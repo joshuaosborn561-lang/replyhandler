@@ -45,8 +45,6 @@ cp .env.example .env
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
 | `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
-| `ADMIN_USERNAME` | Username for admin API basic auth |
-| `ADMIN_PASSWORD` | Password for admin API basic auth |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
@@ -69,7 +67,7 @@ Use the admin API to create a client. This returns webhook URLs ready to paste i
 
 ```bash
 curl -X POST https://your-app.up.railway.app/admin/clients \
-  -u admin:changeme \
+  \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Acme Corp",
@@ -97,14 +95,14 @@ Response includes:
 ### List all clients
 
 ```bash
-curl https://your-app.up.railway.app/admin/clients -u admin:changeme
+curl https://your-app.up.railway.app/admin/clients
 ```
 
 ### Update a client
 
 ```bash
 curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
-  -u admin:changeme \
+  \
   -H "Content-Type: application/json" \
   -d '{"voice_prompt": "Updated voice instructions here"}'
 ```
@@ -177,7 +175,7 @@ For each client:
 
 ```bash
 curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
-  -u admin:changeme \
+  \
   -H "Content-Type: application/json" \
   -d '{"calcom_event_type_id": "123456"}'
 ```
@@ -225,7 +223,7 @@ Cal.com handles sending calendar invites and confirmation emails automatically â
 | `POST` | `/webhook/smartlead/:clientId` | None | SmartLead inbound webhook |
 | `POST` | `/webhook/heyreach/:clientId` | None | HeyReach inbound webhook |
 | `POST` | `/slack/actions` | Slack signature | Button interactions |
-| `POST` | `/admin/clients` | Basic auth | Create client |
-| `GET` | `/admin/clients` | Basic auth | List clients |
-| `PATCH` | `/admin/clients/:clientId` | Basic auth | Update client |
+| `POST` | `/admin/clients` | None | Create client |
+| `GET` | `/admin/clients` | None | List clients |
+| `PATCH` | `/admin/clients/:clientId` | None | Update client |
 | `GET` | `/health` | None | Health check |

@@ -1,10 +1,7 @@
 const { Router } = require('express');
 const db = require('../db');
-const basicAuth = require('../middleware/auth');
 
 const router = Router();
-
-router.use(basicAuth);
 
 function webhookUrls(clientId) {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + (process.env.PORT || 3000);

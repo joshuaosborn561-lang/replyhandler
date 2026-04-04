@@ -19,8 +19,6 @@ REQUIRED_VARS=(
   SLACK_SIGNING_SECRET
   LEADMAGIC_API_KEY
   CALCOM_API_KEY
-  ADMIN_USERNAME
-  ADMIN_PASSWORD
 )
 
 # ─── Preflight checks ────────────────────────────────────────────────
@@ -104,7 +102,6 @@ echo "     https://<your-domain>/slack/actions"
 echo "  3. Create your first client:"
 echo ""
 echo "     curl -X POST https://<your-domain>/admin/clients \\"
-echo "       -u ${ADMIN_USERNAME}:******* \\"
 echo "       -H 'Content-Type: application/json' \\"
 echo "       -d '{\"name\": \"My Client\", \"slack_bot_token\": \"xoxb-...\", \"slack_channel_id\": \"C...\"}'"
 echo ""
