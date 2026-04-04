@@ -1,6 +1,6 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const client = new Anthropic();
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const CLASSIFICATIONS = [
   'INTERESTED', 'QUESTION', 'OBJECTION', 'NOT_INTERESTED',
@@ -53,14 +53,18 @@ ${inboundMessage}
 
 Classify this reply and draft a response if appropriate.`;
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userMessage }],
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash-preview-04-17',
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: 1024,
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingBudget: 1024 },
+    },
   });
 
-  const text = response.content[0].text.trim();
+  const result = await model.generateContent(userMessage);
+  const text = result.response.text().trim();
 
   try {
     return JSON.parse(text);

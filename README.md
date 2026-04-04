@@ -1,12 +1,12 @@
 # ReplyHandler
 
-Automated prospect reply handling for B2B outbound campaigns. Processes inbound replies from SmartLead (email) and HeyReach (LinkedIn), classifies them with Claude, drafts responses in each client's voice, and routes them through Slack for one-tap approval.
+Automated prospect reply handling for B2B outbound campaigns. Processes inbound replies from SmartLead (email) and HeyReach (LinkedIn), classifies them with Gemini 2.5 Flash, drafts responses in each client's voice, and routes them through Slack for one-tap approval.
 
 ## Architecture
 
 ```
 SmartLead Webhook ──┐
-                    ├─→ Classify (Claude) ─→ Slack Approval ─→ Send Reply
+                    ├─→ Classify (Gemini) ─→ Slack Approval ─→ Send Reply
 HeyReach Webhook ──┘                            │
                                                  ├─→ SmartLead (email)
                                                  ├─→ HeyReach (LinkedIn)
@@ -41,7 +41,7 @@ cp .env.example .env
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
-| `ANTHROPIC_API_KEY` | Claude API key for classification and drafting |
+| `GEMINI_API_KEY` | Google Gemini API key for classification and drafting |
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
 | `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
@@ -201,9 +201,9 @@ Cal.com handles sending calendar invites and confirmation emails automatically �
 
 | Classification | Action |
 |---|---|
-| `INTERESTED` | Claude drafts reply → Slack approval → send |
-| `QUESTION` | Claude drafts reply → Slack approval → send |
-| `OBJECTION` | Claude drafts reply → Slack approval → send |
+| `INTERESTED` | Gemini drafts reply → Slack approval → send |
+| `QUESTION` | Gemini drafts reply → Slack approval → send |
+| `OBJECTION` | Gemini drafts reply → Slack approval → send |
 | `MEETING_PROPOSED` | Extract time → Slack booking flow → Cal.com |
 | `NOT_INTERESTED` | Slack alert only |
 | `OUT_OF_OFFICE` | Slack alert only |
