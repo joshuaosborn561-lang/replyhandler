@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const webhookRoutes = require('./routes/webhooks');
 const slackRoutes = require('./routes/slack');
@@ -16,6 +17,10 @@ app.use('/slack', express.urlencoded({
 
 // JSON for everything else
 app.use(express.json());
+
+// ─── Dashboard UI ────────────────────────────────────────────────────
+app.use('/dashboard', express.static(path.join(__dirname, 'public')));
+app.get('/', (_req, res) => res.redirect('/dashboard'));
 
 // ─── Health check ────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
