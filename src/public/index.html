@@ -974,7 +974,10 @@
   <div class="modal">
     <div class="modal-header">
       <h3 id="detailTitle">Client Details</h3>
-      <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
+      <div class="modal-header-actions">
+        <button class="modal-guide-btn" id="detailGuideToggleBtn" onclick="toggleGuide()" title="Setup guide">&#9432; Guide</button>
+        <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
+      </div>
     </div>
     <div class="modal-body" id="detailBody"></div>
     <div class="modal-footer">
@@ -1228,9 +1231,9 @@ async function submitForm() {
 
 function toggleGuide() {
   const drawer = document.getElementById('guideDrawer');
-  const btn = document.getElementById('guideToggleBtn');
   const isOpen = drawer.classList.toggle('active');
-  btn.classList.toggle('active', isOpen);
+  document.getElementById('guideToggleBtn').classList.toggle('active', isOpen);
+  document.getElementById('detailGuideToggleBtn').classList.toggle('active', isOpen);
   document.body.classList.toggle('guide-open', isOpen);
 }
 
@@ -1248,14 +1251,20 @@ function openModal(id) {
 
 function closeModal(id) {
   document.getElementById(id).classList.remove('active');
-  if (id === 'formModal') {
+  // Close guide drawer when either modal closes
+  if (id === 'formModal' || id === 'detailModal') {
     const drawer = document.getElementById('guideDrawer');
     if (drawer.classList.contains('active')) {
-      drawer.classList.remove('active');
-      document.getElementById('guideToggleBtn').classList.remove('active');
-      document.body.classList.remove('guide-open');
+      closeGuide();
     }
   }
+}
+
+function closeGuide() {
+  document.getElementById('guideDrawer').classList.remove('active');
+  document.getElementById('guideToggleBtn').classList.remove('active');
+  document.getElementById('detailGuideToggleBtn').classList.remove('active');
+  document.body.classList.remove('guide-open');
 }
 
 function mask(val) {
