@@ -351,38 +351,77 @@
     }
 
     .guide-section {
-      margin-bottom: 28px;
+      margin-bottom: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      overflow: hidden;
     }
 
-    .guide-section:last-child { margin-bottom: 0; }
+    .guide-section[open] {
+      background: var(--surface-2);
+    }
 
-    .guide-section h4 {
+    .guide-section summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 12px 16px;
       font-size: 13px;
       font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .guide-section summary::-webkit-details-marker { display: none; }
+
+    .guide-section summary:hover {
+      background: rgba(61, 138, 82, 0.08);
+    }
+
+    .guide-section summary::before {
+      content: '\25B8';
       color: var(--accent-light);
-      margin-bottom: 10px;
-      padding-bottom: 6px;
+      font-size: 11px;
+      transition: transform 0.15s;
+      display: inline-block;
+      width: 10px;
+    }
+
+    .guide-section[open] summary::before {
+      transform: rotate(90deg);
+    }
+
+    .guide-section[open] summary {
+      color: var(--accent-light);
       border-bottom: 1px solid var(--border);
     }
 
-    .guide-section p {
+    .guide-section-body {
+      padding: 14px 18px 18px;
+    }
+
+    .guide-section-body p {
       font-size: 13px;
       color: var(--text);
       margin-bottom: 10px;
       line-height: 1.6;
     }
 
-    .guide-section ol,
-    .guide-section ul {
+    .guide-section-body ol,
+    .guide-section-body ul {
       margin: 10px 0 10px 20px;
       color: var(--text);
       font-size: 13px;
       line-height: 1.7;
     }
 
-    .guide-section li { margin-bottom: 4px; }
+    .guide-section-body li { margin-bottom: 4px; }
 
-    .guide-section code {
+    .guide-section-body code {
       background: var(--bg);
       border: 1px solid var(--border);
       padding: 1px 6px;
@@ -392,22 +431,34 @@
       color: var(--accent-light);
     }
 
-    .guide-section a {
+    .guide-section-body a {
       color: var(--accent-light);
       text-decoration: underline;
     }
 
     .guide-note {
-      background: rgba(61, 138, 82, 0.08);
+      background: rgba(61, 138, 82, 0.1);
       border-left: 3px solid var(--accent-light);
       padding: 10px 14px;
       border-radius: 4px;
       font-size: 12px;
       color: var(--text-muted);
       margin-top: 10px;
+      line-height: 1.6;
     }
 
     .guide-note strong { color: var(--text); }
+
+    .guide-category {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin: 16px 4px 8px;
+    }
+
+    .guide-category:first-child { margin-top: 0; }
 
     /* When drawer is open on wide screens, shift modal left to make room */
     @media (min-width: 1200px) {
@@ -674,90 +725,246 @@
   </div>
   <div class="guide-body">
 
-    <div class="guide-section">
-      <h4>Client Name</h4>
-      <p>Any label that helps you identify the client internally. Can be the company name or a shorthand like "acme-ops".</p>
-    </div>
+    <div class="guide-category">Form Fields</div>
 
-    <div class="guide-section">
-      <h4>SmartLead API Key</h4>
-      <ol>
-        <li>Log in to <a href="https://app.smartlead.ai" target="_blank">SmartLead</a></li>
-        <li>Click your profile avatar (top right) &rarr; <strong>Settings</strong></li>
-        <li>Go to the <strong>API Keys</strong> section</li>
-        <li>Click <strong>Add New API Key</strong>, name it, and copy the key</li>
-      </ol>
-      <div class="guide-note">Leave blank if this client doesn't run email campaigns.</div>
-    </div>
+    <details class="guide-section">
+      <summary>Client Name</summary>
+      <div class="guide-section-body">
+        <p>Any label that helps you identify the client internally. Can be the company name or a shorthand like "acme-ops".</p>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>HeyReach API Key</h4>
-      <ol>
-        <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a></li>
-        <li>Go to <strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong></li>
-        <li>Click <strong>Generate New Key</strong> and copy it</li>
-      </ol>
-      <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns.</div>
-    </div>
+    <details class="guide-section">
+      <summary>SmartLead API Key</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Log in to <a href="https://app.smartlead.ai" target="_blank">SmartLead</a></li>
+          <li>Click your profile avatar (top right) &rarr; <strong>Settings</strong></li>
+          <li>Go to the <strong>API Keys</strong> section</li>
+          <li>Click <strong>Add New API Key</strong>, name it, and copy the key</li>
+        </ol>
+        <div class="guide-note">Leave blank if this client doesn't run email campaigns.</div>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>Slack Bot Token</h4>
-      <ol>
-        <li>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> and open your SalesGlider Slack app</li>
-        <li>Click <strong>OAuth &amp; Permissions</strong> in the left sidebar</li>
-        <li>Scroll down to <strong>Bot Token Scopes</strong> and confirm these are added:
-          <ul>
-            <li><code>chat:write</code></li>
-            <li><code>chat:write.public</code></li>
-            <li><code>channels:history</code></li>
-            <li><code>im:write</code></li>
-          </ul>
-        </li>
-        <li>Scroll back up and copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</li>
-      </ol>
-      <div class="guide-note"><strong>Same token for all clients</strong> if they share the same Slack workspace. Different workspaces need different apps &amp; tokens.</div>
-    </div>
+    <details class="guide-section">
+      <summary>HeyReach API Key</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a></li>
+          <li>Go to <strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong></li>
+          <li>Click <strong>Generate New Key</strong> and copy it</li>
+        </ol>
+        <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns.</div>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>Slack Channel ID</h4>
-      <ol>
-        <li>In Slack, create a dedicated channel for this client (e.g. <code>#acme-replies</code>)</li>
-        <li><strong>Invite the bot</strong> to the channel: type <code>/invite @YourBotName</code> in the channel</li>
-        <li>Right-click the channel name in the sidebar &rarr; <strong>View channel details</strong></li>
-        <li>Scroll to the bottom &mdash; the <strong>Channel ID</strong> is listed there (starts with <code>C</code>)</li>
-      </ol>
-      <div class="guide-note">Alternative: right-click channel &rarr; <strong>Copy link</strong>. The ID is the last segment of the URL.</div>
-    </div>
+    <details class="guide-section">
+      <summary>Slack Bot Token</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> and open your SalesGlider Slack app</li>
+          <li>Click <strong>OAuth &amp; Permissions</strong> in the left sidebar</li>
+          <li>Scroll to <strong>Bot Token Scopes</strong> and confirm these are added:
+            <ul>
+              <li><code>chat:write</code></li>
+              <li><code>chat:write.public</code></li>
+              <li><code>channels:history</code></li>
+              <li><code>im:write</code></li>
+            </ul>
+          </li>
+          <li>Scroll back up and copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</li>
+        </ol>
+        <div class="guide-note"><strong>Same token for all clients</strong> if they share the same Slack workspace. Different workspaces need different apps &amp; tokens.</div>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>Cal.com Event Type ID</h4>
-      <p>An "event type" is a bookable meeting page on Cal.com &mdash; like a Calendly link.</p>
-      <ol>
-        <li>Log in to <a href="https://cal.com" target="_blank">cal.com</a></li>
-        <li>Go to <strong>Event Types</strong> in the sidebar</li>
-        <li>If the client doesn't have one yet, create it (e.g. "30-Minute Discovery Call"). Have them connect their Google/Outlook calendar under <strong>Apps</strong> first &mdash; Cal.com will auto-block their real calendar to prevent double bookings.</li>
-        <li>Click the event type to edit it</li>
-        <li>Look at the browser URL: <code>cal.com/event-types/<strong>123456</strong></code> &mdash; the number at the end is the Event Type ID</li>
-        <li>Paste that number into the form</li>
-      </ol>
-      <div class="guide-note">Cal.com sends the confirmation email and calendar invite automatically when we create a booking &mdash; no extra setup needed.</div>
-    </div>
+    <details class="guide-section">
+      <summary>Slack Channel ID</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>In Slack, create a dedicated channel for this client (e.g. <code>#acme-replies</code>)</li>
+          <li><strong>Invite the bot</strong> to the channel: type <code>/invite @YourBotName</code> in the channel</li>
+          <li>Right-click the channel name in the sidebar &rarr; <strong>View channel details</strong></li>
+          <li>Scroll to the bottom &mdash; the <strong>Channel ID</strong> is listed there (starts with <code>C</code>)</li>
+        </ol>
+        <div class="guide-note">Alternative: right-click channel &rarr; <strong>Copy link</strong>. The ID is the last segment of the URL.</div>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>Voice Prompt</h4>
-      <p>2&ndash;4 sentences describing how Gemini should write on this client's behalf. Think tone, style, phrases to avoid, how to close.</p>
-      <div class="guide-note"><strong>Example:</strong><br>"Direct, no-fluff tone. Speak like a fellow B2B operator. Never start with 'Great question' or 'Thanks for reaching out'. Keep replies to 2&ndash;3 sentences. Always end with a soft CTA for a 15-min call."</div>
-    </div>
+    <details class="guide-section">
+      <summary>Cal.com Event Type ID</summary>
+      <div class="guide-section-body">
+        <p>An "event type" is a bookable meeting page on Cal.com &mdash; like a Calendly link. Each one has a numeric ID that goes here.</p>
+        <ol>
+          <li>Once the client's team and event type are set up (see the "Cal.com Setup" sections below), go to the team's <strong>Event Types</strong></li>
+          <li>Click the event type to edit it</li>
+          <li>Look at the browser URL: <code>cal.com/event-types/<strong>123456</strong></code></li>
+          <li>The number at the end is the Event Type ID &mdash; paste it here</li>
+        </ol>
+      </div>
+    </details>
 
-    <div class="guide-section">
-      <h4>After You Create the Client</h4>
-      <ol>
-        <li>Click the client card to open its details</li>
-        <li>Copy the <strong>SmartLead Webhook URL</strong> and paste it into your SmartLead campaign under <strong>Webhooks</strong> &rarr; reply-received trigger</li>
-        <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it into your HeyReach campaign webhook settings</li>
-        <li>Send a test reply to verify the flow: webhook &rarr; classification &rarr; Slack approval message</li>
-      </ol>
-    </div>
+    <details class="guide-section">
+      <summary>Voice Prompt</summary>
+      <div class="guide-section-body">
+        <p>2&ndash;4 sentences describing how Gemini should write on this client's behalf. Think tone, style, phrases to avoid, how to close.</p>
+        <div class="guide-note"><strong>Example:</strong><br>"Direct, no-fluff tone. Speak like a fellow B2B operator. Never start with 'Great question' or 'Thanks for reaching out'. Keep replies to 2&ndash;3 sentences. Always end with a soft CTA for a 15-min call."</div>
+      </div>
+    </details>
+
+    <div class="guide-category">Cal.com Setup (Per Client)</div>
+
+    <details class="guide-section">
+      <summary>How Cal.com works &mdash; architecture overview</summary>
+      <div class="guide-section-body">
+        <p>Cal.com ties into whatever calendar the client already uses (Google, Outlook, iCloud) and whatever video tool they use (Zoom, Google Meet, Teams). Once set up, every booking our system creates automatically:</p>
+        <ul>
+          <li>Checks the client's real calendar for conflicts</li>
+          <li>Pushes the event onto their calendar</li>
+          <li>Generates a unique video call link</li>
+          <li>Sends confirmation emails &amp; calendar invites to both parties</li>
+          <li>Handles reschedules, cancellations, and reminders</li>
+        </ul>
+        <p>The structure:</p>
+        <ol>
+          <li>You own one Cal.com <strong>organization</strong> &mdash; "SalesGlider Growth"</li>
+          <li>Each client gets their own <strong>sub-team</strong> under your org</li>
+          <li>Each team has at least one <strong>event type</strong> (e.g. "30-Min Intro Call")</li>
+          <li>The client's user is the team member &mdash; their calendar gets blocked, their name appears as the host</li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 1 &mdash; Create the client's sub-team</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Log in to <a href="https://cal.com" target="_blank">cal.com</a></li>
+          <li>Go to <strong>Teams</strong> in the sidebar &rarr; click <strong>Create Team</strong></li>
+          <li>Name it after the client (e.g. "Acme Corp")</li>
+          <li>Skip billing &mdash; it rolls up to your org plan</li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 2 &mdash; Invite the client's user</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Inside the newly created team, click <strong>Members</strong> &rarr; <strong>Invite</strong></li>
+          <li>Invite the email of the person whose calendar meetings should land on &mdash; usually the founder, CEO, or whoever does discovery calls</li>
+          <li>They get an email &mdash; they sign up for Cal.com (free) and join your team</li>
+        </ol>
+        <div class="guide-note">If they already have a Cal.com account on the same email, the invite just adds them to your team &mdash; they don't need to re-sign-up.</div>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 3 &mdash; Client connects their calendar</summary>
+      <div class="guide-section-body">
+        <p>This is the critical step that makes availability checking + auto-booking work.</p>
+        <ol>
+          <li>The client logs into their Cal.com account</li>
+          <li>Goes to <strong>Settings</strong> &rarr; <strong>Apps</strong> &rarr; <strong>Calendars</strong></li>
+          <li>Clicks <strong>Connect</strong> next to their calendar provider:
+            <ul>
+              <li><strong>Google Calendar</strong> &mdash; OAuth flow, 30 seconds</li>
+              <li><strong>Office 365 / Outlook</strong> &mdash; Microsoft OAuth</li>
+              <li><strong>Apple iCloud</strong> &mdash; app-specific password</li>
+            </ul>
+          </li>
+          <li>After connecting, Cal.com asks which calendar to:
+            <ul>
+              <li><strong>Check for conflicts</strong> (prevents double-booking)</li>
+              <li><strong>Add events to</strong> (where new bookings appear)</li>
+            </ul>
+          </li>
+          <li>Select their primary work calendar for both</li>
+        </ol>
+        <div class="guide-note"><strong>Test it:</strong> have them temporarily block 10am&ndash;11am tomorrow on their real calendar, then check their Cal.com booking page &mdash; that time slot should be unavailable.</div>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 4 &mdash; Connect video conferencing (Zoom/Meet/Teams)</summary>
+      <div class="guide-section-body">
+        <p>Same <strong>Settings</strong> &rarr; <strong>Apps</strong> section. Connect as many as the client uses:</p>
+        <ul>
+          <li><strong>Zoom</strong> &mdash; OAuth, 30 seconds. Cal.com auto-generates a unique Zoom link for every booking.</li>
+          <li><strong>Google Meet</strong> &mdash; automatic if they connected Google Calendar. Every event gets a Meet link.</li>
+          <li><strong>Microsoft Teams</strong> &mdash; OAuth if they're on Microsoft 365. Auto-generates Teams meetings.</li>
+          <li><strong>Around / Whereby / Jitsi</strong> &mdash; also supported if the client uses them.</li>
+        </ul>
+        <p>After connecting, go to <strong>Settings</strong> &rarr; <strong>Apps</strong> &rarr; set the <strong>default conferencing app</strong> to whichever one they prefer.</p>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 5 &mdash; Create the event type</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Go to the client's team &rarr; <strong>Event Types</strong> &rarr; <strong>Create</strong></li>
+          <li>Fill in:
+            <ul>
+              <li><strong>Title:</strong> e.g. "30-Minute Intro Call"</li>
+              <li><strong>Duration:</strong> 30 min (or whatever they want)</li>
+              <li><strong>Host:</strong> the client user you invited</li>
+              <li><strong>Location:</strong> select Zoom / Google Meet / Teams &mdash; <em>not</em> "In-person" or "Link meeting"</li>
+              <li><strong>Availability:</strong> leave as "default" &mdash; pulls from their connected calendar automatically</li>
+              <li><strong>Email notifications:</strong> ON (Cal.com sends invites to both parties)</li>
+              <li><strong>Reminders:</strong> optionally set 24h and 1h email reminders to the prospect</li>
+            </ul>
+          </li>
+          <li>Save</li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 6 &mdash; Grab the Event Type ID</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>After saving the event type, stay on the edit page</li>
+          <li>Look at the browser URL: <code>cal.com/event-types/<strong>892341</strong></code></li>
+          <li>Copy just the number at the end</li>
+          <li>Paste it into the <strong>Cal.com Event Type ID</strong> field in the client form</li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Step 7 &mdash; Test end-to-end</summary>
+      <div class="guide-section-body">
+        <p>Before handing this off to the client, verify the full loop:</p>
+        <ol>
+          <li>Manually simulate a MEETING_PROPOSED reply through the system (or wait for a real one)</li>
+          <li>In Slack, click <strong>Confirm &amp; Book</strong></li>
+          <li>Verify:
+            <ul>
+              <li>The prospect receives a calendar invite email with a working video link</li>
+              <li>The event appears on the client's real Google/Outlook calendar automatically</li>
+              <li>The video link (Zoom/Meet/Teams) works when clicked</li>
+            </ul>
+          </li>
+        </ol>
+        <div class="guide-note">If anything fails, check Cal.com &rarr; Bookings to see the booking record and any errors.</div>
+      </div>
+    </details>
+
+    <div class="guide-category">After Creating the Client</div>
+
+    <details class="guide-section">
+      <summary>Set up webhooks in SmartLead &amp; HeyReach</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Click the client card in the dashboard to open its details</li>
+          <li>Copy the <strong>SmartLead Webhook URL</strong> and paste it into your SmartLead campaign under <strong>Webhooks</strong> &rarr; reply-received trigger</li>
+          <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it into your HeyReach campaign webhook settings</li>
+          <li>Send a test reply to verify the flow: webhook &rarr; classification &rarr; Slack approval message</li>
+        </ol>
+      </div>
+    </details>
 
   </div>
 </div>
