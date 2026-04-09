@@ -277,16 +277,145 @@
 
     .modal-header h3 { font-size: 16px; font-weight: 600; }
 
-    .modal-close {
+    .modal-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .modal-close,
+    .modal-guide-btn {
       background: none;
       border: none;
       color: var(--text-muted);
-      font-size: 20px;
+      font-size: 18px;
       cursor: pointer;
-      padding: 4px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      line-height: 1;
+      transition: background 0.15s, color 0.15s;
     }
 
-    .modal-close:hover { color: var(--text); }
+    .modal-close { font-size: 22px; }
+
+    .modal-close:hover,
+    .modal-guide-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .modal-guide-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    /* ─── Guide Drawer ────────────────────── */
+    .guide-drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 440px;
+      max-width: 100vw;
+      height: 100vh;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      z-index: 150;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .guide-drawer.active { transform: translateX(0); }
+
+    .guide-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .guide-header h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .guide-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px 40px;
+    }
+
+    .guide-section {
+      margin-bottom: 28px;
+    }
+
+    .guide-section:last-child { margin-bottom: 0; }
+
+    .guide-section h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-light);
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .guide-section p {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 10px;
+      line-height: 1.6;
+    }
+
+    .guide-section ol,
+    .guide-section ul {
+      margin: 10px 0 10px 20px;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .guide-section li { margin-bottom: 4px; }
+
+    .guide-section code {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--accent-light);
+    }
+
+    .guide-section a {
+      color: var(--accent-light);
+      text-decoration: underline;
+    }
+
+    .guide-note {
+      background: rgba(61, 138, 82, 0.08);
+      border-left: 3px solid var(--accent-light);
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 10px;
+    }
+
+    .guide-note strong { color: var(--text); }
+
+    /* When drawer is open on wide screens, shift modal left to make room */
+    @media (min-width: 1200px) {
+      body.guide-open .modal-overlay.active {
+        padding-right: 440px;
+        transition: padding 0.25s ease;
+      }
+    }
 
     .modal-body { padding: 24px; }
 
@@ -484,7 +613,10 @@
   <div class="modal">
     <div class="modal-header">
       <h3 id="formTitle">Add Client</h3>
-      <button class="modal-close" onclick="closeModal('formModal')">&times;</button>
+      <div class="modal-header-actions">
+        <button class="modal-guide-btn" id="guideToggleBtn" onclick="toggleGuide()" title="Setup guide">&#9432; Guide</button>
+        <button class="modal-close" onclick="closeModal('formModal')">&times;</button>
+      </div>
     </div>
     <div class="modal-body">
       <input type="hidden" id="editClientId">
@@ -531,6 +663,102 @@
       <button class="btn btn-ghost" onclick="closeModal('formModal')">Cancel</button>
       <button class="btn btn-primary" id="formSubmitBtn" onclick="submitForm()">Create Client</button>
     </div>
+  </div>
+</div>
+
+<!-- Guide Drawer -->
+<div class="guide-drawer" id="guideDrawer">
+  <div class="guide-header">
+    <h3>Setup Guide</h3>
+    <button class="modal-close" onclick="toggleGuide()">&times;</button>
+  </div>
+  <div class="guide-body">
+
+    <div class="guide-section">
+      <h4>Client Name</h4>
+      <p>Any label that helps you identify the client internally. Can be the company name or a shorthand like "acme-ops".</p>
+    </div>
+
+    <div class="guide-section">
+      <h4>SmartLead API Key</h4>
+      <ol>
+        <li>Log in to <a href="https://app.smartlead.ai" target="_blank">SmartLead</a></li>
+        <li>Click your profile avatar (top right) &rarr; <strong>Settings</strong></li>
+        <li>Go to the <strong>API Keys</strong> section</li>
+        <li>Click <strong>Add New API Key</strong>, name it, and copy the key</li>
+      </ol>
+      <div class="guide-note">Leave blank if this client doesn't run email campaigns.</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>HeyReach API Key</h4>
+      <ol>
+        <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a></li>
+        <li>Go to <strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong></li>
+        <li>Click <strong>Generate New Key</strong> and copy it</li>
+      </ol>
+      <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns.</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>Slack Bot Token</h4>
+      <ol>
+        <li>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> and open your SalesGlider Slack app</li>
+        <li>Click <strong>OAuth &amp; Permissions</strong> in the left sidebar</li>
+        <li>Scroll down to <strong>Bot Token Scopes</strong> and confirm these are added:
+          <ul>
+            <li><code>chat:write</code></li>
+            <li><code>chat:write.public</code></li>
+            <li><code>channels:history</code></li>
+            <li><code>im:write</code></li>
+          </ul>
+        </li>
+        <li>Scroll back up and copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</li>
+      </ol>
+      <div class="guide-note"><strong>Same token for all clients</strong> if they share the same Slack workspace. Different workspaces need different apps &amp; tokens.</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>Slack Channel ID</h4>
+      <ol>
+        <li>In Slack, create a dedicated channel for this client (e.g. <code>#acme-replies</code>)</li>
+        <li><strong>Invite the bot</strong> to the channel: type <code>/invite @YourBotName</code> in the channel</li>
+        <li>Right-click the channel name in the sidebar &rarr; <strong>View channel details</strong></li>
+        <li>Scroll to the bottom &mdash; the <strong>Channel ID</strong> is listed there (starts with <code>C</code>)</li>
+      </ol>
+      <div class="guide-note">Alternative: right-click channel &rarr; <strong>Copy link</strong>. The ID is the last segment of the URL.</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>Cal.com Event Type ID</h4>
+      <p>An "event type" is a bookable meeting page on Cal.com &mdash; like a Calendly link.</p>
+      <ol>
+        <li>Log in to <a href="https://cal.com" target="_blank">cal.com</a></li>
+        <li>Go to <strong>Event Types</strong> in the sidebar</li>
+        <li>If the client doesn't have one yet, create it (e.g. "30-Minute Discovery Call"). Have them connect their Google/Outlook calendar under <strong>Apps</strong> first &mdash; Cal.com will auto-block their real calendar to prevent double bookings.</li>
+        <li>Click the event type to edit it</li>
+        <li>Look at the browser URL: <code>cal.com/event-types/<strong>123456</strong></code> &mdash; the number at the end is the Event Type ID</li>
+        <li>Paste that number into the form</li>
+      </ol>
+      <div class="guide-note">Cal.com sends the confirmation email and calendar invite automatically when we create a booking &mdash; no extra setup needed.</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>Voice Prompt</h4>
+      <p>2&ndash;4 sentences describing how Gemini should write on this client's behalf. Think tone, style, phrases to avoid, how to close.</p>
+      <div class="guide-note"><strong>Example:</strong><br>"Direct, no-fluff tone. Speak like a fellow B2B operator. Never start with 'Great question' or 'Thanks for reaching out'. Keep replies to 2&ndash;3 sentences. Always end with a soft CTA for a 15-min call."</div>
+    </div>
+
+    <div class="guide-section">
+      <h4>After You Create the Client</h4>
+      <ol>
+        <li>Click the client card to open its details</li>
+        <li>Copy the <strong>SmartLead Webhook URL</strong> and paste it into your SmartLead campaign under <strong>Webhooks</strong> &rarr; reply-received trigger</li>
+        <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it into your HeyReach campaign webhook settings</li>
+        <li>Send a test reply to verify the flow: webhook &rarr; classification &rarr; Slack approval message</li>
+      </ol>
+    </div>
+
   </div>
 </div>
 
@@ -791,6 +1019,14 @@ async function submitForm() {
   }
 }
 
+function toggleGuide() {
+  const drawer = document.getElementById('guideDrawer');
+  const btn = document.getElementById('guideToggleBtn');
+  const isOpen = drawer.classList.toggle('active');
+  btn.classList.toggle('active', isOpen);
+  document.body.classList.toggle('guide-open', isOpen);
+}
+
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
    'f_slack_channel_id', 'f_calcom_event_type_id', 'f_voice_prompt'].forEach(id => {
@@ -805,6 +1041,14 @@ function openModal(id) {
 
 function closeModal(id) {
   document.getElementById(id).classList.remove('active');
+  if (id === 'formModal') {
+    const drawer = document.getElementById('guideDrawer');
+    if (drawer.classList.contains('active')) {
+      drawer.classList.remove('active');
+      document.getElementById('guideToggleBtn').classList.remove('active');
+      document.body.classList.remove('guide-open');
+    }
+  }
 }
 
 function mask(val) {
