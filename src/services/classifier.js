@@ -8,9 +8,9 @@ const CLASSIFICATIONS = [
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION'];
+const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION', 'MEETING_PROPOSED'];
 
-async function classifyAndDraft(threadContext, inboundMessage, voicePrompt) {
+async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink) {
   const systemPrompt = `You are an expert B2B sales reply classifier and ghostwriter.
 
 Your job:
@@ -21,8 +21,7 @@ CLASSIFICATION CATEGORIES (pick exactly one):
 ${CLASSIFICATIONS.map(c => `- ${c}`).join('\n')}
 
 RULES FOR DRAFTING:
-- Only draft a reply for: INTERESTED, QUESTION, OBJECTION
-- For MEETING_PROPOSED: extract the proposed time instead of drafting
+- Draft a reply for: INTERESTED, QUESTION, OBJECTION, MEETING_PROPOSED
 - For all other classifications: no draft needed
 - Never start with "Great question" or similar filler
 - Never use exclamation marks excessively
@@ -31,6 +30,14 @@ RULES FOR DRAFTING:
 - End OBJECTION replies by acknowledging their concern and pivoting
 - Sound like a real human, not a bot
 
+MEETING_PROPOSED RULES:
+- If the prospect agreed to a meeting but did NOT propose a specific time, suggest a specific time later today or tomorrow and include the booking link so they can lock it in.
+- If the prospect proposed a specific time (e.g. "Thursday at 2pm"), confirm it sounds great and share the booking link for them to confirm.
+- If the prospect is going back and forth on timing, be flexible and propose an alternative, always including the booking link.
+- The booking link is: ${bookingLink || '[no booking link configured]'}
+- Work the booking link naturally into the message — don't just dump it. Example: "Here's a link to grab a time that works: [link]"
+- Extract the proposed or suggested time into the "proposed_time" field for tracking.
+
 CLIENT VOICE INSTRUCTIONS:
 ${voicePrompt || 'Professional, direct, practitioner-level tone. No fluff.'}
 
@@ -38,7 +45,7 @@ Respond in this exact JSON format (no markdown, no code fences):
 {
   "classification": "CATEGORY",
   "draft": "Reply text here or null if no draft needed",
-  "proposed_time": "Extracted time string or null if not MEETING_PROPOSED",
+  "proposed_time": "Extracted or suggested time string, or null if not MEETING_PROPOSED",
   "reasoning": "One sentence explaining your classification"
 }`;
 

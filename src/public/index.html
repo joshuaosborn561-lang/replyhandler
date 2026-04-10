@@ -700,8 +700,9 @@
       </div>
 
       <div class="form-group">
-        <label>Cal.com Event Type ID</label>
-        <input type="text" id="f_calcom_event_type_id" placeholder="123456">
+        <label>Booking Link</label>
+        <input type="text" id="f_booking_link" placeholder="https://cal.com/acme/30min">
+        <div class="hint">Client's scheduling page URL (Calendly, Cal.com, etc). Included in AI replies when a meeting is proposed.</div>
       </div>
 
       <div class="form-group">
@@ -793,15 +794,16 @@
     </details>
 
     <details class="guide-section">
-      <summary>Cal.com Event Type ID</summary>
+      <summary>Booking Link</summary>
       <div class="guide-section-body">
-        <p>An "event type" is a bookable meeting page on Cal.com &mdash; like a Calendly link. Each one has a numeric ID that goes here.</p>
-        <ol>
-          <li>Once the client's team and event type are set up (see the "Cal.com Setup" sections below), go to the team's <strong>Event Types</strong></li>
-          <li>Click the event type to edit it</li>
-          <li>Look at the browser URL: <code>cal.com/event-types/<strong>123456</strong></code></li>
-          <li>The number at the end is the Event Type ID &mdash; paste it here</li>
-        </ol>
+        <p>The client's scheduling page URL &mdash; Calendly, Cal.com, SavvyCal, or any scheduling tool. This is the link the AI will include in replies when a prospect agrees to a meeting.</p>
+        <p>Examples:</p>
+        <ul>
+          <li><code>https://calendly.com/acme-ceo/30min</code></li>
+          <li><code>https://cal.com/acme/discovery-call</code></li>
+          <li><code>https://savvycal.com/acme/chat</code></li>
+        </ul>
+        <div class="guide-note"><strong>How it works:</strong> When a prospect says "sure, let's talk", the AI drafts a reply proposing a specific time (today or tomorrow) and includes this booking link so they can lock it in. The AI handles the back-and-forth negotiation on timing automatically through the normal approve flow.</div>
       </div>
     </details>
 
@@ -813,142 +815,34 @@
       </div>
     </details>
 
-    <div class="guide-category">Cal.com Setup (Per Client)</div>
+    <div class="guide-category">Meeting Booking Flow</div>
 
     <details class="guide-section">
-      <summary>How Cal.com works &mdash; architecture overview</summary>
+      <summary>How meetings work</summary>
       <div class="guide-section-body">
-        <p>Cal.com ties into whatever calendar the client already uses (Google, Outlook, iCloud) and whatever video tool they use (Zoom, Google Meet, Teams). Once set up, every booking our system creates automatically:</p>
+        <p>When a prospect agrees to meet, the AI handles the entire scheduling conversation:</p>
+        <ol>
+          <li>Prospect says "sure, let's chat" or proposes a time</li>
+          <li>AI classifies it as MEETING_PROPOSED and drafts a reply proposing a specific time (later today or tomorrow) with the client's booking link</li>
+          <li>Draft goes to Slack for approval &mdash; your SDR taps Approve, reply sends</li>
+          <li>If the prospect counters with a different time, the next reply comes in, AI handles it, proposes again &mdash; same flow</li>
+          <li>Once agreed, the prospect clicks the booking link and books on the client's calendar</li>
+        </ol>
+        <div class="guide-note">All you need from the client is their scheduling page URL. The AI does the rest &mdash; proposing times, negotiating, and working the booking link into the conversation naturally.</div>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Getting the client's booking link</summary>
+      <div class="guide-section-body">
+        <p>Ask the client for the URL of their scheduling page. Any platform works:</p>
         <ul>
-          <li>Checks the client's real calendar for conflicts</li>
-          <li>Pushes the event onto their calendar</li>
-          <li>Generates a unique video call link</li>
-          <li>Sends confirmation emails &amp; calendar invites to both parties</li>
-          <li>Handles reschedules, cancellations, and reminders</li>
+          <li><strong>Calendly</strong> &mdash; e.g. <code>https://calendly.com/jane/30min</code></li>
+          <li><strong>Cal.com</strong> &mdash; e.g. <code>https://cal.com/acme/discovery</code></li>
+          <li><strong>SavvyCal</strong> &mdash; e.g. <code>https://savvycal.com/acme/chat</code></li>
+          <li><strong>HubSpot</strong> &mdash; e.g. <code>https://meetings.hubspot.com/jane</code></li>
         </ul>
-        <p>The structure:</p>
-        <ol>
-          <li>You own one Cal.com <strong>organization</strong> &mdash; "SalesGlider Growth"</li>
-          <li>Each client gets their own <strong>sub-team</strong> under your org</li>
-          <li>Each team has at least one <strong>event type</strong> (e.g. "30-Min Intro Call")</li>
-          <li>The client's user is the team member &mdash; their calendar gets blocked, their name appears as the host</li>
-        </ol>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 1 &mdash; Create the client's sub-team</summary>
-      <div class="guide-section-body">
-        <ol>
-          <li>Log in to <a href="https://cal.com" target="_blank">cal.com</a></li>
-          <li>Go to <strong>Teams</strong> in the sidebar &rarr; click <strong>Create Team</strong></li>
-          <li>Name it after the client (e.g. "Acme Corp")</li>
-          <li>Skip billing &mdash; it rolls up to your org plan</li>
-        </ol>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 2 &mdash; Invite the client's user</summary>
-      <div class="guide-section-body">
-        <ol>
-          <li>Inside the newly created team, click <strong>Members</strong> &rarr; <strong>Invite</strong></li>
-          <li>Invite the email of the person whose calendar meetings should land on &mdash; usually the founder, CEO, or whoever does discovery calls</li>
-          <li>They get an email &mdash; they sign up for Cal.com (free) and join your team</li>
-        </ol>
-        <div class="guide-note">If they already have a Cal.com account on the same email, the invite just adds them to your team &mdash; they don't need to re-sign-up.</div>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 3 &mdash; Client connects their calendar</summary>
-      <div class="guide-section-body">
-        <p>This is the critical step that makes availability checking + auto-booking work.</p>
-        <ol>
-          <li>The client logs into their Cal.com account</li>
-          <li>Goes to <strong>Settings</strong> &rarr; <strong>Apps</strong> &rarr; <strong>Calendars</strong></li>
-          <li>Clicks <strong>Connect</strong> next to their calendar provider:
-            <ul>
-              <li><strong>Google Calendar</strong> &mdash; OAuth flow, 30 seconds</li>
-              <li><strong>Office 365 / Outlook</strong> &mdash; Microsoft OAuth</li>
-              <li><strong>Apple iCloud</strong> &mdash; app-specific password</li>
-            </ul>
-          </li>
-          <li>After connecting, Cal.com asks which calendar to:
-            <ul>
-              <li><strong>Check for conflicts</strong> (prevents double-booking)</li>
-              <li><strong>Add events to</strong> (where new bookings appear)</li>
-            </ul>
-          </li>
-          <li>Select their primary work calendar for both</li>
-        </ol>
-        <div class="guide-note"><strong>Test it:</strong> have them temporarily block 10am&ndash;11am tomorrow on their real calendar, then check their Cal.com booking page &mdash; that time slot should be unavailable.</div>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 4 &mdash; Connect video conferencing (Zoom/Meet/Teams)</summary>
-      <div class="guide-section-body">
-        <p>Same <strong>Settings</strong> &rarr; <strong>Apps</strong> section. Connect as many as the client uses:</p>
-        <ul>
-          <li><strong>Zoom</strong> &mdash; OAuth, 30 seconds. Cal.com auto-generates a unique Zoom link for every booking.</li>
-          <li><strong>Google Meet</strong> &mdash; automatic if they connected Google Calendar. Every event gets a Meet link.</li>
-          <li><strong>Microsoft Teams</strong> &mdash; OAuth if they're on Microsoft 365. Auto-generates Teams meetings.</li>
-          <li><strong>Around / Whereby / Jitsi</strong> &mdash; also supported if the client uses them.</li>
-        </ul>
-        <p>After connecting, go to <strong>Settings</strong> &rarr; <strong>Apps</strong> &rarr; set the <strong>default conferencing app</strong> to whichever one they prefer.</p>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 5 &mdash; Create the event type</summary>
-      <div class="guide-section-body">
-        <ol>
-          <li>Go to the client's team &rarr; <strong>Event Types</strong> &rarr; <strong>Create</strong></li>
-          <li>Fill in:
-            <ul>
-              <li><strong>Title:</strong> e.g. "30-Minute Intro Call"</li>
-              <li><strong>Duration:</strong> 30 min (or whatever they want)</li>
-              <li><strong>Host:</strong> the client user you invited</li>
-              <li><strong>Location:</strong> select Zoom / Google Meet / Teams &mdash; <em>not</em> "In-person" or "Link meeting"</li>
-              <li><strong>Availability:</strong> leave as "default" &mdash; pulls from their connected calendar automatically</li>
-              <li><strong>Email notifications:</strong> ON (Cal.com sends invites to both parties)</li>
-              <li><strong>Reminders:</strong> optionally set 24h and 1h email reminders to the prospect</li>
-            </ul>
-          </li>
-          <li>Save</li>
-        </ol>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 6 &mdash; Grab the Event Type ID</summary>
-      <div class="guide-section-body">
-        <ol>
-          <li>After saving the event type, stay on the edit page</li>
-          <li>Look at the browser URL: <code>cal.com/event-types/<strong>892341</strong></code></li>
-          <li>Copy just the number at the end</li>
-          <li>Paste it into the <strong>Cal.com Event Type ID</strong> field in the client form</li>
-        </ol>
-      </div>
-    </details>
-
-    <details class="guide-section">
-      <summary>Step 7 &mdash; Test end-to-end</summary>
-      <div class="guide-section-body">
-        <p>Before handing this off to the client, verify the full loop:</p>
-        <ol>
-          <li>Manually simulate a MEETING_PROPOSED reply through the system (or wait for a real one)</li>
-          <li>In Slack, click <strong>Confirm &amp; Book</strong></li>
-          <li>Verify:
-            <ul>
-              <li>The prospect receives a calendar invite email with a working video link</li>
-              <li>The event appears on the client's real Google/Outlook calendar automatically</li>
-              <li>The video link (Zoom/Meet/Teams) works when clicked</li>
-            </ul>
-          </li>
-        </ol>
-        <div class="guide-note">If anything fails, check Cal.com &rarr; Bookings to see the booking record and any errors.</div>
+        <p>The scheduling platform handles calendar conflicts, Zoom/Meet/Teams links, confirmation emails, and reminders &mdash; we just need the URL.</p>
       </div>
     </details>
 
@@ -1059,8 +953,8 @@ function renderGrid() {
         <span class="${c.heyreach_api_key ? 'key-present' : 'key-missing'}">
           ${c.heyreach_api_key ? '&#10003;' : '&#10007;'} HeyReach
         </span>
-        <span class="${c.calcom_event_type_id ? 'key-present' : 'key-missing'}">
-          ${c.calcom_event_type_id ? '&#10003;' : '&#10007;'} Cal.com
+        <span class="${c.booking_link ? 'key-present' : 'key-missing'}">
+          ${c.booking_link ? '&#10003;' : '&#10007;'} Booking Link
         </span>
         <span style="color: var(--text-muted)">
           Added ${new Date(c.created_at).toLocaleDateString()}
@@ -1113,8 +1007,8 @@ function openDetail(id) {
         <span class="value">${esc(c.slack_channel_id)}</span>
       </div>
       <div class="detail-row">
-        <span class="label">Cal.com Event Type ID</span>
-        <span class="value">${esc(c.calcom_event_type_id || '—')}</span>
+        <span class="label">Booking Link</span>
+        <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
     </div>
 
@@ -1182,7 +1076,7 @@ function openEditFromDetail() {
   document.getElementById('f_heyreach_api_key').value = c.heyreach_api_key || '';
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
-  document.getElementById('f_calcom_event_type_id').value = c.calcom_event_type_id || '';
+  document.getElementById('f_booking_link').value = c.booking_link || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
 
   openModal('formModal');
@@ -1196,7 +1090,7 @@ async function submitForm() {
     heyreach_api_key: document.getElementById('f_heyreach_api_key').value.trim() || null,
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
-    calcom_event_type_id: document.getElementById('f_calcom_event_type_id').value.trim() || null,
+    booking_link: document.getElementById('f_booking_link').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
 
@@ -1239,7 +1133,7 @@ function toggleGuide() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_calcom_event_type_id', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_booking_link', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }

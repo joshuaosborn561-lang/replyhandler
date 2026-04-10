@@ -7,7 +7,7 @@ CREATE TABLE clients (
   heyreach_api_key TEXT,
   slack_bot_token TEXT NOT NULL,
   slack_channel_id TEXT NOT NULL,
-  calcom_event_type_id TEXT,
+  booking_link TEXT,
   voice_prompt TEXT NOT NULL DEFAULT '',
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -44,7 +44,6 @@ CREATE TABLE meetings (
   linkedin_url TEXT,
   proposed_time TEXT,
   confirmed_time TIMESTAMPTZ,
-  calcom_booking_uid TEXT,
   status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'confirmed', 'booked', 'cancelled')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

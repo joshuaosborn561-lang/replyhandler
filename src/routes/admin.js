@@ -21,7 +21,7 @@ router.post('/admin/clients', async (req, res) => {
   try {
     const {
       name, smartlead_api_key, heyreach_api_key, slack_bot_token,
-      slack_channel_id, calcom_event_type_id, voice_prompt,
+      slack_channel_id, booking_link, voice_prompt,
     } = req.body;
 
     if (!name || !slack_bot_token || !slack_channel_id) {
@@ -29,9 +29,9 @@ router.post('/admin/clients', async (req, res) => {
     }
 
     const { rows: [client] } = await db.query(
-      `INSERT INTO clients (name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id, calcom_event_type_id, voice_prompt)
+      `INSERT INTO clients (name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [name, smartlead_api_key || null, heyreach_api_key || null, slack_bot_token, slack_channel_id, calcom_event_type_id || null, voice_prompt || '']
+      [name, smartlead_api_key || null, heyreach_api_key || null, slack_bot_token, slack_channel_id, booking_link || null, voice_prompt || '']
     );
 
     console.log('[Admin] Client created', { id: client.id, name: client.name });
@@ -60,7 +60,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const fields = req.body;
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'slack_bot_token',
-      'slack_channel_id', 'calcom_event_type_id', 'voice_prompt', 'active',
+      'slack_channel_id', 'booking_link', 'voice_prompt', 'active',
     ];
 
     const updates = [];

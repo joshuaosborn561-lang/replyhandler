@@ -56,88 +56,6 @@ async function postDraftApproval(token, channelId, { replyId, leadName, leadEmai
   });
 }
 
-async function postMeetingApproval(token, channelId, { replyId, meetingId, leadName, leadEmail, linkedinUrl, platform, proposedTime, inboundMessage, hasEmail }) {
-  const slack = getClient(token);
-
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `📅 Meeting Proposed — ${platform.toUpperCase()}` },
-    },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Proposed time:* ${proposedTime}` },
-    },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundMessage.split('\n').join('\n>')}` },
-    },
-  ];
-
-  if (hasEmail) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✅ Confirm & Book' },
-          style: 'primary',
-          action_id: 'confirm_booking',
-          value: JSON.stringify({ meetingId, replyId }),
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '🕐 Suggest Different Time' },
-          action_id: 'suggest_time',
-          value: JSON.stringify({ meetingId, replyId }),
-        },
-      ],
-    });
-  } else {
-    blocks.push(
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `⚠️ *No email found for this lead.* Enter their email below to proceed with booking.` },
-      },
-      {
-        type: 'input',
-        block_id: 'email_input_block',
-        dispatch_action: false,
-        element: {
-          type: 'plain_text_input',
-          action_id: 'email_input',
-          placeholder: { type: 'plain_text', text: 'prospect@company.com' },
-        },
-        label: { type: 'plain_text', text: 'Lead Email' },
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: '✅ Confirm & Book' },
-            style: 'primary',
-            action_id: 'confirm_booking_with_email',
-            value: JSON.stringify({ meetingId, replyId }),
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: '🕐 Suggest Different Time' },
-            action_id: 'suggest_time',
-            value: JSON.stringify({ meetingId, replyId }),
-          },
-        ],
-      }
-    );
-  }
-
-  return slack.chat.postMessage({
-    channel: channelId,
-    text: `Meeting proposed by ${leadName} — ${proposedTime}`,
-    blocks,
-  });
-}
-
 async function postAlert(token, channelId, { leadName, platform, classification, inboundMessage, reasoning }) {
   const slack = getClient(token);
 
@@ -201,7 +119,6 @@ async function updateMessage(token, channelId, messageTs, text) {
 
 module.exports = {
   postDraftApproval,
-  postMeetingApproval,
   postAlert,
   postError,
   postReminder,
