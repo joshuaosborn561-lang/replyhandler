@@ -1013,6 +1013,15 @@ function openDetail(id) {
     </div>
 
     <div class="detail-section">
+      <h4>Calendar Connection</h4>
+      <div id="calendarStatus_${c.id}" style="font-size:13px; color:var(--text-muted)">Loading...</div>
+      <div style="display:flex; gap:8px; margin-top:10px">
+        <button class="btn btn-ghost btn-sm" onclick="connectCalendar('${c.id}', 'microsoft')">Connect Outlook</button>
+        <button class="btn btn-ghost btn-sm" onclick="connectCalendar('${c.id}', 'google')">Connect Google</button>
+      </div>
+    </div>
+
+    <div class="detail-section">
       <h4>Voice Prompt</h4>
       <div style="font-size:13px; color:var(--text-muted); white-space:pre-wrap">${esc(c.voice_prompt || 'No voice prompt set.')}</div>
     </div>
@@ -1035,6 +1044,7 @@ function openDetail(id) {
   `;
 
   openModal('detailModal');
+  loadCalendarStatus(c.id);
 }
 
 async function toggleActive() {
@@ -1217,6 +1227,51 @@ document.addEventListener('keydown', (e) => {
     document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
   }
 });
+
+// ─── Calendar Connection ─────────────────────────────
+async function loadCalendarStatus(clientId) {
+  try {
+    const res = await fetch(`${API}/auth/calendar-status/${clientId}`);
+    const connections = await res.json();
+    const el = document.getElementById(`calendarStatus_${clientId}`);
+    if (!el) return;
+
+    if (connections.length === 0) {
+      el.innerHTML = '<span style="opacity:0.5">No calendar connected</span>';
+    } else {
+      el.innerHTML = connections.map(c =>
+        `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0">` +
+        `<span style="color:var(--accent-light)">${c.provider === 'microsoft' ? 'Outlook' : 'Google'}: ${esc(c.email)}</span>` +
+        `<button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:11px" onclick="disconnectCalendar('${clientId}','${c.provider}')">Disconnect</button>` +
+        `</div>`
+      ).join('');
+    }
+  } catch (err) {
+    console.error('Failed to load calendar status', err);
+  }
+}
+
+function connectCalendar(clientId, provider) {
+  window.open(`${API}/auth/${provider}/connect/${clientId}`, '_blank');
+}
+
+async function disconnectCalendar(clientId, provider) {
+  await fetch(`${API}/auth/calendar/${clientId}/${provider}`, { method: 'DELETE' });
+  toast(`${provider === 'microsoft' ? 'Outlook' : 'Google'} calendar disconnected`, 'success');
+  loadCalendarStatus(clientId);
+}
+
+// Check for auth callback in URL params
+(function checkAuthCallback() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('auth') === 'success') {
+    toast(`${params.get('provider') === 'microsoft' ? 'Outlook' : 'Google'} calendar connected`, 'success');
+    window.history.replaceState({}, '', '/dashboard');
+  } else if (params.get('auth') === 'error') {
+    toast(`Failed to connect ${params.get('provider') || ''} calendar`, 'error');
+    window.history.replaceState({}, '', '/dashboard');
+  }
+})();
 
 // ─── Init ────────────────────────────────────────────
 loadClients();

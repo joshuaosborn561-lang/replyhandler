@@ -44,9 +44,26 @@ CREATE TABLE meetings (
   linkedin_url TEXT,
   proposed_time TEXT,
   confirmed_time TIMESTAMPTZ,
+  calendar_event_id TEXT,
+  calendar_provider TEXT,
+  meeting_link TEXT,
+  reminder_sent BOOLEAN NOT NULL DEFAULT false,
   status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'confirmed', 'booked', 'cancelled')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE calendar_connections (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft')),
+  email TEXT,
+  access_token TEXT NOT NULL,
+  refresh_token TEXT NOT NULL,
+  token_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (client_id, provider)
 );
 
 CREATE INDEX idx_pending_replies_client_id ON pending_replies(client_id);

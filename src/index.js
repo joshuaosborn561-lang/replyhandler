@@ -3,6 +3,7 @@ const express = require('express');
 const webhookRoutes = require('./routes/webhooks');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
+const authRoutes = require('./routes/auth');
 const { startCron } = require('./cron');
 
 const app = express();
@@ -29,6 +30,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date()
 app.use(webhookRoutes);
 app.use(slackRoutes);
 app.use(adminRoutes);
+app.use(authRoutes);
 
 // ─── Start ───────────────────────────────────────────────────────────
 app.listen(PORT, () => {
