@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
+const heyreach = require('../services/heyreach');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
@@ -31,6 +32,19 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (!campaignId || !leadId) {
       console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId });
       return res.status(200).json({ ok: true, error: 'missing required fields' });
+    }
+
+    if (!client.smartlead_api_key) {
+      console.warn('[Webhook] SmartLead skipped — no API key on client', { clientId, client: client.name });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'no_smartlead_api_key' });
+    }
+
+    const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, campaignId);
+    if (!campaignOk) {
+      console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
+        clientId, client: client.name, campaignId,
+      });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
     }
 
     // Fetch full thread history
@@ -136,6 +150,30 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     const inboundMessage = payload.message || payload.reply || payload.body || '';
     const listId = payload.listId || payload.list_id;
     const linkedinAccountId = payload.linkedinAccountId || payload.linkedin_account_id;
+
+    if (!client.heyreach_api_key) {
+      console.warn('[Webhook] HeyReach skipped — no API key on client', { clientId, client: client.name });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'no_heyreach_api_key' });
+    }
+
+    if (!campaignId) {
+      console.warn('[Webhook] HeyReach skipped — missing campaign id (cannot tie to client campaigns)', { clientId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
+    }
+
+    let heyreachCampaignOk = false;
+    try {
+      heyreachCampaignOk = await heyreach.verifyCampaignAccess(client.heyreach_api_key, campaignId);
+    } catch (err) {
+      console.error('[Webhook] HeyReach campaign verification failed', { clientId, err: err.message });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'heyreach_api_error' });
+    }
+    if (!heyreachCampaignOk) {
+      console.warn('[Webhook] HeyReach campaign not in this workspace (wrong webhook URL or key)', {
+        clientId, client: client.name, campaignId,
+      });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
+    }
 
     const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
 

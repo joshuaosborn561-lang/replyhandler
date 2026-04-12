@@ -113,6 +113,13 @@ curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
 
 ## Webhook Setup
 
+Each client has **unique** URLs (`/webhook/smartlead/<client-uuid>`, `/webhook/heyreach/<client-uuid>`). Replies are posted to **that client’s** `slack_channel_id` using **their** bot token only after we confirm the event belongs to **their** account:
+
+- **SmartLead:** `GET /api/v1/campaigns/{campaign_id}?api_key=...` must succeed for the client’s key (SmartLead returns 404 if the campaign is not in that account).
+- **HeyReach:** we call `POST /api/public/campaign/GetAll` with the client’s key and require the webhook’s `campaignId` to appear in their workspace’s campaign list.
+
+Paste **each client’s** webhook URL only into campaigns that belong to **that** client’s SmartLead/HeyReach workspace (the same API keys you saved in the dashboard). If someone pastes Client A’s URL into Client B’s campaign, events are **skipped** (no Slack noise).
+
 ### SmartLead
 
 1. Go to your SmartLead campaign settings
@@ -124,6 +131,8 @@ curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
 1. Go to your HeyReach campaign settings
 2. Under **Webhooks**, add a new webhook for "Message Received"
 3. Paste the `heyreach_webhook_url` from the admin API response
+
+HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key (field name may be `campaignId` or `campaign_id` depending on HeyReach’s payload).
 
 ## Slack App Setup
 
