@@ -2,7 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const slackService = require('../services/slack');
 const slackVerify = require('../middleware/slackVerify');
-const { sendReplyToPlatform, maybeBookMeetingAfterSend } = require('../services/reply-send');
+const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 
 const router = Router();
 
@@ -99,6 +99,9 @@ async function handleEditModalSubmit(interaction) {
     );
 
     let statusMsg = `✅ Reply to ${reply.lead_name} edited and sent by <@${interaction.user.id}>.`;
+    if (isSlackTestFixtureReply(reply)) {
+      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+    }
     statusMsg += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
 
     if (channelId && messageTs) {
@@ -141,6 +144,9 @@ async function handleApprove(replyId, interaction) {
     );
 
     let statusMsg = `✅ Reply to ${reply.lead_name} approved and sent by <@${interaction.user.id}>.`;
+    if (isSlackTestFixtureReply(reply)) {
+      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+    }
     statusMsg += await maybeBookMeetingAfterSend(reply, client);
 
     await slackService.updateMessage(

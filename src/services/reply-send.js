@@ -4,7 +4,16 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 
+/** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
+function isSlackTestFixtureReply(reply) {
+  return reply.campaign_id === 'test-campaign' && reply.lead_id === 'test-lead';
+}
+
 async function sendReplyToPlatform(client, reply, replyText) {
+  if (isSlackTestFixtureReply(reply)) {
+    console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
+    return;
+  }
   if (reply.platform === 'smartlead') {
     await smartlead.sendReply(client.smartlead_api_key, reply.campaign_id, reply.lead_id, replyText);
   } else if (reply.platform === 'heyreach') {
@@ -27,6 +36,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
  * Returns a status line suffix (empty string if none).
  */
 async function maybeBookMeetingAfterSend(reply, client) {
+  if (isSlackTestFixtureReply(reply)) return '';
   if (reply.classification !== 'MEETING_PROPOSED') return '';
 
   const { rows: [meeting] } = await db.query('SELECT * FROM meetings WHERE pending_reply_id = $1', [reply.id]);
@@ -62,4 +72,4 @@ async function maybeBookMeetingAfterSend(reply, client) {
   }
 }
 
-module.exports = { sendReplyToPlatform, maybeBookMeetingAfterSend };
+module.exports = { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply };
