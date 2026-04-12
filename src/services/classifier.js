@@ -10,7 +10,10 @@ const CLASSIFICATIONS = [
 
 const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION', 'MEETING_PROPOSED'];
 
-async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink) {
+async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
+  const booking = bookingLink || '[no booking link configured — say you will send a scheduling link shortly]';
+  const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
+
   const systemPrompt = `You are an expert B2B sales reply classifier and ghostwriter.
 
 Your job:
@@ -29,15 +32,18 @@ RULES FOR DRAFTING:
 - End INTERESTED/QUESTION replies with a soft ask for a call
 - End OBJECTION replies by acknowledging their concern and pivoting
 - Sound like a real human, not a bot
+- For INTERESTED, QUESTION, OBJECTION: do NOT paste verified scheduling times from the block below unless the prospect explicitly asked for times to meet.
 
-MEETING_PROPOSED + SCHEDULING (Calendly-style link):
-- Always include exactly two concrete time suggestions in the draft (e.g. "Tuesday 2:00pm ET or Wednesday 10:30am ET") that fit what the prospect said when possible; if they gave no preference, suggest two slots in the next few business days.
-- Always include the client's booking link exactly once so they can self-book: ${bookingLink || '[no booking link configured — say you will send a scheduling link shortly]'}
-- Phrase it so they can either reply with a preference OR use the link to lock a slot (Calendly handles actual availability).
-- If the prospect proposed a specific time, confirm it sounds great, still offer the two alternatives as backups, and include the booking link for them to confirm.
-- If timing is unclear, stay flexible; still give two suggestions plus the booking link.
-- Work the booking link naturally — e.g. "If it's easier, you can grab a slot here: [full URL]"
-- Extract the primary time they proposed (or your first suggested slot) into "proposed_time" for calendar tracking; use a short human-readable string like "Thursday 2pm" or ISO if given.
+VERIFIED AVAILABILITY (from the client's scheduling system when configured — e.g. Calendly API with token — and/or their connected Google/Outlook busy times — not invented):
+${scheduleCtx}
+
+MEETING_PROPOSED + SCHEDULING (client may use Calendly, Cal.com, SavvyCal, HubSpot meetings, etc. — the booking URL is generic):
+- If the block lists TWO verified open times, your draft MUST offer exactly those two (use the human-readable labels). Then include the booking link once so they can book or pick another slot: ${booking}
+- If the block lists only ONE verified time, mention that time and the booking link once; do not invent a second wall-clock time.
+- If the block says no verified slots, do not invent specific times; invite them to choose via the booking link once: ${booking}
+- If the prospect proposed a specific time, confirm it warmly, still include the booking link once for them to confirm, and use verified slots only as extras if the block lists them and they do not conflict.
+- Work the booking link naturally (full URL). Never label the tool as "Calendly" unless the URL is calendly.com.
+- Set "proposed_time" to the prospect's stated time if any; else the first verified slot's ISO from the block if present; else null.
 
 CLIENT VOICE INSTRUCTIONS:
 ${voicePrompt || 'Professional, direct, practitioner-level tone. No fluff.'}

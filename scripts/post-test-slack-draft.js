@@ -15,7 +15,7 @@
 const { readFileSync } = require('fs');
 const path = require('path');
 
-const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+const BASE_URL = (process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`).replace(/\/$/, '');
 const secret = process.env.WEBHOOK_TEST_SECRET;
 const clientId = process.env.CLIENT_ID;
 

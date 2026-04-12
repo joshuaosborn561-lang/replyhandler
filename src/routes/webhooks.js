@@ -4,6 +4,7 @@ const smartlead = require('../services/smartlead');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
+const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 
 const router = Router();
 
@@ -41,10 +42,17 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       threadContext = [{ role: 'prospect', message: inboundMessage }];
     }
 
-    // Classify and draft — pass booking_link for MEETING_PROPOSED drafts
+    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
+
     let result;
     try {
-      result = await classifyAndDraft(threadContext, inboundMessage, client.voice_prompt, client.booking_link);
+      result = await classifyAndDraft(
+        threadContext,
+        inboundMessage,
+        client.voice_prompt,
+        client.booking_link,
+        schedulingPromptBlock
+      );
     } catch (err) {
       console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
       await slack.postError(client.slack_bot_token, client.slack_channel_id, {
@@ -131,10 +139,17 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
     const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
 
-    // Classify and draft — pass booking_link for MEETING_PROPOSED drafts
+    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
+
     let result;
     try {
-      result = await classifyAndDraft(threadContext, inboundMessage, client.voice_prompt, client.booking_link);
+      result = await classifyAndDraft(
+        threadContext,
+        inboundMessage,
+        client.voice_prompt,
+        client.booking_link,
+        schedulingPromptBlock
+      );
     } catch (err) {
       console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
       await slack.postError(client.slack_bot_token, client.slack_channel_id, {
