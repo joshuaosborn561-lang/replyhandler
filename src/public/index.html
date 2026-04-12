@@ -772,13 +772,14 @@
         <ol>
           <li>Go to <a href="https://api.slack.com/apps" target="_blank">api.slack.com/apps</a> and open your SalesGlider Slack app</li>
           <li>Click <strong>OAuth &amp; Permissions</strong> in the left sidebar</li>
-          <li>Scroll to <strong>Bot Token Scopes</strong> and confirm these are added:
+          <li>Scroll to <strong>Bot Token Scopes</strong> and add these (then <strong>Reinstall to Workspace</strong> so the token picks them up):
             <ul>
-              <li><code>chat:write</code></li>
-              <li><code>chat:write.public</code></li>
+              <li><code>chat:write</code> &mdash; required to post drafts and alerts</li>
+              <li><code>chat:write.public</code> &mdash; post in channels the bot hasn&rsquo;t joined yet (prefer inviting the bot anyway)</li>
               <li><code>channels:history</code></li>
               <li><code>im:write</code></li>
             </ul>
+            <div class="guide-note">If Slack returns <code>missing_scope</code>, open the app&rsquo;s <strong>OAuth &amp; Permissions</strong> page &mdash; Slack often shows which scope is missing. After any scope change, copy the new <code>xoxb-</code> token into the client record in this dashboard.</div>
           </li>
           <li>Under <strong>Interactivity &amp; Shortcuts</strong>, set the Request URL to <code>https://YOUR-RAILWAY-DOMAIN/slack/actions</code> so <strong>Approve</strong>, <strong>Edit &amp; send</strong>, and <strong>Reject</strong> work</li>
           <li>Scroll back up and copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</li>
