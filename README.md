@@ -50,7 +50,7 @@ cp .env.example .env
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
-Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL, the server uses Calendly’s API to fetch **real** open times for suggested slots. For Cal.com, SavvyCal, HubSpot meetings, or other schedulers, leave that field blank and **connect Google or Outlook** for that client in the dashboard so two slots can be inferred from calendar free/busy instead. On existing databases, run `migrations/004_calendly_pat.sql` once.
+Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL and a PAT is set, the server uses Calendly’s API to fetch **real** open times. For other schedulers (Cal.com, SavvyCal, etc.), you can **connect Google or Outlook** so two slots may still be inferred from calendar free/busy; if neither Calendly+PAT nor a connected calendar is available, the AI will **not** invent wall-clock times and will rely on the booking link only. On existing databases, run `migrations/004_calendly_pat.sql` once.
 
 ### 3. Install and Run
 
