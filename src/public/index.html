@@ -744,11 +744,11 @@
     <details class="guide-section">
       <summary>SmartLead API Key</summary>
       <div class="guide-section-body">
+        <p><strong>Use this client&rsquo;s own key</strong> &mdash; ideally a <strong>client-level</strong> key from SmartLead (agency mode), so it only ever sees <em>that</em> customer&rsquo;s campaigns. The app checks every webhook: the campaign must belong to the key you paste here, or the event is ignored (nothing posted to Slack).</p>
         <ol>
-          <li>Log in to <a href="https://app.smartlead.ai" target="_blank">SmartLead</a></li>
-          <li>Click your profile avatar (top right) &rarr; <strong>Settings</strong></li>
-          <li>Go to the <strong>API Keys</strong> section</li>
-          <li>Click <strong>Add New API Key</strong>, name it, and copy the key</li>
+          <li>Log in to SmartLead as the workspace that owns <em>this</em> customer&rsquo;s campaigns</li>
+          <li>Profile avatar (top right) &rarr; <strong>Settings</strong> &rarr; <strong>API Keys</strong></li>
+          <li>Create a key for that client (SmartLead&rsquo;s docs: &ldquo;client-level API keys&rdquo; for agencies) and copy it here</li>
         </ol>
         <div class="guide-note">Leave blank if this client doesn't run email campaigns.</div>
       </div>
@@ -757,12 +757,12 @@
     <details class="guide-section">
       <summary>HeyReach API Key</summary>
       <div class="guide-section-body">
+        <p><strong>One HeyReach workspace = one API key.</strong> Generate the key <em>inside that client&rsquo;s</em> HeyReach account so it only ever touches their campaigns and inboxes. We still verify each webhook&rsquo;s campaign id against their key before posting to Slack.</p>
         <ol>
-          <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a></li>
-          <li>Go to <strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong></li>
-          <li>Click <strong>Generate New Key</strong> and copy it</li>
+          <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a> as <strong>that client&rsquo;s</strong> workspace (or their sub-account, however you separate clients)</li>
+          <li><strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong> &rarr; <strong>Generate New Key</strong></li>
         </ol>
-        <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns.</div>
+        <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns. Webhooks must include a <code>campaignId</code> (or <code>campaign_id</code>) so we can match the event to their campaigns.</div>
       </div>
     </details>
 
@@ -780,6 +780,7 @@
               <li><code>im:write</code></li>
             </ul>
           </li>
+          <li>Under <strong>Interactivity &amp; Shortcuts</strong>, set the Request URL to <code>https://YOUR-RAILWAY-DOMAIN/slack/actions</code> so <strong>Approve</strong>, <strong>Edit &amp; send</strong>, and <strong>Reject</strong> work</li>
           <li>Scroll back up and copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</li>
         </ol>
         <div class="guide-note"><strong>Same token for all clients</strong> if they share the same Slack workspace. Different workspaces need different apps &amp; tokens.</div>
@@ -800,16 +801,16 @@
     </details>
 
     <details class="guide-section">
-      <summary>Booking Link</summary>
+      <summary>Booking Link &amp; Calendly token</summary>
       <div class="guide-section-body">
-        <p>The client's scheduling page URL &mdash; Calendly, Cal.com, SavvyCal, or any scheduling tool. This is the link the AI will include in replies when a prospect agrees to a meeting.</p>
+        <p><strong>Booking link</strong> &mdash; any scheduler (Calendly, Cal.com, SavvyCal, HubSpot meetings, etc.). The draft always includes this link when it&rsquo;s time to book.</p>
+        <p><strong>Calendly personal access token</strong> (optional) &mdash; only if the booking link is a <code>calendly.com</code> URL. With it, the app pulls <strong>real</strong> open times from Calendly so the AI can suggest two slots that actually exist. Without it (or for non-Calendly links), connect <strong>Google or Outlook</strong> on this client card so we can suggest times from calendar free/busy; otherwise the draft just points them to the link without inventing fake times.</p>
         <p>Examples:</p>
         <ul>
           <li><code>https://calendly.com/acme-ceo/30min</code></li>
           <li><code>https://cal.com/acme/discovery-call</code></li>
           <li><code>https://savvycal.com/acme/chat</code></li>
         </ul>
-        <div class="guide-note"><strong>How it works:</strong> When a prospect says "sure, let's talk", the AI drafts a reply proposing a specific time (today or tomorrow) and includes this booking link so they can lock it in. The AI handles the back-and-forth negotiation on timing automatically through the normal approve flow.</div>
       </div>
     </details>
 
@@ -826,15 +827,14 @@
     <details class="guide-section">
       <summary>How meetings work</summary>
       <div class="guide-section-body">
-        <p>When a prospect agrees to meet, the AI handles the entire scheduling conversation:</p>
+        <p>When a prospect agrees to meet:</p>
         <ol>
-          <li>Prospect says "sure, let's chat" or proposes a time</li>
-          <li>AI classifies it as MEETING_PROPOSED and drafts a reply proposing a specific time (later today or tomorrow) with the client's booking link</li>
-          <li>Draft goes to Slack for approval &mdash; your SDR taps Approve, reply sends</li>
-          <li>If the prospect counters with a different time, the next reply comes in, AI handles it, proposes again &mdash; same flow</li>
-          <li>Once agreed, the prospect clicks the booking link and books on the client's calendar</li>
+          <li>AI drafts a short friendly reply</li>
+          <li>If we have <strong>real</strong> availability (Calendly API and/or their connected calendar), the draft offers <strong>those</strong> times plus the booking link</li>
+          <li>The message goes to <strong>Slack</strong> &mdash; someone taps <strong>Approve &amp; send</strong> or <strong>Edit &amp; send</strong> (or Reject)</li>
+          <li>After approval, the reply goes out on SmartLead or HeyReach; optional calendar invite still depends on Google/Outlook being connected</li>
         </ol>
-        <div class="guide-note">All you need from the client is their scheduling page URL. The AI does the rest &mdash; proposing times, negotiating, and working the booking link into the conversation naturally.</div>
+        <div class="guide-note">Wrong webhook URL on someone else&rsquo;s campaign? We skip it &mdash; nothing appears in the wrong client&rsquo;s Slack.</div>
       </div>
     </details>
 
@@ -859,9 +859,24 @@
       <div class="guide-section-body">
         <ol>
           <li>Click the client card in the dashboard to open its details</li>
-          <li>Copy the <strong>SmartLead Webhook URL</strong> and paste it into your SmartLead campaign under <strong>Webhooks</strong> &rarr; reply-received trigger</li>
-          <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it into your HeyReach campaign webhook settings</li>
-          <li>Send a test reply to verify the flow: webhook &rarr; classification &rarr; Slack approval message</li>
+          <li>Copy the <strong>SmartLead Webhook URL</strong> and paste it only on campaigns that belong to <strong>that same</strong> SmartLead API key&rsquo;s account</li>
+          <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it only on campaigns in <strong>that</strong> HeyReach workspace</li>
+          <li>Send a test reply &mdash; you should see a Slack card with Approve / Edit &amp; send / Reject</li>
+        </ol>
+        <div class="guide-note">Optional: set <code>WEBHOOK_TEST_SECRET</code> on the server and use <code>POST /admin/test/slack-draft/&lt;client-id&gt;</code> with header <code>x-webhook-test-secret</code> to post a fake card without a real prospect reply.</div>
+      </div>
+    </details>
+
+    <div class="guide-category">Railway (hosting)</div>
+
+    <details class="guide-section">
+      <summary>Deploy checklist</summary>
+      <div class="guide-section-body">
+        <ol>
+          <li>Connect this repo; Railway sets <code>RAILWAY_PUBLIC_DOMAIN</code> automatically</li>
+          <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, optional <code>LEADMAGIC_API_KEY</code>, optional <code>WEBHOOK_TEST_SECRET</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
+          <li>Run SQL: <code>schema.sql</code> on a fresh DB, or apply <code>migrations/*.sql</code> in order on an existing one (includes <code>004_calendly_pat.sql</code> for the Calendly token column)</li>
+          <li>Slack app &rarr; Interactivity URL = <code>https://&lt;your-domain&gt;/slack/actions</code></li>
         </ol>
       </div>
     </details>
