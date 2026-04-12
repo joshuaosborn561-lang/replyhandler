@@ -1,0 +1,29 @@
+{
+  "smartlead_interested": {
+    "campaign_id": "demo-campaign-001",
+    "lead_id": "demo-lead-001",
+    "email": "prospect@example.com",
+    "name": "Alex Prospect",
+    "reply": "Thanks for reaching out — I'd love to learn more. What does a typical intro call look like?"
+  },
+  "smartlead_meeting": {
+    "campaign_id": "demo-campaign-001",
+    "lead_id": "demo-lead-002",
+    "email": "jamie@example.com",
+    "name": "Jamie Lee",
+    "reply": "Yes, happy to chat next week. Tuesday afternoon works best for me if you have something open."
+  },
+  "heyreach_reply": {
+    "campaignId": "demo-li-campaign",
+    "leadId": "demo-li-lead",
+    "name": "Jordan LinkedIn",
+    "linkedinUrl": "https://www.linkedin.com/in/jordan-example",
+    "message": "Interested — can you send a few times?",
+    "listId": "demo-list-id",
+    "linkedinAccountId": "demo-account-id",
+    "conversationHistory": [
+      { "role": "us", "message": "Hi Jordan — quick question about your outbound motion." },
+      { "role": "prospect", "message": "Interested — can you send a few times?" }
+    ]
+  }
+}

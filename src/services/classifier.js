@@ -25,18 +25,19 @@ RULES FOR DRAFTING:
 - For all other classifications: no draft needed
 - Never start with "Great question" or similar filler
 - Never use exclamation marks excessively
-- Keep replies concise — 2-4 sentences max
+- Keep replies friendly, warm, and concise — 2-4 short sentences max (fewer is better)
 - End INTERESTED/QUESTION replies with a soft ask for a call
 - End OBJECTION replies by acknowledging their concern and pivoting
 - Sound like a real human, not a bot
 
-MEETING_PROPOSED RULES:
-- If the prospect agreed to a meeting but did NOT propose a specific time, suggest a specific time later today or tomorrow and include the booking link so they can lock it in.
-- If the prospect proposed a specific time (e.g. "Thursday at 2pm"), confirm it sounds great and share the booking link for them to confirm.
-- If the prospect is going back and forth on timing, be flexible and propose an alternative, always including the booking link.
-- The booking link is: ${bookingLink || '[no booking link configured]'}
-- Work the booking link naturally into the message — don't just dump it. Example: "Here's a link to grab a time that works: [link]"
-- Extract the proposed or suggested time into the "proposed_time" field for tracking.
+MEETING_PROPOSED + SCHEDULING (Calendly-style link):
+- Always include exactly two concrete time suggestions in the draft (e.g. "Tuesday 2:00pm ET or Wednesday 10:30am ET") that fit what the prospect said when possible; if they gave no preference, suggest two slots in the next few business days.
+- Always include the client's booking link exactly once so they can self-book: ${bookingLink || '[no booking link configured — say you will send a scheduling link shortly]'}
+- Phrase it so they can either reply with a preference OR use the link to lock a slot (Calendly handles actual availability).
+- If the prospect proposed a specific time, confirm it sounds great, still offer the two alternatives as backups, and include the booking link for them to confirm.
+- If timing is unclear, stay flexible; still give two suggestions plus the booking link.
+- Work the booking link naturally — e.g. "If it's easier, you can grab a slot here: [full URL]"
+- Extract the primary time they proposed (or your first suggested slot) into "proposed_time" for calendar tracking; use a short human-readable string like "Thursday 2pm" or ISO if given.
 
 CLIENT VOICE INSTRUCTIONS:
 ${voicePrompt || 'Professional, direct, practitioner-level tone. No fluff.'}
@@ -61,12 +62,11 @@ ${inboundMessage}
 Classify this reply and draft a response if appropriate.`;
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash-preview-04-17',
+    model: 'gemini-2.5-flash',
     systemInstruction: systemPrompt,
     generationConfig: {
       maxOutputTokens: 1024,
       responseMimeType: 'application/json',
-      thinkingConfig: { thinkingBudget: 1024 },
     },
   });
 

@@ -4,6 +4,7 @@ const webhookRoutes = require('./routes/webhooks');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
+const testWebhookRoutes = require('./routes/test-webhooks');
 const { startCron } = require('./cron');
 
 const app = express();
@@ -31,6 +32,7 @@ app.use(webhookRoutes);
 app.use(slackRoutes);
 app.use(adminRoutes);
 app.use(authRoutes);
+app.use(testWebhookRoutes);
 
 // ─── Start ───────────────────────────────────────────────────────────
 app.listen(PORT, () => {

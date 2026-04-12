@@ -45,6 +45,12 @@ async function postDraftApproval(token, channelId, { replyId, leadName, leadEmai
           },
           {
             type: 'button',
+            text: { type: 'plain_text', text: '✏️ Edit & send' },
+            action_id: 'open_edit_modal',
+            value: replyId,
+          },
+          {
+            type: 'button',
             text: { type: 'plain_text', text: '❌ Reject' },
             style: 'danger',
             action_id: 'reject_reply',
@@ -117,10 +123,43 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
+async function openEditReplyModal(token, triggerId, { replyId, initialDraft, channelId, messageTs }) {
+  const slack = getClient(token);
+  const meta = JSON.stringify({ replyId, channelId, messageTs });
+
+  return slack.views.open({
+    trigger_id: triggerId,
+    view: {
+      type: 'modal',
+      callback_id: 'edit_reply_modal',
+      private_metadata: meta,
+      title: { type: 'plain_text', text: 'Edit reply' },
+      submit: { type: 'plain_text', text: 'Send' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'draft_block',
+          label: { type: 'plain_text', text: 'Message to send to the prospect' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'draft_input',
+            multiline: true,
+            ...((initialDraft && String(initialDraft).trim())
+              ? { initial_value: String(initialDraft).slice(0, 2900) }
+              : {}),
+          },
+        },
+      ],
+    },
+  });
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
   postError,
   postReminder,
   updateMessage,
+  openEditReplyModal,
 };

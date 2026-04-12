@@ -24,7 +24,9 @@ function slackVerify(req, res, next) {
   const hmac = crypto.createHmac('sha256', secret).update(baseString).digest('hex');
   const expected = `v0=${hmac}`;
 
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+  const sigBuf = Buffer.from(signature, 'utf8');
+  const expBuf = Buffer.from(expected, 'utf8');
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     return res.status(400).json({ error: 'Invalid signature' });
   }
 
