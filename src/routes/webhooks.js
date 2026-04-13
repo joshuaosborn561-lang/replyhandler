@@ -23,11 +23,56 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaign_id || payload.campaignId;
-    const leadId = payload.lead_id || payload.leadId;
-    const leadEmail = payload.email || payload.lead_email || payload.to_email;
-    const leadName = payload.name || payload.lead_name || payload.first_name || 'Unknown';
-    const inboundMessage = payload.reply || payload.message || payload.body || '';
+    // SmartLead webhook payloads vary by event + test button; support common shapes.
+    const leadData = payload.lead_data || payload.lead || {};
+    const replyObj = payload.reply || payload.latest_reply || payload.last_reply || null;
+
+    const campaignId =
+      payload.campaign_id ||
+      payload.campaignId ||
+      payload.campaign?.id ||
+      leadData.campaign_id ||
+      leadData.campaignId;
+
+    const leadId =
+      payload.lead_id ||
+      payload.leadId ||
+      payload.lead?.id ||
+      leadData.lead_id ||
+      leadData.leadId ||
+      leadData.id;
+
+    const leadEmail =
+      payload.email ||
+      payload.lead_email ||
+      payload.to_email ||
+      leadData.email ||
+      leadData.lead_email ||
+      payload.lead?.email;
+
+    const leadName =
+      payload.name ||
+      payload.lead_name ||
+      payload.first_name ||
+      (leadData.first_name ? `${leadData.first_name} ${leadData.last_name || ''}`.trim() : null) ||
+      leadData.name ||
+      payload.lead?.first_name ||
+      'Unknown';
+
+    const inboundMessage =
+      (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj) ||
+      payload.reply_text ||
+      payload.message ||
+      payload.body ||
+      '';
+
+    console.log('[Webhook] SmartLead extracted', {
+      clientId,
+      campaignId,
+      leadId,
+      hasLeadData: !!payload.lead_data,
+      hasReplyObj: !!replyObj,
+    });
 
     if (!campaignId || !leadId) {
       console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId });
