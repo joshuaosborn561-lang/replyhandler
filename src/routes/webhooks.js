@@ -6,6 +6,7 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classif
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
+const { cancelForInboundReply } = require('../services/outbound-follow-up');
 
 const router = Router();
 
@@ -24,11 +25,11 @@ function normalizeHeyreachPayload(payload) {
     campaign?.campaignId ??
     null;
 
+  const conversationId = p.conversation_id || p.conversationId || null;
+
   const leadId =
     p.leadId ??
     p.lead_id ??
-    p.conversation_id ??
-    p.conversationId ??
     p.lead?.id ??
     null;
 
@@ -85,6 +86,7 @@ function normalizeHeyreachPayload(payload) {
   return {
     campaignId,
     leadId,
+    conversationId,
     linkedinUrl,
     leadName,
     inboundMessage,
@@ -176,6 +178,14 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
     }
+
+    await cancelForInboundReply({
+      clientId,
+      platform: 'smartlead',
+      campaignId,
+      leadId,
+      conversationId: null,
+    });
 
     // Fetch full thread history
     let threadContext;
@@ -277,6 +287,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     const {
       campaignId,
       leadId,
+      conversationId: hrConversationId,
       linkedinUrl,
       leadName,
       inboundMessage,
@@ -290,6 +301,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       client: client.name,
       campaignId,
       leadId,
+      conversationId: hrConversationId,
       inboundLen: (inboundMessage || '').length,
       hasLinkedinUrl: !!linkedinUrl,
     });
@@ -302,6 +314,11 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     if (!campaignId) {
       console.warn('[Webhook] HeyReach skipped — missing campaign id (cannot tie to client campaigns)', { clientId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
+    }
+
+    if (!leadId && !hrConversationId) {
+      console.warn('[Webhook] HeyReach skipped — missing lead id and conversation_id', { clientId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'missing_thread_ids' });
     }
 
     let heyreachCampaignOk = false;
@@ -317,6 +334,14 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       });
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
+
+    await cancelForInboundReply({
+      clientId,
+      platform: 'heyreach',
+      campaignId,
+      leadId,
+      conversationId: hrConversationId,
+    });
 
     const threadContext =
       (Array.isArray(normalizedThread) && normalizedThread.length
@@ -355,15 +380,17 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         listId,
         linkedinAccountId,
         linkedinUrl,
-        conversationId: payload.conversation_id || payload.conversationId || null,
+        conversationId: hrConversationId,
       },
     };
+
+    const leadIdForRow = leadId || hrConversationId;
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'heyreach', campaignId, leadId, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+      [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
     );
 
     if (isDraft) {

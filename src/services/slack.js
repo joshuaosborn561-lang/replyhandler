@@ -98,6 +98,21 @@ async function postError(token, channelId, { leadName, platform, error }) {
   });
 }
 
+async function postProspectFollowUpReminder(token, channelId, {
+  leadName, platform, campaignId, leadKey, hours,
+}) {
+  const slack = getClient(token);
+  const plat = (platform || '').toUpperCase();
+  const shortKey = leadKey && String(leadKey).length > 80 ? `${String(leadKey).slice(0, 80)}…` : leadKey;
+  const meta = [campaignId && `campaign ${campaignId}`, shortKey && `thread ${shortKey}`].filter(Boolean).join(' · ');
+  const text = `📬 *Follow-up nudge:* no reply from *${leadName || 'prospect'}* in ${hours}h after your last ${plat} message.${meta ? ` _(${meta})_` : ''}`;
+
+  return slack.chat.postMessage({
+    channel: channelId,
+    text,
+  });
+}
+
 async function postReminder(token, channelId, messageTs, { replyId, leadName, minutes, escalate }) {
   const slack = getClient(token);
 
@@ -159,6 +174,7 @@ module.exports = {
   postDraftApproval,
   postAlert,
   postError,
+  postProspectFollowUpReminder,
   postReminder,
   updateMessage,
   openEditReplyModal,

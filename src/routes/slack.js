@@ -3,6 +3,7 @@ const db = require('../db');
 const slackService = require('../services/slack');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
+const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
 
 const router = Router();
 
@@ -98,6 +99,9 @@ async function handleEditModalSubmit(interaction) {
       ['sent', messageText, replyId]
     );
 
+    const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
+    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+
     let statusMsg = `✅ Reply to ${reply.lead_name} edited and sent by <@${interaction.user.id}>.`;
     if (isSlackTestFixtureReply(reply)) {
       statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
@@ -142,6 +146,9 @@ async function handleApprove(replyId, interaction) {
       'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
       ['sent', reply.draft_reply, replyId]
     );
+
+    const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
+    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
 
     let statusMsg = `✅ Reply to ${reply.lead_name} approved and sent by <@${interaction.user.id}>.`;
     if (isSlackTestFixtureReply(reply)) {

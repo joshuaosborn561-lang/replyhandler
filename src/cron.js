@@ -114,7 +114,60 @@ function startCron() {
     }
   });
 
-  console.log('[Cron] Jobs scheduled: reply reminders + meeting reminders (every 10 min)');
+  // ─── Prospect silent after our outbound (every 10 minutes) ─────────
+  cron.schedule('*/10 * * * *', async () => {
+    try {
+      const { rows: due } = await db.query(
+        `SELECT f.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name
+         FROM outbound_follow_ups f
+         JOIN clients c ON f.client_id = c.id
+         WHERE f.status = 'pending'
+           AND f.due_at <= now()
+         ORDER BY f.due_at ASC
+         LIMIT 50`
+      );
+
+      const hours = parseInt(process.env.FOLLOW_UP_REMINDER_HOURS || '24', 10);
+      const labelHours = Number.isFinite(hours) && hours > 0 ? hours : 24;
+
+      for (const row of due) {
+        try {
+          const leadKey = row.conversation_id || row.lead_id || '';
+          const res = await slack.postProspectFollowUpReminder(
+            row.slack_bot_token,
+            row.slack_channel_id,
+            {
+              leadName: row.lead_name,
+              platform: row.platform,
+              campaignId: row.campaign_id,
+              leadKey,
+              hours: labelHours,
+            }
+          );
+
+          await db.query(
+            `UPDATE outbound_follow_ups
+             SET status = 'notified', slack_message_ts = $1, updated_at = now()
+             WHERE id = $2`,
+            [res.ts, row.id]
+          );
+
+          console.log('[Cron] Prospect follow-up nudge sent', {
+            followUpId: row.id,
+            client: row.client_name,
+            lead: row.lead_name,
+            platform: row.platform,
+          });
+        } catch (err) {
+          console.error('[Cron] Follow-up nudge failed', { followUpId: row.id, err: err.message });
+        }
+      }
+    } catch (err) {
+      console.error('[Cron] Follow-up scan failed', { err: err.message });
+    }
+  });
+
+  console.log('[Cron] Jobs scheduled: reply reminders + meeting reminders + prospect follow-ups (every 10 min)');
 }
 
 module.exports = { startCron };
