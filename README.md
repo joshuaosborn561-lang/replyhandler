@@ -134,7 +134,7 @@ Paste **each client’s** webhook URL only into campaigns that belong to **that*
 2. Under **Webhooks**, add a new webhook for "Message Received"
 3. Paste the `heyreach_webhook_url` from the admin API response
 
-HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key (field name may be `campaignId` or `campaign_id` depending on HeyReach’s payload).
+HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key. We read `campaignId` / `campaign_id` **or** nested `campaign.id` (common on reply webhooks). Reply text may arrive in `recent_messages` rather than top-level `message`.
 
 ## Slack App Setup
 

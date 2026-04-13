@@ -9,6 +9,91 @@ const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots
 
 const router = Router();
 
+/**
+ * HeyReach webhook shapes vary by event. Reply webhooks often send:
+ * campaign: { id, name }, recent_messages: [...], conversation_id, sender, etc.
+ */
+function normalizeHeyreachPayload(payload) {
+  const p = payload || {};
+  const campaign = p.campaign && typeof p.campaign === 'object' ? p.campaign : null;
+
+  const campaignId =
+    p.campaignId ??
+    p.campaign_id ??
+    campaign?.id ??
+    campaign?.campaignId ??
+    null;
+
+  const leadId =
+    p.leadId ??
+    p.lead_id ??
+    p.conversation_id ??
+    p.conversationId ??
+    p.lead?.id ??
+    null;
+
+  const recent = Array.isArray(p.recent_messages) ? p.recent_messages : [];
+  const lastMsg = recent.length ? recent[recent.length - 1] : null;
+  const inboundMessage =
+    (typeof p.message === 'string' && p.message) ||
+    (typeof p.reply === 'string' && p.reply) ||
+    (typeof p.body === 'string' && p.body) ||
+    (lastMsg && typeof lastMsg.message === 'string' ? lastMsg.message : '') ||
+    '';
+
+  const lead = p.lead && typeof p.lead === 'object' ? p.lead : null;
+  const recipient = p.recipient && typeof p.recipient === 'object' ? p.recipient : null;
+  const prospect = p.prospect && typeof p.prospect === 'object' ? p.prospect : null;
+  const fromProspect = recipient || prospect || lead;
+
+  const leadName =
+    (typeof p.name === 'string' && p.name) ||
+    (typeof p.lead_name === 'string' && p.lead_name) ||
+    (typeof p.firstName === 'string' && p.firstName) ||
+    [fromProspect?.first_name, fromProspect?.last_name].filter(Boolean).join(' ').trim() ||
+    (typeof fromProspect?.full_name === 'string' && fromProspect.full_name) ||
+    (typeof p.contact?.full_name === 'string' && p.contact.full_name) ||
+    (typeof p.profile?.full_name === 'string' && p.profile.full_name) ||
+    'LinkedIn prospect';
+
+  const linkedinUrl =
+    p.linkedinUrl ||
+    p.linkedin_url ||
+    p.profileUrl ||
+    fromProspect?.linkedin_url ||
+    fromProspect?.linkedinUrl ||
+    fromProspect?.profile_url ||
+    null;
+
+  const listId = p.listId ?? p.list_id ?? p.list?.id ?? null;
+  const linkedinAccountId =
+    p.linkedinAccountId ??
+    p.linkedin_account_id ??
+    p.accountId ??
+    p.linkedin_account?.id ??
+    null;
+
+  let threadContext = p.conversationHistory || p.thread;
+  if (!threadContext && recent.length) {
+    threadContext = recent.map((m) => ({
+      role: m.is_reply ? 'prospect' : 'us',
+      message: m.message || '',
+      at: m.creation_time,
+    }));
+  }
+
+  return {
+    campaignId,
+    leadId,
+    linkedinUrl,
+    leadName,
+    inboundMessage,
+    listId,
+    linkedinAccountId,
+    threadContext,
+  };
+}
+
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -188,13 +273,26 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaignId || payload.campaign_id;
-    const leadId = payload.leadId || payload.lead_id;
-    const linkedinUrl = payload.linkedinUrl || payload.linkedin_url || payload.profileUrl;
-    const leadName = payload.name || payload.lead_name || payload.firstName || 'Unknown';
-    const inboundMessage = payload.message || payload.reply || payload.body || '';
-    const listId = payload.listId || payload.list_id;
-    const linkedinAccountId = payload.linkedinAccountId || payload.linkedin_account_id;
+    const hr = normalizeHeyreachPayload(payload);
+    const {
+      campaignId,
+      leadId,
+      linkedinUrl,
+      leadName,
+      inboundMessage,
+      listId,
+      linkedinAccountId,
+      threadContext: normalizedThread,
+    } = hr;
+
+    console.log('[Webhook] HeyReach extracted', {
+      clientId,
+      client: client.name,
+      campaignId,
+      leadId,
+      inboundLen: (inboundMessage || '').length,
+      hasLinkedinUrl: !!linkedinUrl,
+    });
 
     if (!client.heyreach_api_key) {
       console.warn('[Webhook] HeyReach skipped — no API key on client', { clientId, client: client.name });
@@ -220,7 +318,13 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
 
-    const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
+    const threadContext =
+      (Array.isArray(normalizedThread) && normalizedThread.length
+        ? normalizedThread
+        : null) ||
+      payload.conversationHistory ||
+      payload.thread ||
+      [{ role: 'prospect', message: inboundMessage || '(no message body)' }];
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
@@ -247,7 +351,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
     const contextWithMeta = {
       messages: threadContext,
-      heyreach: { listId, linkedinAccountId, linkedinUrl },
+      heyreach: {
+        listId,
+        linkedinAccountId,
+        linkedinUrl,
+        conversationId: payload.conversation_id || payload.conversationId || null,
+      },
     };
 
     const { rows: [reply] } = await db.query(
