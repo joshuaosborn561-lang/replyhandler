@@ -62,9 +62,25 @@ async function verifyCampaignAccess(apiKey, campaignId) {
   return false;
 }
 
-async function sendMessage(apiKey, listId, linkedinAccountId, linkedinUrl, message) {
-  const url = `${BASE_URL}/inbox/send-message`;
-  console.log('[HeyReach] Sending message', { listId, linkedinUrl, messageLength: message.length });
+/**
+ * Send an inbox reply.
+ *
+ * HeyReach's public API uses PascalCase endpoints in many places (e.g. /campaign/GetAll).
+ * When replying to an existing conversation, the reliable identifiers are conversationId + linkedInAccountId.
+ */
+async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, linkedinUrl, message }) {
+  const msg = String(message || '');
+  const url = conversationId
+    ? `${BASE_URL}/inbox/SendMessage`
+    : `${BASE_URL}/inbox/send-message`;
+
+  console.log('[HeyReach] Sending message', {
+    conversationId: conversationId || null,
+    linkedInAccountId: linkedInAccountId || null,
+    listId: listId || null,
+    linkedinUrl: linkedinUrl || null,
+    messageLength: msg.length,
+  });
 
   const res = await fetch(url, {
     method: 'POST',
@@ -72,12 +88,11 @@ async function sendMessage(apiKey, listId, linkedinAccountId, linkedinUrl, messa
       'Content-Type': 'application/json',
       'X-API-KEY': apiKey,
     },
-    body: JSON.stringify({
-      listId,
-      linkedinAccountId,
-      linkedinUrl,
-      message,
-    }),
+    body: JSON.stringify(
+      conversationId
+        ? { conversationId, linkedInAccountId: linkedInAccountId, message: msg }
+        : { listId, linkedinAccountId: linkedInAccountId, linkedinUrl, message: msg }
+    ),
   });
 
   const responseBody = await res.text();

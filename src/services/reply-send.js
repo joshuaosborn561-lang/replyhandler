@@ -19,13 +19,13 @@ async function sendReplyToPlatform(client, reply, replyText) {
   } else if (reply.platform === 'heyreach') {
     const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
     const meta = ctx?.heyreach || {};
-    await heyreach.sendMessage(
-      client.heyreach_api_key,
-      meta.listId,
-      meta.linkedinAccountId,
-      meta.linkedinUrl || reply.linkedin_url,
-      replyText
-    );
+    await heyreach.sendMessage(client.heyreach_api_key, {
+      conversationId: meta.conversationId || null,
+      linkedInAccountId: meta.linkedinAccountId || null,
+      listId: meta.listId || null,
+      linkedinUrl: meta.linkedinUrl || reply.linkedin_url || null,
+      message: replyText,
+    });
   } else {
     throw new Error(`Unknown platform: ${reply.platform}`);
   }
