@@ -43,7 +43,7 @@ async function sendReply(apiKey, campaignId, leadId, replyText) {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`SmartLead sendReply failed (${res.status}): ${body}`);
+    throw new Error(`SmartLead sendReply failed (${res.status}) [campaign_id=${cid} lead_id=${lid}]: ${body}`);
   }
   return res.json();
 }
