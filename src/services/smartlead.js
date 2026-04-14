@@ -1,18 +1,29 @@
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
 
+function toSmartleadId(value, name) {
+  const n = typeof value === 'number' ? value : Number(String(value || '').trim());
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new Error(`SmartLead ${name} must be a positive integer (got: ${JSON.stringify(value)})`);
+  }
+  return n;
+}
+
 /**
  * Confirms this campaign belongs to the SmartLead account for this API key.
  * @see https://api.smartlead.ai/api-reference/campaigns/get-by-id — 404 if not accessible
  */
 async function verifyCampaignAccess(apiKey, campaignId) {
   if (!apiKey || campaignId == null || campaignId === '') return false;
-  const url = `${BASE_URL}/campaigns/${encodeURIComponent(campaignId)}?api_key=${encodeURIComponent(apiKey)}`;
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url);
   return res.ok;
 }
 
 async function getThreadHistory(apiKey, campaignId, leadId) {
-  const url = `${BASE_URL}/campaigns/${campaignId}/leads/${leadId}/message-history?api_key=${encodeURIComponent(apiKey)}`;
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const lid = toSmartleadId(leadId, 'lead_id');
+  const url = `${BASE_URL}/campaigns/${cid}/leads/${lid}/message-history?api_key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url);
   if (!res.ok) {
     const body = await res.text();
@@ -22,11 +33,13 @@ async function getThreadHistory(apiKey, campaignId, leadId) {
 }
 
 async function sendReply(apiKey, campaignId, leadId, replyText) {
-  const url = `${BASE_URL}/campaigns/${campaignId}/leads/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const lid = toSmartleadId(leadId, 'lead_id');
+  const url = `${BASE_URL}/campaigns/${cid}/leads/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: leadId, reply_text: replyText }),
+    body: JSON.stringify({ lead_id: lid, reply_text: replyText }),
   });
   if (!res.ok) {
     const body = await res.text();
