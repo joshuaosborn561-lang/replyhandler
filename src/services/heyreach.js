@@ -88,11 +88,12 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, 
       'Content-Type': 'application/json',
       'X-API-KEY': apiKey,
     },
-    body: JSON.stringify(
-      conversationId
+    // HeyReach endpoints often expect an { input: {...} } wrapper (validation error: "input field is required.").
+    body: JSON.stringify({
+      input: conversationId
         ? { conversationId, linkedInAccountId: linkedInAccountId, message: msg }
-        : { listId, linkedinAccountId: linkedInAccountId, linkedinUrl, message: msg }
-    ),
+        : { listId, linkedinAccountId: linkedInAccountId, linkedinUrl, message: msg },
+    }),
   });
 
   const responseBody = await res.text();
