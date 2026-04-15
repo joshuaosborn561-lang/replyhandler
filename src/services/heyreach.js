@@ -1,5 +1,21 @@
 const BASE_URL = 'https://api.heyreach.io/api/public';
 
+function toHeyreachInt(value, name) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new Error(`HeyReach ${name} must be a positive integer (got: ${JSON.stringify(value)})`);
+  }
+  return n;
+}
+
+function nonEmptyString(value) {
+  const s = String(value ?? '').trim();
+  return s ? s : null;
+}
+
 function extractCampaignList(payload) {
   if (!payload || typeof payload !== 'object') return [];
   if (Array.isArray(payload)) return payload;
@@ -70,17 +86,32 @@ async function verifyCampaignAccess(apiKey, campaignId) {
  */
 async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, linkedinUrl, message }) {
   const msg = String(message || '');
-  const url = conversationId
-    ? `${BASE_URL}/inbox/SendMessage`
-    : `${BASE_URL}/inbox/send-message`;
+  const url = `${BASE_URL}/inbox/SendMessage`;
+
+  const cid = toHeyreachInt(conversationId, 'conversationId');
+  const aid = toHeyreachInt(linkedInAccountId, 'linkedInAccountId');
+  const lid = toHeyreachInt(listId, 'listId');
+  const lurl = nonEmptyString(linkedinUrl);
 
   console.log('[HeyReach] Sending message', {
-    conversationId: conversationId || null,
-    linkedInAccountId: linkedInAccountId || null,
-    listId: listId || null,
-    linkedinUrl: linkedinUrl || null,
+    conversationId: cid,
+    linkedInAccountId: aid,
+    listId: lid,
+    linkedinUrl: lurl,
     messageLength: msg.length,
   });
+
+  let input;
+  if (cid && aid) {
+    input = { conversationId: cid, linkedInAccountId: aid, message: msg };
+  } else if (lid && aid && lurl) {
+    input = { listId: lid, linkedInAccountId: aid, linkedinUrl: lurl, message: msg };
+  } else {
+    throw new Error(
+      `HeyReach sendMessage missing required identifiers (conversationId+linkedInAccountId OR listId+linkedInAccountId+linkedinUrl). Got: ` +
+      JSON.stringify({ conversationId, linkedInAccountId, listId, linkedinUrl })
+    );
+  }
 
   const res = await fetch(url, {
     method: 'POST',
@@ -90,9 +121,7 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, 
     },
     // HeyReach endpoints often expect an { input: {...} } wrapper (validation error: "input field is required.").
     body: JSON.stringify({
-      input: conversationId
-        ? { conversationId, linkedInAccountId: linkedInAccountId, message: msg }
-        : { listId, linkedinAccountId: linkedInAccountId, linkedinUrl, message: msg },
+      input,
     }),
   });
 

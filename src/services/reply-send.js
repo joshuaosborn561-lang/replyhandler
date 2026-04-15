@@ -19,9 +19,11 @@ async function sendReplyToPlatform(client, reply, replyText) {
   } else if (reply.platform === 'heyreach') {
     const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
     const meta = ctx?.heyreach || {};
+    // In production we should always have conversationId + linkedInAccountId from the inbound webhook.
+    // Fallbacks exist for older rows / fixtures.
     await heyreach.sendMessage(client.heyreach_api_key, {
       conversationId: meta.conversationId || null,
-      linkedInAccountId: meta.linkedinAccountId || null,
+      linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
       listId: meta.listId || null,
       linkedinUrl: meta.linkedinUrl || reply.linkedin_url || null,
       message: replyText,
