@@ -46,6 +46,37 @@ function extractFirstJsonObject(text) {
   return null;
 }
 
+function makeFallbackDraft({ inboundMessage, bookingLink }) {
+  const booking = bookingLink || '';
+  const msg = String(inboundMessage || '').trim();
+  const short = msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+  // Keep it broadly usable for QUESTION/OTHER/OBJECTION; human can edit in Slack.
+  return [
+    `Thanks for getting back to me — appreciate it.`,
+    short ? `On your note: “${short}”` : null,
+    `Happy to share details and answer anything specific — what’s the main thing you’re trying to confirm?`,
+    booking ? `If it’s easier, feel free to grab a quick time here: ${booking}` : null,
+  ].filter(Boolean).join(' ');
+}
+
+function sanitizeForLogs(value, limit = 1200) {
+  const s = String(value ?? '');
+  // Strip control chars that can break logs; keep newlines.
+  const cleaned = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+  return cleaned.length > limit ? `${cleaned.slice(0, limit)}…` : cleaned;
+}
+
+function buildModel(genAI, systemInstruction, maxOutputTokens) {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction,
+    generationConfig: {
+      maxOutputTokens,
+      responseMimeType: 'application/json',
+    },
+  });
+}
+
 async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
   const booking = bookingLink || '[no booking link configured — say you will send a scheduling link shortly]';
   const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
@@ -92,6 +123,15 @@ Respond in this exact JSON format (no markdown, no code fences):
   "reasoning": "One sentence explaining your classification"
 }`;
 
+  const strictRepairPrompt = `${systemPrompt}
+
+CRITICAL OUTPUT RULES:
+- Output MUST be valid JSON (parsable by JSON.parse).
+- Output MUST contain exactly one JSON object and nothing else.
+- Keep "draft" under 700 characters so it never gets cut off.
+- If classification is OUT_OF_OFFICE, set "draft": null.
+`;
+
   const userMessage = `Here is the full email/message thread for context:
 
 ${typeof threadContext === 'string' ? threadContext : JSON.stringify(threadContext, null, 2)}
@@ -103,25 +143,43 @@ ${inboundMessage}
 
 Classify this reply and draft a response if appropriate.`;
 
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    systemInstruction: systemPrompt,
-    generationConfig: {
-      maxOutputTokens: 1024,
-      responseMimeType: 'application/json',
-    },
-  });
+  const attempts = [
+    { prompt: systemPrompt, maxTokens: 1024 },
+    { prompt: strictRepairPrompt, maxTokens: 768 },
+  ];
 
-  const result = await model.generateContent(userMessage);
-  const text = result.response.text().trim();
+  let lastText = null;
+  for (const a of attempts) {
+    const model = buildModel(genAI, a.prompt, a.maxTokens);
+    const result = await model.generateContent(userMessage);
+    const text = result.response.text().trim();
+    lastText = text;
 
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    const extracted = extractFirstJsonObject(text);
-    if (extracted) return JSON.parse(extracted);
-    throw new Error(`Failed to parse classifier response: ${text}`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      const extracted = extractFirstJsonObject(text);
+      if (extracted) {
+        try {
+          return JSON.parse(extracted);
+        } catch {
+          // continue to next attempt
+        }
+      }
+    }
   }
+
+  // Last resort: do not block Slack approvals — return a safe fallback draft.
+  console.error('[Classifier] Unparsable Gemini JSON; using fallback draft', {
+    raw: sanitizeForLogs(lastText, 1200),
+  });
+  return {
+    classification: 'OTHER',
+    draft: makeFallbackDraft({ inboundMessage, bookingLink }),
+    proposed_time: null,
+    reasoning: `Fallback draft generated (Gemini returned unparsable JSON).`,
+    _raw: lastText && String(lastText).slice(0, 800),
+  };
 }
 
 module.exports = { classifyAndDraft, CLASSIFICATIONS, DRAFT_CLASSIFICATIONS };
