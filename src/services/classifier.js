@@ -8,7 +8,43 @@ const CLASSIFICATIONS = [
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION', 'MEETING_PROPOSED'];
+// User requirement: draft a reply for everything except out-of-office.
+const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE');
+
+function extractFirstJsonObject(text) {
+  if (!text) return null;
+  const s = String(text);
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') depth++;
+    if (ch === '}') depth--;
+    if (depth === 0) return s.slice(start, i + 1);
+  }
+  return null;
+}
 
 async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
   const booking = bookingLink || '[no booking link configured — say you will send a scheduling link shortly]';
@@ -24,8 +60,8 @@ CLASSIFICATION CATEGORIES (pick exactly one):
 ${CLASSIFICATIONS.map(c => `- ${c}`).join('\n')}
 
 RULES FOR DRAFTING:
-- Draft a reply for: INTERESTED, QUESTION, OBJECTION, MEETING_PROPOSED
-- For all other classifications: no draft needed
+- Draft a reply for ALL classifications except OUT_OF_OFFICE
+- For OUT_OF_OFFICE: set "draft" to null
 - Never start with "Great question" or similar filler
 - Never use exclamation marks excessively
 - Keep replies friendly, warm, and concise — 2-4 short sentences max (fewer is better)
@@ -82,11 +118,8 @@ Classify this reply and draft a response if appropriate.`;
   try {
     return JSON.parse(text);
   } catch (err) {
-    // Try to extract JSON from the response
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      return JSON.parse(match[0]);
-    }
+    const extracted = extractFirstJsonObject(text);
+    if (extracted) return JSON.parse(extracted);
     throw new Error(`Failed to parse classifier response: ${text}`);
   }
 }
