@@ -70,8 +70,11 @@ function normalizeHeyreachPayload(payload) {
   const linkedinAccountId =
     p.linkedinAccountId ??
     p.linkedin_account_id ??
+    p.linkedInAccountId ??
+    p.linked_in_account_id ??
     p.accountId ??
     p.linkedin_account?.id ??
+    p.sender?.id ??
     null;
 
   let threadContext = p.conversationHistory || p.thread;
