@@ -23,9 +23,13 @@ function extractSmartleadEmailStatsId(threadContext) {
       m.statsId ??
       m.email_stat_id ??
       null;
-    if (!stats) continue;
+    const idFallback = m.id ?? m.message_id ?? m.messageId ?? null;
+    // SmartLead docs call it `email_stats_id`, but some responses only include a message `id`.
+    // In practice SmartLead often accepts the message id as the stats id for threaded replies.
+    const resolved = stats ?? idFallback;
+    if (!resolved) continue;
     candidates.push({
-      stats: String(stats),
+      stats: String(resolved),
       direction: String(m.direction || '').toLowerCase(),
       // Prefer replying to the most recent inbound message.
       ts:
