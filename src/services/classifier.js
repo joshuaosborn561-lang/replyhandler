@@ -46,11 +46,98 @@ function extractFirstJsonObject(text) {
   return null;
 }
 
+/**
+ * When Gemini hits max tokens mid-"draft", JSON is invalid and balanced-brace extraction returns null.
+ * Pull classification + partial draft from the raw text so Slack still gets something to edit.
+ */
+function salvageClassifierFields(text) {
+  const s = String(text || '');
+  const classificationMatch = s.match(/"classification"\s*:\s*"([^"]+)"/);
+  const classification = classificationMatch ? classificationMatch[1] : null;
+
+  let draft = null;
+  const key = '"draft"';
+  const idx = s.indexOf(key);
+  if (idx !== -1) {
+    const afterKey = s.slice(idx + key.length);
+    const colonQuote = afterKey.match(/^\s*:\s*"/);
+    if (colonQuote) {
+      const start = idx + key.length + colonQuote[0].length;
+      let out = '';
+      let escape = false;
+      for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+        if (escape) {
+          if (ch === 'n') out += '\n';
+          else if (ch === 'r') out += '\r';
+          else if (ch === 't') out += '\t';
+          else out += ch;
+          escape = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escape = true;
+          continue;
+        }
+        if (ch === '"') break;
+        out += ch;
+      }
+      draft = out.trim() || null;
+    } else {
+      const nullDraft = afterKey.match(/^\s*:\s*null\b/);
+      if (nullDraft) draft = null;
+    }
+  }
+
+  let proposed_time = null;
+  const pt = s.match(/"proposed_time"\s*:\s*(null|"([^"]*)")/);
+  if (pt) {
+    proposed_time = pt[1] === 'null' ? null : (pt[2] !== undefined ? pt[2] : null);
+  }
+
+  let reasoning = null;
+  const r1 = s.match(/"reasoning"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (r1) reasoning = r1[1].replace(/\\"/g, '"');
+  else {
+    const r2 = s.match(/"reasoning"\s*:\s*"([\s\S]*)$/);
+    if (r2) reasoning = r2[1].replace(/\\"/g, '"');
+  }
+
+  if (!classification && !draft) return null;
+
+  return {
+    classification: classification || 'OTHER',
+    draft,
+    proposed_time: proposed_time !== undefined ? proposed_time : null,
+    reasoning: reasoning || 'Partial parse (Gemini output was truncated).',
+  };
+}
+
+function tryParseClassifierResult(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    /* fall through */
+  }
+  const extracted = extractFirstJsonObject(text);
+  if (extracted) {
+    try {
+      return JSON.parse(extracted);
+    } catch {
+      /* fall through */
+    }
+  }
+  const salvaged = salvageClassifierFields(text);
+  if (salvaged && (salvaged.draft != null || salvaged.classification)) {
+    return salvaged;
+  }
+  return null;
+}
+
 function makeFallbackDraft({ inboundMessage, bookingLink }) {
   const booking = bookingLink || '';
   const msg = String(inboundMessage || '').trim();
   const short = msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
-  // Keep it broadly usable for QUESTION/OTHER/OBJECTION; human can edit in Slack.
   return [
     `Thanks for getting back to me — appreciate it.`,
     short ? `On your note: “${short}”` : null,
@@ -61,7 +148,6 @@ function makeFallbackDraft({ inboundMessage, bookingLink }) {
 
 function sanitizeForLogs(value, limit = 1200) {
   const s = String(value ?? '');
-  // Strip control chars that can break logs; keep newlines.
   const cleaned = s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
   return cleaned.length > limit ? `${cleaned.slice(0, limit)}…` : cleaned;
 }
@@ -128,7 +214,7 @@ Respond in this exact JSON format (no markdown, no code fences):
 CRITICAL OUTPUT RULES:
 - Output MUST be valid JSON (parsable by JSON.parse).
 - Output MUST contain exactly one JSON object and nothing else.
-- Keep "draft" under 700 characters so it never gets cut off.
+- Keep "draft" under 500 characters so it never gets cut off mid-string.
 - If classification is OUT_OF_OFFICE, set "draft": null.
 `;
 
@@ -144,32 +230,40 @@ ${inboundMessage}
 Classify this reply and draft a response if appropriate.`;
 
   const attempts = [
-    { prompt: systemPrompt, maxTokens: 1024 },
-    { prompt: strictRepairPrompt, maxTokens: 768 },
+    { prompt: systemPrompt, maxTokens: 1536 },
+    { prompt: strictRepairPrompt, maxTokens: 1024 },
   ];
 
   let lastText = null;
-  for (const a of attempts) {
-    const model = buildModel(genAI, a.prompt, a.maxTokens);
-    const result = await model.generateContent(userMessage);
-    const text = result.response.text().trim();
-    lastText = text;
 
-    try {
-      return JSON.parse(text);
-    } catch {
-      const extracted = extractFirstJsonObject(text);
-      if (extracted) {
-        try {
-          return JSON.parse(extracted);
-        } catch {
-          // continue to next attempt
+  try {
+    for (const a of attempts) {
+      const model = buildModel(genAI, a.prompt, a.maxTokens);
+      const result = await model.generateContent(userMessage);
+      const text = result.response.text().trim();
+      lastText = text;
+
+      const parsed = tryParseClassifierResult(text);
+      if (parsed) {
+        if (parsed.classification === 'OUT_OF_OFFICE') {
+          return { ...parsed, draft: null };
         }
+        if (
+          parsed.classification === 'MEETING_PROPOSED' &&
+          parsed.draft &&
+          bookingLink &&
+          String(bookingLink).trim().startsWith('http') &&
+          !String(parsed.draft).includes(String(bookingLink).trim())
+        ) {
+          parsed.draft = `${String(parsed.draft).trim()}\n\n${String(bookingLink).trim()}`;
+        }
+        return parsed;
       }
     }
+  } catch (err) {
+    console.error('[Classifier] Gemini request failed', { err: err.message });
   }
 
-  // Last resort: do not block Slack approvals — return a safe fallback draft.
   console.error('[Classifier] Unparsable Gemini JSON; using fallback draft', {
     raw: sanitizeForLogs(lastText, 1200),
   });
@@ -177,8 +271,7 @@ Classify this reply and draft a response if appropriate.`;
     classification: 'OTHER',
     draft: makeFallbackDraft({ inboundMessage, bookingLink }),
     proposed_time: null,
-    reasoning: `Fallback draft generated (Gemini returned unparsable JSON).`,
-    _raw: lastText && String(lastText).slice(0, 800),
+    reasoning: 'Fallback draft generated (Gemini returned unparsable or truncated JSON).',
   };
 }
 
