@@ -9,13 +9,44 @@ function isSlackTestFixtureReply(reply) {
   return reply.campaign_id === 'test-campaign' && reply.lead_id === 'test-lead';
 }
 
+function extractSmartleadEmailStatsId(threadContext) {
+  const ctx = threadContext && typeof threadContext === 'object' ? threadContext : null;
+  const messages = Array.isArray(ctx?.messages) ? ctx.messages : (Array.isArray(ctx) ? ctx : []);
+
+  const candidates = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const stats =
+      m.email_stats_id ??
+      m.emailStatsId ??
+      m.stats_id ??
+      m.statsId ??
+      m.email_stat_id ??
+      null;
+    if (!stats) continue;
+    candidates.push({ stats: String(stats), direction: String(m.direction || '').toLowerCase() });
+  }
+  // Prefer replying to the latest inbound message if available.
+  const inbound = candidates.filter((c) => c.direction === 'inbound');
+  if (inbound.length) return inbound[inbound.length - 1].stats;
+  if (candidates.length) return candidates[candidates.length - 1].stats;
+  return null;
+}
+
 async function sendReplyToPlatform(client, reply, replyText) {
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
   }
   if (reply.platform === 'smartlead') {
-    await smartlead.sendReply(client.smartlead_api_key, reply.campaign_id, reply.lead_id, replyText);
+    const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
+    let emailStatsId = extractSmartleadEmailStatsId(ctx);
+    if (!emailStatsId) {
+      // Message history can change after the inbound webhook; re-fetch as a last resort at send-time.
+      const history = await smartlead.getThreadHistory(client.smartlead_api_key, reply.campaign_id, reply.lead_id);
+      emailStatsId = extractSmartleadEmailStatsId(history);
+    }
+    await smartlead.sendReply(client.smartlead_api_key, reply.campaign_id, reply.lead_id, { replyText, emailStatsId });
   } else if (reply.platform === 'heyreach') {
     const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
     const meta = ctx?.heyreach || {};

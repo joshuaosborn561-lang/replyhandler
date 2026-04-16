@@ -32,16 +32,24 @@ async function getThreadHistory(apiKey, campaignId, leadId) {
   return res.json();
 }
 
-async function sendReply(apiKey, campaignId, leadId, replyText) {
+async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   const lid = toSmartleadId(leadId, 'lead_id');
   // SmartLead v1 API: POST /campaigns/{campaign_id}/reply-email-thread (not /leads/reply-email-thread)
-  // Body: lead_id (number) + email_body (string). Other fields optional.
+  // Body: email_stats_id (string, required) + email_body (string, required). Other fields optional.
   const url = `${BASE_URL}/campaigns/${cid}/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
+  const stats = String(emailStatsId || '').trim();
+  if (!stats) {
+    throw new Error(`SmartLead sendReply missing required email_stats_id [campaign_id=${cid} lead_id=${lid}]`);
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_id: lid, email_body: String(replyText || '') }),
+    body: JSON.stringify({
+      email_stats_id: stats,
+      email_body: String(replyText || ''),
+      add_signature: true,
+    }),
   });
   if (!res.ok) {
     const body = await res.text();
