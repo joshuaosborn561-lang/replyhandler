@@ -24,12 +24,30 @@ function extractSmartleadEmailStatsId(threadContext) {
       m.email_stat_id ??
       null;
     if (!stats) continue;
-    candidates.push({ stats: String(stats), direction: String(m.direction || '').toLowerCase() });
+    candidates.push({
+      stats: String(stats),
+      direction: String(m.direction || '').toLowerCase(),
+      // Prefer replying to the most recent inbound message.
+      ts:
+        m.received_at ??
+        m.receivedAt ??
+        m.sent_at ??
+        m.sentAt ??
+        m.created_at ??
+        m.createdAt ??
+        null,
+    });
   }
   // Prefer replying to the latest inbound message if available.
   const inbound = candidates.filter((c) => c.direction === 'inbound');
-  if (inbound.length) return inbound[inbound.length - 1].stats;
-  if (candidates.length) return candidates[candidates.length - 1].stats;
+  if (inbound.length) {
+    inbound.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+    return inbound[inbound.length - 1].stats;
+  }
+  if (candidates.length) {
+    candidates.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+    return candidates[candidates.length - 1].stats;
+  }
   return null;
 }
 
