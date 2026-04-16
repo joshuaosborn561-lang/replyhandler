@@ -45,7 +45,6 @@ function campaignRowId(row) {
 
 /**
  * Paginates HeyReach GetAll until the campaign id is found or lists are exhausted.
- * @see HeyReach public API — POST /campaign/GetAll
  */
 async function verifyCampaignAccess(apiKey, campaignId) {
   if (!apiKey || campaignId == null || String(campaignId).trim() === '') return false;
@@ -57,10 +56,7 @@ async function verifyCampaignAccess(apiKey, campaignId) {
   for (let page = 0; page < maxPages; page++) {
     const res = await fetch(`${BASE_URL}/campaign/GetAll`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-KEY': apiKey,
-      },
+      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
       body: JSON.stringify({ offset, limit }),
     });
     if (!res.ok) {
@@ -80,49 +76,41 @@ async function verifyCampaignAccess(apiKey, campaignId) {
 
 /**
  * Send an inbox reply.
- *
- * HeyReach's public API uses PascalCase endpoints in many places (e.g. /campaign/GetAll).
- * When replying to an existing conversation, the reliable identifiers are conversationId + linkedInAccountId.
+ * HeyReach public API: POST /inbox/SendMessage with { input: { ... } }.
+ * Prefer conversationId + linkedInAccountId. Include senderId if the webhook provided it.
  */
-async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, linkedinUrl, message }) {
+async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId, listId, linkedinUrl, message }) {
   const msg = String(message || '');
   const url = `${BASE_URL}/inbox/SendMessage`;
 
   const cid = toHeyreachInt(conversationId, 'conversationId');
   const aid = toHeyreachInt(linkedInAccountId, 'linkedInAccountId');
+  const sid = toHeyreachInt(senderId, 'senderId');
   const lid = toHeyreachInt(listId, 'listId');
   const lurl = nonEmptyString(linkedinUrl);
 
   console.log('[HeyReach] Sending message', {
-    conversationId: cid,
-    linkedInAccountId: aid,
-    listId: lid,
-    linkedinUrl: lurl,
-    messageLength: msg.length,
+    conversationId: cid, linkedInAccountId: aid, senderId: sid, listId: lid, linkedinUrl: lurl, messageLength: msg.length,
   });
 
   let input;
   if (cid && aid) {
     input = { conversationId: cid, linkedInAccountId: aid, message: msg };
+    if (sid) input.senderId = sid;
   } else if (lid && aid && lurl) {
     input = { listId: lid, linkedInAccountId: aid, linkedinUrl: lurl, message: msg };
+    if (sid) input.senderId = sid;
   } else {
     throw new Error(
       `HeyReach sendMessage missing required identifiers (conversationId+linkedInAccountId OR listId+linkedInAccountId+linkedinUrl). Got: ` +
-      JSON.stringify({ conversationId, linkedInAccountId, listId, linkedinUrl })
+      JSON.stringify({ conversationId, linkedInAccountId, senderId, listId, linkedinUrl })
     );
   }
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-KEY': apiKey,
-    },
-    // HeyReach endpoints often expect an { input: {...} } wrapper (validation error: "input field is required.").
-    body: JSON.stringify({
-      input,
-    }),
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+    body: JSON.stringify({ input }),
   });
 
   const responseBody = await res.text();
@@ -131,12 +119,7 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, listId, 
   if (!res.ok) {
     throw new Error(`HeyReach sendMessage failed (${res.status}): ${responseBody}`);
   }
-
-  try {
-    return JSON.parse(responseBody);
-  } catch {
-    return { raw: responseBody };
-  }
+  try { return JSON.parse(responseBody); } catch { return { raw: responseBody }; }
 }
 
 module.exports = { sendMessage, verifyCampaignAccess };

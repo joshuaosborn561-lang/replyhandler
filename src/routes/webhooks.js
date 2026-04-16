@@ -67,6 +67,8 @@ function normalizeHeyreachPayload(payload) {
     null;
 
   const listId = p.listId ?? p.list_id ?? p.list?.id ?? null;
+  // linkedInAccountId: the HeyReach LinkedIn account that received the DM.
+  // Typical reply webhook exposes this via p.sender.id (confirmed from live logs).
   const linkedinAccountId =
     p.linkedinAccountId ??
     p.linkedin_account_id ??
@@ -75,6 +77,12 @@ function normalizeHeyreachPayload(payload) {
     p.accountId ??
     p.linkedin_account?.id ??
     p.sender?.id ??
+    null;
+  const senderId =
+    p.senderId ??
+    p.sender_id ??
+    p.sender?.senderId ??
+    p.sender?.sender_id ??
     null;
 
   let threadContext = p.conversationHistory || p.thread;
@@ -95,6 +103,7 @@ function normalizeHeyreachPayload(payload) {
     inboundMessage,
     listId,
     linkedinAccountId,
+    senderId,
     threadContext,
   };
 }
@@ -104,7 +113,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
 
-  console.log('[Webhook] SmartLead inbound', { clientId, payload: JSON.stringify(payload).slice(0, 500) });
+  console.log('[Webhook] SmartLead inbound', { clientId, payload: JSON.stringify(payload).slice(0, 4000) });
 
   try {
     const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
@@ -190,10 +199,13 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       conversationId: null,
     });
 
-    // Fetch full thread history
+    // Fetch full thread history AND resolve the email_stats_id we'll need at send time.
     let threadContext;
+    let smartleadEmailStatsId = null;
     try {
       threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, campaignId, leadId);
+      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId, leadId, emailStatsId: smartleadEmailStatsId });
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
       threadContext = [{ role: 'prospect', message: inboundMessage }];
@@ -224,9 +236,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status]
+        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft) {
@@ -277,7 +289,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
 
-  console.log('[Webhook] HeyReach inbound', { clientId, payload: JSON.stringify(payload).slice(0, 500) });
+  console.log('[Webhook] HeyReach inbound', { clientId, payload: JSON.stringify(payload).slice(0, 4000) });
 
   try {
     const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
@@ -296,6 +308,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       inboundMessage,
       listId,
       linkedinAccountId,
+      senderId: hrSenderId,
       threadContext: normalizedThread,
     } = hr;
 
@@ -384,6 +397,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         linkedinAccountId,
         linkedinUrl,
         conversationId: hrConversationId,
+        senderId: hrSenderId,
       },
     };
 
