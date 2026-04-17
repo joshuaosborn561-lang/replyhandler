@@ -108,6 +108,48 @@ function normalizeHeyreachPayload(payload) {
   };
 }
 
+function stripHtmlToText(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** When webhook omits reply text, pull latest REPLY from message-history API shape. */
+function latestInboundFromSmartleadHistory(histResponse) {
+  if (!histResponse || typeof histResponse !== 'object') return '';
+  const list = Array.isArray(histResponse.history)
+    ? histResponse.history
+    : Array.isArray(histResponse.messages)
+      ? histResponse.messages
+      : Array.isArray(histResponse)
+        ? histResponse
+        : [];
+  const rows = [];
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    if (type !== 'REPLY' && type !== 'INBOUND') continue;
+    const raw = m.email_body || m.body || m.text || '';
+    const plain = stripHtmlToText(raw) || String(raw || '').trim();
+    if (!plain) continue;
+    const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
+    rows.push({ time, body: plain });
+  }
+  rows.sort((a, b) => a.time.localeCompare(b.time));
+  return rows.length ? rows[rows.length - 1].body : '';
+}
+
+// SmartLead sends one URL per campaign for all subscribed events; we only handle real replies.
+const SMARTLEAD_NON_REPLY_EVENTS = new Set([
+  'EMAIL_SENT',
+  'EMAIL_OPENED',
+  'EMAIL_CLICKED',
+  'EMAIL_BOUNCED',
+  'EMAIL_UNSUBSCRIBED',
+]);
+
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -120,6 +162,13 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (!client || !client.active) {
       console.warn('[Webhook] Unknown or inactive client', { clientId });
       return res.status(200).json({ ok: true, skipped: true });
+    }
+
+    const rawEvent = payload.event || payload.type || payload.webhook_event || null;
+    const eventNorm = rawEvent != null ? String(rawEvent).trim().toUpperCase() : null;
+    if (eventNorm && SMARTLEAD_NON_REPLY_EVENTS.has(eventNorm)) {
+      console.log('[Webhook] SmartLead skipped (not a reply event)', { clientId, event: eventNorm });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'not_email_replied_event', event: eventNorm });
     }
 
     // SmartLead webhook payloads vary by event + test button; support common shapes.
@@ -159,7 +208,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       'Unknown';
 
     const inboundMessage =
-      (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj) ||
+      (replyObj && typeof replyObj === 'object'
+        ? (replyObj.body || replyObj.message || replyObj.text || replyObj.plain_text || stripHtmlToText(replyObj.html || replyObj.html_body))
+        : replyObj) ||
       payload.reply_text ||
       payload.message ||
       payload.body ||
@@ -167,10 +218,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     console.log('[Webhook] SmartLead extracted', {
       clientId,
+      event: eventNorm || rawEvent || null,
       campaignId,
       leadId,
       hasLeadData: !!payload.lead_data,
       hasReplyObj: !!replyObj,
+      inboundLen: String(inboundMessage || '').length,
     });
 
     if (!campaignId || !leadId) {
@@ -208,7 +261,18 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId, leadId, emailStatsId: smartleadEmailStatsId });
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      threadContext = [{ role: 'prospect', message: inboundMessage }];
+      const fallbackMsg = String(inboundMessage || '').trim() || '(could not load thread from SmartLead)';
+      threadContext = [{ role: 'prospect', message: fallbackMsg }];
+    }
+
+    let inboundEffective = String(inboundMessage || '').trim();
+    if (!inboundEffective && threadContext && typeof threadContext === 'object') {
+      inboundEffective = latestInboundFromSmartleadHistory(threadContext);
+      if (inboundEffective) {
+        console.log('[Webhook] SmartLead inbound filled from message-history (webhook body was empty)', {
+          clientId, campaignId, leadId, len: inboundEffective.length,
+        });
+      }
     }
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
@@ -217,7 +281,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     try {
       result = await classifyAndDraft(
         threadContext,
-        inboundMessage,
+        inboundEffective,
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock
@@ -238,7 +302,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft) {
@@ -253,7 +317,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
         replyId: reply.id, leadName, leadEmail, platform: 'smartlead',
-        classification, draft, reasoning, inboundMessage,
+        classification, draft, reasoning, inboundMessage: inboundEffective,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
@@ -267,12 +331,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       }
 
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
+        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
       });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
+        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
       });
     }
 
