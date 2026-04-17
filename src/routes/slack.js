@@ -45,6 +45,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleAlreadyRepliedYes(action.value, interaction);
     } else if (action.action_id === 'already_replied_no') {
       await handleAlreadyRepliedNo(action.value, interaction);
+    } else if (action.action_id === 'snooze_nudge_30') {
+      await handleSnoozeNudge(action.value, interaction, 30);
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });
@@ -257,6 +259,38 @@ async function handleAlreadyRepliedNo(replyId, interaction) {
   await db.query('UPDATE pending_replies SET slack_message_ts = $1, status = $2, updated_at = now() WHERE id = $3',
     [posted.ts, 'pending', replyId]
   );
+}
+
+
+async function handleSnoozeNudge(replyId, interaction, minutes) {
+  const mins = Math.max(1, parseInt(minutes, 10) || 30);
+  const { rows: [reply] } = await db.query(
+    `UPDATE pending_replies
+        SET pending_nudge_snoozed_until = now() + ($2::int * interval '1 minute'),
+            pending_nudge_next_at = now() + ($2::int * interval '1 minute'),
+            updated_at = now()
+      WHERE id = $1 AND status = 'pending'
+      RETURNING *`,
+    [replyId, mins]
+  );
+  if (!reply) {
+    console.warn('[Slack] snooze: reply not pending', { replyId });
+    return;
+  }
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  if (interaction.channel?.id && interaction.message?.ts) {
+    try {
+      await slackService.updateMessage(
+        client.slack_bot_token,
+        interaction.channel.id,
+        interaction.message.ts,
+        `💤 Nudge snoozed ${mins} min for *${reply.lead_name}* by <@${interaction.user.id}>.`
+      );
+    } catch (e) {
+      console.error('[Slack] snooze update failed', { err: e.message });
+    }
+  }
+  console.log('[Slack] nudge snoozed', { replyId, lead: reply.lead_name, mins });
 }
 
 module.exports = router;

@@ -192,6 +192,7 @@ async function postPendingNudge(token, channelId, messageTs, { replyId, leadName
         elements: [
           { type: 'button', text: { type: 'plain_text', text: '✅ Yes, already replied' }, action_id: 'already_replied_yes', value: replyId, style: 'primary' },
           { type: 'button', text: { type: 'plain_text', text: '❌ No, show me the draft' }, action_id: 'already_replied_no', value: replyId },
+          { type: 'button', text: { type: 'plain_text', text: '💤 Snooze 30 min' }, action_id: 'snooze_nudge_30', value: replyId },
         ],
       },
     ],

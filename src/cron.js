@@ -69,17 +69,23 @@ function startCron() {
     }
   });
 
-  // ─── 5-minute "did you already reply?" nudge (every minute) ────────
+  // ─── Recurring "did you already reply?" nudge — every PENDING_NUDGE_MINUTES (default 5) ────────
   cron.schedule('* * * * *', async () => {
     try {
+      // Pull cards that are either unnudged (pending_nudge_next_at NULL) or whose next nudge is due.
+      // Respect snooze_until (if set and in the future, skip).
       const { rows: due } = await db.query(
         `SELECT pr.*, c.slack_bot_token, c.slack_channel_id
          FROM pending_replies pr
          JOIN clients c ON pr.client_id = c.id
          WHERE pr.status = 'pending'
            AND pr.slack_message_ts IS NOT NULL
-           AND pr.pending_nudge_sent_at IS NULL
-           AND pr.created_at < now() - ($1::int * interval '1 minute')
+           AND (pr.pending_nudge_snoozed_until IS NULL OR pr.pending_nudge_snoozed_until <= now())
+           AND (
+             (pr.pending_nudge_next_at IS NULL AND pr.created_at < now() - ($1::int * interval '1 minute'))
+             OR
+             (pr.pending_nudge_next_at IS NOT NULL AND pr.pending_nudge_next_at <= now())
+           )
          ORDER BY pr.created_at ASC
          LIMIT 50`,
         [PENDING_NUDGE_MINUTES]
@@ -94,8 +100,17 @@ function startCron() {
             reply.slack_message_ts,
             { replyId: reply.id, leadName: reply.lead_name, minutes }
           );
-          await db.query('UPDATE pending_replies SET pending_nudge_sent_at = now(), updated_at = now() WHERE id = $1', [reply.id]);
-          console.log('[Cron] Pending nudge sent', { replyId: reply.id, lead: reply.lead_name });
+          await db.query(
+            `UPDATE pending_replies
+               SET pending_nudge_sent_at = now(),
+                   pending_nudge_next_at = now() + ($1::int * interval '1 minute'),
+                   pending_nudge_count = COALESCE(pending_nudge_count, 0) + 1,
+                   pending_nudge_snoozed_until = NULL,
+                   updated_at = now()
+             WHERE id = $2`,
+            [PENDING_NUDGE_MINUTES, reply.id]
+          );
+          console.log('[Cron] Pending nudge sent', { replyId: reply.id, lead: reply.lead_name, minutes, count: (reply.pending_nudge_count || 0) + 1 });
         } catch (err) {
           console.error('[Cron] Pending nudge failed', { replyId: reply.id, err: err.message });
         }
