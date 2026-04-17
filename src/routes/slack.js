@@ -101,7 +101,7 @@ async function handleEditModalSubmit(interaction) {
     await sendReplyToPlatform(client, reply, messageText);
 
     await db.query(
-      'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
+      'UPDATE pending_replies SET status = $1, sent_reply = $2, draft_reply = $2, updated_at = now() WHERE id = $3',
       ['sent', messageText, replyId]
     );
 
