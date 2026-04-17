@@ -170,6 +170,57 @@ async function openEditReplyModal(token, triggerId, { replyId, initialDraft, cha
   });
 }
 
+/**
+ * Threaded reminder attached to a still-pending approval card.
+ * Asks "did you already reply?" with two buttons:
+ *   already_replied_yes -> mark the row sent, update the parent card
+ *   already_replied_no  -> post the draft below with Approve/Edit/Reject again
+ */
+async function postPendingNudge(token, channelId, messageTs, { replyId, leadName, minutes }) {
+  const slack = getClient(token);
+  return slack.chat.postMessage({
+    channel: channelId,
+    thread_ts: messageTs,
+    text: `:bell: You haven't actioned the draft to *${leadName}* yet (${minutes} min). Did you already reply to them (e.g. on a warm call)?`,
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `:bell: You haven't actioned the draft to *${leadName}* yet (*${minutes} min*). Did you already reply to them (e.g. on a warm call)?` },
+      },
+      {
+        type: 'actions',
+        elements: [
+          { type: 'button', text: { type: 'plain_text', text: '✅ Yes, already replied' }, action_id: 'already_replied_yes', value: replyId, style: 'primary' },
+          { type: 'button', text: { type: 'plain_text', text: '❌ No, show me the draft' }, action_id: 'already_replied_no', value: replyId },
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * Post the morning digest header; individual follow-up approval cards follow as children posts.
+ */
+async function postMorningDigestHeader(token, channelId, { count, dateLabel }) {
+  const slack = getClient(token);
+  return slack.chat.postMessage({
+    channel: channelId,
+    text: `:sunrise: Morning follow-up digest (${dateLabel})`,
+    blocks: [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `🌅 Morning follow-up digest — ${dateLabel}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: count === 0
+          ? 'No silent prospects from yesterday — nice.'
+          : `*${count}* prospect${count === 1 ? '' : 's'} went silent yesterday. AI-drafted follow-ups below — review and hit Approve / Edit & send.` },
+      },
+    ],
+  });
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
@@ -178,4 +229,6 @@ module.exports = {
   postReminder,
   updateMessage,
   openEditReplyModal,
+  postPendingNudge,
+  postMorningDigestHeader,
 };
