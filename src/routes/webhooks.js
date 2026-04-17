@@ -152,8 +152,9 @@ function isLikelyDuplicateOfOutbound(prospectBody, outboundBody) {
 }
 
 /**
- * Latest inbound that is actually from the lead (From matches lead email) and is not
- * SmartLead/Android noise where REPLY body duplicates our last SENT.
+ * Latest inbound: prefer REPLY rows whose From contains the lead email (when known),
+ * skip bodies that duplicate our last SENT (SmartLead/Android glitches). If strict
+ * From-match finds nothing, fall back to any non-duplicate REPLY (previous behavior).
  */
 function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
   if (!histResponse || typeof histResponse !== 'object') return '';
@@ -165,23 +166,29 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
         ? histResponse
         : [];
   const leadFrom = String(leadEmail || '').trim().toLowerCase();
-  const rows = [];
-  for (const m of list) {
-    if (!m || typeof m !== 'object') continue;
-    const type = String(m.type || m.direction || '').toUpperCase();
-    if (type !== 'REPLY' && type !== 'INBOUND') continue;
-    const from = messageFromEmail(m);
-    if (leadFrom && from && !from.includes(leadFrom) && leadFrom !== from) continue;
 
-    const raw = m.email_body || m.body || m.text || '';
-    let plain = stripHtmlToText(raw) || String(raw || '').trim();
-    plain = stripEmailQuotePrefix(plain);
-    plain = stripHtmlToText(plain) || String(plain || '').trim();
-    if (!plain) continue;
-    const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
-    rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
+  function collectRows(requireFromMatchLead) {
+    const rows = [];
+    for (const m of list) {
+      if (!m || typeof m !== 'object') continue;
+      const type = String(m.type || m.direction || '').toUpperCase();
+      if (type !== 'REPLY' && type !== 'INBOUND') continue;
+      const from = messageFromEmail(m);
+      if (requireFromMatchLead && leadFrom && from && !from.includes(leadFrom) && leadFrom !== from) {
+        continue;
+      }
+
+      const raw = m.email_body || m.body || m.text || '';
+      let plain = stripHtmlToText(raw) || String(raw || '').trim();
+      plain = stripEmailQuotePrefix(plain);
+      plain = stripHtmlToText(plain) || String(plain || '').trim();
+      if (!plain) continue;
+      const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
+      rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
+    }
+    rows.sort((a, b) => a.time.localeCompare(b.time));
+    return rows;
   }
-  rows.sort((a, b) => a.time.localeCompare(b.time));
 
   let lastSentBody = '';
   for (const m of list) {
@@ -194,14 +201,22 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
     }
   }
 
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const { body, rawForDedupe } = rows[i];
-    if (lastSentBody && isLikelyDuplicateOfOutbound(rawForDedupe || body, lastSentBody)) {
-      continue;
+  const pickLatestNonDuplicate = (rows) => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const { body, rawForDedupe } = rows[i];
+      if (lastSentBody && isLikelyDuplicateOfOutbound(rawForDedupe || body, lastSentBody)) {
+        continue;
+      }
+      return body;
     }
-    return body;
-  }
-  return '';
+    return '';
+  };
+
+  const strictRows = collectRows(true);
+  const strict = pickLatestNonDuplicate(strictRows);
+  if (strict) return strict;
+  const looseRows = collectRows(false);
+  return pickLatestNonDuplicate(looseRows);
 }
 
 function lastOutboundBodyFromSmartleadHistory(histResponse) {
