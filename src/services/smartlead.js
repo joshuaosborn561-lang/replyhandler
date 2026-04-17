@@ -113,11 +113,13 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
       add_signature: true,
     }),
   });
+  const responseBody = await res.text();
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`SmartLead sendReply failed (${res.status}) [campaign_id=${cid} lead_id=${lid} stats_id=${stats}]: ${body}`);
+    throw new Error(`SmartLead sendReply failed (${res.status}) [campaign_id=${cid} lead_id=${lid} stats_id=${stats}]: ${responseBody}`);
   }
-  return res.json();
+  // SmartLead's reply endpoint sometimes returns plain text (e.g. "Email added to the queue, will be sent out soon!")
+  // even though docs show JSON. Parse defensively.
+  try { return JSON.parse(responseBody); } catch { return { ok: true, raw: responseBody }; }
 }
 
 module.exports = {
