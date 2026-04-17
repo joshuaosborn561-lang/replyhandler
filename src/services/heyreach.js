@@ -76,7 +76,7 @@ async function verifyCampaignAccess(apiKey, campaignId) {
 
 /**
  * Send an inbox reply.
- * HeyReach public API: POST /inbox/SendMessage with { input: { ... } }.
+ * HeyReach public API: POST /inbox/SendMessage with a FLAT body (verified live; wrapping in { input } returns 404).
  * Prefer conversationId + linkedInAccountId. Include senderId if the webhook provided it.
  */
 async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId, listId, linkedinUrl, message }) {
@@ -94,13 +94,15 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
     conversationId: cid, linkedInAccountId: aid, senderId: sid, listId: lid, linkedinUrl: lurl, messageLength: msg.length,
   });
 
-  let input;
+  // VERIFIED against live HeyReach API: /inbox/SendMessage expects a FLAT body
+  // (no { input: ... } wrapper). Wrapping returns 404 "This conversation does not exist".
+  let body;
   if (cid && aid) {
-    input = { conversationId: cid, linkedInAccountId: aid, message: msg };
-    if (sid) input.senderId = sid;
+    body = { conversationId: cid, linkedInAccountId: aid, message: msg };
+    if (sid) body.senderId = sid;
   } else if (lid && aid && lurl) {
-    input = { listId: lid, linkedInAccountId: aid, linkedinUrl: lurl, message: msg };
-    if (sid) input.senderId = sid;
+    body = { listId: lid, linkedInAccountId: aid, linkedinUrl: lurl, message: msg };
+    if (sid) body.senderId = sid;
   } else {
     throw new Error(
       `HeyReach sendMessage missing required identifiers (conversationId+linkedInAccountId OR listId+linkedInAccountId+linkedinUrl). Got: ` +
@@ -111,7 +113,7 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-    body: JSON.stringify({ input }),
+    body: JSON.stringify(body),
   });
 
   const responseBody = await res.text();
