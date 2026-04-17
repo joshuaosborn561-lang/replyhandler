@@ -83,7 +83,8 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
   const msg = String(message || '');
   const url = `${BASE_URL}/inbox/SendMessage`;
 
-  const cid = toHeyreachInt(conversationId, 'conversationId');
+  // conversationId is an opaque base64-ish string (e.g. "2-ZWMzZDIzYjk...") — do NOT coerce to int.
+  const cid = nonEmptyString(conversationId);
   const aid = toHeyreachInt(linkedInAccountId, 'linkedInAccountId');
   const sid = toHeyreachInt(senderId, 'senderId');
   const lid = toHeyreachInt(listId, 'listId');
