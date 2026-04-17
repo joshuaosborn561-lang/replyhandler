@@ -1,5 +1,4 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { normalizeProspectCopy } = require('../utils/prospect-copy');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -8,9 +7,9 @@ function fallbackReattempt({ leadName, platform, bookingLink }) {
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
-  const base = `Hi ${name}, circling back on my last message. Still think 15 minutes could be worth it to see if this is a fit.`;
-  if (link) return normalizeProspectCopy(`${base} Here's a time if easier: ${link}`);
-  return normalizeProspectCopy(`${base} Open to a quick chat?`);
+  const base = `Hi ${name} — circling back on my last message. Still think 15 minutes could be worth it to see if this is a fit.`;
+  if (link) return `${base} Here's a time if easier: ${link}`;
+  return `${base} Open to a quick chat?`;
 }
 
 /**
@@ -22,9 +21,8 @@ async function draftReattemptToBook({ leadName, platform, voicePrompt, bookingLi
     ? String(bookingLink).trim()
     : '';
 
-  const system = `You write a short, warm B2B sales follow-up that re-attempts to book a 15-20 minute meeting.
-Output PLAIN TEXT only. No JSON, no markdown, no "Follow-up:" prefix. No quotes around the message.
-Do not use em dashes or en dashes. Use a comma, period, or a normal hyphen (-) only.
+  const system = `You write a short, warm B2B sales follow-up that re-attempts to book a 15–20 minute meeting.
+Output PLAIN TEXT only — no JSON, no markdown, no "Follow-up:" prefix. No quotes around the message.
 Length: 2-4 short sentences, fewer is better.
 Tone: friendly, warm, concise, human, non-pushy.
 - Never begin with "Great question" or similar filler.
@@ -45,7 +43,7 @@ Last outbound message from us (if any):
 ${lastOutboundMessage || '(none)'}
 
 Last message from prospect (if any):
-${lastInboundMessage || '(none; they never replied)'}
+${lastInboundMessage || '(none — they never replied)'}
 
 Write the follow-up message.`;
 
@@ -67,7 +65,7 @@ Write the follow-up message.`;
     if (booking && !text.includes(booking)) {
       text = `${text.trim()}\n\n${booking}`;
     }
-    return normalizeProspectCopy(text);
+    return text;
   } catch (err) {
     console.error('[FollowUpDraft] Gemini failed', { err: err.message });
     return fallbackReattempt({ leadName, platform, bookingLink });
