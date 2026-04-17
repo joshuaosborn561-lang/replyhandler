@@ -1,6 +1,7 @@
 const db = require('../db');
 const google = require('./google-calendar');
 const microsoft = require('./microsoft-calendar');
+const { normalizeProspectCopy } = require('../utils/prospect-copy');
 
 // Send meeting reminder email via the client's connected calendar provider
 // We send as the client (through their OAuth'd account) so it comes from them, not from us
@@ -27,7 +28,9 @@ async function sendReminder(meeting, client, voicePrompt) {
   });
 
   const subject = `Reminder: We're meeting in 1 hour`;
-  const body = `Hi ${leadName},\n\nQuick reminder — we're meeting at ${time} ET today.${meetingLink ? `\n\nHere's the link to join: ${meetingLink}` : ''}\n\nTalk soon.`;
+  const body = normalizeProspectCopy(
+    `Hi ${leadName},\n\nQuick reminder: we're meeting at ${time} ET today.${meetingLink ? `\n\nHere's the link to join: ${meetingLink}` : ''}\n\nTalk soon.`
+  );
 
   if (conn.provider === 'google') {
     // Send via Gmail-like approach: create a simple calendar reminder notification

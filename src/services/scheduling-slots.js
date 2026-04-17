@@ -239,7 +239,7 @@ async function resolveVerifiedSchedulingSlots(client) {
     promptBlock: two.length >= 2
       ? `VERIFIED OPEN START TIMES (use exactly these two in the draft wording; do not invent other times):\n${lines.join('\n')}\n\nInclude the client's booking link once so they can self-book.`
       : two.length === 1
-        ? `ONE verified open time: ${lines[0]}. Pair it with the booking link only — do not invent a second specific time; say they can use the link for more options.`
+        ? `ONE verified open time: ${lines[0]}. Pair it with the booking link only. Do not invent a second specific time; say they can use the link for more options.`
         : `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Do not invent specific times. Ask them to pick a time via the booking link and include it once.`,
   };
 }

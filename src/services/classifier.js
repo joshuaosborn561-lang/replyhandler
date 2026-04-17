@@ -1,4 +1,5 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { normalizeProspectCopy } = require('../utils/prospect-copy');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -42,7 +43,7 @@ function sanitizeDraft(text, { inboundMessage, bookingLink, classification } = {
     s = `${s.trim()}\n\n${bookingLink.trim()}`;
   }
 
-  return s;
+  return normalizeProspectCopy(s);
 }
 
 function fallbackDraftText({ inboundMessage, bookingLink }) {
@@ -52,7 +53,7 @@ function fallbackDraftText({ inboundMessage, bookingLink }) {
     ? String(bookingLink).trim()
     : '';
   return [
-    'Thanks for getting back to me — appreciate it.',
+    'Thanks for getting back to me, appreciate it.',
     snippet ? `On your note: "${snippet}"` : null,
     'Happy to share details and answer anything specific.',
     link ? `If easier, grab a time that works here: ${link}` : null,
@@ -125,6 +126,7 @@ Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quot
 Length: 2-4 short sentences, fewer is better.
 Tone: friendly, warm, concise, practitioner-level, human.
 Never begin with "Great question" or similar filler. Avoid excessive exclamation marks.
+Do not use em dashes or en dashes. Use a comma, period, or a normal hyphen (-) only.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}

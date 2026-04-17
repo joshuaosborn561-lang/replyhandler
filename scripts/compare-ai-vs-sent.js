@@ -3,6 +3,9 @@
  * Compare the AI draft (draft_reply, unchanged after ingest) to what was actually sent (sent_reply).
  * After Edit & send, draft_reply still holds the original Gemini output; sent_reply holds the final text.
  *
+ * sent_reply only reflects text sent through this app's Slack Approve / Edit & send path.
+ * Manual sends in HeyReach/SmartLead (or phone, etc.) are not stored here.
+ *
  * Run: node scripts/compare-ai-vs-sent.js
  */
 const { Pool } = require('pg');
