@@ -154,6 +154,7 @@ async function postReminder(token, channelId, messageTs, { replyId, leadName, mi
   return slack.chat.postMessage({
     channel: channelId,
     thread_ts: messageTs,
+    reply_broadcast: true,
     text,
   });
 }
@@ -212,6 +213,7 @@ async function postPendingNudge(token, channelId, messageTs, { replyId, leadName
   return slack.chat.postMessage({
     channel: channelId,
     thread_ts: messageTs,
+    reply_broadcast: true,
     text: `:bell: You haven't actioned the draft to *${leadName}* yet (${minutes} min). Did you already reply to them (e.g. on a warm call)?`,
     blocks: [
       {
