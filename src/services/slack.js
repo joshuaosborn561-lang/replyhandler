@@ -10,114 +10,83 @@ function getClient(token) {
   return clientCache.get(token);
 }
 
-/** Slack mrkdwn breaks on raw <...> from email; keep blocks under ~2800 chars per section. */
-function slackMrkdwnSafe(s, maxLen = 2500) {
-  let t = String(s ?? '');
-  t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (t.length > maxLen) t = `${t.slice(0, maxLen - 20)}\n_(truncated)_`;
-  return t;
-}
-
 async function postDraftApproval(token, channelId, { replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage }) {
   const slack = getClient(token);
 
-  const inboundBlock = slackMrkdwnSafe(inboundMessage || '(empty)', 2400);
-  const draftBlock = slackMrkdwnSafe(draft || '(no draft)', 2400);
-  const metaBlock = slackMrkdwnSafe(
-    `*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}`,
-    2400
-  );
-
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}` },
-    },
-    { type: 'section', text: { type: 'mrkdwn', text: metaBlock } },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundBlock.split('\n').join('\n>')}` },
-    },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Draft reply:*\n${draftBlock}` },
-    },
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✅ Approve & Send' },
-          style: 'primary',
-          action_id: 'approve_reply',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✏️ Edit & send' },
-          action_id: 'open_edit_modal',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '❌ Reject' },
-          style: 'danger',
-          action_id: 'reject_reply',
-          value: replyId,
-        },
-      ],
-    },
-  ];
-
-  try {
-    return await slack.chat.postMessage({
-      channel: channelId,
-      text: `New ${platform} reply from ${leadName} — ${classification}`,
-      blocks,
-    });
-  } catch (e) {
-    console.error('[Slack] postDraftApproval blocks failed, falling back to plain text', { err: e.message });
-    const plain = `New ${platform} reply from ${leadName} (${classification})\n\nTheir message:\n${String(inboundMessage || '').slice(0, 2800)}\n\nDraft:\n${String(draft || '').slice(0, 2800)}\n\nReply ID: ${replyId}\n(Buttons failed; use SmartLead to send or fix Slack payload.)`;
-    return slack.chat.postMessage({ channel: channelId, text: plain });
-  }
+  return slack.chat.postMessage({
+    channel: channelId,
+    text: `New ${platform} reply from ${leadName} — ${classification}`,
+    blocks: [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundMessage.split('\n').join('\n>')}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Draft reply:*\n${draft}` },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '✅ Approve & Send' },
+            style: 'primary',
+            action_id: 'approve_reply',
+            value: replyId,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '✏️ Edit & send' },
+            action_id: 'open_edit_modal',
+            value: replyId,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '❌ Reject' },
+            style: 'danger',
+            action_id: 'reject_reply',
+            value: replyId,
+          },
+        ],
+      },
+    ],
+  });
 }
 
 async function postAlert(token, channelId, { leadName, platform, classification, inboundMessage, reasoning }) {
   const slack = getClient(token);
 
-  const inboundBlock = slackMrkdwnSafe(inboundMessage || '(empty)', 2400);
-  const metaBlock = slackMrkdwnSafe(
-    `*From:* ${leadName}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}`,
-    2400
-  );
-
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}` },
-    },
-    { type: 'section', text: { type: 'mrkdwn', text: metaBlock } },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundBlock.split('\n').join('\n>')}` },
-    },
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: 'ℹ️ No draft generated — alert only.' }],
-    },
-  ];
-
-  try {
-    return await slack.chat.postMessage({
-      channel: channelId,
-      text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
-      blocks,
-    });
-  } catch (e) {
-    console.error('[Slack] postAlert blocks failed, falling back to plain text', { err: e.message });
-    const plain = `${platform.toUpperCase()} alert: ${classification} from ${leadName}\n\n${String(inboundMessage || '').slice(0, 3000)}`;
-    return slack.chat.postMessage({ channel: channelId, text: plain });
-  }
+  return slack.chat.postMessage({
+    channel: channelId,
+    text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
+    blocks: [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*From:* ${leadName}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundMessage.split('\n').join('\n>')}` },
+      },
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: 'ℹ️ No draft generated — alert only.' }],
+      },
+    ],
+  });
 }
 
 async function postError(token, channelId, { leadName, platform, error }) {
@@ -154,7 +123,6 @@ async function postReminder(token, channelId, messageTs, { replyId, leadName, mi
   return slack.chat.postMessage({
     channel: channelId,
     thread_ts: messageTs,
-    reply_broadcast: true,
     text,
   });
 }
@@ -213,7 +181,6 @@ async function postPendingNudge(token, channelId, messageTs, { replyId, leadName
   return slack.chat.postMessage({
     channel: channelId,
     thread_ts: messageTs,
-    reply_broadcast: true,
     text: `:bell: You haven't actioned the draft to *${leadName}* yet (${minutes} min). Did you already reply to them (e.g. on a warm call)?`,
     blocks: [
       {

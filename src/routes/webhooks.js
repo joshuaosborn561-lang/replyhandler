@@ -108,148 +108,6 @@ function normalizeHeyreachPayload(payload) {
   };
 }
 
-function stripHtmlToText(s) {
-  if (!s) return '';
-  return String(s)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normWs(s) {
-  return String(s || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-/** Strip common email quote tails so we keep what the prospect typed above the thread. */
-function stripEmailQuotePrefix(raw) {
-  let t = String(raw || '').replace(/\r\n/g, '\n');
-  const splitRe = /\nOn .{8,200}?wrote:\s*\n/i;
-  const idx = t.search(splitRe);
-  if (idx > 0) t = t.slice(0, idx);
-  t = t.replace(/\n-----Original Message-----\s*[\s\S]*/i, '');
-  t = t.replace(/\n_{20,}\s*[\s\S]*/, '');
-  return t.trim();
-}
-
-function messageFromEmail(m) {
-  const v = m && (m.from || m.From || m.sender || m.reply_from);
-  return v ? String(v).trim().toLowerCase() : '';
-}
-
-function isLikelyDuplicateOfOutbound(prospectBody, outboundBody) {
-  const a = normWs(prospectBody);
-  const b = normWs(outboundBody);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const prefixLen = Math.min(120, a.length, b.length);
-  if (prefixLen >= 40 && a.slice(0, prefixLen) === b.slice(0, prefixLen)) return true;
-  if (a.length >= 80 && b.includes(a.slice(0, 80))) return true;
-  if (b.length >= 80 && a.includes(b.slice(0, 80))) return true;
-  return false;
-}
-
-/**
- * Latest inbound: prefer REPLY rows whose From contains the lead email (when known),
- * skip bodies that duplicate our last SENT (SmartLead/Android glitches). If strict
- * From-match finds nothing, fall back to any non-duplicate REPLY (previous behavior).
- */
-function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
-  if (!histResponse || typeof histResponse !== 'object') return '';
-  const list = Array.isArray(histResponse.history)
-    ? histResponse.history
-    : Array.isArray(histResponse.messages)
-      ? histResponse.messages
-      : Array.isArray(histResponse)
-        ? histResponse
-        : [];
-  const leadFrom = String(leadEmail || '').trim().toLowerCase();
-
-  function collectRows(requireFromMatchLead) {
-    const rows = [];
-    for (const m of list) {
-      if (!m || typeof m !== 'object') continue;
-      const type = String(m.type || m.direction || '').toUpperCase();
-      if (type !== 'REPLY' && type !== 'INBOUND') continue;
-      const from = messageFromEmail(m);
-      if (requireFromMatchLead && leadFrom && from && !from.includes(leadFrom) && leadFrom !== from) {
-        continue;
-      }
-
-      const raw = m.email_body || m.body || m.text || '';
-      let plain = stripHtmlToText(raw) || String(raw || '').trim();
-      plain = stripEmailQuotePrefix(plain);
-      plain = stripHtmlToText(plain) || String(plain || '').trim();
-      if (!plain) continue;
-      const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
-      rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
-    }
-    rows.sort((a, b) => a.time.localeCompare(b.time));
-    return rows;
-  }
-
-  let lastSentBody = '';
-  for (const m of list) {
-    if (!m || typeof m !== 'object') continue;
-    const type = String(m.type || m.direction || '').toUpperCase();
-    if (type === 'SENT' || type === 'OUTBOUND') {
-      const raw = m.email_body || m.body || m.text || '';
-      const p = stripHtmlToText(raw) || String(raw || '').trim();
-      if (p) lastSentBody = p;
-    }
-  }
-
-  const pickLatestNonDuplicate = (rows) => {
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const { body, rawForDedupe } = rows[i];
-      if (lastSentBody && isLikelyDuplicateOfOutbound(rawForDedupe || body, lastSentBody)) {
-        continue;
-      }
-      return body;
-    }
-    return '';
-  };
-
-  const strictRows = collectRows(true);
-  const strict = pickLatestNonDuplicate(strictRows);
-  if (strict) return strict;
-  const looseRows = collectRows(false);
-  return pickLatestNonDuplicate(looseRows);
-}
-
-function lastOutboundBodyFromSmartleadHistory(histResponse) {
-  if (!histResponse || typeof histResponse !== 'object') return '';
-  const list = Array.isArray(histResponse.history)
-    ? histResponse.history
-    : Array.isArray(histResponse.messages)
-      ? histResponse.messages
-      : Array.isArray(histResponse)
-        ? histResponse
-        : [];
-  let last = '';
-  for (const m of list) {
-    if (!m || typeof m !== 'object') continue;
-    const type = String(m.type || m.direction || '').toUpperCase();
-    if (type === 'SENT' || type === 'OUTBOUND') {
-      const raw = m.email_body || m.body || m.text || '';
-      const p = stripHtmlToText(raw) || String(raw || '').trim();
-      if (p) last = p;
-    }
-  }
-  return last;
-}
-
-// SmartLead sends one URL per campaign for all subscribed events; we only handle real replies.
-const SMARTLEAD_NON_REPLY_EVENTS = new Set([
-  'EMAIL_SENT',
-  'EMAIL_OPENED',
-  'EMAIL_CLICKED',
-  'EMAIL_BOUNCED',
-  'EMAIL_UNSUBSCRIBED',
-]);
-
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -262,13 +120,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (!client || !client.active) {
       console.warn('[Webhook] Unknown or inactive client', { clientId });
       return res.status(200).json({ ok: true, skipped: true });
-    }
-
-    const rawEvent = payload.event || payload.type || payload.webhook_event || null;
-    const eventNorm = rawEvent != null ? String(rawEvent).trim().toUpperCase() : null;
-    if (eventNorm && SMARTLEAD_NON_REPLY_EVENTS.has(eventNorm)) {
-      console.log('[Webhook] SmartLead skipped (not a reply event)', { clientId, event: eventNorm });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'not_email_replied_event', event: eventNorm });
     }
 
     // SmartLead webhook payloads vary by event + test button; support common shapes.
@@ -308,9 +159,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       'Unknown';
 
     const inboundMessage =
-      (replyObj && typeof replyObj === 'object'
-        ? (replyObj.body || replyObj.message || replyObj.text || replyObj.plain_text || stripHtmlToText(replyObj.html || replyObj.html_body))
-        : replyObj) ||
+      (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj) ||
       payload.reply_text ||
       payload.message ||
       payload.body ||
@@ -318,12 +167,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     console.log('[Webhook] SmartLead extracted', {
       clientId,
-      event: eventNorm || rawEvent || null,
       campaignId,
       leadId,
       hasLeadData: !!payload.lead_data,
       hasReplyObj: !!replyObj,
-      inboundLen: String(inboundMessage || '').length,
     });
 
     if (!campaignId || !leadId) {
@@ -361,46 +208,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId, leadId, emailStatsId: smartleadEmailStatsId });
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      const fallbackMsg = String(inboundMessage || '').trim() || '(could not load thread from SmartLead)';
-      threadContext = [{ role: 'prospect', message: fallbackMsg }];
-    }
-
-    let inboundEffective = String(inboundMessage || '').trim();
-    if (inboundEffective) {
-      inboundEffective = stripEmailQuotePrefix(inboundEffective);
-      inboundEffective = stripHtmlToText(inboundEffective) || inboundEffective;
-    }
-
-    const lastSentPlain = threadContext && typeof threadContext === 'object'
-      ? lastOutboundBodyFromSmartleadHistory(threadContext)
-      : '';
-    const fromHistory = threadContext && typeof threadContext === 'object'
-      ? latestInboundFromSmartleadHistory(threadContext, leadEmail)
-      : '';
-
-    if (fromHistory) {
-      const webhookLooksLikeOurCopy = lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain);
-      if (!inboundEffective || webhookLooksLikeOurCopy) {
-        inboundEffective = fromHistory;
-        console.log('[Webhook] SmartLead inbound from message-history', {
-          clientId, campaignId, leadId, replacedWebhookDuplicate: !!webhookLooksLikeOurCopy, len: inboundEffective.length,
-        });
-      }
-    } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
-      inboundEffective = '';
-    }
-
-    if (!inboundEffective) {
-      console.warn('[Webhook] SmartLead could not resolve prospect reply text (check thread in SmartLead)', {
-        clientId, campaignId, leadId, leadEmail, leadName,
-      });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName: `${leadName} (SmartLead)`,
-        platform: 'smartlead',
-        error:
-          'Webhook had no usable reply body and message-history did not yield text from the lead. Reply manually in SmartLead.',
-      });
-      return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
+      threadContext = [{ role: 'prospect', message: inboundMessage }];
     }
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
@@ -409,7 +217,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     try {
       result = await classifyAndDraft(
         threadContext,
-        inboundEffective,
+        inboundMessage,
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock
@@ -430,7 +238,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft) {
@@ -445,7 +253,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
         replyId: reply.id, leadName, leadEmail, platform: 'smartlead',
-        classification, draft, reasoning, inboundMessage: inboundEffective,
+        classification, draft, reasoning, inboundMessage,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
@@ -459,12 +267,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       }
 
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
+        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
       });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
+        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
       });
     }
 
