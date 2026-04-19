@@ -87,6 +87,62 @@ async function resolveEmailStatsId(apiKey, campaignId, leadId) {
   }
 }
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function trimUrlTrailingPunct(url) {
+  let u = String(url);
+  while (u.length > 0) {
+    const c = u[u.length - 1];
+    if (')]}>'.includes(c) || (c === '.' && !u.includes('?'))) {
+      u = u.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  return u;
+}
+
+function formatPlainTextAsSmartleadHtml(plain) {
+  const normalized = String(plain || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  const urlRe = /(https?:\/\/[^\s<]+)/gi;
+  return lines
+    .map((line) => {
+      const parts = [];
+      let last = 0;
+      let m;
+      while ((m = urlRe.exec(line)) !== null) {
+        parts.push(escapeHtml(line.slice(last, m.index)));
+        const raw = m[1];
+        const url = trimUrlTrailingPunct(raw);
+        const tail = raw.slice(url.length);
+        const h = escapeHtml(url);
+        parts.push(`<a href="${h}">${h}</a>${escapeHtml(tail)}`);
+        last = m.index + raw.length;
+      }
+      parts.push(escapeHtml(line.slice(last)));
+      return parts.join('');
+    })
+    .join('<br/>');
+}
+
+function looksLikeHandwrittenHtmlEmailBody(s) {
+  const t = String(s || '');
+  return /<\s*(a\s|br\s|\/\s*br|p\s|div\s|span\s|table\s|html\s)/i.test(t);
+}
+
+function shouldHtmlifyOutboundBody() {
+  const v = process.env.SMARTLEAD_OUTBOUND_HTML;
+  if (v === undefined || v === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
 /**
  * SmartLead reply endpoint.
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
@@ -103,13 +159,18 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
   if (!stats) {
     throw new Error(`SmartLead sendReply missing email_stats_id [campaign_id=${cid} lead_id=${lid}] — no SENT message found in thread history`);
   }
+  let emailBody = String(replyText || '');
+  if (shouldHtmlifyOutboundBody() && !looksLikeHandwrittenHtmlEmailBody(emailBody)) {
+    emailBody = formatPlainTextAsSmartleadHtml(emailBody);
+  }
+
   const url = `${BASE_URL}/campaigns/${cid}/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email_stats_id: stats,
-      email_body: String(replyText || ''),
+      email_body: emailBody,
       add_signature: true,
     }),
   });
@@ -128,4 +189,6 @@ module.exports = {
   verifyCampaignAccess,
   resolveEmailStatsId,
   extractStatsIdFromHistory,
+  formatPlainTextAsSmartleadHtml,
+  looksLikeHandwrittenHtmlEmailBody,
 };
