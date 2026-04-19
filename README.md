@@ -24,11 +24,13 @@ createdb replyhandler
 psql replyhandler < schema.sql
 ```
 
-Or on Railway, provision a Postgres plugin and run the schema via the Railway CLI:
+Or on Railway, provision a Postgres plugin and apply the base schema once (required before the app can migrate):
 
 ```bash
 railway run psql $DATABASE_URL < schema.sql
 ```
+
+After that, each deploy runs `migrations/*.sql` in order (tracked in `schema_migrations`), including `005_booking_link_safe.sql`, so columns like `clients.booking_link` stay in sync. Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
 
 ### 2. Environment Variables
 
