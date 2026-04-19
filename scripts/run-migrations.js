@@ -9,6 +9,24 @@ const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
 
+/**
+ * Railway CLI often exposes DATABASE_URL with host postgres.railway.internal (not resolvable off-platform).
+ * When RAILWAY_TCP_PROXY_* + POSTGRES_* are set (Postgres plugin), build a reachable URL.
+ */
+function resolveDatabaseUrl() {
+  const u = process.env.DATABASE_URL;
+  if (u && !/railway\.internal/.test(u)) return u;
+  const host = process.env.RAILWAY_TCP_PROXY_DOMAIN;
+  const port = process.env.RAILWAY_TCP_PROXY_PORT || '5432';
+  const user = process.env.POSTGRES_USER || 'postgres';
+  const pass = process.env.POSTGRES_PASSWORD;
+  const db = process.env.POSTGRES_DB || 'railway';
+  if (host && pass) {
+    return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}/${db}`;
+  }
+  return u || null;
+}
+
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 
 /** Filenames in lexical order (002 … 010). */
@@ -55,7 +73,7 @@ async function main() {
     return;
   }
 
-  const conn = process.env.DATABASE_URL;
+  const conn = resolveDatabaseUrl();
   if (!conn) {
     console.log('[Migrations] No DATABASE_URL — skipping');
     return;
