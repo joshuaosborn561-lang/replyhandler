@@ -30,7 +30,9 @@ Or on Railway, provision a Postgres plugin and apply the base schema once (requi
 railway run psql $DATABASE_URL < schema.sql
 ```
 
-After that, each deploy runs `migrations/*.sql` in order (tracked in `schema_migrations`), including `005_booking_link_safe.sql`, so columns like `clients.booking_link` stay in sync. Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
+After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–010, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
+
+**Backups and avoiding data loss:** This app never deletes `clients` rows. If client rows vanish, the Postgres **volume was reset or a new database was attached** (e.g. recreating the Postgres service in Railway). Mitigations: enable **Railway Postgres backups** in the dashboard (plan-dependent); avoid detaching/recreating the Postgres plugin; periodically run `pg_dump` off-platform, e.g. `railway run --service <App> pg_dump "$DATABASE_URL" > backup-$(date +%Y%m%d).sql` (use the app service so `DATABASE_URL` points at your data). Client API keys must be **re-entered** after a restore if you only have SQL dumps without secrets elsewhere.
 
 ### 2. Environment Variables
 

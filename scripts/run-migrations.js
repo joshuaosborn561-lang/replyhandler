@@ -8,24 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
-
-/**
- * Railway CLI often exposes DATABASE_URL with host postgres.railway.internal (not resolvable off-platform).
- * When RAILWAY_TCP_PROXY_* + POSTGRES_* are set (Postgres plugin), build a reachable URL.
- */
-function resolveDatabaseUrl() {
-  const u = process.env.DATABASE_URL;
-  if (u && !/railway\.internal/.test(u)) return u;
-  const host = process.env.RAILWAY_TCP_PROXY_DOMAIN;
-  const port = process.env.RAILWAY_TCP_PROXY_PORT || '5432';
-  const user = process.env.POSTGRES_USER || 'postgres';
-  const pass = process.env.POSTGRES_PASSWORD;
-  const db = process.env.POSTGRES_DB || 'railway';
-  if (host && pass) {
-    return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}/${db}`;
-  }
-  return u || null;
-}
+const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 
@@ -79,8 +62,9 @@ async function main() {
     return;
   }
 
-  const client = new Client({ connectionString: conn });
+  const client = new Client({ connectionString: conn, ssl: pgSslOption(conn) });
   await client.connect();
+  await client.query('SELECT 1 AS db_ping');
 
   try {
     if (!(await clientsTableExists(client))) {
