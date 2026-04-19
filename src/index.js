@@ -6,6 +6,7 @@ const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const { startCron } = require('./cron');
+const { assertDatabaseReady } = require('./db-ready');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,7 +36,17 @@ app.use(authRoutes);
 app.use(testWebhookRoutes);
 
 // ─── Start ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[Server] ReplyHandler running on port ${PORT}`);
-  startCron();
-});
+async function start() {
+  try {
+    await assertDatabaseReady();
+  } catch (err) {
+    console.error('[Server] Database not ready:', err.message);
+    process.exit(1);
+  }
+  app.listen(PORT, () => {
+    console.log(`[Server] ReplyHandler running on port ${PORT}`);
+    startCron();
+  });
+}
+
+start();
