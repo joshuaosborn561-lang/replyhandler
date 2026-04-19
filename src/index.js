@@ -6,7 +6,7 @@ const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const { startCron } = require('./cron');
-const { assertDatabaseReady } = require('./db-ready');
+const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,8 +25,16 @@ app.use(express.json());
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 app.get('/', (_req, res) => res.redirect('/dashboard'));
 
-// ─── Health check ────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+// ─── Health check (fails with 503 if schema or active clients missing — Railway should not route traffic) ───
+app.get('/health', async (_req, res) => {
+  try {
+    const body = await getHealthStatus();
+    res.json(body);
+  } catch (err) {
+    console.error('[Health] Unhealthy:', err.message);
+    res.status(503).json({ status: 'error', error: err.message });
+  }
+});
 
 // ─── Routes ──────────────────────────────────────────────────────────
 app.use(webhookRoutes);
