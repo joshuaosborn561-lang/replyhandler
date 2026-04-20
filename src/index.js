@@ -19,7 +19,9 @@ app.use('/slack', express.urlencoded({
 }));
 
 // JSON for everything else
-app.use(express.json());
+// SmartLead webhooks can include large HTML reply bodies (signatures/quoted threads).
+// Raise limit so we don't 413 and "miss" replies.
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' }));
 
 // ─── Dashboard UI ────────────────────────────────────────────────────
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
