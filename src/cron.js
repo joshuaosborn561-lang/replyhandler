@@ -31,6 +31,22 @@ function dateInTimezone(tz) {
   }
 }
 
+function dayOfWeekInTimezone(tz) {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+    return fmt.format(new Date()); // e.g. Mon, Tue
+  } catch {
+    const d = new Date().getDay();
+    return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d] || 'Mon';
+  }
+}
+
+function addDays(yyyyMmDd, deltaDays) {
+  const base = new Date(`${yyyyMmDd}T00:00:00.000Z`);
+  base.setUTCDate(base.getUTCDate() + deltaDays);
+  return base.toISOString().slice(0, 10);
+}
+
 function startCron() {
   // ─── Stale reply reminders (every 10 minutes) ─────────────────────
   cron.schedule('*/10 * * * *', async () => {
@@ -190,17 +206,21 @@ function startCron() {
 /** Collect silent prospects from last ~36h, draft follow-ups, post approval cards in Slack. */
 async function buildAndPostMorningDigest(client, digestDate, tz) {
   // Candidate follow-ups: scheduled outbound that prospect hasn't replied to.
-  // We consider any prospect with a sent message >=10h and <=48h ago with no inbound reply since then,
-  // to catch both "late yesterday" and "day before" that still need nudging.
+  // Normally: include follow-ups from "yesterday" (client-local date).
+  // Monday: include Fri+Sat+Sun and remind on Monday.
+  const endDate = addDays(digestDate, -1); // yesterday
+  const dow = dayOfWeekInTimezone(tz);
+  const startDate = dow === 'Mon' ? addDays(endDate, -2) : endDate; // Fri..Sun on Monday, else just yesterday
+
   const { rows: pendingFollowUps } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*
      FROM outbound_follow_ups f
      WHERE f.client_id = $1
        AND f.status = 'pending'
-       AND f.sent_at < now() - interval '10 hours'
+       AND (f.sent_at AT TIME ZONE $2)::date BETWEEN $3::date AND $4::date
      ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.sent_at DESC`,
-    [client.id]
+    [client.id, tz, startDate, endDate]
   );
 
   if (pendingFollowUps.length === 0) {
