@@ -3,11 +3,9 @@ function fallbackReattempt({ leadName, platform, bookingLink }) {
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
-  const base = `Hi ${name} — quick follow-up on my last note.`;
-  if (link) {
-    return `${base} I have a couple slots today and tomorrow — if easier, grab a time here: ${link}`;
-  }
-  return `${base} I have a couple slots today and tomorrow — open to a quick chat?`;
+  const base = `Hey ${name}, have a couple slots open today or tomorrow if those work:`;
+  if (link) return `${base} ${link}`;
+  return `Hey ${name}, have a couple slots open today or tomorrow if those work?`;
 }
 
 /**
