@@ -136,7 +136,14 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     // SmartLead webhook payloads vary by event + test button; support common shapes.
     const leadData = payload.lead_data || payload.lead || {};
-    const replyObj = payload.reply || payload.latest_reply || payload.last_reply || null;
+    // SmartLead EMAIL_REPLY payloads often use reply_message/sent_message (not "reply").
+    const replyObj =
+      payload.reply_message ||
+      payload.replyMessage ||
+      payload.reply ||
+      payload.latest_reply ||
+      payload.last_reply ||
+      null;
 
     const campaignId =
       payload.campaign_id ||
@@ -151,12 +158,19 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.lead?.id ||
       leadData.lead_id ||
       leadData.leadId ||
-      leadData.id;
+      leadData.id ||
+      // SmartLead EMAIL_REPLY shape:
+      payload.sl_email_lead_id ||
+      payload.slEmailLeadId ||
+      payload.sl_email_lead_map_id ||
+      payload.slEmailLeadMapId;
 
     const leadEmail =
       payload.email ||
       payload.lead_email ||
       payload.to_email ||
+      payload.sl_lead_email ||
+      payload.slLeadEmail ||
       leadData.email ||
       leadData.lead_email ||
       payload.lead?.email;
@@ -165,6 +179,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.name ||
       payload.lead_name ||
       payload.first_name ||
+      payload.to_name ||
+      payload.toName ||
       (leadData.first_name ? `${leadData.first_name} ${leadData.last_name || ''}`.trim() : null) ||
       leadData.name ||
       payload.lead?.first_name ||
