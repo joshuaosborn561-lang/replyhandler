@@ -16,10 +16,19 @@ function truncateForSlack(s, maxLen = 2800) {
   return `${t.slice(0, maxLen - 1)}…`;
 }
 
-function quoteBlock(label, body) {
-  const b = truncateForSlack(body);
-  if (!b) return `*${label}:*\n_(not available)_`;
-  return `*${label}:*\n>${b.split('\n').join('\n>')}`;
+/** Slack mrkdwn: escape &, <, > so user copy does not break blocks. */
+function escMrkdwn(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Fenced block safe for user-provided multiline (avoid ``` in body breaking fence). */
+function fencedBody(body, maxLen = 2500) {
+  let b = truncateForSlack(body, maxLen);
+  b = b.replace(/```/g, '`\u200b``');
+  return `\`\`\`\n${b}\n\`\`\``;
 }
 
 async function postDraftApproval(token, channelId, {
@@ -27,54 +36,81 @@ async function postDraftApproval(token, channelId, {
   campaignDisplay, lastOutboundMessage,
 }) {
   const slack = getClient(token);
-  const camp = campaignDisplay ? `*Campaign:* ${campaignDisplay}\n` : '';
-  const lastOut = lastOutboundMessage ? `${quoteBlock('Your last message', lastOutboundMessage)}\n\n` : '';
-  const draftText = draft != null && String(draft).trim() !== '' ? `*Draft reply:*\n${truncateForSlack(draft)}` : '';
+  const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
+  const leadBlock = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? `\n${escMrkdwn(leadEmail)}` : ''}`;
+  const draftText = draft != null && String(draft).trim() !== ''
+    ? `*Draft reply:*\n${fencedBody(draft)}`
+    : '';
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}` },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Lead*\n${leadBlock}` },
+        { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Classification:* ${escMrkdwn(classification)}\n*Reasoning:* ${escMrkdwn(reasoning)}`,
+      },
+    },
+  ];
+
+  if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Your last message*\n${fencedBody(lastOutboundMessage)}` },
+    });
+  }
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*Their reply*\n${fencedBody(inboundMessage)}` },
+  });
+
+  if (draftText) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: draftText } });
+  }
+
+  blocks.push(
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '✅ Approve & Send' },
+          style: 'primary',
+          action_id: 'approve_reply',
+          value: replyId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '✏️ Edit & send' },
+          action_id: 'open_edit_modal',
+          value: replyId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '❌ Reject' },
+          style: 'danger',
+          action_id: 'reject_reply',
+          value: replyId,
+        },
+      ],
+    },
+  );
 
   return slack.chat.postMessage({
     channel: channelId,
     text: `New ${platform} reply from ${leadName} — ${classification}`,
-    blocks: [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}` },
-      },
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `${camp}*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
-      },
-      ...(lastOut ? [{ type: 'section', text: { type: 'mrkdwn', text: lastOut.trimEnd() } }] : []),
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: quoteBlock('Their reply', inboundMessage) },
-      },
-      ...(draftText ? [{ type: 'section', text: { type: 'mrkdwn', text: draftText } }] : []),
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: '✅ Approve & Send' },
-            style: 'primary',
-            action_id: 'approve_reply',
-            value: replyId,
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: '✏️ Edit & send' },
-            action_id: 'open_edit_modal',
-            value: replyId,
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: '❌ Reject' },
-            style: 'danger',
-            action_id: 'reject_reply',
-            value: replyId,
-          },
-        ],
-      },
-    ],
+    blocks,
   });
 }
 
@@ -83,31 +119,50 @@ async function postAlert(token, channelId, {
   campaignDisplay, lastOutboundMessage,
 }) {
   const slack = getClient(token);
-  const camp = campaignDisplay ? `*Campaign:* ${campaignDisplay}\n` : '';
-  const lastOut = lastOutboundMessage ? `${quoteBlock('Your last message', lastOutboundMessage)}\n\n` : '';
+  const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}` },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Lead*\n*${escMrkdwn(leadName || 'Unknown')}*` },
+        { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Classification:* ${escMrkdwn(classification)}\n*Reasoning:* ${escMrkdwn(reasoning)}`,
+      },
+    },
+  ];
+
+  if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Your last message*\n${fencedBody(lastOutboundMessage)}` },
+    });
+  }
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*Their reply*\n${fencedBody(inboundMessage)}` },
+  });
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: 'ℹ️ No draft generated — alert only.' }],
+  });
 
   return slack.chat.postMessage({
     channel: channelId,
     text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
-    blocks: [
-      {
-        type: 'header',
-        text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}` },
-      },
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `${camp}*From:* ${leadName}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
-      },
-      ...(lastOut ? [{ type: 'section', text: { type: 'mrkdwn', text: lastOut.trimEnd() } }] : []),
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: quoteBlock('Their reply', inboundMessage) },
-      },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: 'ℹ️ No draft generated — alert only.' }],
-      },
-    ],
+    blocks,
   });
 }
 
