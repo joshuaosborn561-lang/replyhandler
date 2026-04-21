@@ -32,6 +32,9 @@ function normalizeHeyreachPayload(payload) {
   const campaignId =
     p.campaignId ??
     p.campaign_id ??
+    p.campaignID ??
+    p.CampaignId ??
+    p.campaign?.id ??
     campaign?.id ??
     campaign?.campaignId ??
     null;
@@ -46,11 +49,21 @@ function normalizeHeyreachPayload(payload) {
 
   const recent = Array.isArray(p.recent_messages) ? p.recent_messages : [];
   const lastMsg = recent.length ? recent[recent.length - 1] : null;
+  function msgTextFromRecentRow(m) {
+    if (!m || typeof m !== 'object') return '';
+    return (
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      (typeof m.content === 'string' && m.content) ||
+      ''
+    );
+  }
   const inboundMessage =
     (typeof p.message === 'string' && p.message) ||
     (typeof p.reply === 'string' && p.reply) ||
     (typeof p.body === 'string' && p.body) ||
-    (lastMsg && typeof lastMsg.message === 'string' ? lastMsg.message : '') ||
+    (lastMsg ? msgTextFromRecentRow(lastMsg) : '') ||
     '';
 
   const lead = p.lead && typeof p.lead === 'object' ? p.lead : null;
@@ -100,7 +113,7 @@ function normalizeHeyreachPayload(payload) {
   if (!threadContext && recent.length) {
     threadContext = recent.map((m) => ({
       role: m.is_reply ? 'prospect' : 'us',
-      message: m.message || '',
+      message: msgTextFromRecentRow(m),
       at: m.creation_time,
     }));
   }

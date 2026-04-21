@@ -43,12 +43,67 @@ function campaignRowId(row) {
   return id != null ? String(id) : null;
 }
 
+function campaignIdMatchesResponse(target, payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const t = String(target).trim();
+  const candidates = [
+    payload.id,
+    payload.campaignId,
+    payload.campaign_id,
+    payload?.data?.id,
+    payload?.data?.campaignId,
+    payload?.data?.campaign_id,
+    payload?.campaign?.id,
+    payload?.campaign?.campaignId,
+  ];
+  for (const c of candidates) {
+    if (c != null && String(c).trim() === t) return true;
+  }
+  return false;
+}
+
+/**
+ * Try a cheap "fetch this campaign" call before paging GetAll.
+ * HeyReach has evolved endpoint shapes; we probe a few common patterns.
+ */
+async function tryFetchCampaignById(apiKey, campaignId) {
+  const id = String(campaignId).trim();
+  const headers = { 'Content-Type': 'application/json', 'X-API-KEY': apiKey };
+
+  const attempts = [
+    { method: 'GET', url: `${BASE_URL}/campaign/${encodeURIComponent(id)}`, body: null },
+    { method: 'POST', url: `${BASE_URL}/campaign/GetById`, body: JSON.stringify({ id: Number(id) || id }) },
+    { method: 'POST', url: `${BASE_URL}/campaign/GetById`, body: JSON.stringify({ campaignId: Number(id) || id }) },
+    { method: 'POST', url: `${BASE_URL}/campaign/Get`, body: JSON.stringify({ id: Number(id) || id }) },
+  ];
+
+  for (const a of attempts) {
+    try {
+      const res = await fetch(a.url, {
+        method: a.method,
+        headers,
+        body: a.body,
+      });
+      if (res.status === 404) continue;
+      if (!res.ok) continue;
+      const payload = await res.json();
+      if (campaignIdMatchesResponse(id, payload)) return true;
+    } catch {
+      // ignore — fall through to GetAll
+    }
+  }
+  return false;
+}
+
 /**
  * Paginates HeyReach GetAll until the campaign id is found or lists are exhausted.
  */
 async function verifyCampaignAccess(apiKey, campaignId) {
   if (!apiKey || campaignId == null || String(campaignId).trim() === '') return false;
   const target = String(campaignId).trim();
+
+  if (await tryFetchCampaignById(apiKey, target)) return true;
+
   let offset = 0;
   const limit = 100;
   const maxPages = 50;
@@ -125,4 +180,4 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
   try { return JSON.parse(responseBody); } catch { return { raw: responseBody }; }
 }
 
-module.exports = { sendMessage, verifyCampaignAccess };
+module.exports = { sendMessage, verifyCampaignAccess, tryFetchCampaignById };
