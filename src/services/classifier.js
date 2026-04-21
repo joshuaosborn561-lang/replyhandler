@@ -66,10 +66,30 @@ function buildClassifyModel() {
     systemInstruction:
       `You classify a B2B sales reply into exactly one category.\n` +
       `Respond with ONLY the category word, nothing else.\n` +
-      `Categories: ${CLASSIFICATIONS.join(', ')}.`,
+      `Categories: ${CLASSIFICATIONS.join(', ')}.\n\n` +
+      `Important:\n` +
+      `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
+      `- If it is clearly OOO, output OOO (not OTHER).\n` +
+      `- OUT_OF_OFFICE is legacy; prefer OOO.`,
     generationConfig: {
       // ONE WORD. Cannot truncate meaningfully.
       maxOutputTokens: 16,
+      temperature: 0,
+      responseMimeType: 'text/plain',
+    },
+  });
+}
+
+function buildOooCheckModel() {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction:
+      'You decide if a message is an out-of-office, vacation, or automatic reply.\n' +
+      'Respond with exactly YES or NO, nothing else.\n' +
+      'YES if: out of office, OOO, vacation, away, limited email access, auto-reply, automatic reply, will return on [date], not monitoring email closely.\n' +
+      'NO if: a human is engaging with substance about the offer (even if brief).',
+    generationConfig: {
+      maxOutputTokens: 8,
       temperature: 0,
       responseMimeType: 'text/plain',
     },
@@ -113,6 +133,23 @@ async function classifyOnly(threadContext, inboundMessage) {
     console.error('[Classifier] classify call failed', { err: err.message });
     return 'OTHER';
   }
+}
+
+/** Second pass: when primary label is OTHER, ask explicitly for OOO vs not. */
+async function classifyOooSecondPass(threadContext, inboundMessage) {
+  try {
+    const model = buildOooCheckModel();
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect message:\n${inboundMessage}\n\n` +
+      `Is this an out-of-office / vacation / automatic reply?`
+    );
+    const t = (res.response.text() || '').trim().toUpperCase();
+    if (t.startsWith('Y')) return 'OOO';
+  } catch (err) {
+    console.error('[Classifier] OOO second pass failed', { err: err.message });
+  }
+  return null;
 }
 
 async function draftOnly({ classification, threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock }) {
@@ -160,7 +197,11 @@ ${scheduleCtx}
  * Never throws. Always returns { classification, draft, proposed_time, reasoning }.
  */
 async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
-  const classification = await classifyOnly(threadContext, inboundMessage);
+  let classification = await classifyOnly(threadContext, inboundMessage);
+  if (classification === 'OTHER') {
+    const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
+    if (ooo === 'OOO') classification = 'OOO';
+  }
   const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
 
   const draft = needsDraft
