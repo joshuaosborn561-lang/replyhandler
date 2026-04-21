@@ -165,6 +165,21 @@ function smartleadWebhookEnhancementsEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+function looksLikeOutOfOffice(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  // Common OOO / auto-reply phrases.
+  if (/\bout of office\b/.test(s)) return true;
+  if (/\bauto(?:matic)? reply\b/.test(s)) return true;
+  if (/\bautoreply\b/.test(s)) return true;
+  if (/\bon vacation\b/.test(s)) return true;
+  if (/\breturn on\b/.test(s) && /\blimited access\b/.test(s)) return true;
+  if (/\bi will have limited access to email\b/.test(s)) return true;
+  if (/\bi am currently out of (the )?office\b/.test(s)) return true;
+  if (/\bthank you for your (email|message)\b/.test(s) && /\bwill (respond|get back)\b/.test(s) && /\breturn\b/.test(s)) return true;
+  return false;
+}
+
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -175,4 +190,5 @@ module.exports = {
   SMARTLEAD_NON_REPLY_EVENTS,
   envFlag,
   smartleadWebhookEnhancementsEnabled,
+  looksLikeOutOfOffice,
 };

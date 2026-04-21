@@ -15,6 +15,7 @@ const {
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
   SMARTLEAD_NON_REPLY_EVENTS,
+  looksLikeOutOfOffice,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -310,7 +311,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    if (classification === 'OOO') {
+    if (classification === 'OOO' || (slEnhance && looksLikeOutOfOffice(inboundEffective))) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
