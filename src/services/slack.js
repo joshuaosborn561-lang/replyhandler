@@ -24,11 +24,15 @@ function escMrkdwn(s) {
     .replace(/>/g, '&gt;');
 }
 
-/** Fenced block safe for user-provided multiline (avoid ``` in body breaking fence). */
-function fencedBody(body, maxLen = 2500) {
+/** Slack block-quote inset (grey bar): prefix each line with `>`. */
+function insetQuote(body, maxLen = 2800) {
   let b = truncateForSlack(body, maxLen);
-  b = b.replace(/```/g, '`\u200b``');
-  return `\`\`\`\n${b}\n\`\`\``;
+  b = escMrkdwn(b);
+  if (!b) return '_(not available)_';
+  return b
+    .split('\n')
+    .map((line) => `>${line.length ? line : ' '}`)
+    .join('\n');
 }
 
 async function postDraftApproval(token, channelId, {
@@ -39,7 +43,7 @@ async function postDraftApproval(token, channelId, {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadBlock = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? `\n${escMrkdwn(leadEmail)}` : ''}`;
   const draftText = draft != null && String(draft).trim() !== ''
-    ? `*Draft reply:*\n${fencedBody(draft)}`
+    ? `*Draft reply:*\n${insetQuote(draft)}`
     : '';
 
   const blocks = [
@@ -66,13 +70,13 @@ async function postDraftApproval(token, channelId, {
   if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Your last message*\n${fencedBody(lastOutboundMessage)}` },
+      text: { type: 'mrkdwn', text: `*Your last message:*\n${insetQuote(lastOutboundMessage)}` },
     });
   }
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: `*Their reply*\n${fencedBody(inboundMessage)}` },
+    text: { type: 'mrkdwn', text: `*Their reply:*\n${insetQuote(inboundMessage)}` },
   });
 
   if (draftText) {
@@ -145,13 +149,13 @@ async function postAlert(token, channelId, {
   if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Your last message*\n${fencedBody(lastOutboundMessage)}` },
+      text: { type: 'mrkdwn', text: `*Your last message:*\n${insetQuote(lastOutboundMessage)}` },
     });
   }
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: `*Their reply*\n${fencedBody(inboundMessage)}` },
+    text: { type: 'mrkdwn', text: `*Their reply:*\n${insetQuote(inboundMessage)}` },
   });
 
   blocks.push({
