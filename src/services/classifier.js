@@ -4,15 +4,16 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const CLASSIFICATIONS = [
   'INTERESTED', 'QUESTION', 'OBJECTION', 'NOT_INTERESTED',
-  'OUT_OF_OFFICE', 'REMOVE_ME', 'WRONG_PERSON', 'COMPETITOR',
+  'OOO', 'OUT_OF_OFFICE', 'REMOVE_ME', 'WRONG_PERSON', 'COMPETITOR',
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE');
+const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE' && c !== 'OOO');
 
 function normalizeClassification(raw) {
   if (!raw) return 'OTHER';
   const upper = String(raw).toUpperCase();
+  if (/\bOUT_OF_OFFICE\b/.test(upper)) return 'OOO';
   // Find the first enum value mentioned in the model's response.
   for (const c of CLASSIFICATIONS) {
     const re = new RegExp(`\\b${c}\\b`);

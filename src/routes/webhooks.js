@@ -310,6 +310,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
+    if (classification === 'OOO') {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
@@ -466,6 +469,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
+    if (classification === 'OOO') {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
