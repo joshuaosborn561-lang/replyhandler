@@ -10,8 +10,26 @@ function getClient(token) {
   return clientCache.get(token);
 }
 
-async function postDraftApproval(token, channelId, { replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage }) {
+function truncateForSlack(s, maxLen = 2800) {
+  const t = String(s || '').trim();
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, maxLen - 1)}…`;
+}
+
+function quoteBlock(label, body) {
+  const b = truncateForSlack(body);
+  if (!b) return `*${label}:*\n_(not available)_`;
+  return `*${label}:*\n>${b.split('\n').join('\n>')}`;
+}
+
+async function postDraftApproval(token, channelId, {
+  replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
+  campaignDisplay, lastOutboundMessage,
+}) {
   const slack = getClient(token);
+  const camp = campaignDisplay ? `*Campaign:* ${campaignDisplay}\n` : '';
+  const lastOut = lastOutboundMessage ? `${quoteBlock('Your last message', lastOutboundMessage)}\n\n` : '';
+  const draftText = draft != null && String(draft).trim() !== '' ? `*Draft reply:*\n${truncateForSlack(draft)}` : '';
 
   return slack.chat.postMessage({
     channel: channelId,
@@ -23,16 +41,14 @@ async function postDraftApproval(token, channelId, { replyId, leadName, leadEmai
       },
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
+        text: { type: 'mrkdwn', text: `${camp}*From:* ${leadName}${leadEmail ? ` (${leadEmail})` : ''}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
       },
+      ...(lastOut ? [{ type: 'section', text: { type: 'mrkdwn', text: lastOut.trimEnd() } }] : []),
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundMessage.split('\n').join('\n>')}` },
+        text: { type: 'mrkdwn', text: quoteBlock('Their reply', inboundMessage) },
       },
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `*Draft reply:*\n${draft}` },
-      },
+      ...(draftText ? [{ type: 'section', text: { type: 'mrkdwn', text: draftText } }] : []),
       {
         type: 'actions',
         elements: [
@@ -62,8 +78,13 @@ async function postDraftApproval(token, channelId, { replyId, leadName, leadEmai
   });
 }
 
-async function postAlert(token, channelId, { leadName, platform, classification, inboundMessage, reasoning }) {
+async function postAlert(token, channelId, {
+  leadName, platform, classification, inboundMessage, reasoning,
+  campaignDisplay, lastOutboundMessage,
+}) {
   const slack = getClient(token);
+  const camp = campaignDisplay ? `*Campaign:* ${campaignDisplay}\n` : '';
+  const lastOut = lastOutboundMessage ? `${quoteBlock('Your last message', lastOutboundMessage)}\n\n` : '';
 
   return slack.chat.postMessage({
     channel: channelId,
@@ -75,11 +96,12 @@ async function postAlert(token, channelId, { leadName, platform, classification,
       },
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `*From:* ${leadName}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
+        text: { type: 'mrkdwn', text: `${camp}*From:* ${leadName}\n*Classification:* ${classification}\n*Reasoning:* ${reasoning}` },
       },
+      ...(lastOut ? [{ type: 'section', text: { type: 'mrkdwn', text: lastOut.trimEnd() } }] : []),
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: `*Their message:*\n>${inboundMessage.split('\n').join('\n>')}` },
+        text: { type: 'mrkdwn', text: quoteBlock('Their reply', inboundMessage) },
       },
       {
         type: 'context',

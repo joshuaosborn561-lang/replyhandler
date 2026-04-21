@@ -4,8 +4,56 @@ const slackService = require('../services/slack');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
+const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
 const router = Router();
+
+function formatCampaignDisplay(campaignName, campaignId) {
+  const id = campaignId != null ? String(campaignId).trim() : '';
+  const name = campaignName != null ? String(campaignName).trim() : '';
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return `Campaign ${id}`;
+  return '';
+}
+
+function heyreachLastOutboundFromMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let last = '';
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const role = String(m.role || '').toLowerCase();
+    const isUs = role === 'us' || role === 'me' || role === 'sender' || role === 'user';
+    if (!isUs) continue;
+    const txt =
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      '';
+    if (txt && String(txt).trim()) last = String(txt).trim();
+  }
+  return last;
+}
+
+function slackCardContextFromReply(reply) {
+  let tc = reply.thread_context;
+  if (typeof tc === 'string') {
+    try { tc = JSON.parse(tc); } catch { tc = null; }
+  }
+  const campaignId = reply.campaign_id;
+  let campaignDisplay = formatCampaignDisplay(null, campaignId);
+  let lastOutbound = '';
+
+  if (reply.platform === 'heyreach' && tc && typeof tc === 'object' && !Array.isArray(tc)) {
+    const meta = tc.heyreach && typeof tc.heyreach === 'object' ? tc.heyreach : {};
+    campaignDisplay = formatCampaignDisplay(meta.campaignName, campaignId) || campaignDisplay;
+    lastOutbound = heyreachLastOutboundFromMessages(tc.messages);
+  } else if (reply.platform === 'smartlead' && tc && typeof tc === 'object') {
+    lastOutbound = lastOutboundBodyFromSmartleadHistory(tc) || '';
+  }
+
+  return { campaignDisplay: campaignDisplay || undefined, lastOutboundMessage: lastOutbound || undefined };
+}
 
 router.post('/slack/actions', slackVerify, async (req, res) => {
   let interaction;
@@ -240,6 +288,7 @@ async function handleAlreadyRepliedNo(replyId, interaction) {
   }
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
   const draft = reply.draft_reply || '(no draft stored — use Edit & send)';
+  const ctx = slackCardContextFromReply(reply);
 
   // Post the draft as a fresh approval card so user can Approve/Edit/Reject with the same send path.
   const posted = await slackService.postDraftApproval(
@@ -254,6 +303,8 @@ async function handleAlreadyRepliedNo(replyId, interaction) {
       draft,
       reasoning: 'Re-surfaced because you said you have not replied yet.',
       inboundMessage: reply.inbound_message || '(no inbound)',
+      campaignDisplay: ctx.campaignDisplay,
+      lastOutboundMessage: ctx.lastOutboundMessage,
     }
   );
   await db.query('UPDATE pending_replies SET slack_message_ts = $1, status = $2, updated_at = now() WHERE id = $3',

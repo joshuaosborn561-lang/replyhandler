@@ -21,6 +21,65 @@ const {
 
 const router = Router();
 
+function stripHtmlToTextLocal(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function smartleadLastOutboundFromPayload(payload) {
+  const p = payload || {};
+  const sent = p.sent_message && typeof p.sent_message === 'object' ? p.sent_message : null;
+  const fromSent =
+    (sent && typeof sent.text === 'string' && sent.text.trim()) ||
+    (sent && stripHtmlToTextLocal(sent.html || sent.email_body || '')) ||
+    '';
+  const fromBody =
+    (typeof p.sent_message_body === 'string' && stripHtmlToTextLocal(p.sent_message_body)) ||
+    (typeof p.sent_message_text === 'string' && String(p.sent_message_text).trim()) ||
+    '';
+  return String(fromSent || fromBody || '').trim();
+}
+
+function heyreachLastOutboundFromThread(threadContext) {
+  const list = Array.isArray(threadContext) ? threadContext : [];
+  let last = '';
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const role = String(m.role || '').toLowerCase();
+    const isUs = role === 'us' || role === 'me' || role === 'sender' || role === 'user';
+    if (!isUs) continue;
+    const txt =
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      '';
+    if (txt && String(txt).trim()) last = String(txt).trim();
+  }
+  return last;
+}
+
+function formatCampaignDisplay(campaignName, campaignId) {
+  const id = campaignId != null ? String(campaignId).trim() : '';
+  const name = campaignName != null ? String(campaignName).trim() : '';
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return `Campaign ${id}`;
+  return 'Campaign (unknown)';
+}
+
+function smartleadCampaignName(payload) {
+  const p = payload || {};
+  return (
+    p.campaign_name ||
+    p.campaignName ||
+    (p.campaign && typeof p.campaign === 'object' ? p.campaign.name : null) ||
+    null
+  );
+}
+
 /**
  * HeyReach webhook shapes vary by event. Reply webhooks often send:
  * campaign: { id, name }, recent_messages: [...], conversation_id, sender, etc.
@@ -37,6 +96,12 @@ function normalizeHeyreachPayload(payload) {
     p.campaign?.id ??
     campaign?.id ??
     campaign?.campaignId ??
+    null;
+
+  const campaignName =
+    p.campaign_name ||
+    p.campaignName ||
+    campaign?.name ||
     null;
 
   const conversationId = p.conversation_id || p.conversationId || null;
@@ -120,6 +185,7 @@ function normalizeHeyreachPayload(payload) {
 
   return {
     campaignId,
+    campaignName,
     leadId,
     conversationId,
     linkedinUrl,
@@ -304,6 +370,13 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
     }
 
+    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), campaignId);
+    const lastOutboundSl =
+      smartleadLastOutboundFromPayload(payload) ||
+      (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
+        ? lastOutboundBodyFromSmartleadHistory(threadContext)
+        : '');
+
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
     let result;
@@ -350,6 +423,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
         replyId: reply.id, leadName, leadEmail, platform: 'smartlead',
         classification, draft, reasoning, inboundMessage: inboundEffective,
+        campaignDisplay: campaignDisplaySl,
+        lastOutboundMessage: lastOutboundSl,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
@@ -364,11 +439,15 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
         leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
+        campaignDisplay: campaignDisplaySl,
+        lastOutboundMessage: lastOutboundSl,
       });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
         leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
+        campaignDisplay: campaignDisplaySl,
+        lastOutboundMessage: lastOutboundSl,
       });
     }
 
@@ -397,6 +476,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     const hr = normalizeHeyreachPayload(payload);
     const {
       campaignId,
+      campaignName: hrCampaignName,
       leadId,
       conversationId: hrConversationId,
       linkedinUrl,
@@ -463,6 +543,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       payload.thread ||
       [{ role: 'prospect', message: inboundMessage || '(no message body)' }];
 
+    const campaignDisplayHr = formatCampaignDisplay(
+      hrCampaignName || (payload.campaign && payload.campaign.name),
+      campaignId
+    );
+    const lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
+
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
     let result;
@@ -497,6 +583,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         linkedinUrl,
         conversationId: hrConversationId,
         senderId: hrSenderId,
+        campaignName: hrCampaignName || (payload.campaign && payload.campaign.name) || null,
       },
     };
 
@@ -533,17 +620,23 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
         replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
         classification, draft, reasoning, inboundMessage,
+        campaignDisplay: campaignDisplayHr,
+        lastOutboundMessage: lastOutboundHr,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
     } else if (classification === 'REMOVE_ME') {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
         leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+        campaignDisplay: campaignDisplayHr,
+        lastOutboundMessage: lastOutboundHr,
       });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
         leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+        campaignDisplay: campaignDisplayHr,
+        lastOutboundMessage: lastOutboundHr,
       });
     }
 

@@ -3,6 +3,7 @@ const db = require('./db');
 const slack = require('./services/slack');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
+const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const PENDING_NUDGE_MINUTES = parseInt(process.env.PENDING_NUDGE_MINUTES || '5', 10);
@@ -261,6 +262,9 @@ async function buildAndPostMorningDigest(client, digestDate, tz) {
         if (src) {
           threadContext = src.thread_context;
           smartleadStatsId = src.smartlead_email_stats_id;
+          if (typeof threadContext === 'string') {
+            try { threadContext = JSON.parse(threadContext); } catch { /* keep string */ }
+          }
         }
       }
 
@@ -285,6 +289,27 @@ async function buildAndPostMorningDigest(client, digestDate, tz) {
         ]
       );
 
+      let lastOutFollow = '';
+      if (fu.platform === 'smartlead' && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
+        lastOutFollow = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
+      } else if (fu.platform === 'heyreach' && threadContext && typeof threadContext === 'object' && threadContext.messages) {
+        const msgs = threadContext.messages;
+        if (Array.isArray(msgs)) {
+          for (const m of msgs) {
+            if (!m || typeof m !== 'object') continue;
+            const role = String(m.role || '').toLowerCase();
+            if (role === 'us' || role === 'me') {
+              const t = (typeof m.message === 'string' && m.message) || (typeof m.text === 'string' && m.text) || '';
+              if (t.trim()) lastOutFollow = t.trim();
+            }
+          }
+        }
+      }
+      const campFollow =
+        fu.campaign_id != null && String(fu.campaign_id).trim() !== ''
+          ? `Campaign ${String(fu.campaign_id).trim()}`
+          : '';
+
       const slackRes = await slack.postDraftApproval(
         client.slack_bot_token, client.slack_channel_id,
         {
@@ -296,6 +321,8 @@ async function buildAndPostMorningDigest(client, digestDate, tz) {
           draft,
           reasoning: `No reply since our last message (${fu.sent_at.toISOString ? fu.sent_at.toISOString() : fu.sent_at}). AI drafted a re-attempt to book.`,
           inboundMessage: '(no new reply from prospect)',
+          campaignDisplay: campFollow || undefined,
+          lastOutboundMessage: lastOutFollow || undefined,
         }
       );
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackRes.ts, newReply.id]);
