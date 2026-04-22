@@ -400,6 +400,17 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (classification === 'OOO' || (slEnhance && looksLikeOutOfOffice(inboundEffective))) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
+    if (classification === 'REMOVE_ME') {
+      // Silently unsubscribe — do not post to Slack / channel.
+      try {
+        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
+        await fetch(unsubUrl, { method: 'POST' });
+        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
+      } catch (err) {
+        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
+      }
+      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
+    }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
@@ -427,21 +438,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         lastOutboundMessage: lastOutboundSl,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else if (classification === 'REMOVE_ME') {
-      try {
-        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
-        await fetch(unsubUrl, { method: 'POST' });
-        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
-      } catch (err) {
-        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
-      }
-
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
-        campaignDisplay: campaignDisplaySl,
-        lastOutboundMessage: lastOutboundSl,
-      });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
@@ -572,6 +568,10 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     if (classification === 'OOO') {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
+    if (classification === 'REMOVE_ME') {
+      // Do not post unsubscribe notifications to Slack.
+      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
+    }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
@@ -624,13 +624,6 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         lastOutboundMessage: lastOutboundHr,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else if (classification === 'REMOVE_ME') {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-        campaignDisplay: campaignDisplayHr,
-        lastOutboundMessage: lastOutboundHr,
-      });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
