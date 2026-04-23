@@ -397,7 +397,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    if (classification === 'OOO' || (slEnhance && looksLikeOutOfOffice(inboundEffective))) {
+    // Suppress out-of-office / auto-replies even if the classifier misses.
+    if (classification === 'OOO' || looksLikeOutOfOffice(inboundEffective)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
     if (classification === 'REMOVE_ME') {
@@ -565,7 +566,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    if (classification === 'OOO') {
+    // Suppress out-of-office / auto-replies even if the classifier misses.
+    if (classification === 'OOO' || looksLikeOutOfOffice(inboundMessage)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
     if (classification === 'REMOVE_ME') {
