@@ -180,6 +180,21 @@ function looksLikeOutOfOffice(text) {
   return false;
 }
 
+function looksLikeWrongPerson(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  // Common "wrong person / no longer employed" / redirect phrases.
+  if (/\bno longer employed\b/.test(s)) return true;
+  if (/\bno longer with\b/.test(s)) return true;
+  if (/\bno longer works?\b/.test(s)) return true;
+  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team)\b/.test(s)) return true;
+  if (/\bplease contact\b/.test(s) && /\bregarding\b/.test(s)) return true;
+  if (/\bplease (reach|contact)\b/.test(s) && /\binstead\b/.test(s)) return true;
+  if (/\bwrong person\b/.test(s)) return true;
+  if (/\bnot (the )?right (person|contact)\b/.test(s)) return true;
+  return false;
+}
+
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -191,4 +206,5 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  looksLikeWrongPerson,
 };

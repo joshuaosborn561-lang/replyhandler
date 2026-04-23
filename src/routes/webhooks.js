@@ -16,6 +16,7 @@ const {
   parseInboundFromPayload,
   SMARTLEAD_NON_REPLY_EVENTS,
   looksLikeOutOfOffice,
+  looksLikeWrongPerson,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -401,6 +402,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (classification === 'OOO' || looksLikeOutOfOffice(inboundEffective)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
+    // Suppress "wrong person / no longer employed" redirects (treat as WRONG_PERSON but no Slack noise).
+    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundEffective)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
+    }
     if (classification === 'REMOVE_ME') {
       // Silently unsubscribe — do not post to Slack / channel.
       try {
@@ -569,6 +574,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     // Suppress out-of-office / auto-replies even if the classifier misses.
     if (classification === 'OOO' || looksLikeOutOfOffice(inboundMessage)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
+    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
     }
     if (classification === 'REMOVE_ME') {
       // Do not post unsubscribe notifications to Slack.
