@@ -195,6 +195,28 @@ function looksLikeWrongPerson(text) {
   return false;
 }
 
+function looksLikeNotInterested(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  // Do not suppress likely-positive / ambiguous "interested" replies.
+  if (/\b(i'?m|i am|we'?re|we are)\s+(interested|in)\b/.test(s)) return false;
+  if (/\binterested in\b/.test(s)) return false;
+  if (/\b(sounds good|let'?s (book|meet|chat|talk)|happy to (chat|meet|talk)|would love to)\b/.test(s)) return false;
+  if (/^yes\b/.test(s)) return false;
+
+  // Strong negative / clear "no" signals only.
+  if (/\bnot interested\b/.test(s)) return true;
+  if (/\bno thanks\b/.test(s)) return true;
+  if (/\bplease stop\b/.test(s)) return true;
+  if (/\bstop emailing\b/.test(s)) return true;
+  if (/\bdo not contact\b/.test(s)) return true;
+  if (/\bdon't contact\b/.test(s)) return true;
+  if (/\bremove me\b/.test(s)) return true; // often overlaps REMOVE_ME
+  if (/\bnot a fit\b/.test(s)) return true;
+  if (/\bwe are all set\b/.test(s)) return true;
+  return false;
+}
+
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -207,4 +229,5 @@ module.exports = {
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
   looksLikeWrongPerson,
+  looksLikeNotInterested,
 };
