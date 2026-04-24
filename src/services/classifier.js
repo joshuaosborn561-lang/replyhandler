@@ -68,6 +68,8 @@ function buildClassifyModel() {
       `Respond with ONLY the category word, nothing else.\n` +
       `Categories: ${CLASSIFICATIONS.join(', ')}.\n\n` +
       `Important:\n` +
+      `- NOT_INTERESTED: use when they decline, pass, or say they do not want the offer — including "not interested in this," "we are not interested at this time," "no interest," "going to pass," "not a fit for us" (brief polite no).\n` +
+      `- Do NOT use OTHER for a clear soft no; use NOT_INTERESTED instead.\n` +
       `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
       `- If it is clearly OOO, output OOO (not OTHER).\n` +
       `- OUT_OF_OFFICE is legacy; prefer OOO.`,
@@ -88,6 +90,22 @@ function buildOooCheckModel() {
       'Respond with exactly YES or NO, nothing else.\n' +
       'YES if: out of office, OOO, vacation, away, limited email access, auto-reply, automatic reply, will return on [date], not monitoring email closely.\n' +
       'NO if: a human is engaging with substance about the offer (even if brief).',
+    generationConfig: {
+      maxOutputTokens: 8,
+      temperature: 0,
+      responseMimeType: 'text/plain',
+    },
+  });
+}
+
+function buildNotInterestedCheckModel() {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction:
+      'Is the prospect clearly declining the offer, passing, or saying they do not want to proceed?\n' +
+      'Respond with exactly YES or NO, nothing else.\n' +
+      'YES for: "not interested," "we are not interested at this time," "no interest," "going to pass," "not a fit for us" (brief polite no).\n' +
+      'NO if: they are asking a question, scheduling, expressing interest, requesting info, or the message is ambiguous/needs more context.',
     generationConfig: {
       maxOutputTokens: 8,
       temperature: 0,
@@ -152,6 +170,23 @@ async function classifyOooSecondPass(threadContext, inboundMessage) {
   return null;
 }
 
+/** Second pass: when label is still OTHER, detect clear "no thanks" style declines. */
+async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
+  try {
+    const model = buildNotInterestedCheckModel();
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect message:\n${inboundMessage}\n\n` +
+      `Is the prospect clearly declining the offer?`
+    );
+    const t = (res.response.text() || '').trim().toUpperCase();
+    if (t.startsWith('Y')) return 'NOT_INTERESTED';
+  } catch (err) {
+    console.error('[Classifier] not-interested second pass failed', { err: err.message });
+  }
+  return null;
+}
+
 async function draftOnly({ classification, threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
@@ -201,6 +236,10 @@ async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, book
   if (classification === 'OTHER') {
     const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
     if (ooo === 'OOO') classification = 'OOO';
+  }
+  if (classification === 'OTHER') {
+    const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
+    if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
   }
   const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
 

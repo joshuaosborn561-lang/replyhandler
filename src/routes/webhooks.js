@@ -2,7 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
+const { classifyAndDraft, draftOnly, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
@@ -18,6 +18,7 @@ const {
   looksLikeOutOfOffice,
   looksLikeWrongPerson,
   looksLikeNotInterested,
+  extractSmartleadCategoryFromPayload,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -381,15 +382,40 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
+    const smartleadCategory = extractSmartleadCategoryFromPayload(payload);
+    if (smartleadCategory) {
+      console.log('[Webhook] SmartLead provider category', { clientId, smartleadCategory });
+    }
+
     let result;
     try {
-      result = await classifyAndDraft(
-        threadContext,
-        inboundEffective,
-        client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock
-      );
+      if (smartleadCategory) {
+        const needsDraft = DRAFT_CLASSIFICATIONS.includes(smartleadCategory);
+        const draft = needsDraft
+          ? await draftOnly({
+            classification: smartleadCategory,
+            threadContext,
+            inboundMessage: inboundEffective,
+            voicePrompt: client.voice_prompt,
+            bookingLink: client.booking_link,
+            schedulingPromptBlock,
+          })
+          : null;
+        result = {
+          classification: smartleadCategory,
+          draft,
+          proposed_time: null,
+          reasoning: `SmartLead category: ${smartleadCategory}${needsDraft ? '; draft generated.' : '; no draft.'}`,
+        };
+      } else {
+        result = await classifyAndDraft(
+          threadContext,
+          inboundEffective,
+          client.voice_prompt,
+          client.booking_link,
+          schedulingPromptBlock
+        );
+      }
     } catch (err) {
       console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
       await slack.postError(client.slack_bot_token, client.slack_channel_id, {

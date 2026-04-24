@@ -198,14 +198,26 @@ function looksLikeWrongPerson(text) {
 function looksLikeNotInterested(text) {
   const s = normWs(text);
   if (!s) return false;
-  // Do not suppress likely-positive / ambiguous "interested" replies.
-  if (/\b(i'?m|i am|we'?re|we are)\s+(interested|in)\b/.test(s)) return false;
-  if (/\binterested in\b/.test(s)) return false;
-  if (/\b(sounds good|let'?s (book|meet|chat|talk)|happy to (chat|meet|talk)|would love to)\b/.test(s)) return false;
+
+  // High priority: clear decline / no interest. Must run *before* positive "interested" heuristics
+  // (otherwise "not interested in this service" wrongfully matches /\binterested in\b/ as positive).
+  if (/\bwe are not interested\b/.test(s)) return true;
+  if (/\b(i'?m|i am) not interested\b/.test(s)) return true;
+  if (/\bnot interested in\b/.test(s)) return true;
+  if (/\bnot interested at (this|the) time\b/.test(s)) return true;
+  if (/\bnot interested\b/.test(s)) return true;
+  if (/\bno interest (in|at|for)\b/.test(s)) return true;
+  if (/\bnot pursuing\b/.test(s)) return true;
+  if (/\bgoing to (have to |)pass\b/.test(s)) return true;
+  if (/\bwill (have to )?pass (on this|on it)\b/.test(s)) return true;
+
+  // Do not suppress clearly positive "interested" / engagement phrases.
+  if (/\b(still|very|really) interested\b/.test(s)) return false;
+  if (/\b(sounds good|let'?s (book|meet|chat|talk)|happy to (chat|meet|talk|learn)|would love to)\b/.test(s)) return false;
+  if (/\binterested in (hearing|learning|seeing|your|a call|connecting|more|continuing)\b/.test(s)) return false;
   if (/^yes\b/.test(s)) return false;
 
-  // Strong negative / clear "no" signals only.
-  if (/\bnot interested\b/.test(s)) return true;
+  // Remaining clear negatives.
   if (/\bno thanks\b/.test(s)) return true;
   if (/\bplease stop\b/.test(s)) return true;
   if (/\bstop emailing\b/.test(s)) return true;
@@ -215,6 +227,67 @@ function looksLikeNotInterested(text) {
   if (/\bnot a fit\b/.test(s)) return true;
   if (/\bwe are all set\b/.test(s)) return true;
   return false;
+}
+
+/**
+ * Map SmartLead webhook "category" / sentiment fields to our enum when present.
+ * Returns null if nothing usable (caller should use the LLM + heuristics).
+ */
+function mapSmartleadCategoryString(raw) {
+  if (raw == null) return null;
+  const t = String(raw)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+  if (!t) return null;
+  if (/(^|_)not_?interested(_|$)/.test(t) || t === 'negative' || t === 'declin(e|ed)' || t === 'rejected' || t === 'disinterested' || t === 'no') {
+    return 'NOT_INTERESTED';
+  }
+  if (t === 'unsubscribe' || t === 'unsubscribed' || t === 'unsub') return 'REMOVE_ME';
+  if (t === 'ooo' || t === 'out_of_office' || t === 'outofoffice' || t === 'autoresponder' || t === 'auto_responder') return 'OOO';
+  if (t === 'wrong_person' || t === 'wrong_contact' || t === 'bounce' || t === 'invalid_lead') return 'WRONG_PERSON';
+  if (t === 'interested' || t === 'positive' || t === 'hot' || t === 'engaged') return 'INTERESTED';
+  if (t === 'question' || t === 'questions' || t === 'inquiry') return 'QUESTION';
+  if (t === 'meeting' || t === 'meeting_booked' || t === 'calendar' || t === 'scheduling' || t === 'meeting_proposed') {
+    return 'MEETING_PROPOSED';
+  }
+  if (t === 'competitor' || t === 'competition') return 'COMPETITOR';
+  if (t === 'objection' || t === 'concern') return 'OBJECTION';
+  return null;
+}
+
+function extractSmartleadCategoryFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const lead = payload.lead_data || payload.lead || {};
+  const replyO = payload.reply_message || payload.replyMessage || payload.reply || null;
+  const fromReply = replyO && typeof replyO === 'object'
+    ? (replyO.category || replyO.email_category || replyO.sentiment || null)
+    : null;
+  const candidates = [
+    payload.email_category,
+    payload.emailCategory,
+    payload.reply_category,
+    payload.replyCategory,
+    payload.message_category,
+    payload.messageCategory,
+    payload.lead_email_category,
+    payload.leadEmailCategory,
+    payload.sl_reply_category,
+    payload.slReplyCategory,
+    payload.category,
+    payload.sentiment,
+    payload.classification,
+    lead.email_category,
+    lead.emailCategory,
+    lead.lead_email_category,
+    fromReply,
+  ];
+  for (const c of candidates) {
+    const mapped = mapSmartleadCategoryString(c);
+    if (mapped) return mapped;
+  }
+  return null;
 }
 
 module.exports = {
@@ -230,4 +303,6 @@ module.exports = {
   looksLikeOutOfOffice,
   looksLikeWrongPerson,
   looksLikeNotInterested,
+  mapSmartleadCategoryString,
+  extractSmartleadCategoryFromPayload,
 };
