@@ -9,6 +9,93 @@ const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots
 
 const router = Router();
 
+function normWs(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function looksLikeOutOfOffice(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bout of office\b/.test(s)) return true;
+  if (/\bautomatic reply\b/.test(s) || /\bauto-?reply\b/.test(s)) return true;
+  if (/\bon vacation\b/.test(s) || /\bvacation\b/.test(s)) return true;
+  if (/\blimited access to email\b/.test(s)) return true;
+  if (/\bwill return on\b/.test(s) || /\breturning on\b/.test(s)) return true;
+  if (/\baway from (the )?(office|desk)\b/.test(s)) return true;
+  return false;
+}
+
+function looksLikeWrongPerson(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bwrong person\b/.test(s)) return true;
+  if (/\bnot the right (person|contact)\b/.test(s)) return true;
+  if (/\bno longer (with|employed|works?)\b/.test(s)) return true;
+  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team)\b/.test(s)) return true;
+  if (/\bplease (reach|contact)\b/.test(s) && /\binstead\b/.test(s)) return true;
+  return false;
+}
+
+function looksLikeNotInterested(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  // Clear declines first (avoid matching "interested in" inside "not interested in")
+  if (/\bwe are not interested\b/.test(s)) return true;
+  if (/\b(i'?m|i am) not interested\b/.test(s)) return true;
+  if (/\bnot interested in\b/.test(s)) return true;
+  if (/\bnot interested at (this|the) time\b/.test(s)) return true;
+  if (/\bnot interested\b/.test(s)) return true;
+  if (/\bno thanks\b/.test(s) || /\bno thank you\b/.test(s)) return true;
+  if (/\bnot a fit\b/.test(s)) return true;
+  if (/\bwe are all set\b/.test(s)) return true;
+  if (/\bplease stop\b/.test(s) || /\bstop (emailing|messaging)\b/.test(s)) return true;
+  return false;
+}
+
+function looksLikeRemoveMe(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bunsubscribe\b/.test(s)) return true;
+  if (/\bremove me\b/.test(s)) return true;
+  if (/\bdo not contact\b/.test(s) || /\bdon't contact\b/.test(s)) return true;
+  if (/\bstop emailing\b/.test(s) || /\bstop sending\b/.test(s)) return true;
+  return false;
+}
+
+// HeyReach can retry webhooks; dedupe per client+campaign+lead+message hash.
+const heyreachDedupe = new Map();
+function heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage }) {
+  const msg = normWs(inboundMessage).slice(0, 500);
+  return [clientId, 'heyreach', String(campaignId || ''), String(leadId || ''), msg].join('|');
+}
+function isHeyreachDuplicate(key) {
+  const now = Date.now();
+  const ttlMs = 5 * 60 * 1000; // 5 minutes
+  const last = heyreachDedupe.get(key);
+  // Opportunistic cleanup
+  if (heyreachDedupe.size > 2000) {
+    for (const [k, ts] of heyreachDedupe.entries()) {
+      if (now - ts > ttlMs) heyreachDedupe.delete(k);
+    }
+  }
+  if (last && now - last < ttlMs) return true;
+  heyreachDedupe.set(key, now);
+  return false;
+}
+
+// Cache HeyReach campaign access checks to reduce latency.
+const heyreachCampaignAccessCache = new Map();
+async function verifyHeyreachCampaignAccessCached(apiKey, campaignId) {
+  const k = `${String(campaignId)}|${String(apiKey).slice(0, 6)}`;
+  const now = Date.now();
+  const ttlMs = 10 * 60 * 1000;
+  const cached = heyreachCampaignAccessCache.get(k);
+  if (cached && now - cached.ts < ttlMs) return cached.ok;
+  const ok = await heyreach.verifyCampaignAccess(apiKey, campaignId);
+  heyreachCampaignAccessCache.set(k, { ok, ts: now });
+  return ok;
+}
+
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -79,6 +166,27 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
+    // Hard suppress noise classes.
+    if (classification === 'OUT_OF_OFFICE' || looksLikeOutOfOffice(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
+    if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'not_interested' });
+    }
+    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
+    }
+    if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inboundMessage)) {
+      // SmartLead: attempt to unsubscribe silently.
+      try {
+        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
+        await fetch(unsubUrl, { method: 'POST' });
+      } catch (err) {
+        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
+      }
+      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
+    }
+
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status)
@@ -101,19 +209,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         classification, draft, reasoning, inboundMessage,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else if (classification === 'REMOVE_ME') {
-      try {
-        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
-        await fetch(unsubUrl, { method: 'POST' });
-        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
-      } catch (err) {
-        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
-      }
-
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
@@ -161,9 +256,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
     }
 
+    const dedupeKey = heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage });
+    if (isHeyreachDuplicate(dedupeKey)) {
+      console.log('[Webhook] HeyReach duplicate suppressed', { clientId, campaignId, leadId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
+    }
+
     let heyreachCampaignOk = false;
     try {
-      heyreachCampaignOk = await heyreach.verifyCampaignAccess(client.heyreach_api_key, campaignId);
+      heyreachCampaignOk = await verifyHeyreachCampaignAccessCached(client.heyreach_api_key, campaignId);
     } catch (err) {
       console.error('[Webhook] HeyReach campaign verification failed', { clientId, err: err.message });
       return res.status(200).json({ ok: true, skipped: true, reason: 'heyreach_api_error' });
@@ -199,6 +300,20 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     const { classification, draft, proposed_time, reasoning } = result;
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
+
+    // Hard suppress noise classes.
+    if (classification === 'OUT_OF_OFFICE' || looksLikeOutOfOffice(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
+    if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'not_interested' });
+    }
+    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
+    }
+    if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inboundMessage)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
+    }
 
     const contextWithMeta = {
       messages: threadContext,
@@ -238,11 +353,6 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         classification, draft, reasoning, inboundMessage,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else if (classification === 'REMOVE_ME') {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
 
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
