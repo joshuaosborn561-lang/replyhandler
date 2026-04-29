@@ -188,6 +188,109 @@ function heyreachInboundEffective(payload) {
   return '';
 }
 
+// SmartLead sends many event types to one URL; only process real replies.
+const SMARTLEAD_NON_REPLY_EVENTS = new Set([
+  'EMAIL_SENT', 'SENT', 'OUTBOUND', 'EMAIL_OPENED', 'OPEN', 'EMAIL_CLICKED', 'CLICK', 'EMAIL_BOUNCED', 'BOUNCE', 'BOUNCED',
+  'LEAD_UNSUBSCRIBED', 'UNSUBSCRIBED', 'UNSUBSCRIBE',
+]);
+
+function stripHtmlToText(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function smartleadLatestReplyFromHistory(histResponse) {
+  if (!histResponse || typeof histResponse !== 'object') return '';
+  const list = Array.isArray(histResponse.history)
+    ? histResponse.history
+    : Array.isArray(histResponse.messages)
+      ? histResponse.messages
+      : Array.isArray(histResponse)
+        ? histResponse
+        : [];
+  const rows = [];
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    if (type !== 'REPLY' && type !== 'INBOUND') continue;
+    const raw = m.email_body || m.body || m.text || '';
+    const plain = stripHtmlToText(raw) || String(raw).trim();
+    if (!plain) continue;
+    const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
+    rows.push({ time, body: plain });
+  }
+  rows.sort((a, b) => a.time.localeCompare(b.time));
+  return rows.length ? rows[rows.length - 1].body : '';
+}
+
+function parseSmartleadWebhookPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return { campaignId: null, leadId: null, leadEmail: null, leadName: 'Unknown', direct: '' };
+  }
+  const leadData = payload.lead_data || payload.lead || {};
+  const replyObj =
+    payload.reply_message ||
+    payload.replyMessage ||
+    payload.reply ||
+    payload.latest_reply ||
+    payload.last_reply ||
+    null;
+  const fromReplyObj =
+    replyObj && typeof replyObj === 'object'
+      ? (replyObj.body || replyObj.message || replyObj.text || replyObj.html || replyObj.email_body || '')
+      : String(replyObj || '');
+  const direct = String(
+    fromReplyObj ||
+      payload.reply ||
+      payload.message ||
+      payload.body ||
+      payload.reply_text ||
+      payload.replyText ||
+      ''
+  ).trim();
+
+  const campaignId =
+    payload.campaign_id ||
+    payload.campaignId ||
+    payload.campaign?.id ||
+    leadData.campaign_id ||
+    leadData.campaignId;
+  const leadId =
+    payload.lead_id ||
+    payload.leadId ||
+    payload.lead?.id ||
+    leadData.lead_id ||
+    leadData.leadId ||
+    leadData.id ||
+    payload.sl_email_lead_id ||
+    payload.slEmailLeadId ||
+    payload.sl_email_lead_map_id ||
+    payload.slEmailLeadMapId;
+  const leadEmail =
+    payload.email ||
+    payload.lead_email ||
+    payload.to_email ||
+    payload.sl_lead_email ||
+    payload.slLeadEmail ||
+    leadData.email ||
+    leadData.lead_email ||
+    payload.lead?.email;
+  const leadName =
+    payload.name ||
+    payload.lead_name ||
+    payload.first_name ||
+    payload.to_name ||
+    payload.toName ||
+    (leadData.first_name ? `${leadData.first_name} ${leadData.last_name || ''}`.trim() : null) ||
+    leadData.name ||
+    'Unknown';
+
+  return { campaignId, leadId, leadEmail, leadName, direct };
+}
+
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -202,11 +305,15 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaign_id || payload.campaignId;
-    const leadId = payload.lead_id || payload.leadId;
-    const leadEmail = payload.email || payload.lead_email || payload.to_email;
-    const leadName = payload.name || payload.lead_name || payload.first_name || 'Unknown';
-    const inboundMessage = payload.reply || payload.message || payload.body || '';
+    const eventType = String(payload.event_type || payload.eventType || payload.type || payload.webhook_event || '').toUpperCase();
+    if (eventType && SMARTLEAD_NON_REPLY_EVENTS.has(eventType)) {
+      console.log('[Webhook] SmartLead skipped non-reply event', { clientId, event: eventType });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'non_reply_event', event: eventType });
+    }
+
+    const parsed = parseSmartleadWebhookPayload(payload);
+    const { campaignId, leadId, leadEmail, leadName } = parsed;
+    let inboundMessage = parsed.direct ? stripHtmlToText(parsed.direct) || parsed.direct : '';
 
     if (!campaignId || !leadId) {
       console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId });
@@ -232,7 +339,25 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, campaignId, leadId);
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      threadContext = [{ role: 'prospect', message: inboundMessage }];
+      threadContext = [{ role: 'prospect', message: inboundMessage || '(no thread)' }];
+    }
+
+    if (!String(inboundMessage || '').trim() && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
+      const fromHist = smartleadLatestReplyFromHistory(threadContext);
+      if (fromHist) {
+        inboundMessage = fromHist;
+        console.log('[Webhook] SmartLead inbound from message-history (webhook body empty)', { clientId, campaignId, leadId, len: inboundMessage.length });
+      }
+    }
+
+    if (!String(inboundMessage || '').trim()) {
+      console.warn('[Webhook] SmartLead no usable reply text after history', { clientId, campaignId, leadId, leadName });
+      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+        leadName: `${leadName} (SmartLead)`,
+        platform: 'smartlead',
+        error: 'No reply body in webhook or message-history — check SmartLead payload keys / EMAIL_REPLY shape.',
+      });
+      return res.status(200).json({ ok: true, error: 'empty_inbound' });
     }
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);

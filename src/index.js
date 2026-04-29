@@ -17,8 +17,8 @@ app.use('/slack', express.urlencoded({
   verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
 }));
 
-// JSON for everything else
-app.use(express.json());
+// JSON for everything else (SmartLead EMAIL_REPLY payloads can be several MB with HTML)
+app.use(express.json({ limit: '5mb' }));
 
 // ─── Dashboard UI ────────────────────────────────────────────────────
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));

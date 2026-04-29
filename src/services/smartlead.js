@@ -12,7 +12,7 @@ async function verifyCampaignAccess(apiKey, campaignId) {
 }
 
 async function getThreadHistory(apiKey, campaignId, leadId) {
-  const url = `${BASE_URL}/campaigns/${campaignId}/leads/${leadId}/message-history?api_key=${encodeURIComponent(apiKey)}`;
+  const url = `${BASE_URL}/campaigns/${campaignId}/leads/${leadId}/message-history?api_key=${encodeURIComponent(apiKey)}&show_plain_text_response=true`;
   const res = await fetch(url);
   if (!res.ok) {
     const body = await res.text();
