@@ -16,12 +16,17 @@ function normWs(s) {
 function looksLikeOutOfOffice(text) {
   const s = normWs(text);
   if (!s) return false;
-  if (/\bout of office\b/.test(s)) return true;
+  // "out of the office" has an extra word — \bout of office\b does NOT match it.
+  if (/\bout of (the )?office\b/.test(s)) return true;
   if (/\bautomatic reply\b/.test(s) || /\bauto-?reply\b/.test(s)) return true;
   if (/\bon vacation\b/.test(s) || /\bvacation\b/.test(s)) return true;
-  if (/\blimited access to email\b/.test(s)) return true;
+  // Common variants: "limited access to my email", "limited email access"
+  if (/\blimited access to (my )?(email|inbox|messages)\b/.test(s)) return true;
+  if (/\blimited email access\b/.test(s)) return true;
   if (/\bwill return on\b/.test(s) || /\breturning on\b/.test(s)) return true;
+  if (/\bwill be returning\b/.test(s) || /\breturning (on )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(s)) return true;
   if (/\baway from (the )?(office|desk)\b/.test(s)) return true;
+  if (/\bmonitoring (my )?(email|inbox) (closely|infrequently)\b/.test(s)) return true;
   return false;
 }
 
@@ -130,6 +135,57 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, inboundMess
     [clientId, String(campaignId || ''), leadId == null ? null : String(leadId), normalized]
   );
   return rows.length > 0;
+}
+
+/**
+ * HeyReach payloads vary: inbound text may be on message/body OR only inside recent_messages / conversationHistory.
+ * If we only read message/reply/body, OOO heuristics see "" and never suppress.
+ */
+function heyreachLastProspectFromThread(list) {
+  if (!Array.isArray(list) || !list.length) return '';
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m || typeof m !== 'object') continue;
+    const sender = String(m.sender || m.from || m.role || '').toUpperCase();
+    const isReply = m.is_reply === true || m.isReply === true || String(m.type || '').toLowerCase() === 'reply';
+    if (sender === 'ME' || sender === 'US' || sender === 'USER') continue;
+    // HeyReach sometimes omits sender; treat explicit inbound reply flags as prospect.
+    if (!sender && !isReply) continue;
+    const txt = m.message || m.body || m.text || m.content || '';
+    const t = String(txt).trim();
+    if (t) return t;
+  }
+  // Single-message payloads sometimes omit sender/is_reply — use the only body.
+  if (list.length === 1 && list[0] && typeof list[0] === 'object') {
+    const m = list[0];
+    const t = String(m.message || m.body || m.text || m.content || '').trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+function heyreachInboundEffective(payload) {
+  const direct = String(
+    payload.message ||
+      payload.reply ||
+      payload.body ||
+      payload.text ||
+      payload.lastMessage ||
+      payload.inboundMessage ||
+      payload.inbound_message ||
+      ''
+  ).trim();
+  if (direct) return direct;
+
+  const recent = payload.recent_messages || payload.recentMessages || payload.messages;
+  const fromRecent = heyreachLastProspectFromThread(Array.isArray(recent) ? recent : []);
+  if (fromRecent) return fromRecent;
+
+  const hist = payload.conversationHistory || payload.thread;
+  const fromHist = heyreachLastProspectFromThread(Array.isArray(hist) ? hist : []);
+  if (fromHist) return fromHist;
+
+  return '';
 }
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
@@ -278,7 +334,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     const leadId = payload.leadId || payload.lead_id;
     const linkedinUrl = payload.linkedinUrl || payload.linkedin_url || payload.profileUrl;
     const leadName = payload.name || payload.lead_name || payload.firstName || 'Unknown';
-    const inboundMessage = payload.message || payload.reply || payload.body || '';
+    const inboundMessage = heyreachInboundEffective(payload);
     const listId = payload.listId || payload.list_id;
     const linkedinAccountId = payload.linkedinAccountId || payload.linkedin_account_id;
 

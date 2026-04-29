@@ -10,6 +10,17 @@ const CLASSIFICATIONS = [
 
 const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION', 'MEETING_PROPOSED'];
 
+function normalizeClassification(raw) {
+  let u = String(raw || 'OTHER').trim().toUpperCase().replace(/\s+/g, '_');
+  if (u === 'OOO') u = 'OUT_OF_OFFICE';
+  if (!CLASSIFICATIONS.includes(u)) {
+    for (const c of CLASSIFICATIONS) {
+      if (u.includes(c)) return c;
+    }
+  }
+  return CLASSIFICATIONS.includes(u) ? u : 'OTHER';
+}
+
 async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
   const booking = bookingLink || '[no booking link configured — say you will send a scheduling link shortly]';
   const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
@@ -26,6 +37,10 @@ ${CLASSIFICATIONS.map(c => `- ${c}`).join('\n')}
 RULES FOR DRAFTING:
 - Draft a reply for: INTERESTED, QUESTION, OBJECTION, MEETING_PROPOSED
 - For all other classifications: no draft needed
+
+CLASSIFICATION PRIORITY:
+- Use OUT_OF_OFFICE when the message is an out-of-office / vacation / automatic reply. Examples: "out of the office", "out of office", "limited access to my email", "automatic reply", "will be returning Monday", "returning on [date]".
+- Do NOT classify clear OOO messages as OTHER or INTERESTED.
 - Never start with "Great question" or similar filler
 - Never use exclamation marks excessively
 - Keep replies friendly, warm, and concise — 2-4 short sentences max (fewer is better)
@@ -79,16 +94,20 @@ Classify this reply and draft a response if appropriate.`;
   const result = await model.generateContent(userMessage);
   const text = result.response.text().trim();
 
+  let parsed;
   try {
-    return JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch (err) {
     // Try to extract JSON from the response
     const match = text.match(/\{[\s\S]*\}/);
     if (match) {
-      return JSON.parse(match[0]);
+      parsed = JSON.parse(match[0]);
+    } else {
+      throw new Error(`Failed to parse classifier response: ${text}`);
     }
-    throw new Error(`Failed to parse classifier response: ${text}`);
   }
+  parsed.classification = normalizeClassification(parsed.classification);
+  return parsed;
 }
 
-module.exports = { classifyAndDraft, CLASSIFICATIONS, DRAFT_CLASSIFICATIONS };
+module.exports = { classifyAndDraft, CLASSIFICATIONS, DRAFT_CLASSIFICATIONS, normalizeClassification };
