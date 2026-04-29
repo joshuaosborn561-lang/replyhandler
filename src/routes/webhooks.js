@@ -57,16 +57,32 @@ function looksLikeRemoveMe(text) {
   if (!s) return false;
   if (/\bunsubscribe\b/.test(s)) return true;
   if (/\bremove me\b/.test(s)) return true;
+  if (/\bopt\s*out\b/.test(s) || /\bopt-?out\b/.test(s)) return true;
+  if (/\btake me off\b/.test(s) || /\btake (my name|me) off\b/.test(s)) return true;
+  if (/\bremove (my|me) from\b/.test(s) && /\b(list|mailing list|your list)\b/.test(s)) return true;
   if (/\bdo not contact\b/.test(s) || /\bdon't contact\b/.test(s)) return true;
+  if (/\bdo not email\b/.test(s) || /\bdon't email\b/.test(s)) return true;
+  if (/\bdo not message\b/.test(s) || /\bdon't message\b/.test(s)) return true;
+  if (/\bstop reaching out\b/.test(s) || /\bstop contacting\b/.test(s)) return true;
   if (/\bstop emailing\b/.test(s) || /\bstop sending\b/.test(s)) return true;
   return false;
 }
 
 // HeyReach can retry webhooks; dedupe per client+campaign+lead+message hash.
 const heyreachDedupe = new Map();
-function heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage }) {
+function heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage, linkedinUrl, listId, linkedinAccountId }) {
   const msg = normWs(inboundMessage).slice(0, 500);
-  return [clientId, 'heyreach', String(campaignId || ''), String(leadId || ''), msg].join('|');
+  // Include extra ids where present; HeyReach can omit leadId on some payload shapes.
+  return [
+    clientId,
+    'heyreach',
+    String(campaignId || ''),
+    String(leadId || ''),
+    String(linkedinUrl || ''),
+    String(listId || ''),
+    String(linkedinAccountId || ''),
+    msg,
+  ].join('|');
 }
 function isHeyreachDuplicate(key) {
   const now = Date.now();
@@ -94,6 +110,26 @@ async function verifyHeyreachCampaignAccessCached(apiKey, campaignId) {
   const ok = await heyreach.verifyCampaignAccess(apiKey, campaignId);
   heyreachCampaignAccessCache.set(k, { ok, ts: now });
   return ok;
+}
+
+async function heyreachDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
+  const normalized = normWs(inboundMessage);
+  if (!normalized) return false;
+  // DB-backed idempotency across restarts/retries: same client+campaign+lead+normalized body in last 30 minutes.
+  // Note: uses regexp_replace to match our normWs behavior.
+  const { rows } = await db.query(
+    `SELECT 1
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'heyreach'
+        AND campaign_id = $2
+        AND COALESCE(lead_id, '') = COALESCE($3, '')
+        AND created_at > now() - interval '30 minutes'
+        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $4
+      LIMIT 1`,
+    [clientId, String(campaignId || ''), leadId == null ? null : String(leadId), normalized]
+  );
+  return rows.length > 0;
 }
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
@@ -256,10 +292,14 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
     }
 
-    const dedupeKey = heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage });
+    const dedupeKey = heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage, linkedinUrl, listId, linkedinAccountId });
     if (isHeyreachDuplicate(dedupeKey)) {
       console.log('[Webhook] HeyReach duplicate suppressed', { clientId, campaignId, leadId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
+    }
+    if (await heyreachDuplicateInDb({ clientId, campaignId, leadId, inboundMessage })) {
+      console.log('[Webhook] HeyReach duplicate suppressed (db)', { clientId, campaignId, leadId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
 
     let heyreachCampaignOk = false;
