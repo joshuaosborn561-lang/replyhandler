@@ -566,98 +566,99 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
 
-    const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
+    // Acknowledge immediately so HeyReach does not queue retries while we call Gemini + Slack.
+    // Heavy work continues in the background (HeyReach help center: webhook sync can already lag minutes).
+    res.status(200).json({ ok: true, accepted: true });
 
-    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
+    setImmediate(async () => {
+      try {
+        const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
+        // Skip Calendly/calendar HTTP on HeyReach path — those calls were adding multi-second latency per webhook.
+        const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, {
+          skipExternalFetch: true,
+        });
 
-    let result;
-    try {
-      result = await classifyAndDraft(
-        threadContext,
-        inboundMessage,
-        client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock
-      );
-    } catch (err) {
-      console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', error: err.message,
-      });
-      return res.status(200).json({ ok: true, error: 'classifier failed' });
-    }
-
-    const { classification, draft, proposed_time, reasoning } = result;
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-    const status = isDraft ? 'pending' : 'alert_only';
-
-    // Hard suppress noise classes.
-    if (classification === 'OUT_OF_OFFICE' || looksLikeOutOfOffice(inboundMessage)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
-    }
-    if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'not_interested' });
-    }
-    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
-    }
-    if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inboundMessage)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
-    }
-
-    const contextWithMeta = {
-      messages: threadContext,
-      heyreach: { listId, linkedinAccountId, linkedinUrl, conversationId },
-    };
-
-    const leadIdForRow =
-      leadId != null && String(leadId).trim() !== ''
-        ? String(leadId)
-        : conversationId != null && String(conversationId).trim() !== ''
-          ? String(conversationId).trim()
-          : null;
-
-    const { rows: [reply] } = await db.query(
-      `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
-    );
-
-    if (isDraft) {
-      // For MEETING_PROPOSED on LinkedIn, look up email for meeting tracking
-      let leadEmail = null;
-      if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
+        let result;
         try {
-          leadEmail = await profileToEmail(linkedinUrl);
-          console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
-          if (leadEmail) {
-            await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
-          }
+          result = await classifyAndDraft(
+            threadContext,
+            inboundMessage,
+            client.voice_prompt,
+            client.booking_link,
+            schedulingPromptBlock
+          );
         } catch (err) {
-          console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
+          console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
+          await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+            leadName, platform: 'heyreach', error: err.message,
+          });
+          return;
         }
 
-        await db.query(
-          `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
-          [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+        const { classification, draft, proposed_time, reasoning } = result;
+        const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+        const status = isDraft ? 'pending' : 'alert_only';
+
+        if (classification === 'OUT_OF_OFFICE' || looksLikeOutOfOffice(inboundMessage)) return;
+        if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) return;
+        if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) return;
+        if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inboundMessage)) return;
+
+        const contextWithMeta = {
+          messages: threadContext,
+          heyreach: { listId, linkedinAccountId, linkedinUrl, conversationId },
+        };
+
+        const leadIdForRow =
+          leadId != null && String(leadId).trim() !== ''
+            ? String(leadId)
+            : conversationId != null && String(conversationId).trim() !== ''
+              ? String(conversationId).trim()
+              : null;
+
+        const { rows: [reply] } = await db.query(
+          `INSERT INTO pending_replies
+            (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
+
+        if (isDraft) {
+          let leadEmail = null;
+          const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
+            replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
+            classification, draft, reasoning, inboundMessage,
+          });
+          await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
+
+          if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
+            try {
+              leadEmail = await profileToEmail(linkedinUrl);
+              console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
+              if (leadEmail) {
+                await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
+              }
+            } catch (err) {
+              console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
+            }
+
+            await db.query(
+              `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
+              [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+            );
+          }
+        } else {
+          await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+            leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+          });
+        }
+
+        console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName });
+      } catch (bgErr) {
+        console.error('[Webhook] HeyReach async handler error', { clientId, err: bgErr.message, stack: bgErr.stack });
       }
-
-      const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-        replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
-        classification, draft, reasoning, inboundMessage,
-      });
-      await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
-    }
-
-    res.status(200).json({ ok: true, classification, replyId: reply.id });
+    });
 
   } catch (err) {
     console.error('[Webhook] HeyReach handler error', { clientId, err: err.message, stack: err.stack });

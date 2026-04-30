@@ -192,10 +192,31 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate) {
 }
 
 /**
+ * Booking-link-only prompt (no Calendly/calendar HTTP). Keeps webhooks fast — HeyReach docs
+ * note webhook delivery can lag; blocking on multi-hop Calendly + calendar scans adds seconds–minutes.
+ */
+function schedulingPromptBookingLinkOnly(client) {
+  const link =
+    client.booking_link && String(client.booking_link).trim().startsWith('http')
+      ? String(client.booking_link).trim()
+      : '';
+  return {
+    slots: [],
+    promptBlock: link
+      ? `BOOKING LINK ONLY (no live availability API call — faster webhook path): invite them to book using this URL once when appropriate: ${link}. Do not invent specific wall-clock times unless the prospect explicitly asked for times.`
+      : 'No booking link on this client and no live availability lookup was run. Do not invent specific times.',
+  };
+}
+
+/**
  * Returns up to two verified open times + human labels for Gemini.
  * @param {object} client - DB client row (booking_link, calendly_personal_access_token, id)
+ * @param {{ skipExternalFetch?: boolean }} [options] - If true, skip Calendly/calendar calls (instant).
  */
-async function resolveVerifiedSchedulingSlots(client) {
+async function resolveVerifiedSchedulingSlots(client, options = {}) {
+  if (options.skipExternalFetch) {
+    return schedulingPromptBookingLinkOnly(client);
+  }
   const timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/New_York';
   const fromDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
   const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
@@ -246,6 +267,7 @@ async function resolveVerifiedSchedulingSlots(client) {
 
 module.exports = {
   resolveVerifiedSchedulingSlots,
+  schedulingPromptBookingLinkOnly,
   normalizeBookingUrl,
   isCalendlyUrl,
 };
