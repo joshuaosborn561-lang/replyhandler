@@ -6,7 +6,13 @@ const { parseProposedTime } = require('../utils/parse-proposed-time');
 
 async function sendReplyToPlatform(client, reply, replyText) {
   if (reply.platform === 'smartlead') {
-    await smartlead.sendReply(client.smartlead_api_key, reply.campaign_id, reply.lead_id, replyText);
+    await smartlead.sendReply(
+      client.smartlead_api_key,
+      reply.campaign_id,
+      reply.lead_id,
+      replyText,
+      reply.smartlead_email_stats_id || null
+    );
   } else if (reply.platform === 'heyreach') {
     const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
     const meta = ctx?.heyreach || {};

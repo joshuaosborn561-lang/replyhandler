@@ -32,6 +32,7 @@ CREATE TABLE pending_replies (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'sent', 'flagged', 'alert_only')),
   slack_message_ts TEXT,
   reminder_count INTEGER NOT NULL DEFAULT 0,
+  smartlead_email_stats_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

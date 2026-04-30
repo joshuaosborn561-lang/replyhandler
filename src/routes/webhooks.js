@@ -360,6 +360,11 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'empty_inbound' });
     }
 
+    const smartleadEmailStatsId =
+      threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
+        ? smartlead.extractStatsIdFromHistory(threadContext)
+        : null;
+
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
     let result;
@@ -406,9 +411,22 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status]
+        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [
+        clientId,
+        'smartlead',
+        campaignId,
+        leadId,
+        leadName,
+        leadEmail,
+        inboundMessage,
+        JSON.stringify(threadContext),
+        classification,
+        draft,
+        status,
+        smartleadEmailStatsId,
+      ]
     );
 
     if (isDraft) {
