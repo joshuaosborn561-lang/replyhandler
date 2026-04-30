@@ -4,9 +4,11 @@ const slack = require('./services/slack');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
+const { pollHeyReachReplies } = require('./services/heyreach-poller');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const PENDING_NUDGE_MINUTES = parseInt(process.env.PENDING_NUDGE_MINUTES || '5', 10);
+const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
 
 function clientTimezone(client) {
   return client?.digest_timezone || DEFAULT_TZ;
@@ -49,6 +51,23 @@ function addDays(yyyyMmDd, deltaDays) {
 }
 
 function startCron() {
+  // ─── HeyReach polling backstop (webhooks are primary) ──────────────
+  if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_HEYREACH_POLLING || '').trim())) {
+    const every = Number.isFinite(HEYREACH_POLL_MINUTES) && HEYREACH_POLL_MINUTES > 0
+      ? HEYREACH_POLL_MINUTES
+      : 3;
+    cron.schedule(`*/${every} * * * *`, async () => {
+      try {
+        const result = await pollHeyReachReplies();
+        if (result && (result.processed || result.skipped)) {
+          console.log('[Cron] HeyReach poll complete', result);
+        }
+      } catch (err) {
+        console.error('[Cron] HeyReach poll failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Stale reply reminders (every 10 minutes) ─────────────────────
   cron.schedule('*/10 * * * *', async () => {
     try {
@@ -201,7 +220,7 @@ function startCron() {
     }
   });
 
-  console.log('[Cron] Jobs scheduled: stale-reply reminders, 5-min pending nudge, meeting reminders, morning digest (per client TZ)');
+  console.log('[Cron] Jobs scheduled: HeyReach polling, stale-reply reminders, 5-min pending nudge, meeting reminders, morning digest (per client TZ)');
 }
 
 /** Collect silent prospects from last ~36h, draft follow-ups, post approval cards in Slack. */

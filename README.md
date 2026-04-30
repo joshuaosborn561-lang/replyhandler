@@ -50,6 +50,10 @@ cp .env.example .env
 | `WEBHOOK_TEST_SECRET` | Optional. Protects `POST /admin/test/slack-draft/:clientId` for Slack-only testing |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
 | `FOLLOW_UP_REMINDER_HOURS` | Optional. After you **send** an approved reply, Slack gets a **follow-up nudge** if the prospect hasn’t replied again within this many hours (default `24`) |
+| `HEYREACH_POLL_ENABLED` | Optional. Backstop poller for HeyReach inbox replies if webhooks are late/missed (default `true`) |
+| `HEYREACH_POLL_MINUTES` | Optional. Poll interval in minutes (default `3`) |
+| `HEYREACH_POLL_LOOKBACK_HOURS` | Optional. How far back the poller scans recent conversations (default `8`) |
+| `HEYREACH_POLL_CLIENTS_JSON` | Optional fallback client JSON if DB `clients` rows are unavailable. Prefer restoring clients in Postgres. |
 | `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
@@ -128,6 +132,8 @@ Each client has **unique** URLs (`/webhook/smartlead/<client-uuid>`, `/webhook/h
 - **HeyReach:** we call `POST /api/public/campaign/GetAll` with the client’s key and require the webhook’s `campaignId` to appear in their workspace’s campaign list.
 
 Paste **each client’s** webhook URL only into campaigns that belong to **that** client’s SmartLead/HeyReach workspace (the same API keys you saved in the dashboard). If someone pastes Client A’s URL into Client B’s campaign, events are **skipped** (no Slack noise).
+
+**HeyReach polling backstop:** HeyReach webhooks can occasionally sync late. The app also runs an API poller (default every 3 minutes) that scans each active client's HeyReach inbox using the client-level `heyreach_api_key`, dedupes against `pending_replies`, and posts missed replies to the same Slack approval flow. Webhooks remain the primary path; polling is a safety net.
 
 ### SmartLead
 

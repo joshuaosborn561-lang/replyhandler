@@ -181,4 +181,23 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
   try { return JSON.parse(responseBody); } catch { return { raw: responseBody }; }
 }
 
-module.exports = { sendMessage, verifyCampaignAccess, tryFetchCampaignById };
+async function getConversations(apiKey, { offset = 0, limit = 25, accountIds } = {}) {
+  const body = { offset, limit };
+  if (Array.isArray(accountIds) && accountIds.length) body.accountIds = accountIds;
+  const res = await fetch(`${BASE_URL}/inbox/GetConversationsV2`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+    body: JSON.stringify(body),
+  });
+  const responseBody = await res.text();
+  if (!res.ok) {
+    throw new Error(`HeyReach GetConversationsV2 failed (${res.status}): ${responseBody.slice(0, 300)}`);
+  }
+  try {
+    return JSON.parse(responseBody);
+  } catch {
+    throw new Error(`HeyReach GetConversationsV2 returned non-JSON: ${responseBody.slice(0, 200)}`);
+  }
+}
+
+module.exports = { sendMessage, verifyCampaignAccess, tryFetchCampaignById, getConversations };
