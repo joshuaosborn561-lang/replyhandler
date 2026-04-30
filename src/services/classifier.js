@@ -4,110 +4,266 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const CLASSIFICATIONS = [
   'INTERESTED', 'QUESTION', 'OBJECTION', 'NOT_INTERESTED',
-  'OUT_OF_OFFICE', 'REMOVE_ME', 'WRONG_PERSON', 'COMPETITOR',
+  'OOO', 'OUT_OF_OFFICE', 'REMOVE_ME', 'WRONG_PERSON', 'COMPETITOR',
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'QUESTION', 'OBJECTION', 'MEETING_PROPOSED'];
+const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE' && c !== 'OOO');
 
 function normalizeClassification(raw) {
-  let u = String(raw || 'OTHER').trim().toUpperCase().replace(/\s+/g, '_');
-  if (u === 'OOO') u = 'OUT_OF_OFFICE';
-  if (!CLASSIFICATIONS.includes(u)) {
-    for (const c of CLASSIFICATIONS) {
-      if (u.includes(c)) return c;
-    }
+  if (!raw) return 'OTHER';
+  const upper = String(raw).toUpperCase();
+  if (/\bOUT_OF_OFFICE\b/.test(upper)) return 'OOO';
+  // Find the first enum value mentioned in the model's response.
+  for (const c of CLASSIFICATIONS) {
+    const re = new RegExp(`\\b${c}\\b`);
+    if (re.test(upper)) return c;
   }
-  return CLASSIFICATIONS.includes(u) ? u : 'OTHER';
+  return 'OTHER';
 }
 
-async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
-  const booking = bookingLink || '[no booking link configured — say you will send a scheduling link shortly]';
-  const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
+function sanitizeDraft(text, { inboundMessage, bookingLink, classification } = {}) {
+  let s = String(text || '').trim();
+  // Strip markdown fences / leading role labels the model sometimes adds.
+  s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+  s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
-  const systemPrompt = `You are an expert B2B sales reply classifier and ghostwriter.
+  if (!s) {
+    s = fallbackDraftText({ inboundMessage, bookingLink });
+  }
 
-Your job:
-1. Classify the prospect's latest reply into exactly one category.
-2. If the classification warrants a draft reply, write one in the client's voice.
+  // For MEETING_PROPOSED, guarantee the booking link is present.
+  if (
+    classification === 'MEETING_PROPOSED' &&
+    bookingLink &&
+    typeof bookingLink === 'string' &&
+    bookingLink.trim().startsWith('http') &&
+    !s.includes(bookingLink.trim())
+  ) {
+    s = `${s.trim()}\n\n${bookingLink.trim()}`;
+  }
 
-CLASSIFICATION CATEGORIES (pick exactly one):
-${CLASSIFICATIONS.map(c => `- ${c}`).join('\n')}
+  return s;
+}
 
-RULES FOR DRAFTING:
-- Draft a reply for: INTERESTED, QUESTION, OBJECTION, MEETING_PROPOSED
-- For all other classifications: no draft needed
+function fallbackDraftText({ inboundMessage, bookingLink }) {
+  const msg = String(inboundMessage || '').trim();
+  const snippet = msg.length > 180 ? `${msg.slice(0, 180)}…` : msg;
+  const link = bookingLink && String(bookingLink).trim().startsWith('http')
+    ? String(bookingLink).trim()
+    : '';
+  return [
+    'Thanks for getting back to me — appreciate it.',
+    snippet ? `On your note: "${snippet}"` : null,
+    'Happy to share details and answer anything specific.',
+    link ? `If easier, grab a time that works here: ${link}` : null,
+  ].filter(Boolean).join(' ');
+}
 
-CLASSIFICATION PRIORITY:
-- Use OUT_OF_OFFICE when the message is an out-of-office / vacation / automatic reply. Examples: "out of the office", "out of office", "limited access to my email", "automatic reply", "will be returning Monday", "returning on [date]".
-- Do NOT classify clear OOO messages as OTHER or INTERESTED.
-- Never start with "Great question" or similar filler
-- Never use exclamation marks excessively
-- Keep replies friendly, warm, and concise — 2-4 short sentences max (fewer is better)
-- End INTERESTED/QUESTION replies with a soft ask for a call
-- End OBJECTION replies by acknowledging their concern and pivoting
-- Sound like a real human, not a bot
-- For INTERESTED, QUESTION, OBJECTION: do NOT paste verified scheduling times from the block below unless the prospect explicitly asked for times to meet.
-
-VERIFIED AVAILABILITY (from the client's scheduling system when configured — e.g. Calendly API with token — and/or their connected Google/Outlook busy times — not invented):
-${scheduleCtx}
-
-MEETING_PROPOSED + SCHEDULING (client may use Calendly, Cal.com, SavvyCal, HubSpot meetings, etc. — the booking URL is generic):
-- If the block lists TWO verified open times, your draft MUST offer exactly those two (use the human-readable labels). Then include the booking link once so they can book or pick another slot: ${booking}
-- If the block lists only ONE verified time, mention that time and the booking link once; do not invent a second wall-clock time.
-- If the block says no verified slots, do not invent specific times; invite them to choose via the booking link once: ${booking}
-- If the prospect proposed a specific time, confirm it warmly, still include the booking link once for them to confirm, and use verified slots only as extras if the block lists them and they do not conflict.
-- Work the booking link naturally (full URL). Never label the tool as "Calendly" unless the URL is calendly.com.
-- Set "proposed_time" to the prospect's stated time if any; else the first verified slot's ISO from the block if present; else null.
-
-CLIENT VOICE INSTRUCTIONS:
-${voicePrompt || 'Professional, direct, practitioner-level tone. No fluff.'}
-
-Respond in this exact JSON format (no markdown, no code fences):
-{
-  "classification": "CATEGORY",
-  "draft": "Reply text here or null if no draft needed",
-  "proposed_time": "Extracted or suggested time string, or null if not MEETING_PROPOSED",
-  "reasoning": "One sentence explaining your classification"
-}`;
-
-  const userMessage = `Here is the full email/message thread for context:
-
-${typeof threadContext === 'string' ? threadContext : JSON.stringify(threadContext, null, 2)}
-
----
-
-The prospect's latest reply:
-${inboundMessage}
-
-Classify this reply and draft a response if appropriate.`;
-
-  const model = genAI.getGenerativeModel({
+function buildClassifyModel() {
+  return genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: systemPrompt,
+    systemInstruction:
+      `You classify a B2B sales reply into exactly one category.\n` +
+      `Respond with ONLY the category word, nothing else.\n` +
+      `Categories: ${CLASSIFICATIONS.join(', ')}.\n\n` +
+      `Important:\n` +
+      `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
+      `- If it is clearly OOO, output OOO (not OTHER).\n` +
+      `- OUT_OF_OFFICE is legacy; prefer OOO.`,
     generationConfig: {
-      maxOutputTokens: 1024,
-      responseMimeType: 'application/json',
+      // ONE WORD. Cannot truncate meaningfully.
+      maxOutputTokens: 16,
+      temperature: 0,
+      responseMimeType: 'text/plain',
     },
   });
-
-  const result = await model.generateContent(userMessage);
-  const text = result.response.text().trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    // Try to extract JSON from the response
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      parsed = JSON.parse(match[0]);
-    } else {
-      throw new Error(`Failed to parse classifier response: ${text}`);
-    }
-  }
-  parsed.classification = normalizeClassification(parsed.classification);
-  return parsed;
 }
 
-module.exports = { classifyAndDraft, CLASSIFICATIONS, DRAFT_CLASSIFICATIONS, normalizeClassification };
+function buildOooCheckModel() {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction:
+      'You decide if a message is an out-of-office, vacation, or automatic reply.\n' +
+      'Respond with exactly YES or NO, nothing else.\n' +
+      'YES if: out of office, OOO, vacation, away, limited email access, auto-reply, automatic reply, will return on [date], not monitoring email closely.\n' +
+      'NO if: a human is engaging with substance about the offer (even if brief).',
+    generationConfig: {
+      maxOutputTokens: 8,
+      temperature: 0,
+      responseMimeType: 'text/plain',
+    },
+  });
+}
+
+function buildNotInterestedCheckModel() {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction:
+      'You decide if a B2B prospect is clearly declining the offer or saying no.\n' +
+      'Respond with exactly YES or NO, nothing else.\n' +
+      'YES if: not interested, no thanks, no thank you, no interest, not a fit, we are all set, going to pass, pass on this, not at this time.\n' +
+      'NO if: they ask a question, express interest, ask for more info, mention bad timing but still interested, or the message is ambiguous.',
+    generationConfig: {
+      maxOutputTokens: 8,
+      temperature: 0,
+      responseMimeType: 'text/plain',
+    },
+  });
+}
+
+function buildDraftModel(systemInstruction) {
+  return genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction,
+    generationConfig: {
+      // Generous budget for a short reply. Plain text — truncation just = shorter reply.
+      maxOutputTokens: 800,
+      temperature: 0.4,
+      responseMimeType: 'text/plain',
+    },
+  });
+}
+
+function summarizeThread(threadContext) {
+  if (!threadContext) return '(no prior thread)';
+  if (typeof threadContext === 'string') return threadContext.slice(0, 4000);
+  try {
+    return JSON.stringify(threadContext, null, 2).slice(0, 4000);
+  } catch {
+    return '(unserializable thread)';
+  }
+}
+
+async function classifyOnly(threadContext, inboundMessage) {
+  try {
+    const model = buildClassifyModel();
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect reply:\n${inboundMessage}\n\n` +
+      `Category:`
+    );
+    const text = res.response.text().trim();
+    return normalizeClassification(text);
+  } catch (err) {
+    console.error('[Classifier] classify call failed', { err: err.message });
+    return 'OTHER';
+  }
+}
+
+/** Second pass: when primary label is OTHER, ask explicitly for OOO vs not. */
+async function classifyOooSecondPass(threadContext, inboundMessage) {
+  try {
+    const model = buildOooCheckModel();
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect message:\n${inboundMessage}\n\n` +
+      `Is this an out-of-office / vacation / automatic reply?`
+    );
+    const t = (res.response.text() || '').trim().toUpperCase();
+    if (t.startsWith('Y')) return 'OOO';
+  } catch (err) {
+    console.error('[Classifier] OOO second pass failed', { err: err.message });
+  }
+  return null;
+}
+
+/** Second pass: when primary label is OTHER, ask explicitly for clear no/not-interested. */
+async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
+  try {
+    const model = buildNotInterestedCheckModel();
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect message:\n${inboundMessage}\n\n` +
+      `Is this a clear decline / not-interested reply?`
+    );
+    const t = (res.response.text() || '').trim().toUpperCase();
+    if (t.startsWith('Y')) return 'NOT_INTERESTED';
+  } catch (err) {
+    console.error('[Classifier] not-interested second pass failed', { err: err.message });
+  }
+  return null;
+}
+
+async function draftOnly({ classification, threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock }) {
+  const booking = bookingLink && String(bookingLink).trim().startsWith('http')
+    ? String(bookingLink).trim()
+    : '[no booking link configured]';
+  const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
+
+  const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
+Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
+Length: 2-4 short sentences, fewer is better.
+Tone: friendly, warm, concise, practitioner-level, human.
+Never begin with "Great question" or similar filler. Avoid excessive exclamation marks.
+
+CLIENT VOICE:
+${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
+
+CURRENT CLASSIFICATION: ${classification}
+RULES BY CLASSIFICATION:
+- INTERESTED / QUESTION: answer briefly, end with a soft ask for a call.
+- OBJECTION: acknowledge the concern, then pivot.
+- MEETING_PROPOSED: confirm warmly. If the verified availability block below lists two open times, offer exactly those two. If one, mention it. If none, invite them to pick via the booking link. Always include the booking URL once (full URL): ${booking}
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief, respectful acknowledgment. For REMOVE_ME confirm removal. For WRONG_PERSON ask for the right contact.
+
+VERIFIED AVAILABILITY:
+${scheduleCtx}
+`;
+
+  try {
+    const model = buildDraftModel(systemInstruction);
+    const res = await model.generateContent(
+      `Thread:\n${summarizeThread(threadContext)}\n\n` +
+      `Latest prospect reply:\n${inboundMessage}\n\n` +
+      `Write the reply:`
+    );
+    return sanitizeDraft(res.response.text(), { inboundMessage, bookingLink, classification });
+  } catch (err) {
+    console.error('[Classifier] draft call failed', { err: err.message });
+    return sanitizeDraft('', { inboundMessage, bookingLink, classification });
+  }
+}
+
+/**
+ * Two-call flow: classify, then draft (when needed).
+ * Never throws. Always returns { classification, draft, proposed_time, reasoning }.
+ */
+async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
+  let classification = await classifyOnly(threadContext, inboundMessage);
+  if (classification === 'OTHER') {
+    const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
+    if (ooo === 'OOO') classification = 'OOO';
+  }
+  if (classification === 'OTHER') {
+    const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
+    if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
+  }
+  const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+
+  const draft = needsDraft
+    ? await draftOnly({
+      classification,
+      threadContext,
+      inboundMessage,
+      voicePrompt,
+      bookingLink,
+      schedulingPromptBlock,
+    })
+    : null;
+
+  return {
+    classification,
+    draft,
+    proposed_time: null,
+    reasoning: needsDraft ? `Classified as ${classification}; draft generated.` : `Classified as ${classification}; no draft.`,
+  };
+}
+
+module.exports = {
+  classifyAndDraft,
+  classifyOnly,
+  draftOnly,
+  CLASSIFICATIONS,
+  DRAFT_CLASSIFICATIONS,
+};

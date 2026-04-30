@@ -1,5 +1,8 @@
--- Migration: Remove Cal.com, add booking_link (idempotent — safe if 002 was never run or partially applied).
--- Prefer this over a bare RENAME, which fails when calcom_event_type_id is already gone.
+-- Safe migration: ensure clients.booking_link exists.
+-- Use when PATCH /admin/clients fails with "column booking_link does not exist"
+-- (e.g. DB created before booking_link, or migrations/002 never applied because calcom_event_type_id was missing).
+--
+-- Run: psql "$DATABASE_URL" -f migrations/005_booking_link_safe.sql
 
 DO $$
 BEGIN
@@ -15,5 +18,3 @@ BEGIN
 END $$;
 
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS booking_link TEXT;
-
-ALTER TABLE meetings DROP COLUMN IF EXISTS calcom_booking_uid;

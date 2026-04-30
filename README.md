@@ -24,11 +24,15 @@ createdb replyhandler
 psql replyhandler < schema.sql
 ```
 
-Or on Railway, provision a Postgres plugin and run the schema via the Railway CLI:
+Or on Railway, provision a Postgres plugin and apply the base schema once (required before the app can migrate):
 
 ```bash
 railway run psql $DATABASE_URL < schema.sql
 ```
+
+After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–010, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
+
+**Backups and avoiding data loss:** This app never deletes `clients` rows. If client rows vanish, the Postgres **volume was reset or a new database was attached** (e.g. recreating the Postgres service in Railway). Mitigations: enable **Railway Postgres backups** in the dashboard (plan-dependent); avoid detaching/recreating the Postgres plugin; periodically run `pg_dump` off-platform, e.g. `railway run --service <App> pg_dump "$DATABASE_URL" > backup-$(date +%Y%m%d).sql` (use the app service so `DATABASE_URL` points at your data). Client API keys must be **re-entered** after a restore if you only have SQL dumps without secrets elsewhere.
 
 ### 2. Environment Variables
 
@@ -45,12 +49,17 @@ cp .env.example .env
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
 | `WEBHOOK_TEST_SECRET` | Optional. Protects `POST /admin/test/slack-draft/:clientId` for Slack-only testing |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
+| `FOLLOW_UP_REMINDER_HOURS` | Optional. After you **send** an approved reply, Slack gets a **follow-up nudge** if the prospect hasn’t replied again within this many hours (default `24`) |
 | `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
 Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL and a PAT is set, the server uses Calendly’s API to fetch **real** open times. For other schedulers (Cal.com, SavvyCal, etc.), you can **connect Google or Outlook** so two slots may still be inferred from calendar free/busy; if neither Calendly+PAT nor a connected calendar is available, the AI will **not** invent wall-clock times and will rely on the booking link only. On existing databases, run `migrations/004_calendly_pat.sql` once.
+
+**If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
+
+**Prospect follow-up nudge:** run `migrations/007_outbound_follow_ups.sql`. After a reply is **approved/sent** from Slack, if the prospect sends **another inbound** message within `FOLLOW_UP_REMINDER_HOURS`, the pending nudge is cancelled; otherwise the client’s Slack channel gets a reminder to follow up. This uses **SmartLead** `campaign_id`+`lead_id` or **HeyReach** `conversation_id` / `lead_id` from webhooks — not “read receipts” from LinkedIn/email.
 
 ### 3. Install and Run
 
@@ -132,7 +141,7 @@ Paste **each client’s** webhook URL only into campaigns that belong to **that*
 2. Under **Webhooks**, add a new webhook for "Message Received"
 3. Paste the `heyreach_webhook_url` from the admin API response
 
-HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key (field name may be `campaignId` or `campaign_id` depending on HeyReach’s payload).
+HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key. We read `campaignId` / `campaign_id` **or** nested `campaign.id` (common on reply webhooks). Reply text may arrive in `recent_messages` rather than top-level `message`.
 
 ## Slack App Setup
 

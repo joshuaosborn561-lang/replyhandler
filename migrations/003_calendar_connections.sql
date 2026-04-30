@@ -1,7 +1,7 @@
 -- Migration: Add calendar connections and meeting reminders
 -- Run: psql "$DATABASE_URL" -f migrations/003_calendar_connections.sql
 
-CREATE TABLE calendar_connections (
+CREATE TABLE IF NOT EXISTS calendar_connections (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft')),

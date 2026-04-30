@@ -4,35 +4,62 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 
+/** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
+function isSlackTestFixtureReply(reply) {
+  return reply.campaign_id === 'test-campaign' && reply.lead_id === 'test-lead';
+}
+
 async function sendReplyToPlatform(client, reply, replyText) {
+  if (isSlackTestFixtureReply(reply)) {
+    console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
+    return;
+  }
+
   if (reply.platform === 'smartlead') {
+    // Primary: the stats_id captured at webhook ingestion.
+    // Fallback: resolve live from message-history (for older rows that predate the column).
+    let emailStatsId = reply.smartlead_email_stats_id || null;
+    if (!emailStatsId) {
+      console.log('[ReplySend] SmartLead stats_id missing on row — resolving live', {
+        replyId: reply.id, campaignId: reply.campaign_id, leadId: reply.lead_id,
+      });
+      emailStatsId = await smartlead.resolveEmailStatsId(client.smartlead_api_key, reply.campaign_id, reply.lead_id);
+      if (emailStatsId) {
+        await db.query('UPDATE pending_replies SET smartlead_email_stats_id = $1 WHERE id = $2', [emailStatsId, reply.id]);
+      }
+    }
+
     await smartlead.sendReply(
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      replyText,
-      reply.smartlead_email_stats_id || null
+      { replyText, emailStatsId }
     );
-  } else if (reply.platform === 'heyreach') {
+    return;
+  }
+
+  if (reply.platform === 'heyreach') {
     const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
     const meta = ctx?.heyreach || {};
-    await heyreach.sendMessage(
-      client.heyreach_api_key,
-      meta.listId,
-      meta.linkedinAccountId,
-      meta.linkedinUrl || reply.linkedin_url,
-      replyText
-    );
-  } else {
-    throw new Error(`Unknown platform: ${reply.platform}`);
+    await heyreach.sendMessage(client.heyreach_api_key, {
+      conversationId: meta.conversationId || null,
+      linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
+      senderId: meta.senderId || null,
+      listId: meta.listId || null,
+      linkedinUrl: meta.linkedinUrl || reply.linkedin_url || null,
+      message: replyText,
+    });
+    return;
   }
+
+  throw new Error(`Unknown platform: ${reply.platform}`);
 }
 
 /**
  * After a human-approved message is sent, optionally book calendar for MEETING_PROPOSED.
- * Returns a status line suffix (empty string if none).
  */
 async function maybeBookMeetingAfterSend(reply, client) {
+  if (isSlackTestFixtureReply(reply)) return '';
   if (reply.classification !== 'MEETING_PROPOSED') return '';
 
   const { rows: [meeting] } = await db.query('SELECT * FROM meetings WHERE pending_reply_id = $1', [reply.id]);
@@ -68,4 +95,4 @@ async function maybeBookMeetingAfterSend(reply, client) {
   }
 }
 
-module.exports = { sendReplyToPlatform, maybeBookMeetingAfterSend };
+module.exports = { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply };
