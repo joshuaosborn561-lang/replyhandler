@@ -75,19 +75,52 @@ function looksLikeRemoveMe(text) {
 
 // HeyReach can retry webhooks; dedupe per client+campaign+lead+message hash.
 const heyreachDedupe = new Map();
-function heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage, linkedinUrl, listId, linkedinAccountId }) {
+function heyreachDedupeKey({
+  clientId, campaignId, leadId, conversationId, inboundMessage, linkedinUrl, listId, linkedinAccountId,
+}) {
   const msg = normWs(inboundMessage).slice(0, 500);
-  // Include extra ids where present; HeyReach can omit leadId on some payload shapes.
+  const threadKey = String(conversationId || '').trim() || String(leadId || '');
   return [
     clientId,
     'heyreach',
     String(campaignId || ''),
-    String(leadId || ''),
+    threadKey,
     String(linkedinUrl || ''),
     String(listId || ''),
     String(linkedinAccountId || ''),
     msg,
   ].join('|');
+}
+
+/** HeyReach webhook shapes vary; normalize campaign id from payload root or nested objects. */
+function heyreachExtractCampaignId(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const c = payload.campaign;
+  return (
+    payload.campaignId ??
+    payload.campaign_id ??
+    payload.listCampaignId ??
+    payload.list_campaign_id ??
+    c?.id ??
+    c?.campaignId ??
+    c?.campaign_id ??
+    payload.data?.campaignId ??
+    payload.data?.campaign_id ??
+    null
+  );
+}
+
+function heyreachExtractConversationId(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  return (
+    payload.conversationId ??
+    payload.conversation_id ??
+    payload.threadId ??
+    payload.thread_id ??
+    payload.chatId ??
+    payload.chat_id ??
+    null
+  );
 }
 function isHeyreachDuplicate(key) {
   const now = Date.now();
@@ -117,22 +150,26 @@ async function verifyHeyreachCampaignAccessCached(apiKey, campaignId) {
   return ok;
 }
 
-async function heyreachDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
+async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage }) {
   const normalized = normWs(inboundMessage);
   if (!normalized) return false;
-  // DB-backed idempotency across restarts/retries: same client+campaign+lead+normalized body in last 30 minutes.
-  // Note: uses regexp_replace to match our normWs behavior.
+  const threadKey = conversationId != null && String(conversationId).trim() !== ''
+    ? String(conversationId).trim()
+    : leadId == null
+      ? ''
+      : String(leadId);
+  // DB-backed idempotency for webhook retries (same thread + same body shortly apart).
   const { rows } = await db.query(
     `SELECT 1
        FROM pending_replies
       WHERE client_id = $1
         AND platform = 'heyreach'
         AND campaign_id = $2
-        AND COALESCE(lead_id, '') = COALESCE($3, '')
+        AND COALESCE(lead_id, '') = $3
         AND created_at > now() - interval '30 minutes'
         AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $4
       LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? null : String(leadId), normalized]
+    [clientId, String(campaignId || ''), threadKey, normalized]
   );
   return rows.length > 0;
 }
@@ -473,10 +510,22 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaignId || payload.campaign_id;
-    const leadId = payload.leadId || payload.lead_id;
-    const linkedinUrl = payload.linkedinUrl || payload.linkedin_url || payload.profileUrl;
-    const leadName = payload.name || payload.lead_name || payload.firstName || 'Unknown';
+    const campaignId = heyreachExtractCampaignId(payload);
+    const leadId = payload.leadId || payload.lead_id || payload.lead?.id;
+    const conversationId = heyreachExtractConversationId(payload);
+    const linkedinUrl =
+      payload.linkedinUrl ||
+      payload.linkedin_url ||
+      payload.profileUrl ||
+      payload.lead?.linkedinUrl ||
+      payload.lead?.linkedin_url;
+    const leadName =
+      payload.name ||
+      payload.lead_name ||
+      payload.firstName ||
+      payload.lead?.firstName ||
+      payload.lead?.name ||
+      'Unknown';
     const inboundMessage = heyreachInboundEffective(payload);
     const listId = payload.listId || payload.list_id;
     const linkedinAccountId = payload.linkedinAccountId || payload.linkedin_account_id;
@@ -491,12 +540,14 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
     }
 
-    const dedupeKey = heyreachDedupeKey({ clientId, campaignId, leadId, inboundMessage, linkedinUrl, listId, linkedinAccountId });
+    const dedupeKey = heyreachDedupeKey({
+      clientId, campaignId, leadId, conversationId, inboundMessage, linkedinUrl, listId, linkedinAccountId,
+    });
     if (isHeyreachDuplicate(dedupeKey)) {
       console.log('[Webhook] HeyReach duplicate suppressed', { clientId, campaignId, leadId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
     }
-    if (await heyreachDuplicateInDb({ clientId, campaignId, leadId, inboundMessage })) {
+    if (await heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage })) {
       console.log('[Webhook] HeyReach duplicate suppressed (db)', { clientId, campaignId, leadId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
@@ -556,14 +607,21 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
     const contextWithMeta = {
       messages: threadContext,
-      heyreach: { listId, linkedinAccountId, linkedinUrl },
+      heyreach: { listId, linkedinAccountId, linkedinUrl, conversationId },
     };
+
+    const leadIdForRow =
+      leadId != null && String(leadId).trim() !== ''
+        ? String(leadId)
+        : conversationId != null && String(conversationId).trim() !== ''
+          ? String(conversationId).trim()
+          : null;
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'heyreach', campaignId, leadId, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+      [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
     );
 
     if (isDraft) {

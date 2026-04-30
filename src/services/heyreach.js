@@ -27,13 +27,48 @@ function campaignRowId(row) {
   return id != null ? String(id) : null;
 }
 
+function campaignIdMatchesResponse(payload, target) {
+  if (!payload || typeof payload !== 'object') return false;
+  const t = String(target).trim();
+  const candidates = [
+    payload.id,
+    payload.campaignId,
+    payload.campaign_id,
+    payload.data?.id,
+    payload.data?.campaignId,
+    payload.campaign?.id,
+  ];
+  return candidates.some((v) => v != null && String(v).trim() === t);
+}
+
 /**
- * Paginates HeyReach GetAll until the campaign id is found or lists are exhausted.
- * @see HeyReach public API — POST /campaign/GetAll
+ * Confirms campaign belongs to this HeyReach workspace for the API key.
+ * Tries GetById first, then paginates GetAll as fallback.
  */
 async function verifyCampaignAccess(apiKey, campaignId) {
   if (!apiKey || campaignId == null || String(campaignId).trim() === '') return false;
   const target = String(campaignId).trim();
+
+  try {
+    const res = await fetch(
+      `${BASE_URL}/campaign/GetById?campaignId=${encodeURIComponent(target)}`,
+      {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+      }
+    );
+    if (res.ok) {
+      try {
+        const payload = await res.json();
+        if (campaignIdMatchesResponse(payload, target)) return true;
+      } catch {
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('[HeyReach] GetById error', { campaignId: target, err: err.message });
+  }
+
   let offset = 0;
   const limit = 100;
   const maxPages = 50;
