@@ -16,6 +16,17 @@ CREATE TABLE clients (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE OR REPLACE FUNCTION prevent_clients_delete()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Deleting client rows is disabled; set active=false instead.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER protect_clients_delete
+BEFORE DELETE ON clients
+FOR EACH ROW EXECUTE FUNCTION prevent_clients_delete();
+
 CREATE TABLE pending_replies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id UUID NOT NULL REFERENCES clients(id),
