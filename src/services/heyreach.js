@@ -200,4 +200,43 @@ async function getConversations(apiKey, { offset = 0, limit = 25, accountIds } =
   }
 }
 
-module.exports = { sendMessage, verifyCampaignAccess, tryFetchCampaignById, getConversations };
+function conversationMatches(conv, { conversationId, leadId, linkedinUrl }) {
+  if (!conv || typeof conv !== 'object') return false;
+  const cid = conv.id || conv.conversationId || conv.conversation_id || conv.threadId || conv.thread_id;
+  if (conversationId && cid && String(cid) === String(conversationId)) return true;
+
+  const lid = conv.leadId || conv.lead_id || conv.lead?.id || conv.profile?.id;
+  if (leadId && lid && String(lid) === String(leadId)) return true;
+
+  const profileUrl =
+    conv.linkedinUrl ||
+    conv.linkedin_url ||
+    conv.profileUrl ||
+    conv.correspondentProfile?.profileUrl ||
+    conv.lead?.linkedinUrl ||
+    conv.lead?.linkedin_url ||
+    conv.profile?.profileUrl;
+  if (linkedinUrl && profileUrl && String(profileUrl).trim() === String(linkedinUrl).trim()) return true;
+
+  return false;
+}
+
+async function findConversation(apiKey, { conversationId, leadId, linkedinUrl, maxPages = 3, limit = 50 } = {}) {
+  for (let page = 0; page < maxPages; page++) {
+    const payload = await getConversations(apiKey, { offset: page * limit, limit });
+    const rows = payload.items || payload.data || payload.conversations || [];
+    if (!Array.isArray(rows) || !rows.length) break;
+    const found = rows.find((conv) => conversationMatches(conv, { conversationId, leadId, linkedinUrl }));
+    if (found) return found;
+    if (rows.length < limit) break;
+  }
+  return null;
+}
+
+module.exports = {
+  sendMessage,
+  verifyCampaignAccess,
+  tryFetchCampaignById,
+  getConversations,
+  findConversation,
+};

@@ -615,7 +615,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
 
-    const threadContext =
+    let threadContext =
       (Array.isArray(normalizedThread) && normalizedThread.length
         ? normalizedThread
         : null) ||
@@ -627,7 +627,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       hrCampaignName || (payload.campaign && payload.campaign.name),
       campaignId
     );
-    const lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
+    let lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
 
     await cancelForInboundReply({
       clientId,
@@ -642,6 +642,31 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
     setImmediate(async () => {
       try {
+        // Webhook payloads can include only the latest reply. Enrich from inbox API so Slack
+        // shows "Your last message" and Gemini sees the full context.
+        if (hrConversationId) {
+          try {
+            const full = await heyreach.findConversation(client.heyreach_api_key, {
+              conversationId: hrConversationId,
+              leadId,
+              linkedinUrl,
+            });
+            const fullMessages = Array.isArray(full?.messages) ? full.messages : [];
+            if (fullMessages.length) {
+              threadContext = fullMessages.map((m) => ({
+                role: String(m.sender || '').toUpperCase() === 'ME' || m.is_reply === false ? 'us' : 'prospect',
+                message: m.body || m.message || m.text || m.content || '',
+                at: m.createdAt || m.creation_time || m.created_at || null,
+              })).filter((m) => m.message);
+              lastOutboundHr = heyreachLastOutboundFromThread(threadContext) || lastOutboundHr;
+            }
+          } catch (err) {
+            console.warn('[Webhook] HeyReach conversation enrichment failed', {
+              clientId, conversationId: hrConversationId, err: err.message,
+            });
+          }
+        }
+
         // Skip slow Calendly/calendar network calls on the LinkedIn webhook path; include booking link guidance.
         const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
 

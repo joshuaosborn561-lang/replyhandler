@@ -225,6 +225,39 @@ async function alreadyProcessed({ clientId, campaignId: cid, leadKey, inboundMes
   return rows.length > 0;
 }
 
+async function maybeUpdateExistingThinReply({ clientId, campaignId: cid, leadKey, inboundMessage, threadContext, lastOutboundMessage }) {
+  if (!lastOutboundMessage || !String(lastOutboundMessage).trim()) return false;
+  const normalized = normWs(inboundMessage);
+  if (!normalized) return false;
+  const { rows } = await db.query(
+    `SELECT id, thread_context, slack_message_ts
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'heyreach'
+        AND COALESCE(campaign_id, '') = COALESCE($2, '')
+        AND COALESCE(lead_id, '') = COALESCE($3, '')
+        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $4
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [clientId, cid == null ? null : String(cid), leadKey == null ? null : String(leadKey), normalized]
+  );
+  if (!rows.length) return false;
+
+  let current = rows[0].thread_context;
+  if (typeof current === 'string') {
+    try { current = JSON.parse(current); } catch { current = null; }
+  }
+  const currentMessages = Array.isArray(current?.messages) ? current.messages : (Array.isArray(current) ? current : []);
+  if (lastOutbound(currentMessages)) return true;
+
+  await db.query('UPDATE pending_replies SET thread_context = $1, updated_at = now() WHERE id = $2', [
+    JSON.stringify(threadContext),
+    rows[0].id,
+  ]);
+  console.log('[HeyReachPoll] Enriched existing thin reply context', { replyId: rows[0].id });
+  return true;
+}
+
 function envClients() {
   const raw = process.env.HEYREACH_POLL_CLIENTS_JSON;
   if (raw) {
@@ -306,6 +339,27 @@ async function processConversation(client, conv, options) {
   });
 
   const threadContext = messagesForThread(messages);
+  const lastOut = lastOutbound(messages);
+  if (await maybeUpdateExistingThinReply({
+    clientId: client.id,
+    campaignId: cid,
+    leadKey,
+    inboundMessage: inbound.text,
+    threadContext: {
+      messages: threadContext,
+      heyreach: {
+        listId: listId(conv),
+        linkedinAccountId: linkedInAccountId(conv),
+        linkedinUrl: linkedinUrl(conv),
+        conversationId: convId,
+        senderId: senderId(conv),
+        campaignName: conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || null,
+      },
+    },
+    lastOutboundMessage: lastOut,
+  })) {
+    return { skipped: 'already_processed_enriched' };
+  }
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   const result = await classifyAndDraft(threadContext, inbound.text, client.voice_prompt, client.booking_link, promptBlock);
   const { classification, draft, proposed_time, reasoning } = result;
@@ -358,7 +412,7 @@ async function processConversation(client, conv, options) {
     reasoning: `${reasoning} (Recovered by HeyReach polling backstop.)`,
     inboundMessage: inbound.text,
     campaignDisplay: campaignDisplay(conv, cid),
-    lastOutboundMessage: lastOutbound(messages) || undefined,
+    lastOutboundMessage: lastOut || undefined,
   };
 
   let slackResult;
