@@ -28,7 +28,8 @@ function assertSecret(req, res) {
  *
  * POST /admin/test/slack-draft/:clientId
  * Header: x-webhook-test-secret: <WEBHOOK_TEST_SECRET>
- * Body (optional): { classification, draft, inboundMessage, leadName, leadEmail, platform }
+ * Body (optional): { classification, draft, inboundMessage, leadName, leadEmail, platform,
+ *   campaignDisplay, lastOutboundMessage, campaignId }
  */
 router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
   if (!assertSecret(req, res)) return;
@@ -45,6 +46,10 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
     linkedinUrl = null,
     listId = null,
     linkedinAccountId = null,
+    campaignDisplay = null,
+    lastOutboundMessage = null,
+    campaignName = null,
+    campaignId = 'test-campaign',
   } = req.body || {};
 
   try {
@@ -54,12 +59,37 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
     }
 
     const useHeyreach = platform === 'heyreach';
+    const display =
+      campaignDisplay ||
+      (campaignName && campaignId
+        ? `${campaignName} (${campaignId})`
+        : campaignId
+          ? `Example Campaign (${campaignId})`
+          : 'Example Campaign');
+
+    const lastOut =
+      lastOutboundMessage ||
+      (useHeyreach
+        ? 'Hi Alex — quick question about how you handle outbound today. Open to a 10-min chat this week?'
+        : 'Hi Alex,\n\nNoticed you\'re scaling the team — curious if you\'re still handling outbound in-house or testing an agency model.\n\nWorth a quick look?');
+
     const threadContext = useHeyreach
       ? {
-        messages: [{ role: 'prospect', message: inboundMessage }],
-        heyreach: { listId, linkedinAccountId, linkedinUrl },
+        messages: [
+          { role: 'us', message: lastOut },
+          { role: 'prospect', message: inboundMessage },
+        ],
+        heyreach: {
+          listId,
+          linkedinAccountId,
+          linkedinUrl,
+          campaignName: campaignName || 'Example Campaign',
+        },
       }
-      : [{ role: 'prospect', message: inboundMessage }];
+      : [
+        { role: 'us', message: lastOut },
+        { role: 'prospect', message: inboundMessage },
+      ];
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
@@ -68,7 +98,7 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
       [
         clientId,
         useHeyreach ? 'heyreach' : 'smartlead',
-        'test-campaign',
+        campaignId || 'test-campaign',
         'test-lead',
         leadName,
         useHeyreach ? null : leadEmail,
@@ -89,6 +119,8 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
       draft,
       reasoning,
       inboundMessage,
+      campaignDisplay: display,
+      lastOutboundMessage: lastOut,
     });
     await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 

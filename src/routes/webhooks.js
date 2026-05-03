@@ -6,15 +6,268 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classif
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
+const { cancelForInboundReply } = require('../services/outbound-follow-up');
+const {
+  stripHtmlToText,
+  stripEmailQuotePrefix,
+  latestInboundFromSmartleadHistory,
+  lastOutboundBodyFromSmartleadHistory,
+  isLikelyDuplicateOfOutbound,
+  parseInboundFromPayload,
+  SMARTLEAD_NON_REPLY_EVENTS,
+  looksLikeOutOfOffice,
+  looksLikeWrongPerson,
+  looksLikeNotInterested,
+  smartleadWebhookEnhancementsEnabled,
+} = require('../utils/smartlead-webhook-helpers');
 
 const router = Router();
+
+function stripHtmlToTextLocal(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function smartleadLastOutboundFromPayload(payload) {
+  const p = payload || {};
+  const sent = p.sent_message && typeof p.sent_message === 'object' ? p.sent_message : null;
+  const fromSent =
+    (sent && typeof sent.text === 'string' && sent.text.trim()) ||
+    (sent && stripHtmlToTextLocal(sent.html || sent.email_body || '')) ||
+    '';
+  const fromBody =
+    (typeof p.sent_message_body === 'string' && stripHtmlToTextLocal(p.sent_message_body)) ||
+    (typeof p.sent_message_text === 'string' && String(p.sent_message_text).trim()) ||
+    '';
+  return String(fromSent || fromBody || '').trim();
+}
+
+function heyreachLastOutboundFromThread(threadContext) {
+  const list = Array.isArray(threadContext) ? threadContext : [];
+  let last = '';
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const role = String(m.role || '').toLowerCase();
+    const isUs = role === 'us' || role === 'me' || role === 'sender' || role === 'user';
+    if (!isUs) continue;
+    const txt =
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      '';
+    if (txt && String(txt).trim()) last = String(txt).trim();
+  }
+  return last;
+}
+
+function formatCampaignDisplay(campaignName, campaignId) {
+  const id = campaignId != null ? String(campaignId).trim() : '';
+  const name = campaignName != null ? String(campaignName).trim() : '';
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return `Campaign ${id}`;
+  return 'Campaign (unknown)';
+}
+
+function smartleadCampaignName(payload) {
+  const p = payload || {};
+  return (
+    p.campaign_name ||
+    p.campaignName ||
+    (p.campaign && typeof p.campaign === 'object' ? p.campaign.name : null) ||
+    null
+  );
+}
+
+/**
+ * HeyReach webhook shapes vary by event. Reply webhooks often send:
+ * campaign: { id, name }, recent_messages: [...], conversation_id, sender, etc.
+ */
+function normalizeHeyreachPayload(payload) {
+  const p = payload || {};
+  const campaign = p.campaign && typeof p.campaign === 'object' ? p.campaign : null;
+
+  const campaignId =
+    p.campaignId ??
+    p.campaign_id ??
+    p.campaignID ??
+    p.CampaignId ??
+    p.listCampaignId ??
+    p.list_campaign_id ??
+    p.campaign?.id ??
+    campaign?.id ??
+    campaign?.campaignId ??
+    p.data?.campaignId ??
+    p.data?.campaign_id ??
+    null;
+
+  const campaignName =
+    p.campaign_name ||
+    p.campaignName ||
+    campaign?.name ||
+    null;
+
+  const conversationId = p.conversation_id || p.conversationId || p.thread_id || p.threadId || p.chat_id || p.chatId || null;
+
+  const leadId =
+    p.leadId ??
+    p.lead_id ??
+    p.lead?.id ??
+    p.data?.leadId ??
+    p.data?.lead_id ??
+    null;
+
+  const recent = Array.isArray(p.recent_messages) ? p.recent_messages : [];
+  const lastMsg = recent.length ? recent[recent.length - 1] : null;
+  function msgTextFromRecentRow(m) {
+    if (!m || typeof m !== 'object') return '';
+    return (
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      (typeof m.content === 'string' && m.content) ||
+      ''
+    );
+  }
+  const inboundMessage =
+    (typeof p.message === 'string' && p.message) ||
+    (typeof p.reply === 'string' && p.reply) ||
+    (typeof p.body === 'string' && p.body) ||
+    (lastMsg ? msgTextFromRecentRow(lastMsg) : '') ||
+    '';
+
+  const lead = p.lead && typeof p.lead === 'object' ? p.lead : null;
+  const recipient = p.recipient && typeof p.recipient === 'object' ? p.recipient : null;
+  const prospect = p.prospect && typeof p.prospect === 'object' ? p.prospect : null;
+  const fromProspect = recipient || prospect || lead;
+
+  const leadName =
+    (typeof p.name === 'string' && p.name) ||
+    (typeof p.lead_name === 'string' && p.lead_name) ||
+    (typeof p.firstName === 'string' && p.firstName) ||
+    [fromProspect?.first_name, fromProspect?.last_name].filter(Boolean).join(' ').trim() ||
+    (typeof fromProspect?.full_name === 'string' && fromProspect.full_name) ||
+    (typeof p.contact?.full_name === 'string' && p.contact.full_name) ||
+    (typeof p.profile?.full_name === 'string' && p.profile.full_name) ||
+    'LinkedIn prospect';
+
+  const linkedinUrl =
+    p.linkedinUrl ||
+    p.linkedin_url ||
+    p.profileUrl ||
+    fromProspect?.linkedin_url ||
+    fromProspect?.linkedinUrl ||
+    fromProspect?.profile_url ||
+    null;
+
+  const listId = p.listId ?? p.list_id ?? p.list?.id ?? null;
+  // linkedInAccountId: the HeyReach LinkedIn account that received the DM.
+  // Typical reply webhook exposes this via p.sender.id (confirmed from live logs).
+  const linkedinAccountId =
+    p.linkedinAccountId ??
+    p.linkedin_account_id ??
+    p.linkedInAccountId ??
+    p.linked_in_account_id ??
+    p.accountId ??
+    p.linkedin_account?.id ??
+    p.sender?.id ??
+    null;
+  const senderId =
+    p.senderId ??
+    p.sender_id ??
+    p.sender?.senderId ??
+    p.sender?.sender_id ??
+    null;
+
+  let threadContext = p.conversationHistory || p.thread;
+  if (!threadContext && recent.length) {
+    threadContext = recent.map((m) => ({
+      role: m.is_reply ? 'prospect' : 'us',
+      message: msgTextFromRecentRow(m),
+      at: m.creation_time,
+    }));
+  }
+
+  return {
+    campaignId,
+    campaignName,
+    leadId,
+    conversationId,
+    linkedinUrl,
+    leadName,
+    inboundMessage,
+    listId,
+    linkedinAccountId,
+    senderId,
+    threadContext,
+  };
+}
+
+const heyreachDedupe = new Map();
+
+function heyreachDedupeKey({
+  clientId, campaignId, leadId, conversationId, inboundMessage, linkedinUrl, listId, linkedinAccountId,
+}) {
+  const msg = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 500);
+  const threadKey = String(conversationId || '').trim() || String(leadId || '');
+  return [
+    clientId,
+    'heyreach',
+    String(campaignId || ''),
+    threadKey,
+    String(linkedinUrl || ''),
+    String(listId || ''),
+    String(linkedinAccountId || ''),
+    msg,
+  ].join('|');
+}
+
+function isHeyreachDuplicate(key) {
+  const now = Date.now();
+  const ttlMs = 5 * 60 * 1000;
+  const last = heyreachDedupe.get(key);
+  if (heyreachDedupe.size > 2000) {
+    for (const [k, ts] of heyreachDedupe.entries()) {
+      if (now - ts > ttlMs) heyreachDedupe.delete(k);
+    }
+  }
+  if (last && now - last < ttlMs) return true;
+  heyreachDedupe.set(key, now);
+  return false;
+}
+
+async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage }) {
+  const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return false;
+  const threadKey = conversationId != null && String(conversationId).trim() !== ''
+    ? String(conversationId).trim()
+    : leadId == null
+      ? ''
+      : String(leadId);
+  const { rows } = await db.query(
+    `SELECT 1
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'heyreach'
+        AND campaign_id = $2
+        AND COALESCE(lead_id, '') = $3
+        AND created_at > now() - interval '30 minutes'
+        AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+      LIMIT 1`,
+    [clientId, String(campaignId || ''), threadKey, normalized]
+  );
+  return rows.length > 0;
+}
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
 
-  console.log('[Webhook] SmartLead inbound', { clientId, payload: JSON.stringify(payload).slice(0, 500) });
+  console.log('[Webhook] SmartLead inbound', { clientId, payload: JSON.stringify(payload).slice(0, 4000) });
 
   try {
     const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
@@ -23,11 +276,87 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaign_id || payload.campaignId;
-    const leadId = payload.lead_id || payload.leadId;
-    const leadEmail = payload.email || payload.lead_email || payload.to_email;
-    const leadName = payload.name || payload.lead_name || payload.first_name || 'Unknown';
-    const inboundMessage = payload.reply || payload.message || payload.body || '';
+    const slEnhance = smartleadWebhookEnhancementsEnabled();
+
+    // SmartLead webhook payloads vary by event + test button; support common shapes.
+    const leadData = payload.lead_data || payload.lead || {};
+    // SmartLead EMAIL_REPLY payloads often use reply_message/sent_message (not "reply").
+    const replyObj =
+      payload.reply_message ||
+      payload.replyMessage ||
+      payload.reply ||
+      payload.latest_reply ||
+      payload.last_reply ||
+      null;
+
+    const campaignId =
+      payload.campaign_id ||
+      payload.campaignId ||
+      payload.campaign?.id ||
+      leadData.campaign_id ||
+      leadData.campaignId;
+
+    const leadId =
+      payload.lead_id ||
+      payload.leadId ||
+      payload.lead?.id ||
+      leadData.lead_id ||
+      leadData.leadId ||
+      leadData.id ||
+      // SmartLead EMAIL_REPLY shape:
+      payload.sl_email_lead_id ||
+      payload.slEmailLeadId ||
+      payload.sl_email_lead_map_id ||
+      payload.slEmailLeadMapId;
+
+    const leadEmail =
+      payload.email ||
+      payload.lead_email ||
+      payload.to_email ||
+      payload.sl_lead_email ||
+      payload.slLeadEmail ||
+      leadData.email ||
+      leadData.lead_email ||
+      payload.lead?.email;
+
+    const leadName =
+      payload.name ||
+      payload.lead_name ||
+      payload.first_name ||
+      payload.to_name ||
+      payload.toName ||
+      (leadData.first_name ? `${leadData.first_name} ${leadData.last_name || ''}`.trim() : null) ||
+      leadData.name ||
+      payload.lead?.first_name ||
+      'Unknown';
+
+    if (slEnhance) {
+      const ev = String(
+        payload.event_type || payload.eventType || payload.event || payload.webhook_event || payload.type || ''
+      ).toUpperCase();
+      if (ev && SMARTLEAD_NON_REPLY_EVENTS.has(ev)) {
+        console.log('[Webhook] SmartLead skipped non-reply event', { clientId, event: ev });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'non_reply_event', event: ev });
+      }
+    }
+
+    const inboundMessage = slEnhance
+      ? parseInboundFromPayload(replyObj, payload)
+      : (
+          (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj) ||
+          payload.reply_text ||
+          payload.message ||
+          payload.body ||
+          ''
+        );
+
+    console.log('[Webhook] SmartLead extracted', {
+      clientId,
+      campaignId,
+      leadId,
+      hasLeadData: !!payload.lead_data,
+      hasReplyObj: !!replyObj,
+    });
 
     if (!campaignId || !leadId) {
       console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId });
@@ -47,14 +376,70 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
     }
 
-    // Fetch full thread history
+    await cancelForInboundReply({
+      clientId,
+      platform: 'smartlead',
+      campaignId,
+      leadId,
+      conversationId: null,
+    });
+
+    // Fetch full thread history AND resolve the email_stats_id we'll need at send time.
     let threadContext;
+    let smartleadEmailStatsId = null;
     try {
       threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, campaignId, leadId);
+      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId, leadId, emailStatsId: smartleadEmailStatsId });
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      threadContext = [{ role: 'prospect', message: inboundMessage }];
+      let fallbackMsg = String(inboundMessage || '').trim();
+      if (slEnhance && fallbackMsg) {
+        fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
+        fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
+      }
+      threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
     }
+
+    let inboundEffective = String(inboundMessage || '').trim();
+    if (slEnhance && inboundEffective) {
+      inboundEffective = stripEmailQuotePrefix(inboundEffective);
+      inboundEffective = stripHtmlToText(inboundEffective) || inboundEffective;
+    }
+
+    if (slEnhance && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
+      const fromHist = latestInboundFromSmartleadHistory(threadContext, leadEmail);
+      const lastSentPlain = lastOutboundBodyFromSmartleadHistory(threadContext);
+      if (fromHist) {
+        const webhookLooksDup = lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain);
+        if (!inboundEffective || webhookLooksDup) {
+          inboundEffective = fromHist;
+          console.log('[Webhook] SmartLead inbound from message-history', {
+            clientId, campaignId, leadId, replacedWebhookDup: !!webhookLooksDup, len: inboundEffective.length,
+          });
+        }
+      } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
+        inboundEffective = '';
+      }
+    }
+
+    if (!inboundEffective) {
+      console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId, leadId, leadEmail });
+      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+        leadName: `${leadName} (SmartLead)`,
+        platform: 'smartlead',
+        error:
+          'No usable reply body from webhook or message-history. Reply manually in SmartLead.',
+      });
+      return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
+    }
+
+    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), campaignId);
+    const lastOutboundSl =
+      smartleadLastOutboundFromPayload(payload) ||
+      (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
+        ? lastOutboundBodyFromSmartleadHistory(threadContext)
+        : '');
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
@@ -62,7 +447,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     try {
       result = await classifyAndDraft(
         threadContext,
-        inboundMessage,
+        inboundEffective,
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock
@@ -76,14 +461,37 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
+    // Suppress out-of-office / auto-replies even if the classifier misses.
+    if (classification === 'OOO' || looksLikeOutOfOffice(inboundEffective)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
+    // Suppress "wrong person / no longer employed" redirects (treat as WRONG_PERSON but no Slack noise).
+    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundEffective)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
+    }
+    // Suppress clear negative "not interested" replies (no Slack noise).
+    if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundEffective)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'not_interested' });
+    }
+    if (classification === 'REMOVE_ME') {
+      // Silently unsubscribe — do not post to Slack / channel.
+      try {
+        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
+        await fetch(unsubUrl, { method: 'POST' });
+        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
+      } catch (err) {
+        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
+      }
+      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
+    }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundMessage, JSON.stringify(threadContext), classification, draft, status]
+        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft) {
@@ -98,26 +506,17 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
         replyId: reply.id, leadName, leadEmail, platform: 'smartlead',
-        classification, draft, reasoning, inboundMessage,
+        classification, draft, reasoning, inboundMessage: inboundEffective,
+        campaignDisplay: campaignDisplaySl,
+        lastOutboundMessage: lastOutboundSl,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
-    } else if (classification === 'REMOVE_ME') {
-      try {
-        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
-        await fetch(unsubUrl, { method: 'POST' });
-        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
-      } catch (err) {
-        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
-      }
-
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
-
     } else {
       await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
+        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
+        campaignDisplay: campaignDisplaySl,
+        lastOutboundMessage: lastOutboundSl,
       });
     }
 
@@ -134,7 +533,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
 
-  console.log('[Webhook] HeyReach inbound', { clientId, payload: JSON.stringify(payload).slice(0, 500) });
+  console.log('[Webhook] HeyReach inbound', { clientId, payload: JSON.stringify(payload).slice(0, 4000) });
 
   try {
     const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
@@ -143,13 +542,30 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true });
     }
 
-    const campaignId = payload.campaignId || payload.campaign_id;
-    const leadId = payload.leadId || payload.lead_id;
-    const linkedinUrl = payload.linkedinUrl || payload.linkedin_url || payload.profileUrl;
-    const leadName = payload.name || payload.lead_name || payload.firstName || 'Unknown';
-    const inboundMessage = payload.message || payload.reply || payload.body || '';
-    const listId = payload.listId || payload.list_id;
-    const linkedinAccountId = payload.linkedinAccountId || payload.linkedin_account_id;
+    const hr = normalizeHeyreachPayload(payload);
+    const {
+      campaignId,
+      campaignName: hrCampaignName,
+      leadId,
+      conversationId: hrConversationId,
+      linkedinUrl,
+      leadName,
+      inboundMessage,
+      listId,
+      linkedinAccountId,
+      senderId: hrSenderId,
+      threadContext: normalizedThread,
+    } = hr;
+
+    console.log('[Webhook] HeyReach extracted', {
+      clientId,
+      client: client.name,
+      campaignId,
+      leadId,
+      conversationId: hrConversationId,
+      inboundLen: (inboundMessage || '').length,
+      hasLinkedinUrl: !!linkedinUrl,
+    });
 
     if (!client.heyreach_api_key) {
       console.warn('[Webhook] HeyReach skipped — no API key on client', { clientId, client: client.name });
@@ -159,6 +575,30 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     if (!campaignId) {
       console.warn('[Webhook] HeyReach skipped — missing campaign id (cannot tie to client campaigns)', { clientId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
+    }
+
+    if (!leadId && !hrConversationId) {
+      console.warn('[Webhook] HeyReach skipped — missing lead id and conversation_id', { clientId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'missing_thread_ids' });
+    }
+
+    const dedupeKey = heyreachDedupeKey({
+      clientId,
+      campaignId,
+      leadId,
+      conversationId: hrConversationId,
+      inboundMessage,
+      linkedinUrl,
+      listId,
+      linkedinAccountId,
+    });
+    if (isHeyreachDuplicate(dedupeKey)) {
+      console.log('[Webhook] HeyReach duplicate suppressed', { clientId, campaignId, leadId, conversationId: hrConversationId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
+    }
+    if (await heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId: hrConversationId, inboundMessage })) {
+      console.log('[Webhook] HeyReach duplicate suppressed (db)', { clientId, campaignId, leadId, conversationId: hrConversationId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
 
     let heyreachCampaignOk = false;
@@ -175,82 +615,148 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
 
-    const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
+    let threadContext =
+      (Array.isArray(normalizedThread) && normalizedThread.length
+        ? normalizedThread
+        : null) ||
+      payload.conversationHistory ||
+      payload.thread ||
+      [{ role: 'prospect', message: inboundMessage || '(no message body)' }];
 
-    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
-
-    let result;
-    try {
-      result = await classifyAndDraft(
-        threadContext,
-        inboundMessage,
-        client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock
-      );
-    } catch (err) {
-      console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', error: err.message,
-      });
-      return res.status(200).json({ ok: true, error: 'classifier failed' });
-    }
-
-    const { classification, draft, proposed_time, reasoning } = result;
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-    const status = isDraft ? 'pending' : 'alert_only';
-
-    const contextWithMeta = {
-      messages: threadContext,
-      heyreach: { listId, linkedinAccountId, linkedinUrl },
-    };
-
-    const { rows: [reply] } = await db.query(
-      `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [clientId, 'heyreach', campaignId, leadId, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+    const campaignDisplayHr = formatCampaignDisplay(
+      hrCampaignName || (payload.campaign && payload.campaign.name),
+      campaignId
     );
+    let lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
 
-    if (isDraft) {
-      // For MEETING_PROPOSED on LinkedIn, look up email for meeting tracking
-      let leadEmail = null;
-      if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
-        try {
-          leadEmail = await profileToEmail(linkedinUrl);
-          console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
-          if (leadEmail) {
-            await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
+    await cancelForInboundReply({
+      clientId,
+      platform: 'heyreach',
+      campaignId,
+      leadId,
+      conversationId: hrConversationId,
+    });
+
+    // Acknowledge quickly so HeyReach does not queue retries while we call Gemini/Slack.
+    res.status(200).json({ ok: true, accepted: true });
+
+    setImmediate(async () => {
+      try {
+        // Webhook payloads can include only the latest reply. Enrich from inbox API so Slack
+        // shows "Your last message" and Gemini sees the full context.
+        if (hrConversationId) {
+          try {
+            const full = await heyreach.findConversation(client.heyreach_api_key, {
+              conversationId: hrConversationId,
+              leadId,
+              linkedinUrl,
+            });
+            const fullMessages = Array.isArray(full?.messages) ? full.messages : [];
+            if (fullMessages.length) {
+              threadContext = fullMessages.map((m) => ({
+                role: String(m.sender || '').toUpperCase() === 'ME' || m.is_reply === false ? 'us' : 'prospect',
+                message: m.body || m.message || m.text || m.content || '',
+                at: m.createdAt || m.creation_time || m.created_at || null,
+              })).filter((m) => m.message);
+              lastOutboundHr = heyreachLastOutboundFromThread(threadContext) || lastOutboundHr;
+            }
+          } catch (err) {
+            console.warn('[Webhook] HeyReach conversation enrichment failed', {
+              clientId, conversationId: hrConversationId, err: err.message,
+            });
           }
-        } catch (err) {
-          console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
         }
 
-        await db.query(
-          `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
-          [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+        // Skip slow Calendly/calendar network calls on the LinkedIn webhook path; include booking link guidance.
+        const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
+
+        let result;
+        try {
+          result = await classifyAndDraft(
+            threadContext,
+            inboundMessage,
+            client.voice_prompt,
+            client.booking_link,
+            schedulingPromptBlock
+          );
+        } catch (err) {
+          console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
+          await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+            leadName, platform: 'heyreach', error: err.message,
+          });
+          return;
+        }
+
+        const { classification, draft, proposed_time, reasoning } = result;
+        if (classification === 'OOO' || looksLikeOutOfOffice(inboundMessage)) return;
+        if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) return;
+        if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) return;
+        if (classification === 'REMOVE_ME') return;
+
+        const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+        const status = isDraft ? 'pending' : 'alert_only';
+
+        const contextWithMeta = {
+          messages: threadContext,
+          heyreach: {
+            listId,
+            linkedinAccountId,
+            linkedinUrl,
+            conversationId: hrConversationId,
+            senderId: hrSenderId,
+            campaignName: hrCampaignName || (payload.campaign && payload.campaign.name) || null,
+          },
+        };
+
+        const leadIdForRow = leadId || hrConversationId;
+
+        const { rows: [reply] } = await db.query(
+          `INSERT INTO pending_replies
+            (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
+
+        if (isDraft) {
+          let leadEmail = null;
+          const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
+            replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
+            classification, draft, reasoning, inboundMessage,
+            campaignDisplay: campaignDisplayHr,
+            lastOutboundMessage: lastOutboundHr,
+          });
+          await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
+
+          if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
+            try {
+              leadEmail = await profileToEmail(linkedinUrl);
+              console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
+              if (leadEmail) {
+                await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
+              }
+            } catch (err) {
+              console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
+            }
+
+            await db.query(
+              `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
+               VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
+              [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+            );
+          }
+        } else {
+          await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+            leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+            campaignDisplay: campaignDisplayHr,
+            lastOutboundMessage: lastOutboundHr,
+          });
+        }
+
+        console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName });
+      } catch (bgErr) {
+        console.error('[Webhook] HeyReach async handler error', { clientId, err: bgErr.message, stack: bgErr.stack });
       }
-
-      const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-        replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
-        classification, draft, reasoning, inboundMessage,
-      });
-      await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else if (classification === 'REMOVE_ME') {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
-
-    } else {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
-    }
-
-    res.status(200).json({ ok: true, classification, replyId: reply.id });
+    });
 
   } catch (err) {
     console.error('[Webhook] HeyReach handler error', { clientId, err: err.message, stack: err.stack });

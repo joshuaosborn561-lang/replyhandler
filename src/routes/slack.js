@@ -2,9 +2,58 @@ const { Router } = require('express');
 const db = require('../db');
 const slackService = require('../services/slack');
 const slackVerify = require('../middleware/slackVerify');
-const { sendReplyToPlatform, maybeBookMeetingAfterSend } = require('../services/reply-send');
+const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
+const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
+const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
 const router = Router();
+
+function formatCampaignDisplay(campaignName, campaignId) {
+  const id = campaignId != null ? String(campaignId).trim() : '';
+  const name = campaignName != null ? String(campaignName).trim() : '';
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return `Campaign ${id}`;
+  return '';
+}
+
+function heyreachLastOutboundFromMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let last = '';
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const role = String(m.role || '').toLowerCase();
+    const isUs = role === 'us' || role === 'me' || role === 'sender' || role === 'user';
+    if (!isUs) continue;
+    const txt =
+      (typeof m.message === 'string' && m.message) ||
+      (typeof m.text === 'string' && m.text) ||
+      (typeof m.body === 'string' && m.body) ||
+      '';
+    if (txt && String(txt).trim()) last = String(txt).trim();
+  }
+  return last;
+}
+
+function slackCardContextFromReply(reply) {
+  let tc = reply.thread_context;
+  if (typeof tc === 'string') {
+    try { tc = JSON.parse(tc); } catch { tc = null; }
+  }
+  const campaignId = reply.campaign_id;
+  let campaignDisplay = formatCampaignDisplay(null, campaignId);
+  let lastOutbound = '';
+
+  if (reply.platform === 'heyreach' && tc && typeof tc === 'object' && !Array.isArray(tc)) {
+    const meta = tc.heyreach && typeof tc.heyreach === 'object' ? tc.heyreach : {};
+    campaignDisplay = formatCampaignDisplay(meta.campaignName, campaignId) || campaignDisplay;
+    lastOutbound = heyreachLastOutboundFromMessages(tc.messages);
+  } else if (reply.platform === 'smartlead' && tc && typeof tc === 'object') {
+    lastOutbound = lastOutboundBodyFromSmartleadHistory(tc) || '';
+  }
+
+  return { campaignDisplay: campaignDisplay || undefined, lastOutboundMessage: lastOutbound || undefined };
+}
 
 router.post('/slack/actions', slackVerify, async (req, res) => {
   let interaction;
@@ -40,6 +89,12 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleReject(action.value, interaction);
     } else if (action.action_id === 'open_edit_modal') {
       await handleOpenEditModal(action.value, interaction);
+    } else if (action.action_id === 'already_replied_yes') {
+      await handleAlreadyRepliedYes(action.value, interaction);
+    } else if (action.action_id === 'already_replied_no') {
+      await handleAlreadyRepliedNo(action.value, interaction);
+    } else if (action.action_id === 'snooze_nudge_30') {
+      await handleSnoozeNudge(action.value, interaction, 30);
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });
@@ -98,7 +153,13 @@ async function handleEditModalSubmit(interaction) {
       ['sent', messageText, replyId]
     );
 
+    const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
+    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+
     let statusMsg = `✅ Reply to ${reply.lead_name} edited and sent by <@${interaction.user.id}>.`;
+    if (isSlackTestFixtureReply(reply)) {
+      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+    }
     statusMsg += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
 
     if (channelId && messageTs) {
@@ -140,7 +201,13 @@ async function handleApprove(replyId, interaction) {
       ['sent', reply.draft_reply, replyId]
     );
 
+    const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
+    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+
     let statusMsg = `✅ Reply to ${reply.lead_name} approved and sent by <@${interaction.user.id}>.`;
+    if (isSlackTestFixtureReply(reply)) {
+      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+    }
     statusMsg += await maybeBookMeetingAfterSend(reply, client);
 
     await slackService.updateMessage(
@@ -175,6 +242,106 @@ async function handleReject(replyId, interaction) {
   );
 
   console.log('[Slack] Reply rejected', { replyId, lead: reply.lead_name });
+}
+
+
+async function handleAlreadyRepliedYes(replyId, interaction) {
+  const { rows: [reply] } = await db.query(
+    `UPDATE pending_replies SET status = 'sent', updated_at = now(),
+        sent_reply = COALESCE(sent_reply, draft_reply)
+      WHERE id = $1 AND status IN ('pending','approved')
+      RETURNING *`,
+    [replyId]
+  );
+  if (!reply) {
+    console.warn('[Slack] already_replied_yes: row not pending', { replyId });
+    return;
+  }
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  if (interaction.channel?.id && interaction.message?.ts) {
+    // Replace the inline nudge with a confirmation (keeps the original approval card intact above).
+    try {
+      await slackService.updateMessage(
+        client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+        `✅ Marked as already replied by <@${interaction.user.id}> — ${reply.lead_name}.`
+      );
+    } catch (e) { console.error('[Slack] update nudge failed', { err: e.message }); }
+  }
+  try {
+    const { rows: pendingReply } = await db.query('SELECT slack_message_ts FROM pending_replies WHERE id = $1', [replyId]);
+    const parentTs = pendingReply[0]?.slack_message_ts;
+    if (parentTs) {
+      await slackService.updateMessage(
+        client.slack_bot_token, interaction.channel.id, parentTs,
+        `✅ Reply to ${reply.lead_name} marked as already replied by <@${interaction.user.id}> (outside app).`
+      );
+    }
+  } catch (e) { console.error('[Slack] update parent failed', { err: e.message }); }
+  console.log('[Slack] already replied marked', { replyId, lead: reply.lead_name });
+}
+
+async function handleAlreadyRepliedNo(replyId, interaction) {
+  const { rows: [reply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
+  if (!reply) {
+    console.warn('[Slack] already_replied_no: reply not found', { replyId });
+    return;
+  }
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const draft = reply.draft_reply || '(no draft stored — use Edit & send)';
+  const ctx = slackCardContextFromReply(reply);
+
+  // Post the draft as a fresh approval card so user can Approve/Edit/Reject with the same send path.
+  const posted = await slackService.postDraftApproval(
+    client.slack_bot_token,
+    client.slack_channel_id,
+    {
+      replyId: reply.id,
+      leadName: reply.lead_name,
+      leadEmail: reply.lead_email,
+      platform: reply.platform,
+      classification: reply.classification || 'FOLLOW_UP',
+      draft,
+      reasoning: 'Re-surfaced because you said you have not replied yet.',
+      inboundMessage: reply.inbound_message || '(no inbound)',
+      campaignDisplay: ctx.campaignDisplay,
+      lastOutboundMessage: ctx.lastOutboundMessage,
+    }
+  );
+  await db.query('UPDATE pending_replies SET slack_message_ts = $1, status = $2, updated_at = now() WHERE id = $3',
+    [posted.ts, 'pending', replyId]
+  );
+}
+
+
+async function handleSnoozeNudge(replyId, interaction, minutes) {
+  const mins = Math.max(1, parseInt(minutes, 10) || 30);
+  const { rows: [reply] } = await db.query(
+    `UPDATE pending_replies
+        SET pending_nudge_snoozed_until = now() + ($2::int * interval '1 minute'),
+            pending_nudge_next_at = now() + ($2::int * interval '1 minute'),
+            updated_at = now()
+      WHERE id = $1 AND status = 'pending'
+      RETURNING *`,
+    [replyId, mins]
+  );
+  if (!reply) {
+    console.warn('[Slack] snooze: reply not pending', { replyId });
+    return;
+  }
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  if (interaction.channel?.id && interaction.message?.ts) {
+    try {
+      await slackService.updateMessage(
+        client.slack_bot_token,
+        interaction.channel.id,
+        interaction.message.ts,
+        `💤 Nudge snoozed ${mins} min for *${reply.lead_name}* by <@${interaction.user.id}>.`
+      );
+    } catch (e) {
+      console.error('[Slack] snooze update failed', { err: e.message });
+    }
+  }
+  console.log('[Slack] nudge snoozed', { replyId, lead: reply.lead_name, mins });
 }
 
 module.exports = router;

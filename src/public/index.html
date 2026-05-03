@@ -762,7 +762,7 @@
           <li>Log in to <a href="https://app.heyreach.io" target="_blank">HeyReach</a> as <strong>that client&rsquo;s</strong> workspace (or their sub-account, however you separate clients)</li>
           <li><strong>Settings</strong> &rarr; <strong>Integrations</strong> &rarr; <strong>API Keys</strong> &rarr; <strong>Generate New Key</strong></li>
         </ol>
-        <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns. Webhooks must include a <code>campaignId</code> (or <code>campaign_id</code>) so we can match the event to their campaigns.</div>
+        <div class="guide-note">Leave blank if this client doesn't run LinkedIn campaigns. HeyReach reply webhooks often send <code>campaign.id</code> and <code>recent_messages</code> — we support that shape as well as top-level <code>campaignId</code>.</div>
       </div>
     </details>
 
