@@ -7,8 +7,9 @@ const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webh
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
-const PENDING_NUDGE_MINUTES = parseInt(process.env.PENDING_NUDGE_MINUTES || '5', 10);
 const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
+const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
+const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
 
 function clientTimezone(client) {
   return client?.digest_timezone || DEFAULT_TZ;
@@ -27,8 +28,13 @@ function hourInTimezone(tz) {
 
 function dateInTimezone(tz) {
   try {
-    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-    return fmt.format(new Date());
+    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const parts = fmt.formatToParts(new Date());
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+    return new Date().toISOString().slice(0, 10);
   } catch {
     return new Date().toISOString().slice(0, 10);
   }
@@ -67,94 +73,6 @@ function startCron() {
       }
     });
   }
-
-  // ─── Stale reply reminders (every 10 minutes) ─────────────────────
-  cron.schedule('*/10 * * * *', async () => {
-    try {
-      const { rows: staleReplies } = await db.query(
-        `SELECT pr.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name
-         FROM pending_replies pr
-         JOIN clients c ON pr.client_id = c.id
-         WHERE pr.status = 'pending'
-           AND pr.slack_message_ts IS NOT NULL
-           AND pr.created_at < now() - interval '30 minutes'
-         ORDER BY pr.created_at ASC`
-      );
-
-      for (const reply of staleReplies) {
-        const ageMinutes = Math.floor((Date.now() - new Date(reply.created_at).getTime()) / 60000);
-        const shouldEscalate = ageMinutes >= 120;
-        if (shouldEscalate && reply.reminder_count >= 2) continue;
-        if (!shouldEscalate && reply.reminder_count >= 1) continue;
-
-        try {
-          await slack.postReminder(
-            reply.slack_bot_token,
-            reply.slack_channel_id,
-            reply.slack_message_ts,
-            { replyId: reply.id, leadName: reply.lead_name, minutes: ageMinutes, escalate: shouldEscalate }
-          );
-          const newCount = shouldEscalate ? 2 : 1;
-          await db.query('UPDATE pending_replies SET reminder_count = $1, updated_at = now() WHERE id = $2', [newCount, reply.id]);
-        } catch (err) {
-          console.error('[Cron] Failed to send reply reminder', { replyId: reply.id, err: err.message });
-        }
-      }
-    } catch (err) {
-      console.error('[Cron] Stale replies check failed', { err: err.message });
-    }
-  });
-
-  // ─── Recurring "did you already reply?" nudge — every PENDING_NUDGE_MINUTES (default 5) ────────
-  cron.schedule('* * * * *', async () => {
-    try {
-      // Pull cards that are either unnudged (pending_nudge_next_at NULL) or whose next nudge is due.
-      // Respect snooze_until (if set and in the future, skip).
-      const { rows: due } = await db.query(
-        `SELECT pr.*, c.slack_bot_token, c.slack_channel_id
-         FROM pending_replies pr
-         JOIN clients c ON pr.client_id = c.id
-         WHERE pr.status = 'pending'
-           AND pr.slack_message_ts IS NOT NULL
-           AND (pr.pending_nudge_snoozed_until IS NULL OR pr.pending_nudge_snoozed_until <= now())
-           AND (
-             (pr.pending_nudge_next_at IS NULL AND pr.created_at < now() - ($1::int * interval '1 minute'))
-             OR
-             (pr.pending_nudge_next_at IS NOT NULL AND pr.pending_nudge_next_at <= now())
-           )
-         ORDER BY pr.created_at ASC
-         LIMIT 50`,
-        [PENDING_NUDGE_MINUTES]
-      );
-
-      for (const reply of due) {
-        try {
-          const minutes = Math.max(PENDING_NUDGE_MINUTES, Math.floor((Date.now() - new Date(reply.created_at).getTime()) / 60000));
-          await slack.postPendingNudge(
-            reply.slack_bot_token,
-            reply.slack_channel_id,
-            reply.slack_message_ts,
-            { replyId: reply.id, leadName: reply.lead_name, minutes }
-          );
-          await db.query(
-            `UPDATE pending_replies
-               SET pending_nudge_sent_at = now(),
-                   pending_nudge_next_at = now() + ($1::int * interval '1 minute'),
-                   pending_nudge_count = COALESCE(pending_nudge_count, 0) + 1,
-                   pending_nudge_snoozed_until = NULL,
-                   updated_at = now()
-             WHERE id = $2`,
-            [PENDING_NUDGE_MINUTES, reply.id]
-          );
-          console.log('[Cron] Pending nudge sent', { replyId: reply.id, lead: reply.lead_name, minutes, count: (reply.pending_nudge_count || 0) + 1 });
-        } catch (err) {
-          console.error('[Cron] Pending nudge failed', { replyId: reply.id, err: err.message });
-        }
-      }
-    } catch (err) {
-      console.error('[Cron] Pending nudge scan failed', { err: err.message });
-    }
-  });
 
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
@@ -203,14 +121,13 @@ function startCron() {
         if (localHour !== 8) continue;
         const digestDate = dateInTimezone(tz);
 
-        const already = await db.query(
-          'SELECT 1 FROM morning_digests WHERE client_id = $1 AND digest_date = $2',
-          [client.id, digestDate]
-        );
-        if (already.rowCount > 0) continue;
-
         try {
-          await buildAndPostMorningDigest(client, digestDate, tz);
+          await buildAndPostAttentionDigest(client, {
+            digestDate,
+            tz,
+            digestType: 'morning',
+            dateLabel: digestDate,
+          });
         } catch (err) {
           console.error('[Cron] Morning digest failed', { clientId: client.id, err: err.message });
         }
@@ -220,43 +137,118 @@ function startCron() {
     }
   });
 
-  console.log('[Cron] Jobs scheduled: HeyReach polling, stale-reply reminders, 5-min pending nudge, meeting reminders, morning digest (per client TZ)');
+  // ─── Afternoon 3pm Central digest (run every 15 min) ───────────────
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      const localHour = hourInTimezone(AFTERNOON_DIGEST_TZ);
+      if (localHour !== AFTERNOON_DIGEST_HOUR) return;
+      const digestDate = dateInTimezone(AFTERNOON_DIGEST_TZ);
+      const { rows: clients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false');
+      for (const client of clients) {
+        try {
+          await buildAndPostAttentionDigest(client, {
+            digestDate,
+            tz: AFTERNOON_DIGEST_TZ,
+            digestType: 'afternoon',
+            dateLabel: `${digestDate} 3pm CT`,
+          });
+        } catch (err) {
+          console.error('[Cron] Afternoon digest failed', { clientId: client.id, err: err.message });
+        }
+      }
+    } catch (err) {
+      console.error('[Cron] Afternoon digest scan failed', { err: err.message });
+    }
+  });
+
+  console.log('[Cron] Jobs scheduled: HeyReach polling, meeting reminders, morning attention digest, 3pm CT attention digest');
 }
 
-/** Collect silent prospects from last ~36h, draft follow-ups, post approval cards in Slack. */
-async function buildAndPostMorningDigest(client, digestDate, tz) {
-  // Candidate follow-ups: scheduled outbound that prospect hasn't replied to.
-  // Normally: include follow-ups from "yesterday" (client-local date).
-  // Monday: include Fri+Sat+Sun and remind on Monday.
-  const endDate = addDays(digestDate, -1); // yesterday
-  const dow = dayOfWeekInTimezone(tz);
-  const startDate = dow === 'Mon' ? addDays(endDate, -2) : endDate; // Fri..Sun on Monday, else just yesterday
+async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {
+  const { rows } = await db.query(
+    `SELECT 1 FROM attention_digests WHERE client_id = $1 AND digest_date = $2 AND digest_type = $3`,
+    [clientId, digestDate, digestType]
+  );
+  return rows.length > 0;
+}
 
+async function recordAttentionDigest({ clientId, digestDate, digestType, pendingCount, followUpCount, slackMessageTs }) {
+  await db.query(
+    `INSERT INTO attention_digests (client_id, digest_date, digest_type, pending_count, follow_up_count, slack_message_ts)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (client_id, digest_date, digest_type) DO NOTHING`,
+    [clientId, digestDate, digestType, pendingCount, followUpCount, slackMessageTs || null]
+  );
+}
+
+async function pendingApprovalRows(clientId) {
+  const { rows } = await db.query(
+    `SELECT id, platform, campaign_id, lead_name, classification, created_at, slack_message_ts
+       FROM pending_replies
+      WHERE client_id = $1
+        AND status = 'pending'
+        AND classification <> 'FOLLOW_UP'
+      ORDER BY created_at ASC
+      LIMIT 25`,
+    [clientId]
+  );
+  return rows;
+}
+
+/** Collect pending approvals + silent prospects, draft follow-ups, post digest/update in Slack. */
+async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType, dateLabel }) {
+  if (await alreadyPostedAttentionDigest(client.id, digestDate, digestType)) return;
+
+  const pendingApprovals = await pendingApprovalRows(client.id);
+
+  // Candidate follow-ups: scheduled outbound where the due time has arrived and the prospect
+  // still has not replied. Morning and 3pm digests are the only Slack notifications for these.
   const { rows: pendingFollowUps } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*
      FROM outbound_follow_ups f
      WHERE f.client_id = $1
        AND f.status = 'pending'
-       AND (f.sent_at AT TIME ZONE $2)::date BETWEEN $3::date AND $4::date
-     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.sent_at DESC`,
-    [client.id, tz, startDate, endDate]
+       AND f.due_at <= now()
+     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at DESC`,
+    [client.id]
   );
 
-  if (pendingFollowUps.length === 0) {
-    const header = await slack.postMorningDigestHeader(client.slack_bot_token, client.slack_channel_id, { count: 0, dateLabel: digestDate });
-    await db.query(
-      `INSERT INTO morning_digests (client_id, digest_date, follow_up_count, slack_message_ts) VALUES ($1, $2, 0, $3)`,
-      [client.id, digestDate, header?.ts || null]
-    );
-    console.log('[Cron] Morning digest posted (empty)', { clientId: client.id, date: digestDate });
+  if (pendingApprovals.length === 0 && pendingFollowUps.length === 0) {
+    const header = await slack.postAttentionDigestHeader(client.slack_bot_token, client.slack_channel_id, {
+      digestType,
+      dateLabel,
+      pendingCount: 0,
+      followUpCount: 0,
+    });
+    await recordAttentionDigest({
+      clientId: client.id,
+      digestDate,
+      digestType,
+      pendingCount: 0,
+      followUpCount: 0,
+      slackMessageTs: header?.ts || null,
+    });
+    console.log('[Cron] Attention digest posted (empty)', { clientId: client.id, date: digestDate, digestType });
     return;
   }
 
-  const header = await slack.postMorningDigestHeader(
+  const header = await slack.postAttentionDigestHeader(
     client.slack_bot_token, client.slack_channel_id,
-    { count: pendingFollowUps.length, dateLabel: digestDate }
+    {
+      digestType,
+      dateLabel,
+      pendingCount: pendingApprovals.length,
+      followUpCount: pendingFollowUps.length,
+    }
   );
+
+  if (pendingApprovals.length > 0) {
+    await slack.postPendingApprovalDigest(client.slack_bot_token, client.slack_channel_id, {
+      pending: pendingApprovals,
+      dateLabel,
+    });
+  }
 
   let posted = 0;
   for (const fu of pendingFollowUps) {
@@ -352,13 +344,21 @@ async function buildAndPostMorningDigest(client, digestDate, tz) {
     }
   }
 
-  await db.query(
-    `INSERT INTO morning_digests (client_id, digest_date, follow_up_count, slack_message_ts)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (client_id, digest_date) DO NOTHING`,
-    [client.id, digestDate, posted, header?.ts || null]
-  );
-  console.log('[Cron] Morning digest posted', { clientId: client.id, date: digestDate, posted });
+  await recordAttentionDigest({
+    clientId: client.id,
+    digestDate,
+    digestType,
+    pendingCount: pendingApprovals.length,
+    followUpCount: posted,
+    slackMessageTs: header?.ts || null,
+  });
+  console.log('[Cron] Attention digest posted', {
+    clientId: client.id,
+    date: digestDate,
+    digestType,
+    pending: pendingApprovals.length,
+    followUpsPosted: posted,
+  });
 }
 
 module.exports = { startCron };

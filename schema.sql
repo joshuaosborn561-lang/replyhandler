@@ -107,3 +107,15 @@ CREATE TABLE outbound_follow_ups (
 
 CREATE INDEX idx_outbound_follow_ups_due_pending ON outbound_follow_ups (due_at) WHERE status = 'pending';
 CREATE INDEX idx_outbound_follow_ups_match ON outbound_follow_ups (client_id, platform, campaign_id, lead_id);
+
+CREATE TABLE attention_digests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  digest_date DATE NOT NULL,
+  digest_type TEXT NOT NULL CHECK (digest_type IN ('morning', 'afternoon')),
+  pending_count INTEGER NOT NULL DEFAULT 0,
+  follow_up_count INTEGER NOT NULL DEFAULT 0,
+  slack_message_ts TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (client_id, digest_date, digest_type)
+);

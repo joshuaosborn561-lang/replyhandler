@@ -54,6 +54,8 @@ cp .env.example .env
 | `HEYREACH_POLL_MINUTES` | Optional. Poll interval in minutes (default `3`) |
 | `HEYREACH_POLL_LOOKBACK_HOURS` | Optional. How far back the poller scans recent conversations (default `8`) |
 | `HEYREACH_POLL_CLIENTS_JSON` | Optional fallback client JSON if DB `clients` rows are unavailable. Prefer restoring clients in Postgres. |
+| `AFTERNOON_DIGEST_TIMEZONE` | Optional. Timezone for the afternoon attention digest (default `America/Chicago`) |
+| `AFTERNOON_DIGEST_HOUR` | Optional. 24h local hour for afternoon attention digest (default `15`, i.e. 3pm) |
 | `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
@@ -63,7 +65,7 @@ Each client may store an optional **`calendly_personal_access_token`**. When the
 
 **If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
 
-**Prospect follow-up nudge:** run `migrations/007_outbound_follow_ups.sql`. After a reply is **approved/sent** from Slack, if the prospect sends **another inbound** message within `FOLLOW_UP_REMINDER_HOURS`, the pending nudge is cancelled; otherwise the client’s Slack channel gets a reminder to follow up. This uses **SmartLead** `campaign_id`+`lead_id` or **HeyReach** `conversation_id` / `lead_id` from webhooks — not “read receipts” from LinkedIn/email.
+**Attention digests:** run `migrations/007_outbound_follow_ups.sql` and `migrations/012_attention_digests.sql`. The app no longer pings every 5 minutes. Instead, it posts an attention digest in the morning (client timezone) and at 3pm Central (configurable) listing pending approval cards and follow-up-needed prospects. Follow-up cards still use the existing Approve/Edit flow.
 
 ### 3. Install and Run
 

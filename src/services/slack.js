@@ -305,6 +305,55 @@ async function postMorningDigestHeader(token, channelId, { count, dateLabel }) {
   });
 }
 
+async function postAttentionDigestHeader(token, channelId, {
+  digestType, dateLabel, pendingCount, followUpCount,
+}) {
+  const slack = getClient(token);
+  const label = digestType === 'afternoon' ? '3pm follow-up check' : 'Morning follow-up digest';
+  const total = (pendingCount || 0) + (followUpCount || 0);
+  return slack.chat.postMessage({
+    channel: channelId,
+    text: `:spiral_calendar_pad: ${label} (${dateLabel})`,
+    blocks: [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `📋 ${label} — ${dateLabel}` },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: total === 0
+            ? 'Nothing needs attention right now.'
+            : `*${pendingCount || 0}* unreplied Slack card${pendingCount === 1 ? '' : 's'} and *${followUpCount || 0}* follow-up${followUpCount === 1 ? '' : 's'} need attention.`,
+        },
+      },
+    ],
+  });
+}
+
+async function postPendingApprovalDigest(token, channelId, { pending, dateLabel }) {
+  const slack = getClient(token);
+  const rows = (pending || []).slice(0, 25).map((p, i) => {
+    const created = p.created_at ? new Date(p.created_at).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'unknown time';
+    const campaign = p.campaign_id ? ` campaign ${p.campaign_id}` : '';
+    return `${i + 1}. *${escMrkdwn(p.lead_name || 'Unknown')}* (${escMrkdwn((p.platform || '').toUpperCase())}${campaign}) — ${escMrkdwn(p.classification || 'pending')} — ${escMrkdwn(created)} CT`;
+  });
+  return slack.chat.postMessage({
+    channel: channelId,
+    text: `Pending approval cards (${dateLabel})`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Pending Slack cards you have not actioned:*\n${rows.join('\n') || 'None'}`,
+        },
+      },
+    ],
+  });
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
@@ -315,4 +364,6 @@ module.exports = {
   openEditReplyModal,
   postPendingNudge,
   postMorningDigestHeader,
+  postAttentionDigestHeader,
+  postPendingApprovalDigest,
 };
