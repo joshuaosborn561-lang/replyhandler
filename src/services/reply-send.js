@@ -19,14 +19,20 @@ async function sendReplyToPlatform(client, reply, replyText) {
     // Primary: the stats_id captured at webhook ingestion.
     // Fallback: resolve live from message-history (for older rows that predate the column).
     let emailStatsId = reply.smartlead_email_stats_id || null;
-    if (!emailStatsId) {
+    const leadId = reply.lead_id;
+    const leadIdNumeric = leadId != null && /^\d+$/.test(String(leadId).trim());
+    if (!emailStatsId && leadIdNumeric) {
       console.log('[ReplySend] SmartLead stats_id missing on row — resolving live', {
         replyId: reply.id, campaignId: reply.campaign_id, leadId: reply.lead_id,
       });
-      emailStatsId = await smartlead.resolveEmailStatsId(client.smartlead_api_key, reply.campaign_id, reply.lead_id);
+      emailStatsId = await smartlead.resolveEmailStatsId(client.smartlead_api_key, reply.campaign_id, leadId);
       if (emailStatsId) {
         await db.query('UPDATE pending_replies SET smartlead_email_stats_id = $1 WHERE id = $2', [emailStatsId, reply.id]);
       }
+    } else if (!emailStatsId && !leadIdNumeric) {
+      console.warn('[ReplySend] SmartLead stats_id missing and lead_id is not numeric — cannot resolve from history', {
+        replyId: reply.id, campaignId: reply.campaign_id, leadId: reply.lead_id,
+      });
     }
 
     await smartlead.sendReply(

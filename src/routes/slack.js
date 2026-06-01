@@ -102,9 +102,12 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 });
 
 async function handleOpenEditModal(replyId, interaction) {
-  const { rows: [reply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1 AND status = $2', [replyId, 'pending']);
+  const { rows: [reply] } = await db.query(
+    'SELECT * FROM pending_replies WHERE id = $1 AND status IN ($2, $3)',
+    [replyId, 'pending', 'flagged']
+  );
   if (!reply) {
-    console.warn('[Slack] open_edit_modal: reply not pending', { replyId });
+    console.warn('[Slack] open_edit_modal: reply not pending/flagged', { replyId });
     return;
   }
 
@@ -134,8 +137,9 @@ async function handleEditModalSubmit(interaction) {
   if (!messageText) return;
 
   const { rows: [reply] } = await db.query(
-    'UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2 AND status = $3 RETURNING *',
-    ['approved', replyId, 'pending']
+    `UPDATE pending_replies SET status = $1, updated_at = now()
+     WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
+    ['approved', replyId]
   );
 
   if (!reply) {
@@ -182,8 +186,9 @@ async function handleEditModalSubmit(interaction) {
 
 async function handleApprove(replyId, interaction) {
   const { rows: [reply] } = await db.query(
-    'UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2 AND status = $3 RETURNING *',
-    ['approved', replyId, 'pending']
+    `UPDATE pending_replies SET status = $1, updated_at = now()
+     WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
+    ['approved', replyId]
   );
 
   if (!reply) {

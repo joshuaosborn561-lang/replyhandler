@@ -143,28 +143,59 @@ function shouldHtmlifyOutboundBody() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
+/** POST /campaigns/{campaign_id}/reply-email-thread — never /leads/reply-email-thread (misroutes lead_id). */
+function replyEmailThreadUrl(apiKey, campaignId) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  return `${BASE_URL}/campaigns/${cid}/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
+}
+
+function explainSmartleadSendError(status, responseBody, campaignId, leadId, stats) {
+  const body = String(responseBody || '');
+  if (
+    status === 400 &&
+    /"lead_id"\s*must be a number/i.test(body) &&
+    /"params"/i.test(body)
+  ) {
+    return (
+      `SmartLead sendReply failed (${status}): ${body}. ` +
+      'This usually means the app called /campaigns/{id}/leads/reply-email-thread instead of /campaigns/{id}/reply-email-thread. ' +
+      'Redeploy the latest app build, then retry Approve on the Slack card.'
+    );
+  }
+  const lid = leadId != null && leadId !== '' ? leadId : 'n/a';
+  return `SmartLead sendReply failed (${status}) [campaign_id=${campaignId} lead_id=${lid} stats_id=${stats}]: ${body}`;
+}
+
 /**
  * SmartLead reply endpoint.
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
- * Required: email_stats_id, email_body.
+ * Required: email_stats_id, email_body (lead_id is not a path param on this route).
  */
 async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
-  const lid = toSmartleadId(leadId, 'lead_id');
   let stats = String(emailStatsId || '').trim();
-  if (!stats) {
-    // Last-resort in-line resolution so Slack Approve never silently 400s.
+  let lidForLog = leadId;
+  if (!stats && leadId != null && leadId !== '') {
+    const lid = toSmartleadId(leadId, 'lead_id');
+    lidForLog = lid;
     stats = (await resolveEmailStatsId(apiKey, cid, lid)) || '';
   }
   if (!stats) {
-    throw new Error(`SmartLead sendReply missing email_stats_id [campaign_id=${cid} lead_id=${lid}] — no SENT message found in thread history`);
+    const lidHint = leadId != null && leadId !== '' ? toSmartleadId(leadId, 'lead_id') : 'unknown';
+    throw new Error(
+      `SmartLead sendReply missing email_stats_id [campaign_id=${cid} lead_id=${lidHint}] — no SENT message found in thread history`
+    );
   }
   let emailBody = String(replyText || '');
   if (shouldHtmlifyOutboundBody() && !looksLikeHandwrittenHtmlEmailBody(emailBody)) {
     emailBody = formatPlainTextAsSmartleadHtml(emailBody);
   }
 
-  const url = `${BASE_URL}/campaigns/${cid}/reply-email-thread?api_key=${encodeURIComponent(apiKey)}`;
+  const url = replyEmailThreadUrl(apiKey, cid);
+  if (/\/leads\/reply-email-thread/i.test(url)) {
+    throw new Error('SmartLead sendReply internal error: misconstructed reply URL');
+  }
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -176,7 +207,7 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
   });
   const responseBody = await res.text();
   if (!res.ok) {
-    throw new Error(`SmartLead sendReply failed (${res.status}) [campaign_id=${cid} lead_id=${lid} stats_id=${stats}]: ${responseBody}`);
+    throw new Error(explainSmartleadSendError(res.status, responseBody, cid, lidForLog, stats));
   }
   // SmartLead's reply endpoint sometimes returns plain text (e.g. "Email added to the queue, will be sent out soon!")
   // even though docs show JSON. Parse defensively.

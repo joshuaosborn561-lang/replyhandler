@@ -18,6 +18,28 @@ function normWs(s) {
     .toLowerCase();
 }
 
+/** First positive integer SmartLead lead id from webhook payload (prefer sl_email_lead_id). */
+function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
+  const candidates = [
+    payload.sl_email_lead_id,
+    payload.slEmailLeadId,
+    payload.lead_id,
+    payload.leadId,
+    payload.lead?.id,
+    leadData.lead_id,
+    leadData.leadId,
+    leadData.id,
+    payload.sl_email_lead_map_id,
+    payload.slEmailLeadMapId,
+  ];
+  for (const c of candidates) {
+    if (c == null || c === '') continue;
+    const n = Number(String(c).trim());
+    if (Number.isFinite(n) && Number.isInteger(n) && n > 0) return String(n);
+  }
+  return null;
+}
+
 function stripEmailQuotePrefix(raw) {
   let t = String(raw || '').replace(/\r\n/g, '\n');
   const splitRe = /\nOn .{8,200}?wrote:\s*\n/i;
@@ -239,6 +261,7 @@ module.exports = {
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
+  normalizeSmartleadLeadId,
   SMARTLEAD_NON_REPLY_EVENTS,
   envFlag,
   smartleadWebhookEnhancementsEnabled,

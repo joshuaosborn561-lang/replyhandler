@@ -14,6 +14,7 @@ const {
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
+  normalizeSmartleadLeadId,
   SMARTLEAD_NON_REPLY_EVENTS,
   looksLikeOutOfOffice,
   looksLikeWrongPerson,
@@ -296,18 +297,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       leadData.campaign_id ||
       leadData.campaignId;
 
-    const leadId =
-      payload.lead_id ||
-      payload.leadId ||
-      payload.lead?.id ||
-      leadData.lead_id ||
-      leadData.leadId ||
-      leadData.id ||
-      // SmartLead EMAIL_REPLY shape:
-      payload.sl_email_lead_id ||
-      payload.slEmailLeadId ||
-      payload.sl_email_lead_map_id ||
-      payload.slEmailLeadMapId;
+    const leadId = normalizeSmartleadLeadId(payload, leadData);
 
     const leadEmail =
       payload.email ||
