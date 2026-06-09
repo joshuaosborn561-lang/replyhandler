@@ -15,6 +15,7 @@ const {
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
   normalizeSmartleadLeadId,
+  normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   looksLikeOutOfOffice,
   looksLikeWrongPerson,
@@ -76,6 +77,8 @@ function formatCampaignDisplay(campaignName, campaignId) {
 function smartleadCampaignName(payload) {
   const p = payload || {};
   return (
+    p.email_campaign_name ||
+    p.emailCampaignName ||
     p.campaign_name ||
     p.campaignName ||
     (p.campaign && typeof p.campaign === 'object' ? p.campaign.name : null) ||
@@ -290,12 +293,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.last_reply ||
       null;
 
-    const campaignId =
-      payload.campaign_id ||
-      payload.campaignId ||
-      payload.campaign?.id ||
-      leadData.campaign_id ||
-      leadData.campaignId;
+    const campaignId = normalizeSmartleadCampaignId(payload, leadData);
 
     const leadId = normalizeSmartleadLeadId(payload, leadData);
 

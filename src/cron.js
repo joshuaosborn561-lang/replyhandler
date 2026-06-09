@@ -5,9 +5,11 @@ const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
+const { pollSmartleadReplies } = require('./services/smartlead-poller');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
+const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '5', 10);
 const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
 const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
 
@@ -57,6 +59,23 @@ function addDays(yyyyMmDd, deltaDays) {
 }
 
 function startCron() {
+  // ─── SmartLead inbox polling backstop (webhooks are primary) ───────
+  if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_SMARTLEAD_POLLING || '').trim())) {
+    const slEvery = Number.isFinite(SMARTLEAD_POLL_MINUTES) && SMARTLEAD_POLL_MINUTES > 0
+      ? SMARTLEAD_POLL_MINUTES
+      : 5;
+    cron.schedule(`*/${slEvery} * * * *`, async () => {
+      try {
+        const result = await pollSmartleadReplies();
+        if (result && (result.processed || result.skipped)) {
+          console.log('[Cron] SmartLead poll complete', result);
+        }
+      } catch (err) {
+        console.error('[Cron] SmartLead poll failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── HeyReach polling backstop (webhooks are primary) ──────────────
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_HEYREACH_POLLING || '').trim())) {
     const every = Number.isFinite(HEYREACH_POLL_MINUTES) && HEYREACH_POLL_MINUTES > 0

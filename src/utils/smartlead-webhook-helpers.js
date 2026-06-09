@@ -18,19 +18,44 @@ function normWs(s) {
     .toLowerCase();
 }
 
-/** First positive integer SmartLead lead id from webhook payload (prefer sl_email_lead_id). */
+/** First positive integer SmartLead lead id from webhook payload (prefer email_lead_id / sl_email_lead_id). */
 function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
   const candidates = [
+    payload.email_lead_id,
+    payload.emailLeadId,
     payload.sl_email_lead_id,
     payload.slEmailLeadId,
     payload.lead_id,
     payload.leadId,
     payload.lead?.id,
+    leadData.email_lead_id,
+    leadData.emailLeadId,
     leadData.lead_id,
     leadData.leadId,
     leadData.id,
     payload.sl_email_lead_map_id,
     payload.slEmailLeadMapId,
+  ];
+  for (const c of candidates) {
+    if (c == null || c === '') continue;
+    const n = Number(String(c).trim());
+    if (Number.isFinite(n) && Number.isInteger(n) && n > 0) return String(n);
+  }
+  return null;
+}
+
+/** Campaign id from SmartLead webhook / inbox row. */
+function normalizeSmartleadCampaignId(payload = {}, leadData = {}) {
+  const candidates = [
+    payload.email_campaign_id,
+    payload.emailCampaignId,
+    payload.campaign_id,
+    payload.campaignId,
+    payload.campaign?.id,
+    leadData.email_campaign_id,
+    leadData.emailCampaignId,
+    leadData.campaign_id,
+    leadData.campaignId,
   ];
   for (const c of candidates) {
     if (c == null || c === '') continue;
@@ -262,6 +287,7 @@ module.exports = {
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
   normalizeSmartleadLeadId,
+  normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   envFlag,
   smartleadWebhookEnhancementsEnabled,
