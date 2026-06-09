@@ -308,6 +308,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.lead?.email;
 
     const leadName =
+      (payload.lead_first_name
+        ? `${payload.lead_first_name} ${payload.lead_last_name || ''}`.trim()
+        : null) ||
       payload.name ||
       payload.lead_name ||
       payload.first_name ||
