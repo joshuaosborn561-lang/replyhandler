@@ -149,9 +149,8 @@ function buildDraftModel(systemInstruction) {
     model: 'gemini-2.5-flash',
     systemInstruction,
     generationConfig: {
-      // Generous budget for a short reply. Plain text — truncation just = shorter reply.
       maxOutputTokens: 800,
-      temperature: 0.4,
+      temperature: 0.25,
       responseMimeType: 'text/plain',
     },
   });
@@ -244,11 +243,14 @@ TONE (critical):
 - Avoid stiff phrases like "Great question!" or "I appreciate your interest." Keep it natural.
 
 MOST REPLIES ARE neutral, a little skeptical, or asking about the offer (e.g. "do you mean Mets tickets?", pricing, scope, catch).
-NEVER fill in gaps or guess:
-- Do NOT confirm or deny specific offer details you are not 100% sure about.
-- Do NOT invent pricing, deliverables, ticket types, timelines, or terms.
+
+DO NOT HALLUCINATE — if you do not know the answer from the thread alone, do not guess:
+- Only state facts explicitly present in the thread. If it is not in the thread, you do not know it.
+- Do NOT confirm or deny specific offer details (yes/no to "do you mean X?", pricing, deliverables, ticket types, timelines, terms).
+- Do NOT invent, assume, or extrapolate what the offer includes.
 - Do NOT restate the offer as fact when they are asking for clarification.
-When in doubt, defer everything to a call with our CEO and push for the meeting.
+- When unsure: acknowledge briefly and book the call. Never bluff an answer in email.
+When in doubt, defer everything to our CEO on the call and push for the meeting.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
@@ -278,7 +280,7 @@ ${scheduleCtx}
     const res = await model.generateContent(
       `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply:`
+      `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
     );
     return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
