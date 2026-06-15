@@ -69,6 +69,12 @@ function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classifica
   return s;
 }
 
+function looksLikeClearInterest(msg) {
+  const m = String(msg || '').trim().toLowerCase();
+  if (!m || /\?/.test(m)) return false;
+  return /\b(tell me more|i'?m interested|sounds good|let'?s (talk|chat|connect)|open to (a )?(chat|call)|would love to hear|happy to (chat|talk|connect))\b/.test(m);
+}
+
 function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
   const name = firstNameFromLead(leadName);
   const day = nextBusinessDayLabel();
@@ -76,12 +82,10 @@ function fallbackDraftText({ leadName, inboundMessage, bookingLink, classificati
     ? String(bookingLink).trim()
     : '';
   const msg = String(inboundMessage || '').trim();
-  const hasQuestion = /\?/.test(msg)
-    || classification === 'QUESTION'
-    || classification === 'OBJECTION';
-  const ack = hasQuestion
-    ? 'Totally fair question — our CEO can walk through that on the call, and I think this could still be a great fit.'
-    : 'We\'d love to make sure it\'s a good fit on both sides.';
+  const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
+  const ack = clearInterest
+    ? 'We\'d love to make sure it\'s a good fit on both sides.'
+    : 'Totally fair question — I\'m sure we can work something out on the call. We want this to make sense and be worth your time.';
   const close = link
     ? `Here's our CEO's booking link — would ${day} work? ${link}`
     : `Would ${day} work for a quick call with our CEO?`;
@@ -236,8 +240,15 @@ Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quot
 TONE (critical):
 - Friendly, warm, and human — like a real person, not a sales template.
 - Concise: 2-3 short sentences total. No fluff, no jargon, no long paragraphs.
-- Acknowledging: always reflect what they said or why they replied before asking to book.
+- Acknowledging: reflect that you heard them, but do NOT try to answer offer details in writing.
 - Avoid stiff phrases like "Great question!" or "I appreciate your interest." Keep it natural.
+
+MOST REPLIES ARE neutral, a little skeptical, or asking about the offer (e.g. "do you mean Mets tickets?", pricing, scope, catch).
+NEVER fill in gaps or guess:
+- Do NOT confirm or deny specific offer details you are not 100% sure about.
+- Do NOT invent pricing, deliverables, ticket types, timelines, or terms.
+- Do NOT restate the offer as fact when they are asking for clarification.
+When in doubt, defer everything to a call with our CEO and push for the meeting.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
@@ -246,17 +257,17 @@ PROSPECT FIRST NAME (use in greeting): ${name}
 
 REQUIRED REPLY FORMULA (follow this structure closely):
 1. Open warmly: "Hey ${name}, thanks for getting back to me."
-2. Acknowledge their message in one short sentence:
-   - Question or concern/objection: "Totally fair question — our CEO can walk through that on the call, and I think this could still be a great fit."
-   - Interest / yes / tell me more: "We'd love to make sure it's a good fit on both sides."
-   - Mirror their point briefly when possible (e.g. pricing, timing, scope) — one clause only.
+2. Acknowledge in one short sentence — pick the best fit:
+   - Default (neutral, skeptical, clarifying question, or anything about the offer): "Totally fair question — I'm sure we can work something out on the call. We want this to make sense and be worth your time."
+   - Only if clearly enthusiastic interest with no clarifying question (e.g. "tell me more", "sounds good"): "We'd love to make sure it's a good fit on both sides."
+   - For objections/skepticism: acknowledge briefly, still do NOT argue or explain details — use the default line above.
 3. Close with booking: "Here's our CEO's booking link — would ${nextDay} work?" then the full URL: ${booking}
-   - Make clear the link is to book time with our CEO.
+   - Our CEO will walk through specifics on the call; your job is to get the meeting booked, not to sell in email.
 
 CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION: use the formula above.
+- INTERESTED / QUESTION / OBJECTION / OTHER: default to deferring details and booking the call unless clearly enthusiastic with no open questions.
 - MEETING_PROPOSED: confirm warmly; if verified availability lists specific times, you may mention one of those instead of only ${nextDay}, but still include the CEO booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief, respectful acknowledgment only (do not push booking).
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief, respectful acknowledgment only (do not push booking).
 
 VERIFIED AVAILABILITY:
 ${scheduleCtx}
@@ -327,6 +338,7 @@ module.exports = {
   firstNameFromLead,
   nextBusinessDayLabel,
   fallbackDraftText,
+  looksLikeClearInterest,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
 };
