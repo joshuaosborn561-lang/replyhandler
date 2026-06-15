@@ -7,9 +7,9 @@ function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone }) 
     ? String(bookingLink).trim()
     : '';
   if (link) {
-    return `Hey ${name}, thanks for the reply. Here is his booking link, can you do ${day}? ${link}`;
+    return `Hey ${name}, thanks for the reply. Here is our CEO's booking link, can you do ${day}? ${link}`;
   }
-  return `Hey ${name}, thanks for the reply. Can you do ${day}?`;
+  return `Hey ${name}, thanks for the reply. Can you do ${day} for a call with our CEO?`;
 }
 
 /**

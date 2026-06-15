@@ -83,8 +83,8 @@ function fallbackDraftText({ leadName, inboundMessage, bookingLink, classificati
     ? 'Good question — our CEO can go over this on the call, but I think this could be a good fit.'
     : 'Yes, we want to make sure this is a good fit also.';
   const close = link
-    ? `Here is his booking link, can you do ${day}? ${link}`
-    : `Can you do ${day}?`;
+    ? `Here is our CEO's booking link, can you do ${day}? ${link}`
+    : `Can you do ${day} for a call with our CEO?`;
   return `Hey ${name}, thanks for the reply. ${ack} ${close}`;
 }
 
@@ -245,7 +245,8 @@ REQUIRED REPLY FORMULA (follow this structure closely):
    - If they asked a question or raised a concern/objection: briefly acknowledge it, then use something like "Good question — our CEO can go over this on the call, but I think this could be a good fit."
    - If they expressed interest or said yes / tell me more: "Yes, we want to make sure this is a good fit also."
    - Keep the acknowledgment to one short sentence; do not over-explain.
-3. Close with booking: "Here is his booking link, can you do ${nextDay}?" then the full booking URL on the same line or right after: ${booking}
+3. Close with booking: "Here is our CEO's booking link, can you do ${nextDay}?" then the full booking URL on the same line or right after: ${booking}
+   - Make clear the link is to book time with our CEO (not a generic calendar link).
 
 CURRENT CLASSIFICATION: ${classification}
 - INTERESTED / QUESTION / OBJECTION: use the formula above.
