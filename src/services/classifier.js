@@ -80,12 +80,12 @@ function fallbackDraftText({ leadName, inboundMessage, bookingLink, classificati
     || classification === 'QUESTION'
     || classification === 'OBJECTION';
   const ack = hasQuestion
-    ? 'Good question — our CEO can go over this on the call, but I think this could be a good fit.'
-    : 'Yes, we want to make sure this is a good fit also.';
+    ? 'Totally fair question — our CEO can walk through that on the call, and I think this could still be a great fit.'
+    : 'We\'d love to make sure it\'s a good fit on both sides.';
   const close = link
-    ? `Here is our CEO's booking link, can you do ${day}? ${link}`
-    : `Can you do ${day} for a call with our CEO?`;
-  return `Hey ${name}, thanks for the reply. ${ack} ${close}`;
+    ? `Here's our CEO's booking link — would ${day} work? ${link}`
+    : `Would ${day} work for a quick call with our CEO?`;
+  return `Hey ${name}, thanks for getting back to me. ${ack} ${close}`;
 }
 
 function buildClassifyModel() {
@@ -232,7 +232,12 @@ async function draftOnly({
 
   const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
 Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
-Length: 2-4 short sentences. Tone: friendly, warm, concise, human. Avoid excessive exclamation marks.
+
+TONE (critical):
+- Friendly, warm, and human — like a real person, not a sales template.
+- Concise: 2-3 short sentences total. No fluff, no jargon, no long paragraphs.
+- Acknowledging: always reflect what they said or why they replied before asking to book.
+- Avoid stiff phrases like "Great question!" or "I appreciate your interest." Keep it natural.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
@@ -240,18 +245,18 @@ ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
 PROSPECT FIRST NAME (use in greeting): ${name}
 
 REQUIRED REPLY FORMULA (follow this structure closely):
-1. Open: "Hey ${name}, thanks for the reply."
-2. Acknowledge their message:
-   - If they asked a question or raised a concern/objection: briefly acknowledge it, then use something like "Good question — our CEO can go over this on the call, but I think this could be a good fit."
-   - If they expressed interest or said yes / tell me more: "Yes, we want to make sure this is a good fit also."
-   - Keep the acknowledgment to one short sentence; do not over-explain.
-3. Close with booking: "Here is our CEO's booking link, can you do ${nextDay}?" then the full booking URL on the same line or right after: ${booking}
-   - Make clear the link is to book time with our CEO (not a generic calendar link).
+1. Open warmly: "Hey ${name}, thanks for getting back to me."
+2. Acknowledge their message in one short sentence:
+   - Question or concern/objection: "Totally fair question — our CEO can walk through that on the call, and I think this could still be a great fit."
+   - Interest / yes / tell me more: "We'd love to make sure it's a good fit on both sides."
+   - Mirror their point briefly when possible (e.g. pricing, timing, scope) — one clause only.
+3. Close with booking: "Here's our CEO's booking link — would ${nextDay} work?" then the full URL: ${booking}
+   - Make clear the link is to book time with our CEO.
 
 CURRENT CLASSIFICATION: ${classification}
 - INTERESTED / QUESTION / OBJECTION: use the formula above.
-- MEETING_PROPOSED: confirm warmly; if verified availability lists specific times, you may mention one of those instead of only ${nextDay}, but still include the booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief respectful acknowledgment only (do not push booking).
+- MEETING_PROPOSED: confirm warmly; if verified availability lists specific times, you may mention one of those instead of only ${nextDay}, but still include the CEO booking link once.
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief, respectful acknowledgment only (do not push booking).
 
 VERIFIED AVAILABILITY:
 ${scheduleCtx}
