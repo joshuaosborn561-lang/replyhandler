@@ -279,6 +279,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
         bookingLink: client.booking_link,
         lastInboundMessage: null,
         lastOutboundMessage: null,
+        digestTimezone: client.digest_timezone,
       });
 
       // Create a reusable pending_replies row; Slack Approve/Edit uses the existing send path.

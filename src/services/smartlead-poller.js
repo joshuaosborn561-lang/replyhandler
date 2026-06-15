@@ -149,7 +149,14 @@ async function processInboxRow(client, row, options) {
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client);
-  const result = await classifyAndDraft(threadContext, inbound, client.voice_prompt, client.booking_link, promptBlock);
+  const result = await classifyAndDraft(
+    threadContext,
+    inbound,
+    client.voice_prompt,
+    client.booking_link,
+    promptBlock,
+    { leadName, digestTimezone: client.digest_timezone },
+  );
   const { classification, draft, proposed_time, reasoning } = result;
 
   if (classification === 'OOO' || looksLikeOutOfOffice(inbound)) return { skipped: 'ooo' };

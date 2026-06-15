@@ -10,6 +10,29 @@ const CLASSIFICATIONS = [
 
 const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE' && c !== 'OOO');
 
+const DEFAULT_DRAFT_TZ = 'America/Chicago';
+
+function firstNameFromLead(leadName) {
+  const s = String(leadName || '').trim();
+  if (!s || s.toLowerCase() === 'unknown') return 'there';
+  return s.split(/\s+/)[0];
+}
+
+/** Next weekday after today in the given IANA timezone (skips Sat/Sun). */
+function nextBusinessDayLabel(timeZone = DEFAULT_DRAFT_TZ) {
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  let cursor = Date.now();
+  for (let i = 0; i < 8; i += 1) {
+    cursor += 24 * 60 * 60 * 1000;
+    const day = weekdayFmt.format(new Date(cursor));
+    if (day !== 'Sat' && day !== 'Sun') {
+      return longFmt.format(new Date(cursor));
+    }
+  }
+  return 'next week';
+}
+
 function normalizeClassification(raw) {
   if (!raw) return 'OTHER';
   const upper = String(raw).toUpperCase();
@@ -22,14 +45,14 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
-function sanitizeDraft(text, { inboundMessage, bookingLink, classification } = {}) {
+function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classification } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
   s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
   if (!s) {
-    s = fallbackDraftText({ inboundMessage, bookingLink });
+    s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
   }
 
   // For MEETING_PROPOSED, guarantee the booking link is present.
@@ -46,18 +69,23 @@ function sanitizeDraft(text, { inboundMessage, bookingLink, classification } = {
   return s;
 }
 
-function fallbackDraftText({ inboundMessage, bookingLink }) {
-  const msg = String(inboundMessage || '').trim();
-  const snippet = msg.length > 180 ? `${msg.slice(0, 180)}…` : msg;
+function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
+  const name = firstNameFromLead(leadName);
+  const day = nextBusinessDayLabel();
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
-  return [
-    'Thanks for getting back to me — appreciate it.',
-    snippet ? `On your note: "${snippet}"` : null,
-    'Happy to share details and answer anything specific.',
-    link ? `If easier, grab a time that works here: ${link}` : null,
-  ].filter(Boolean).join(' ');
+  const msg = String(inboundMessage || '').trim();
+  const hasQuestion = /\?/.test(msg)
+    || classification === 'QUESTION'
+    || classification === 'OBJECTION';
+  const ack = hasQuestion
+    ? 'Good question — our CEO can go over this on the call, but I think this could be a good fit.'
+    : 'Yes, we want to make sure this is a good fit also.';
+  const close = link
+    ? `Here is his booking link, can you do ${day}? ${link}`
+    : `Can you do ${day}?`;
+  return `Hey ${name}, thanks for the reply. ${ack} ${close}`;
 }
 
 function buildClassifyModel() {
@@ -185,27 +213,44 @@ async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
   return null;
 }
 
-async function draftOnly({ classification, threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock }) {
+async function draftOnly({
+  classification,
+  threadContext,
+  inboundMessage,
+  leadName,
+  voicePrompt,
+  bookingLink,
+  schedulingPromptBlock,
+  digestTimezone,
+}) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '[no booking link configured]';
   const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
+  const name = firstNameFromLead(leadName);
+  const nextDay = nextBusinessDayLabel(digestTimezone || DEFAULT_DRAFT_TZ);
 
   const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
 Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
-Length: 2-4 short sentences, fewer is better.
-Tone: friendly, warm, concise, practitioner-level, human.
-Never begin with "Great question" or similar filler. Avoid excessive exclamation marks.
+Length: 2-4 short sentences. Tone: friendly, warm, concise, human. Avoid excessive exclamation marks.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
 
+PROSPECT FIRST NAME (use in greeting): ${name}
+
+REQUIRED REPLY FORMULA (follow this structure closely):
+1. Open: "Hey ${name}, thanks for the reply."
+2. Acknowledge their message:
+   - If they asked a question or raised a concern/objection: briefly acknowledge it, then use something like "Good question — our CEO can go over this on the call, but I think this could be a good fit."
+   - If they expressed interest or said yes / tell me more: "Yes, we want to make sure this is a good fit also."
+   - Keep the acknowledgment to one short sentence; do not over-explain.
+3. Close with booking: "Here is his booking link, can you do ${nextDay}?" then the full booking URL on the same line or right after: ${booking}
+
 CURRENT CLASSIFICATION: ${classification}
-RULES BY CLASSIFICATION:
-- INTERESTED / QUESTION: answer briefly, end with a soft ask for a call.
-- OBJECTION: acknowledge the concern, then pivot.
-- MEETING_PROPOSED: confirm warmly. If the verified availability block below lists two open times, offer exactly those two. If one, mention it. If none, invite them to pick via the booking link. Always include the booking URL once (full URL): ${booking}
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief, respectful acknowledgment. For REMOVE_ME confirm removal. For WRONG_PERSON ask for the right contact.
+- INTERESTED / QUESTION / OBJECTION: use the formula above.
+- MEETING_PROPOSED: confirm warmly; if verified availability lists specific times, you may mention one of those instead of only ${nextDay}, but still include the booking link once.
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME / OTHER: brief respectful acknowledgment only (do not push booking).
 
 VERIFIED AVAILABILITY:
 ${scheduleCtx}
@@ -218,10 +263,10 @@ ${scheduleCtx}
       `Latest prospect reply:\n${inboundMessage}\n\n` +
       `Write the reply:`
     );
-    return sanitizeDraft(res.response.text(), { inboundMessage, bookingLink, classification });
+    return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
     console.error('[Classifier] draft call failed', { err: err.message });
-    return sanitizeDraft('', { inboundMessage, bookingLink, classification });
+    return sanitizeDraft('', { leadName, inboundMessage, bookingLink, classification });
   }
 }
 
@@ -229,7 +274,14 @@ ${scheduleCtx}
  * Two-call flow: classify, then draft (when needed).
  * Never throws. Always returns { classification, draft, proposed_time, reasoning }.
  */
-async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, bookingLink, schedulingPromptBlock) {
+async function classifyAndDraft(
+  threadContext,
+  inboundMessage,
+  voicePrompt,
+  bookingLink,
+  schedulingPromptBlock,
+  { leadName, digestTimezone } = {},
+) {
   let classification = await classifyOnly(threadContext, inboundMessage);
   if (classification === 'OTHER') {
     const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
@@ -246,9 +298,11 @@ async function classifyAndDraft(threadContext, inboundMessage, voicePrompt, book
       classification,
       threadContext,
       inboundMessage,
+      leadName,
       voicePrompt,
       bookingLink,
       schedulingPromptBlock,
+      digestTimezone,
     })
     : null;
 
@@ -264,6 +318,9 @@ module.exports = {
   classifyAndDraft,
   classifyOnly,
   draftOnly,
+  firstNameFromLead,
+  nextBusinessDayLabel,
+  fallbackDraftText,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
 };

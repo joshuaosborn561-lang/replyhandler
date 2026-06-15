@@ -361,7 +361,14 @@ async function processConversation(client, conv, options) {
     return { skipped: 'already_processed_enriched' };
   }
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
-  const result = await classifyAndDraft(threadContext, inbound.text, client.voice_prompt, client.booking_link, promptBlock);
+  const result = await classifyAndDraft(
+    threadContext,
+    inbound.text,
+    client.voice_prompt,
+    client.booking_link,
+    promptBlock,
+    { leadName: leadName(conv), digestTimezone: client.digest_timezone },
+  );
   const { classification, draft, proposed_time, reasoning } = result;
 
   if (classification === 'OOO' || looksLikeOutOfOffice(inbound.text)) return { skipped: 'ooo' };
