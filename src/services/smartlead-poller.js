@@ -9,9 +9,7 @@ const {
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
-  looksLikeOutOfOffice,
-  looksLikeWrongPerson,
-  looksLikeNotInterested,
+  shouldSkipSlackForReply,
 } = require('../utils/smartlead-webhook-helpers');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
@@ -25,17 +23,6 @@ function envFlag(name, defaultValue = true) {
 function numberEnv(name, fallback) {
   const n = parseInt(process.env[name] || '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function looksLikeRemoveMe(text) {
-  const s = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!s) return false;
-  return (
-    /\bunsubscribe\b/.test(s) ||
-    /\bremove me\b/.test(s) ||
-    /\bopt\s*out\b/.test(s) ||
-    /\bstop (emailing|messaging|contacting)\b/.test(s)
-  );
 }
 
 function formatCampaignDisplay(name, id) {
@@ -159,10 +146,7 @@ async function processInboxRow(client, row, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (classification === 'OOO' || looksLikeOutOfOffice(inbound)) return { skipped: 'ooo' };
-  if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inbound)) return { skipped: 'wrong_person' };
-  if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inbound)) return { skipped: 'not_interested' };
-  if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inbound)) return { skipped: 'remove_me' };
+  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

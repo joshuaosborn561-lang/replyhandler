@@ -17,9 +17,7 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
-  looksLikeOutOfOffice,
-  looksLikeWrongPerson,
-  looksLikeNotInterested,
+  shouldSkipSlackForReply,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -453,20 +451,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    // Suppress out-of-office / auto-replies even if the classifier misses.
-    if (classification === 'OOO' || looksLikeOutOfOffice(inboundEffective)) {
+    if (shouldSkipSlackForReply(inboundEffective)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
-    // Suppress "wrong person / no longer employed" redirects (treat as WRONG_PERSON but no Slack noise).
-    if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundEffective)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'wrong_person' });
-    }
-    // Suppress clear negative "not interested" replies (no Slack noise).
-    if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundEffective)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'not_interested' });
-    }
     if (classification === 'REMOVE_ME') {
-      // Silently unsubscribe — do not post to Slack / channel.
       try {
         const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
         await fetch(unsubUrl, { method: 'POST' });
@@ -474,7 +462,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       } catch (err) {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
-      return res.status(200).json({ ok: true, skipped: true, reason: 'remove_me' });
     }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
@@ -681,10 +668,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         const { classification, draft, proposed_time, reasoning } = result;
-        if (classification === 'OOO' || looksLikeOutOfOffice(inboundMessage)) return;
-        if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inboundMessage)) return;
-        if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inboundMessage)) return;
-        if (classification === 'REMOVE_ME') return;
+        if (shouldSkipSlackForReply(inboundMessage)) return;
 
         const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
         const status = isDraft ? 'pending' : 'alert_only';

@@ -5,9 +5,7 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const {
-  looksLikeOutOfOffice,
-  looksLikeWrongPerson,
-  looksLikeNotInterested,
+  shouldSkipSlackForReply,
 } = require('../utils/smartlead-webhook-helpers');
 
 const HR_BASE = 'https://api.heyreach.io/api/public';
@@ -25,19 +23,6 @@ function envFlag(name, defaultValue = true) {
 function numberEnv(name, fallback) {
   const n = parseInt(process.env[name] || '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function looksLikeRemoveMe(text) {
-  const s = normWs(text);
-  if (!s) return false;
-  if (/\bunsubscribe\b/.test(s)) return true;
-  if (/\bremove me\b/.test(s)) return true;
-  if (/\bopt\s*out\b/.test(s) || /\bopt-?out\b/.test(s)) return true;
-  if (/\btake me off\b/.test(s)) return true;
-  if (/\bdo not (contact|email|message)\b/.test(s)) return true;
-  if (/\bdon't (contact|email|message)\b/.test(s)) return true;
-  if (/\bstop (emailing|messaging|sending|contacting|reaching out)\b/.test(s)) return true;
-  return false;
 }
 
 function pickText(obj) {
@@ -371,10 +356,7 @@ async function processConversation(client, conv, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (classification === 'OOO' || looksLikeOutOfOffice(inbound.text)) return { skipped: 'ooo' };
-  if (classification === 'WRONG_PERSON' || looksLikeWrongPerson(inbound.text)) return { skipped: 'wrong_person' };
-  if (classification === 'NOT_INTERESTED' || looksLikeNotInterested(inbound.text)) return { skipped: 'not_interested' };
-  if (classification === 'REMOVE_ME' || looksLikeRemoveMe(inbound.text)) return { skipped: 'remove_me' };
+  if (shouldSkipSlackForReply(inbound.text)) return { skipped: 'ooo' };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

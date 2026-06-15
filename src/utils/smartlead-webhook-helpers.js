@@ -229,6 +229,11 @@ function looksLikeOutOfOffice(text) {
   return false;
 }
 
+/** Only skip Slack for obvious OOO/auto-replies. Err on the side of posting everything else. */
+function shouldSkipSlackForReply(text) {
+  return looksLikeOutOfOffice(text);
+}
+
 function looksLikeWrongPerson(text) {
   const s = normWs(text);
   if (!s) return false;
@@ -292,6 +297,7 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  shouldSkipSlackForReply,
   looksLikeWrongPerson,
   looksLikeNotInterested,
 };
