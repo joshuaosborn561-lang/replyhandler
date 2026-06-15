@@ -37,7 +37,7 @@ function insetQuote(body, maxLen = 2800) {
 
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
-  campaignDisplay, lastOutboundMessage,
+  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -45,11 +45,12 @@ async function postDraftApproval(token, channelId, {
   const draftText = draft != null && String(draft).trim() !== ''
     ? `*Draft reply:*\n${insetQuote(draft)}`
     : '';
+  const priorLabel = contextLabel || 'Your last message';
 
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}` },
+      text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}${inThread ? ' (thread)' : ''}` },
     },
     {
       type: 'section',
@@ -70,7 +71,12 @@ async function postDraftApproval(token, channelId, {
   if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Your last message:*\n${insetQuote(lastOutboundMessage)}` },
+      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n${insetQuote(lastOutboundMessage)}` },
+    });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n_(not available — check ${platform === 'heyreach' ? 'HeyReach' : 'SmartLead'})_` },
     });
   }
 
@@ -113,6 +119,7 @@ async function postDraftApproval(token, channelId, {
 
   return slack.chat.postMessage({
     channel: channelId,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
     text: `New ${platform} reply from ${leadName} — ${classification}`,
     blocks,
   });
@@ -120,15 +127,16 @@ async function postDraftApproval(token, channelId, {
 
 async function postAlert(token, channelId, {
   leadName, platform, classification, inboundMessage, reasoning,
-  campaignDisplay, lastOutboundMessage,
+  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
+  const priorLabel = contextLabel || 'Your last message';
 
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}` },
+      text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}${inThread ? ' (thread)' : ''}` },
     },
     {
       type: 'section',
@@ -149,7 +157,12 @@ async function postAlert(token, channelId, {
   if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Your last message:*\n${insetQuote(lastOutboundMessage)}` },
+      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n${insetQuote(lastOutboundMessage)}` },
+    });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n_(not available — check ${platform === 'heyreach' ? 'HeyReach' : 'SmartLead'})_` },
     });
   }
 
@@ -165,6 +178,7 @@ async function postAlert(token, channelId, {
 
   return slack.chat.postMessage({
     channel: channelId,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
     text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
     blocks,
   });

@@ -5,6 +5,7 @@ const heyreach = require('../services/heyreach');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
+const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
@@ -473,31 +474,39 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
-    if (isDraft) {
-      // Track meetings separately for reporting
-      if (classification === 'MEETING_PROPOSED') {
-        await db.query(
-          `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
-           VALUES ($1, $2, $3, $4, $5, 'proposed')`,
-          [clientId, reply.id, leadName, leadEmail, proposed_time]
-        );
-      }
-
-      const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-        replyId: reply.id, leadName, leadEmail, platform: 'smartlead',
-        classification, draft, reasoning, inboundMessage: inboundEffective,
-        campaignDisplay: campaignDisplaySl,
-        lastOutboundMessage: lastOutboundSl,
-      });
-      await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-    } else {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage: inboundEffective, reasoning,
-        campaignDisplay: campaignDisplaySl,
-        lastOutboundMessage: lastOutboundSl,
-      });
+    if (isDraft && classification === 'MEETING_PROPOSED') {
+      await db.query(
+        `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
+         VALUES ($1, $2, $3, $4, $5, 'proposed')`,
+        [clientId, reply.id, leadName, leadEmail, proposed_time]
+      );
     }
+
+    const slackCard = {
+      replyId: reply.id,
+      leadName,
+      leadEmail,
+      platform: 'smartlead',
+      classification,
+      draft,
+      reasoning,
+      inboundMessage: inboundEffective,
+      campaignDisplay: campaignDisplaySl,
+      lastOutboundMessage: lastOutboundSl,
+    };
+
+    await postProspectSlackCard({
+      token: client.slack_bot_token,
+      channelId: client.slack_channel_id,
+      clientId,
+      platform: 'smartlead',
+      campaignId,
+      leadId,
+      threadContext,
+      isDraft,
+      replyId: reply.id,
+      card: slackCard,
+    });
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
 
@@ -694,39 +703,49 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
 
-        if (isDraft) {
+        const slackCard = {
+          replyId: reply.id,
+          leadName,
+          leadEmail: null,
+          platform: 'heyreach',
+          classification,
+          draft,
+          reasoning,
+          inboundMessage,
+          campaignDisplay: campaignDisplayHr,
+          lastOutboundMessage: lastOutboundHr,
+        };
+
+        await postProspectSlackCard({
+          token: client.slack_bot_token,
+          channelId: client.slack_channel_id,
+          clientId,
+          platform: 'heyreach',
+          campaignId,
+          leadId: leadIdForRow,
+          threadContext: contextWithMeta,
+          isDraft,
+          replyId: reply.id,
+          card: slackCard,
+        });
+
+        if (isDraft && classification === 'MEETING_PROPOSED' && linkedinUrl) {
           let leadEmail = null;
-          const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-            replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
-            classification, draft, reasoning, inboundMessage,
-            campaignDisplay: campaignDisplayHr,
-            lastOutboundMessage: lastOutboundHr,
-          });
-          await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
-
-          if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
-            try {
-              leadEmail = await profileToEmail(linkedinUrl);
-              console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
-              if (leadEmail) {
-                await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
-              }
-            } catch (err) {
-              console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
+          try {
+            leadEmail = await profileToEmail(linkedinUrl);
+            console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
+            if (leadEmail) {
+              await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
             }
-
-            await db.query(
-              `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
-               VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
-              [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
-            );
+          } catch (err) {
+            console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
           }
-        } else {
-          await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-            leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-            campaignDisplay: campaignDisplayHr,
-            lastOutboundMessage: lastOutboundHr,
-          });
+
+          await db.query(
+            `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
+            [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+          );
         }
 
         console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName });

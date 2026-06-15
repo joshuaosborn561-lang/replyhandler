@@ -1,6 +1,7 @@
 const { Router } = require('express');
 const db = require('../db');
 const slackService = require('../services/slack');
+const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
@@ -296,10 +297,17 @@ async function handleAlreadyRepliedNo(replyId, interaction) {
   const ctx = slackCardContextFromReply(reply);
 
   // Post the draft as a fresh approval card so user can Approve/Edit/Reject with the same send path.
-  const posted = await slackService.postDraftApproval(
-    client.slack_bot_token,
-    client.slack_channel_id,
-    {
+  await postProspectSlackCard({
+    token: client.slack_bot_token,
+    channelId: client.slack_channel_id,
+    clientId: reply.client_id,
+    platform: reply.platform,
+    campaignId: reply.campaign_id,
+    leadId: reply.lead_id,
+    threadContext: reply.thread_context,
+    isDraft: true,
+    replyId: reply.id,
+    card: {
       replyId: reply.id,
       leadName: reply.lead_name,
       leadEmail: reply.lead_email,
@@ -310,10 +318,10 @@ async function handleAlreadyRepliedNo(replyId, interaction) {
       inboundMessage: reply.inbound_message || '(no inbound)',
       campaignDisplay: ctx.campaignDisplay,
       lastOutboundMessage: ctx.lastOutboundMessage,
-    }
-  );
-  await db.query('UPDATE pending_replies SET slack_message_ts = $1, status = $2, updated_at = now() WHERE id = $3',
-    [posted.ts, 'pending', replyId]
+    },
+  });
+  await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2',
+    ['pending', replyId]
   );
 }
 

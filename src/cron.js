@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const db = require('./db');
 const slack = require('./services/slack');
+const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
@@ -341,9 +342,17 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
           ? `Campaign ${String(fu.campaign_id).trim()}`
           : '';
 
-      const slackRes = await slack.postDraftApproval(
-        client.slack_bot_token, client.slack_channel_id,
-        {
+      await postProspectSlackCard({
+        token: client.slack_bot_token,
+        channelId: client.slack_channel_id,
+        clientId: client.id,
+        platform: fu.platform,
+        campaignId: fu.campaign_id,
+        leadId: fu.lead_id,
+        threadContext,
+        isDraft: true,
+        replyId: newReply.id,
+        card: {
           replyId: newReply.id,
           leadName: fu.lead_name,
           leadEmail: fu.lead_email,
@@ -354,9 +363,8 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
           inboundMessage: '(no new reply from prospect)',
           campaignDisplay: campFollow || undefined,
           lastOutboundMessage: lastOutFollow || undefined,
-        }
-      );
-      await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackRes.ts, newReply.id]);
+        },
+      });
       await db.query('UPDATE outbound_follow_ups SET status = $1, updated_at = now() WHERE id = $2', ['notified', fu.id]);
       posted++;
     } catch (err) {

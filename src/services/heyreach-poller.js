@@ -1,6 +1,6 @@
 const db = require('../db');
 const heyreach = require('./heyreach');
-const slack = require('./slack');
+const { postProspectSlackCard } = require('./slack-reply-post');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
@@ -406,11 +406,32 @@ async function processConversation(client, conv, options) {
 
   let slackResult;
   if (isDraft) {
-    slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, card);
+    slackResult = await postProspectSlackCard({
+      token: client.slack_bot_token,
+      channelId: client.slack_channel_id,
+      clientId: client.id,
+      platform: 'heyreach',
+      campaignId: cid,
+      leadId: leadKey,
+      threadContext: meta,
+      isDraft: true,
+      replyId: reply.id,
+      card,
+    });
   } else {
-    slackResult = await slack.postAlert(client.slack_bot_token, client.slack_channel_id, card);
+    slackResult = await postProspectSlackCard({
+      token: client.slack_bot_token,
+      channelId: client.slack_channel_id,
+      clientId: client.id,
+      platform: 'heyreach',
+      campaignId: cid,
+      leadId: leadKey,
+      threadContext: meta,
+      isDraft: false,
+      replyId: reply.id,
+      card,
+    });
   }
-  await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult?.ts || null, reply.id]);
 
   if (classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
     await db.query(

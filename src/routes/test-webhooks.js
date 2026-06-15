@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { Router } = require('express');
 const db = require('../db');
-const slack = require('../services/slack');
+const { postProspectSlackCard } = require('../services/slack-reply-post');
 
 const router = Router();
 
@@ -110,19 +110,29 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
       ]
     );
 
-    const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-      replyId: reply.id,
-      leadName,
-      leadEmail: useHeyreach ? null : leadEmail,
+    const slackResult = await postProspectSlackCard({
+      token: client.slack_bot_token,
+      channelId: client.slack_channel_id,
+      clientId,
       platform: reply.platform,
-      classification,
-      draft,
-      reasoning,
-      inboundMessage,
-      campaignDisplay: display,
-      lastOutboundMessage: lastOut,
+      campaignId: campaignId || 'test-campaign',
+      leadId: 'test-lead',
+      threadContext,
+      isDraft: true,
+      replyId: reply.id,
+      card: {
+        replyId: reply.id,
+        leadName,
+        leadEmail: useHeyreach ? null : leadEmail,
+        platform: reply.platform,
+        classification,
+        draft,
+        reasoning,
+        inboundMessage,
+        campaignDisplay: display,
+        lastOutboundMessage: lastOut,
+      },
     });
-    await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
     return res.status(201).json({
       ok: true,
