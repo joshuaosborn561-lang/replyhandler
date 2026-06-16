@@ -3,6 +3,11 @@ const { WebClient } = require('@slack/web-api');
 // Cache WebClient instances per token
 const clientCache = new Map();
 
+/** Slack section block text field max is 3000 chars — stay under for safety. */
+const SLACK_SECTION_MAX = 2900;
+const OUTBOUND_DISPLAY_MAX = 1400;
+const INBOUND_DISPLAY_MAX = 2000;
+
 function getClient(token) {
   if (!clientCache.has(token)) {
     clientCache.set(token, new WebClient(token));
@@ -10,10 +15,37 @@ function getClient(token) {
   return clientCache.get(token);
 }
 
-function truncateForSlack(s, maxLen = 2800) {
-  const t = String(s || '').trim();
+function decodeHtmlEntities(s) {
+  return String(s || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/** Turn email HTML / messy copy into readable Slack plain text. */
+function plainTextForSlack(raw) {
+  let s = String(raw || '');
+  if (!s.trim()) return '';
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/p>/gi, '\n');
+  s = s.replace(/<\/div>/gi, '\n');
+  s = s.replace(/<li[^>]*>/gi, '\n• ');
+  s = s.replace(/<[^>]+>/g, '');
+  s = decodeHtmlEntities(s);
+  s = s.replace(/[ \t]+\n/g, '\n');
+  s = s.replace(/\n{3,}/g, '\n\n');
+  s = s.replace(/[ \t]{2,}/g, ' ');
+  return s.trim();
+}
+
+function truncateForSlack(s, maxLen = SLACK_SECTION_MAX) {
+  const t = plainTextForSlack(s);
   if (t.length <= maxLen) return t;
-  return `${t.slice(0, maxLen - 1)}…`;
+  return `${t.slice(0, maxLen - 20).trimEnd()}… _(truncated)_`;
 }
 
 /** Slack mrkdwn: escape &, <, > so user copy does not break blocks. */
@@ -25,14 +57,118 @@ function escMrkdwn(s) {
 }
 
 /** Slack block-quote inset (grey bar): prefix each line with `>`. */
-function insetQuote(body, maxLen = 2800) {
-  let b = truncateForSlack(body, maxLen);
-  b = escMrkdwn(b);
+function insetQuote(body) {
+  const b = escMrkdwn(body);
   if (!b) return '_(not available)_';
   return b
     .split('\n')
     .map((line) => `>${line.length ? line : ' '}`)
     .join('\n');
+}
+
+function chunkForSlack(text, maxChunk = SLACK_SECTION_MAX) {
+  const plain = plainTextForSlack(text);
+  if (!plain) return [];
+  if (plain.length <= maxChunk) return [plain];
+  const chunks = [];
+  let rest = plain;
+  while (rest.length > maxChunk) {
+    let cut = rest.lastIndexOf('\n', maxChunk);
+    if (cut < maxChunk * 0.5) cut = rest.lastIndexOf(' ', maxChunk);
+    if (cut < maxChunk * 0.3) cut = maxChunk;
+    chunks.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+function dividerBlock() {
+  return { type: 'divider' };
+}
+
+/**
+ * Build one or more section blocks for a conversation step.
+ * @param {object} opts
+ * @param {string} opts.emoji - e.g. 📤
+ * @param {string} opts.label - e.g. "You sent"
+ * @param {string} opts.body - message text
+ * @param {number|null} opts.maxLen - optional display cap (null = full text, chunked)
+ * @param {boolean} opts.neverTruncate - draft replies: always show full text
+ */
+function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTruncate = false }) {
+  const plain = plainTextForSlack(body);
+  if (!plain) {
+    return [{
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${emoji} *${label}*\n_(not available)_` },
+    }];
+  }
+
+  let display = plain;
+  if (!neverTruncate && maxLen != null && plain.length > maxLen) {
+    display = truncateForSlack(plain, maxLen);
+    const chunks = [display];
+    return chunks.map((chunk, i) => ({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: i === 0 ? `${emoji} *${label}*\n${insetQuote(chunk)}` : insetQuote(chunk),
+      },
+    }));
+  }
+
+  const chunks = chunkForSlack(display);
+  return chunks.map((chunk, i) => ({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: i === 0 ? `${emoji} *${label}*\n${insetQuote(chunk)}` : insetQuote(chunk),
+    },
+  }));
+}
+
+function buildConversationBlocks({
+  lastOutboundMessage,
+  inboundMessage,
+  draft,
+  priorLabel,
+}) {
+  const blocks = [];
+
+  blocks.push(
+    ...conversationStepBlocks({
+      emoji: '📤',
+      label: priorLabel || 'You sent',
+      body: lastOutboundMessage,
+      maxLen: OUTBOUND_DISPLAY_MAX,
+    }),
+  );
+
+  blocks.push(dividerBlock());
+
+  blocks.push(
+    ...conversationStepBlocks({
+      emoji: '📥',
+      label: 'They replied',
+      body: inboundMessage,
+      maxLen: INBOUND_DISPLAY_MAX,
+    }),
+  );
+
+  if (draft != null && String(draft).trim() !== '') {
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '✍️',
+        label: 'Suggested reply',
+        body: draft,
+        neverTruncate: true,
+      }),
+    );
+  }
+
+  return blocks;
 }
 
 async function postDraftApproval(token, channelId, {
@@ -41,55 +177,37 @@ async function postDraftApproval(token, channelId, {
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const leadBlock = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? `\n${escMrkdwn(leadEmail)}` : ''}`;
-  const draftText = draft != null && String(draft).trim() !== ''
-    ? `*Draft reply:*\n${insetQuote(draft)}`
-    : '';
-  const priorLabel = contextLabel || 'Your last message';
+  const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
+  const headerText = inThread
+    ? `↩️ ${platform.toUpperCase()} — ${classification}`
+    : `📩 ${platform.toUpperCase()} — ${classification}`;
 
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `📩 ${platform.toUpperCase()} Reply — ${classification}${inThread ? ' (thread)' : ''}` },
+      text: { type: 'plain_text', text: headerText },
     },
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Lead*\n${leadBlock}` },
+        { type: 'mrkdwn', text: `*Lead*\n${leadLine}` },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
     },
+    dividerBlock(),
+    ...buildConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft,
+      priorLabel: contextLabel || 'You sent',
+    }),
     {
-      type: 'section',
-      text: {
+      type: 'context',
+      elements: [{
         type: 'mrkdwn',
-        text: `*Classification:* ${escMrkdwn(classification)}\n*Reasoning:* ${escMrkdwn(reasoning)}`,
-      },
+        text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`,
+      }],
     },
-  ];
-
-  if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n${insetQuote(lastOutboundMessage)}` },
-    });
-  } else {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n_(not available — check ${platform === 'heyreach' ? 'HeyReach' : 'SmartLead'})_` },
-    });
-  }
-
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: `*Their reply:*\n${insetQuote(inboundMessage)}` },
-  });
-
-  if (draftText) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: draftText } });
-  }
-
-  blocks.push(
     {
       type: 'actions',
       elements: [
@@ -115,12 +233,14 @@ async function postDraftApproval(token, channelId, {
         },
       ],
     },
-  );
+  ];
+
+  const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 
   return slack.chat.postMessage({
     channel: channelId,
     ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: `New ${platform} reply from ${leadName} — ${classification}`,
+    text: `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`,
     blocks,
   });
 }
@@ -131,12 +251,14 @@ async function postAlert(token, channelId, {
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const priorLabel = contextLabel || 'Your last message';
+  const headerText = inThread
+    ? `↩️ ${classification} — ${platform.toUpperCase()}`
+    : `🔔 ${classification} — ${platform.toUpperCase()}`;
 
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `🔔 ${classification} — ${platform.toUpperCase()}${inThread ? ' (thread)' : ''}` },
+      text: { type: 'plain_text', text: headerText },
     },
     {
       type: 'section',
@@ -145,36 +267,21 @@ async function postAlert(token, channelId, {
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
     },
+    dividerBlock(),
+    ...buildConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft: null,
+      priorLabel: contextLabel || 'You sent',
+    }),
     {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Classification:* ${escMrkdwn(classification)}\n*Reasoning:* ${escMrkdwn(reasoning)}`,
-      },
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_` },
+        { type: 'mrkdwn', text: '_ℹ️ No draft — alert only_' },
+      ],
     },
   ];
-
-  if (lastOutboundMessage && String(lastOutboundMessage).trim()) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n${insetQuote(lastOutboundMessage)}` },
-    });
-  } else {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*${priorLabel}:*\n_(not available — check ${platform === 'heyreach' ? 'HeyReach' : 'SmartLead'})_` },
-    });
-  }
-
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: `*Their reply:*\n${insetQuote(inboundMessage)}` },
-  });
-
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: 'ℹ️ No draft generated — alert only.' }],
-  });
 
   return slack.chat.postMessage({
     channel: channelId,

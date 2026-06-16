@@ -45,13 +45,21 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
+function looksTruncatedDraft(text) {
+  const s = String(text || '').trim();
+  if (!s || s.length < 30) return false;
+  if (/[.!?…)"']$/.test(s)) return false;
+  if (/\bhttps?:\/\/\S+$/.test(s)) return false;
+  return s.length > 50;
+}
+
 function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classification } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
   s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
-  if (!s) {
+  if (!s || looksTruncatedDraft(s)) {
     s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
   }
 
@@ -149,7 +157,7 @@ function buildDraftModel(systemInstruction) {
     model: 'gemini-2.5-flash',
     systemInstruction,
     generationConfig: {
-      maxOutputTokens: 800,
+      maxOutputTokens: 1024,
       temperature: 0.25,
       responseMimeType: 'text/plain',
     },
