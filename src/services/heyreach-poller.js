@@ -5,6 +5,12 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const {
+  alreadyPostedToSlack,
+  findUnpostedReply,
+  repostReplyRowToSlack,
+  recoverUnpostedSlackCards,
+} = require('./reply-dedupe');
+const {
   shouldSkipSlackForReply,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -191,25 +197,6 @@ function conversationsFromPayload(payload) {
   return [];
 }
 
-async function alreadyProcessed({ clientId, campaignId: cid, leadKey, inboundMessage, inboundAt }) {
-  const normalized = normWs(inboundMessage);
-  if (!normalized) return true;
-  const since = inboundAt || new Date(Date.now() - 48 * 3600 * 1000);
-  const { rows } = await db.query(
-    `SELECT 1
-       FROM pending_replies
-      WHERE client_id = $1
-        AND platform = 'heyreach'
-        AND COALESCE(campaign_id, '') = COALESCE($2, '')
-        AND COALESCE(lead_id, '') = COALESCE($3, '')
-        AND created_at > $4::timestamptz - interval '30 minutes'
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $5
-      LIMIT 1`,
-    [clientId, cid == null ? null : String(cid), leadKey == null ? null : String(leadKey), since, normalized]
-  );
-  return rows.length > 0;
-}
-
 async function maybeUpdateExistingThinReply({ clientId, campaignId: cid, leadKey, inboundMessage, threadContext, lastOutboundMessage }) {
   if (!lastOutboundMessage || !String(lastOutboundMessage).trim()) return false;
   const normalized = normWs(inboundMessage);
@@ -305,14 +292,28 @@ async function processConversation(client, conv, options) {
   const leadKey = lid || convId;
   if (!leadKey) return { skipped: 'missing_thread_id' };
 
-  if (await alreadyProcessed({
+  const unposted = await findUnpostedReply({
     clientId: client.id,
+    platform: 'heyreach',
     campaignId: cid,
-    leadKey,
+    leadId: leadKey,
     inboundMessage: inbound.text,
-    inboundAt: inbound.at,
+  });
+  if (unposted) {
+    await repostReplyRowToSlack(client, unposted, {
+      reasoningExtra: `${unposted.classification || 'pending'} (Recovered by HeyReach polling — Slack post retry.)`,
+    });
+    return { posted: true, replyId: unposted.id, leadName: unposted.lead_name, recovered: true };
+  }
+
+  if (await alreadyPostedToSlack({
+    clientId: client.id,
+    platform: 'heyreach',
+    campaignId: cid,
+    leadId: leadKey,
+    inboundMessage: inbound.text,
   })) {
-    return { skipped: 'already_processed' };
+    return { skipped: 'already_posted' };
   }
 
   await cancelForInboundReply({
@@ -455,10 +456,17 @@ async function pollHeyReachReplies() {
   const started = Date.now();
   const totals = { processed: 0, skipped: 0 };
   try {
+    const recovery = await recoverUnpostedSlackCards({ limit: 15 });
+    if (recovery.recovered) {
+      totals.processed += recovery.recovered;
+      console.log('[HeyReachPoll] Recovered unposted Slack cards', recovery);
+    }
+
     const clients = await loadClients();
     const limit = numberEnv('HEYREACH_POLL_PAGE_LIMIT', 50);
     const maxConversations = numberEnv('HEYREACH_POLL_MAX_CONVERSATIONS', 100);
-    const lookbackHours = numberEnv('HEYREACH_POLL_LOOKBACK_HOURS', 8);
+    const lookbackHours = numberEnv('HEYREACH_POLL_LOOKBACK_HOURS', 168);
+    const skipCounts = {};
     const accountIds = String(process.env.HEYREACH_POLL_ACCOUNT_IDS || '')
       .split(',')
       .map((s) => parseInt(s.trim(), 10))
@@ -467,6 +475,11 @@ async function pollHeyReachReplies() {
     for (const client of clients) {
       let scanned = 0;
       let posted = 0;
+      const clientSkips = {};
+      const bumpSkip = (reason) => {
+        skipCounts[reason] = (skipCounts[reason] || 0) + 1;
+        clientSkips[reason] = (clientSkips[reason] || 0) + 1;
+      };
       for (let offset = 0; scanned < maxConversations; offset += limit) {
         const payload = await heyreachGetConversations(client.heyreach_api_key, {
           offset,
@@ -485,6 +498,7 @@ async function pollHeyReachReplies() {
               totals.processed++;
             } else if (result.skipped) {
               totals.skipped++;
+              bumpSkip(result.skipped);
             }
           } catch (err) {
             console.error('[HeyReachPoll] Conversation processing failed', {
@@ -496,13 +510,15 @@ async function pollHeyReachReplies() {
         }
         if (conversations.length < limit) break;
       }
-      console.log('[HeyReachPoll] Client scan complete', { clientId: client.id, client: client.name, scanned, posted });
+      console.log('[HeyReachPoll] Client scan complete', {
+        clientId: client.id, client: client.name, scanned, posted, skipReasons: clientSkips,
+      });
     }
   } catch (err) {
     console.error('[HeyReachPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {
     running = false;
-    console.log('[HeyReachPoll] Finished', { ms: Date.now() - started });
+    console.log('[HeyReachPoll] Finished', { ms: Date.now() - started, ...totals, skipCounts });
   }
   return totals;
 }

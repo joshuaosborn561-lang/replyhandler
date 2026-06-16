@@ -5,6 +5,12 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const {
+  alreadyPostedToSlack,
+  findUnpostedReply,
+  repostReplyRowToSlack,
+  recoverUnpostedSlackCards,
+} = require('./reply-dedupe');
+const {
   stripHtmlToText,
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
@@ -81,25 +87,6 @@ async function fetchInboxReplies(apiKey, offset, limit) {
   try { return JSON.parse(body); } catch { return {}; }
 }
 
-async function alreadyProcessed({ clientId, campaignId, leadId, inboundMessage, inboundAt }) {
-  const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!normalized) return true;
-  const since = inboundAt || new Date(Date.now() - 48 * 3600 * 1000);
-  const { rows } = await db.query(
-    `SELECT 1
-       FROM pending_replies
-      WHERE client_id = $1
-        AND platform = 'smartlead'
-        AND COALESCE(campaign_id, '') = COALESCE($2, '')
-        AND COALESCE(lead_id, '') = COALESCE($3, '')
-        AND created_at > $4::timestamptz - interval '30 minutes'
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $5
-      LIMIT 1`,
-    [clientId, String(campaignId || ''), String(leadId || ''), since, normalized]
-  );
-  return rows.length > 0;
-}
-
 async function processInboxRow(client, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
@@ -112,14 +99,28 @@ async function processInboxRow(client, row, options) {
   const lookbackMs = options.lookbackHours * 3600 * 1000;
   if (at && Date.now() - at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
 
-  if (await alreadyProcessed({
+  const unposted = await findUnpostedReply({
     clientId: client.id,
+    platform: 'smartlead',
     campaignId,
     leadId,
     inboundMessage: inbound,
-    inboundAt: at,
+  });
+  if (unposted) {
+    await repostReplyRowToSlack(client, unposted, {
+      reasoningExtra: `${unposted.classification || 'pending'} (Recovered by SmartLead inbox polling — Slack post retry.)`,
+    });
+    return { posted: true, replyId: unposted.id, leadName: unposted.lead_name, recovered: true };
+  }
+
+  if (await alreadyPostedToSlack({
+    clientId: client.id,
+    platform: 'smartlead',
+    campaignId,
+    leadId,
+    inboundMessage: inbound,
   })) {
-    return { skipped: 'already_processed' };
+    return { skipped: 'already_posted' };
   }
 
   await cancelForInboundReply({
@@ -137,7 +138,7 @@ async function processInboxRow(client, row, options) {
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 
-  const { promptBlock } = await resolveVerifiedSchedulingSlots(client);
+  const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   const result = await classifyAndDraft(
     threadContext,
     inbound,
@@ -238,14 +239,26 @@ async function pollSmartleadReplies() {
   const started = Date.now();
   const totals = { processed: 0, skipped: 0 };
   try {
+    const recovery = await recoverUnpostedSlackCards({ limit: 15 });
+    if (recovery.recovered) {
+      totals.processed += recovery.recovered;
+      console.log('[SmartLeadPoll] Recovered unposted Slack cards', recovery);
+    }
+
     const clients = await loadClients();
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
     const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
-    const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 48);
+    const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
+    const skipCounts = {};
 
     for (const client of clients) {
       let scanned = 0;
       let posted = 0;
+      const clientSkips = {};
+      const bumpSkip = (reason) => {
+        skipCounts[reason] = (skipCounts[reason] || 0) + 1;
+        clientSkips[reason] = (clientSkips[reason] || 0) + 1;
+      };
       for (let offset = 0; scanned < maxReplies; offset += pageLimit) {
         let payload;
         try {
@@ -266,6 +279,7 @@ async function pollSmartleadReplies() {
               totals.processed++;
             } else if (result.skipped) {
               totals.skipped++;
+              bumpSkip(result.skipped);
             }
           } catch (err) {
             console.error('[SmartLeadPoll] Row processing failed', {
@@ -275,13 +289,15 @@ async function pollSmartleadReplies() {
         }
         if (rows.length < pageLimit) break;
       }
-      console.log('[SmartLeadPoll] Client scan complete', { clientId: client.id, client: client.name, scanned, posted });
+      console.log('[SmartLeadPoll] Client scan complete', {
+        clientId: client.id, client: client.name, scanned, posted, skipReasons: clientSkips,
+      });
     }
   } catch (err) {
     console.error('[SmartLeadPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {
     isPollingRunning = false;
-    console.log('[SmartLeadPoll] Finished', { ms: Date.now() - started, ...totals });
+    console.log('[SmartLeadPoll] Finished', { ms: Date.now() - started, ...totals, skipCounts });
   }
   return totals;
 }

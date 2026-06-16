@@ -12,6 +12,22 @@ const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
 
+async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err);
+      const retryable = /503|502|504|429|timeout|unavailable|overloaded/i.test(msg);
+      if (!retryable || i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 function firstNameFromLead(leadName) {
   const s = String(leadName || '').trim();
   if (!s || s.toLowerCase() === 'unknown') return 'there';
@@ -170,11 +186,11 @@ function summarizeThread(threadContext) {
 async function classifyOnly(threadContext, inboundMessage) {
   try {
     const model = buildClassifyModel();
-    const res = await model.generateContent(
+    const res = await withGeminiRetry(() => model.generateContent(
       `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect reply:\n${inboundMessage}\n\n` +
       `Category:`
-    );
+    ));
     const text = res.response.text().trim();
     return normalizeClassification(text);
   } catch (err) {
@@ -269,11 +285,11 @@ ${scheduleCtx}
 
   try {
     const model = buildDraftModel(systemInstruction);
-    const res = await model.generateContent(
+    const res = await withGeminiRetry(() => model.generateContent(
       `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect reply:\n${inboundMessage}\n\n` +
       `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
-    );
+    ));
     return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
     console.error('[Classifier] draft call failed', { err: err.message });
