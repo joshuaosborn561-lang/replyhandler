@@ -45,21 +45,14 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
-function looksTruncatedDraft(text) {
-  const s = String(text || '').trim();
-  if (!s || s.length < 30) return false;
-  if (/[.!?…)"']$/.test(s)) return false;
-  if (/\bhttps?:\/\/\S+$/.test(s)) return false;
-  return s.length > 50;
-}
-
 function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classification } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
   s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
-  if (!s || looksTruncatedDraft(s)) {
+  // Only use the template when Gemini returns nothing (API/empty). Never replace a real draft.
+  if (!s) {
     s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
   }
 
@@ -244,40 +237,31 @@ async function draftOnly({
   const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
 Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
 
-TONE (critical):
-- Friendly, warm, and human — like a real person, not a sales template.
-- Concise: 2-3 short sentences total. No fluff, no jargon, no long paragraphs.
-- Acknowledging: reflect that you heard them, but do NOT try to answer offer details in writing.
-- Avoid stiff phrases like "Great question!" or "I appreciate your interest." Keep it natural.
-
-MOST REPLIES ARE neutral, a little skeptical, or asking about the offer (e.g. "do you mean Mets tickets?", pricing, scope, catch).
+TONE:
+- Friendly, warm, human — not a rigid sales template.
+- Concise: 2-4 short sentences. Acknowledge what they said.
+- Write dynamically in your own words. Do NOT copy a fixed script verbatim.
 
 DO NOT HALLUCINATE — if you do not know the answer from the thread alone, do not guess:
-- Only state facts explicitly present in the thread. If it is not in the thread, you do not know it.
-- Do NOT confirm or deny specific offer details (yes/no to "do you mean X?", pricing, deliverables, ticket types, timelines, terms).
-- Do NOT invent, assume, or extrapolate what the offer includes.
-- Do NOT restate the offer as fact when they are asking for clarification.
-- When unsure: acknowledge briefly and book the call. Never bluff an answer in email.
-When in doubt, defer everything to our CEO on the call and push for the meeting.
+- Only state facts explicitly present in the thread.
+- Do NOT confirm/deny offer details (pricing, deliverables, ticket types, scope, terms).
+- Do NOT invent or assume what the offer includes.
+- When unsure: acknowledge briefly and book a call with our CEO. Never bluff.
 
 CLIENT VOICE:
 ${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
 
-PROSPECT FIRST NAME (use in greeting): ${name}
+PROSPECT FIRST NAME: ${name}
 
-REQUIRED REPLY FORMULA (follow this structure closely):
-1. Open warmly: "Hey ${name}, thanks for getting back to me."
-2. Acknowledge in one short sentence — pick the best fit:
-   - Default (neutral, skeptical, clarifying question, or anything about the offer): "Totally fair question — I'm sure we can work something out on the call. We want this to make sense and be worth your time."
-   - Only if clearly enthusiastic interest with no clarifying question (e.g. "tell me more", "sounds good"): "We'd love to make sure it's a good fit on both sides."
-   - For objections/skepticism: acknowledge briefly, still do NOT argue or explain details — use the default line above.
-3. Close with booking: "Here's our CEO's booking link — would ${nextDay} work?" then the full URL: ${booking}
-   - Our CEO will walk through specifics on the call; your job is to get the meeting booked, not to sell in email.
+STRUCTURE (follow this flow, adapt wording naturally):
+1. Open: greet by first name, thank them for getting back to you.
+2. Acknowledge their message in one short sentence — reflect tone (neutral, skeptical, question, or interest). Defer specifics to our CEO on the call; say you want it to make sense and be worth their time.
+3. Close: mention our CEO's booking link, propose ${nextDay}, include the full URL once: ${booking}
 
 CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION / OTHER: default to deferring details and booking the call unless clearly enthusiastic with no open questions.
-- MEETING_PROPOSED: confirm warmly; if verified availability lists specific times, you may mention one of those instead of only ${nextDay}, but still include the CEO booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief, respectful acknowledgment only (do not push booking).
+- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge + book the CEO call.
+- MEETING_PROPOSED: confirm warmly; you may mention verified times below instead of only ${nextDay}, but include the CEO booking link once.
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only (no booking push).
 
 VERIFIED AVAILABILITY:
 ${scheduleCtx}
