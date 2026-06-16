@@ -294,7 +294,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const campaignId = normalizeSmartleadCampaignId(payload, leadData);
 
-    const leadId = normalizeSmartleadLeadId(payload, leadData);
+    let leadId = normalizeSmartleadLeadId(payload, leadData);
 
     const leadEmail =
       payload.email ||
@@ -320,6 +320,26 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.lead?.first_name ||
       'Unknown';
 
+    let resolvedCampaignId = campaignId;
+    if ((!resolvedCampaignId || !leadId) && client.smartlead_api_key) {
+      try {
+        const resolved = await smartlead.resolveIdsFromMasterInbox(client.smartlead_api_key, {
+          leadId,
+          leadEmail,
+          statsId: payload.stats_id || payload.statsId || payload.email_stats_id,
+        });
+        if (resolved) {
+          resolvedCampaignId = resolvedCampaignId || resolved.campaignId;
+          leadId = leadId || resolved.leadId;
+          console.log('[Webhook] SmartLead resolved ids from master inbox', {
+            clientId, campaignId: resolvedCampaignId, leadId, via: 'master_inbox',
+          });
+        }
+      } catch (err) {
+        console.warn('[Webhook] SmartLead master inbox id resolution failed', { clientId, err: err.message });
+      }
+    }
+
     if (slEnhance) {
       const ev = String(
         payload.event_type || payload.eventType || payload.event || payload.webhook_event || payload.type || ''
@@ -342,14 +362,14 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     console.log('[Webhook] SmartLead extracted', {
       clientId,
-      campaignId,
+      campaignId: resolvedCampaignId,
       leadId,
       hasLeadData: !!payload.lead_data,
       hasReplyObj: !!replyObj,
     });
 
-    if (!campaignId || !leadId) {
-      console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId });
+    if (!resolvedCampaignId || !leadId) {
+      console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId, leadId, hasEmail: !!leadEmail });
       return res.status(200).json({ ok: true, error: 'missing required fields' });
     }
 
@@ -358,10 +378,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'no_smartlead_api_key' });
     }
 
-    const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, campaignId);
+    const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, resolvedCampaignId);
     if (!campaignOk) {
       console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
-        clientId, client: client.name, campaignId,
+        clientId, client: client.name, campaignId: resolvedCampaignId,
       });
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
     }
@@ -369,18 +389,18 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     await cancelForInboundReply({
       clientId,
       platform: 'smartlead',
-      campaignId,
+      campaignId: resolvedCampaignId,
       leadId,
       conversationId: null,
     });
 
     // Fetch full thread history AND resolve the email_stats_id we'll need at send time.
     let threadContext;
-    let smartleadEmailStatsId = null;
+    let smartleadEmailStatsId = payload.stats_id || payload.statsId || null;
     try {
-      threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, campaignId, leadId);
-      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
-      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId, leadId, emailStatsId: smartleadEmailStatsId });
+      threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, resolvedCampaignId, leadId);
+      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext) || smartleadEmailStatsId;
+      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId: resolvedCampaignId, leadId, emailStatsId: smartleadEmailStatsId });
     } catch (err) {
       console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
       let fallbackMsg = String(inboundMessage || '').trim();
@@ -405,7 +425,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         if (!inboundEffective || webhookLooksDup) {
           inboundEffective = fromHist;
           console.log('[Webhook] SmartLead inbound from message-history', {
-            clientId, campaignId, leadId, replacedWebhookDup: !!webhookLooksDup, len: inboundEffective.length,
+            clientId, campaignId: resolvedCampaignId, leadId, replacedWebhookDup: !!webhookLooksDup, len: inboundEffective.length,
           });
         }
       } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
@@ -414,7 +434,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     if (!inboundEffective) {
-      console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId, leadId, leadEmail });
+      console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       await slack.postError(client.slack_bot_token, client.slack_channel_id, {
         leadName: `${leadName} (SmartLead)`,
         platform: 'smartlead',
@@ -424,7 +444,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
     }
 
-    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), campaignId);
+    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), resolvedCampaignId);
     const lastOutboundSl =
       smartleadLastOutboundFromPayload(payload) ||
       (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
@@ -457,9 +477,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
     if (classification === 'REMOVE_ME') {
       try {
-        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
+        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${resolvedCampaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
         await fetch(unsubUrl, { method: 'POST' });
-        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId });
+        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId: resolvedCampaignId });
       } catch (err) {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
@@ -471,7 +491,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       `INSERT INTO pending_replies
         (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [clientId, 'smartlead', campaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+      [clientId, 'smartlead', resolvedCampaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft && classification === 'MEETING_PROPOSED') {
@@ -500,7 +520,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       channelId: client.slack_channel_id,
       clientId,
       platform: 'smartlead',
-      campaignId,
+      campaignId: resolvedCampaignId,
       leadId,
       threadContext,
       isDraft,
@@ -560,8 +580,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'no_heyreach_api_key' });
     }
 
-    if (!campaignId) {
-      console.warn('[Webhook] HeyReach skipped — missing campaign id (cannot tie to client campaigns)', { clientId });
+    if (!campaignId && !hrConversationId) {
+      console.warn('[Webhook] HeyReach skipped — missing campaign id and conversation_id', { clientId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
     }
 
@@ -589,18 +609,24 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
 
-    let heyreachCampaignOk = false;
-    try {
-      heyreachCampaignOk = await heyreach.verifyCampaignAccess(client.heyreach_api_key, campaignId);
-    } catch (err) {
-      console.error('[Webhook] HeyReach campaign verification failed', { clientId, err: err.message });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'heyreach_api_error' });
-    }
-    if (!heyreachCampaignOk) {
-      console.warn('[Webhook] HeyReach campaign not in this workspace (wrong webhook URL or key)', {
-        clientId, client: client.name, campaignId,
+    let heyreachCampaignOk = true;
+    if (campaignId) {
+      try {
+        heyreachCampaignOk = await heyreach.verifyCampaignAccess(client.heyreach_api_key, campaignId);
+      } catch (err) {
+        console.error('[Webhook] HeyReach campaign verification failed', { clientId, err: err.message });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'heyreach_api_error' });
+      }
+      if (!heyreachCampaignOk) {
+        console.warn('[Webhook] HeyReach campaign not in this workspace (wrong webhook URL or key)', {
+          clientId, client: client.name, campaignId,
+        });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
+      }
+    } else {
+      console.log('[Webhook] HeyReach proceeding without campaign id (conversation_id present)', {
+        clientId, conversationId: hrConversationId,
       });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
     }
 
     let threadContext =

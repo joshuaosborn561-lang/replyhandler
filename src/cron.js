@@ -181,7 +181,7 @@ function startCron() {
     }
   });
 
-  console.log('[Cron] Jobs scheduled: HeyReach polling, meeting reminders, morning attention digest, 3pm CT attention digest');
+  console.log('[Cron] Jobs scheduled: SmartLead + HeyReach polling, meeting reminders, morning + 3pm attention digests');
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

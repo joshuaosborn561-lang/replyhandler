@@ -214,11 +214,76 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
   try { return JSON.parse(responseBody); } catch { return { ok: true, raw: responseBody }; }
 }
 
+async function fetchMasterInboxPage(apiKey, offset, limit) {
+  const url = `${BASE_URL}/master-inbox/inbox-replies?api_key=${encodeURIComponent(apiKey)}&fetch_message_history=true`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      offset,
+      limit,
+      filters: { emailStatus: 'Replied' },
+      sortBy: 'REPLY_TIME_DESC',
+    }),
+  });
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead master-inbox failed (${res.status}): ${body.slice(0, 300)}`);
+  try { return JSON.parse(body); } catch { return {}; }
+}
+
+/**
+ * Webhooks often ship sl_email_lead_id + stats_id but omit email_campaign_id.
+ * Look up the campaign (and lead) from master inbox when ids are incomplete.
+ */
+async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } = {}, maxPages = 6) {
+  if (!apiKey) return null;
+  const wantLead = leadId != null && String(leadId).trim() ? String(leadId).trim() : null;
+  const wantEmail = leadEmail ? String(leadEmail).trim().toLowerCase() : null;
+  const wantStats = statsId ? String(statsId).trim() : null;
+  if (!wantLead && !wantEmail && !wantStats) return null;
+
+  const pageSize = 25;
+  for (let page = 0; page < maxPages; page += 1) {
+    const offset = page * pageSize;
+    let payload;
+    try {
+      payload = await fetchMasterInboxPage(apiKey, offset, pageSize);
+    } catch (err) {
+      console.error('[SmartLead] resolveIdsFromMasterInbox fetch failed', { err: err.message, page });
+      break;
+    }
+    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    if (!rows.length) break;
+
+    for (const row of rows) {
+      const rowLead = row.email_lead_id || row.emailLeadId || row.sl_email_lead_id || null;
+      const rowEmail = String(row.lead_email || row.email || '').trim().toLowerCase();
+      const rowCampaign = row.email_campaign_id || row.emailCampaignId || null;
+      const hist = Array.isArray(row.email_history) ? row.email_history : [];
+      const statsMatch = wantStats && hist.some((h) => String(h.stats_id || h.email_stats_id || '') === wantStats);
+
+      const leadMatch = wantLead && rowLead != null && String(rowLead) === wantLead;
+      const emailMatch = wantEmail && rowEmail && rowEmail === wantEmail;
+
+      if ((leadMatch || emailMatch || statsMatch) && rowCampaign) {
+        return {
+          campaignId: String(rowCampaign),
+          leadId: rowLead != null ? String(rowLead) : wantLead,
+          inboxRow: row,
+        };
+      }
+    }
+    if (rows.length < pageSize) break;
+  }
+  return null;
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
   verifyCampaignAccess,
   resolveEmailStatsId,
+  resolveIdsFromMasterInbox,
   extractStatsIdFromHistory,
   formatPlainTextAsSmartleadHtml,
   looksLikeHandwrittenHtmlEmailBody,

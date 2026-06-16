@@ -49,6 +49,8 @@ function normalizeSmartleadCampaignId(payload = {}, leadData = {}) {
   const candidates = [
     payload.email_campaign_id,
     payload.emailCampaignId,
+    payload.sl_campaign_id,
+    payload.slCampaignId,
     payload.campaign_id,
     payload.campaignId,
     payload.campaign?.id,
@@ -193,6 +195,10 @@ function parseInboundFromPayload(replyObj, payload) {
         replyObj.plain_text ||
         stripHtmlToText(replyObj.html || replyObj.html_body))
       : replyObj) ||
+    payload.reply_message_body ||
+    payload.replyMessageBody ||
+    payload.last_reply_body ||
+    payload.lastReplyBody ||
     payload.reply_text ||
     payload.message ||
     payload.body ||

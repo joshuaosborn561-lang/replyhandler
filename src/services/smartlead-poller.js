@@ -10,6 +10,8 @@ const {
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   shouldSkipSlackForReply,
+  normalizeSmartleadLeadId,
+  normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
@@ -99,8 +101,8 @@ async function alreadyProcessed({ clientId, campaignId, leadId, inboundMessage, 
 }
 
 async function processInboxRow(client, row, options) {
-  const campaignId = row?.email_campaign_id || row?.emailCampaignId;
-  const leadId = row?.email_lead_id || row?.emailLeadId;
+  const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
+  const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
 
   const inbound = latestInboundFromRow(row);
