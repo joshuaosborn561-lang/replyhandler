@@ -120,7 +120,8 @@ function buildClassifyModel() {
       `Important:\n` +
       `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
       `- If it is clearly OOO, output OOO (not OTHER).\n` +
-      `- OUT_OF_OFFICE is legacy; prefer OOO.`,
+      `- OUT_OF_OFFICE is legacy; prefer OOO.\n` +
+      `- Use WRONG_PERSON when the prospect is the wrong contact, no longer at the company, or redirects you (e.g. "John is no longer with Acme", "no longer employed here", "please contact Jane instead").`,
     generationConfig: {
       // ONE WORD. Cannot truncate meaningfully.
       maxOutputTokens: 16,

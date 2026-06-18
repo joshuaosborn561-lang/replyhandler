@@ -362,7 +362,9 @@ async function processConversation(client, conv, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound.text, classification)) return { skipped: 'ooo' };
+  if (shouldSkipSlackForReply(inbound.text, classification)) {
+    return { skipped: slackSkipReason(inbound.text, classification) || 'no_alert' };
+  }
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

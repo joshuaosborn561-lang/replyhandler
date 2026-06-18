@@ -267,25 +267,43 @@ function isOooClassification(classification) {
   return c === 'OOO' || c === 'OUT_OF_OFFICE';
 }
 
-/** Skip Slack entirely for OOO/auto-replies (text heuristics or classifier label). */
-function shouldSkipSlackForReply(text, classification) {
-  if (isOooClassification(classification)) return true;
-  return looksLikeOutOfOffice(text);
+function isWrongPersonClassification(classification) {
+  return String(classification || '').toUpperCase() === 'WRONG_PERSON';
 }
 
 function looksLikeWrongPerson(text) {
   const s = normWs(text);
   if (!s) return false;
-  // Common "wrong person / no longer employed" / redirect phrases.
+  // Wrong contact / no longer at company / redirect to someone else.
   if (/\bno longer employed\b/.test(s)) return true;
   if (/\bno longer with\b/.test(s)) return true;
+  if (/\bis no longer with\b/.test(s)) return true;
+  if (/\bno longer at\b/.test(s)) return true;
   if (/\bno longer works?\b/.test(s)) return true;
-  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team)\b/.test(s)) return true;
+  if (/\bno longer (works|working) (at|for|with)\b/.test(s)) return true;
+  if (/\bdoesn'?t work (here|at|for|with)\b/.test(s)) return true;
+  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team|firm)\b/.test(s)) return true;
   if (/\bplease contact\b/.test(s) && /\bregarding\b/.test(s)) return true;
   if (/\bplease (reach|contact)\b/.test(s) && /\binstead\b/.test(s)) return true;
   if (/\bwrong person\b/.test(s)) return true;
   if (/\bnot (the )?right (person|contact)\b/.test(s)) return true;
+  if (/\b(reached|contacted) the wrong\b/.test(s)) return true;
   return false;
+}
+
+/** Skip Slack entirely — OOO/auto-replies and wrong-person / left-company (text or classifier). */
+function shouldSkipSlackForReply(text, classification) {
+  if (isOooClassification(classification)) return true;
+  if (isWrongPersonClassification(classification)) return true;
+  if (looksLikeOutOfOffice(text)) return true;
+  if (looksLikeWrongPerson(text)) return true;
+  return false;
+}
+
+function slackSkipReason(text, classification) {
+  if (isOooClassification(classification) || looksLikeOutOfOffice(text)) return 'ooo';
+  if (isWrongPersonClassification(classification) || looksLikeWrongPerson(text)) return 'wrong_person';
+  return null;
 }
 
 function looksLikeNotInterested(text) {
@@ -339,7 +357,9 @@ module.exports = {
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
   isOooClassification,
+  isWrongPersonClassification,
   shouldSkipSlackForReply,
+  slackSkipReason,
   looksLikeWrongPerson,
   looksLikeNotInterested,
 };

@@ -19,6 +19,7 @@ const {
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   shouldSkipSlackForReply,
+  slackSkipReason,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -687,6 +688,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
         // Skip slow Calendly/calendar network calls on the LinkedIn webhook path; include booking link guidance.
         const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
+
+        if (shouldSkipSlackForReply(inboundMessage)) return;
 
         let result;
         try {
