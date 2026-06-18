@@ -1,4 +1,5 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { shouldAppendBookingLink } = require('./voice-training');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -72,9 +73,9 @@ function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classifica
     s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
   }
 
-  // For MEETING_PROPOSED, guarantee the booking link is present.
+  // Guarantee CEO booking link on drafts that should invite a call.
   if (
-    classification === 'MEETING_PROPOSED' &&
+    shouldAppendBookingLink(classification) &&
     bookingLink &&
     typeof bookingLink === 'string' &&
     bookingLink.trim().startsWith('http') &&
