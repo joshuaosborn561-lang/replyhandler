@@ -186,4 +186,15 @@ router.get('/admin/booking-links/audit', async (_req, res) => {
   }
 });
 
+router.post('/admin/poll/smartlead', async (req, res) => {
+  try {
+    const { pollSmartleadReplies } = require('../services/smartlead-poller');
+    const result = await pollSmartleadReplies();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Admin] SmartLead poll trigger error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
