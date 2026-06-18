@@ -1,4 +1,5 @@
 const { Router } = require('express');
+const crypto = require('crypto');
 const db = require('../db');
 const {
   fetchSlackSentTrainingPairs,
@@ -7,6 +8,23 @@ const {
   syncVoicePromptForClient,
   auditClientBookingLinks,
 } = require('../services/voice-training');
+const { clearAllAlerts } = require('../services/clear-alerts');
+
+function assertWebhookTestSecret(req, res) {
+  const secret = process.env.WEBHOOK_TEST_SECRET;
+  if (!secret) {
+    res.status(404).json({ error: 'not found' });
+    return false;
+  }
+  const token = req.get('x-webhook-test-secret') || req.query.secret;
+  const a = Buffer.from(String(token || ''), 'utf8');
+  const b = Buffer.from(secret, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    res.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
 
 const router = Router();
 
@@ -193,6 +211,24 @@ router.post('/admin/poll/smartlead', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[Admin] SmartLead poll trigger error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Mark all open alerts as actioned (DB + Slack). Requires WEBHOOK_TEST_SECRET. */
+router.post('/admin/alerts/clear-all', async (req, res) => {
+  if (!assertWebhookTestSecret(req, res)) return;
+  try {
+    const { clientId, dryRun, note } = req.body || {};
+    const summary = await clearAllAlerts({
+      clientId: clientId || null,
+      dryRun: !!dryRun,
+      note: note || '✅ Cleared — marked as actioned.',
+    });
+    console.log('[Admin] Cleared all alerts', summary);
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    console.error('[Admin] Clear all alerts error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });
