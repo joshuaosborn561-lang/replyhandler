@@ -72,6 +72,7 @@ async function main() {
   const unreadOnly = process.argv.includes('--unread-only');
   const dryRun = process.argv.includes('--dry-run');
   const limit = parseInt(argValue('--limit') || '50', 10);
+  const start = parseInt(argValue('--start') || '0', 10);
   const maxPages = parseInt(process.env.BACKFILL_MAX_PAGES || '5', 10);
 
   const clients = await fetch(`${BASE}/admin/clients`).then((r) => r.json());
@@ -79,28 +80,32 @@ async function main() {
   if (!client) throw new Error(`No active client matching "${clientNeedle}"`);
   if (!client.smartlead_api_key) throw new Error(`${client.name} has no SmartLead API key`);
 
-  console.log(`[Backfill] ${client.name} (${client.id}) unreadOnly=${unreadOnly} limit=${limit} dryRun=${dryRun}`);
+  console.log(`[Backfill] ${client.name} (${client.id}) unreadOnly=${unreadOnly} start=${start} limit=${limit} dryRun=${dryRun}`);
 
+  const need = start + limit;
   const rows = [];
-  for (let page = 0; page < maxPages && rows.length < limit; page++) {
+  for (let page = 0; page < maxPages && rows.length < need; page++) {
     const payload = await fetchInboxPage(client.smartlead_api_key, page * 20, 20);
-    const batch = payload.data || [];
-    if (!batch.length) break;
-    for (const row of batch) {
+    const pageRows = payload.data || [];
+    if (!pageRows.length) break;
+    for (const row of pageRows) {
       if (unreadOnly && !row.has_new_unread_email) continue;
       rows.push(row);
-      if (rows.length >= limit) break;
+      if (rows.length >= need) break;
     }
-    if (batch.length < 20) break;
+    if (pageRows.length < 20) break;
   }
 
-  console.log(`[Backfill] Inbox candidates: ${rows.length}`);
+  console.log(`[Backfill] Inbox candidates: ${rows.length} (start=${start} limit=${limit})`);
+
+  const batch = rows.slice(start, start + limit);
+  console.log(`[Backfill] Processing batch: ${batch.length}`);
 
   let posted = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (const row of rows) {
+  for (const row of batch) {
     const hist = { history: row.email_history || [] };
     const inbound = latestInboundFromSmartleadHistory(hist, row.lead_email);
     const campaignId = normalizeSmartleadCampaignId(row) || row.email_campaign_id;
