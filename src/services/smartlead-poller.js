@@ -142,6 +142,8 @@ async function processInboxRow(client, row, options) {
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 
+  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
+
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   const result = await classifyAndDraft(
     threadContext,
@@ -153,7 +155,7 @@ async function processInboxRow(client, row, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
+  if (shouldSkipSlackForReply(inbound, classification)) return { skipped: 'ooo' };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

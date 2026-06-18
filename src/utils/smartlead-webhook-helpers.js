@@ -262,8 +262,14 @@ function looksLikeOutOfOffice(text) {
   return false;
 }
 
-/** Only skip Slack for obvious OOO/auto-replies. Err on the side of posting everything else. */
-function shouldSkipSlackForReply(text) {
+function isOooClassification(classification) {
+  const c = String(classification || '').toUpperCase();
+  return c === 'OOO' || c === 'OUT_OF_OFFICE';
+}
+
+/** Skip Slack entirely for OOO/auto-replies (text heuristics or classifier label). */
+function shouldSkipSlackForReply(text, classification) {
+  if (isOooClassification(classification)) return true;
   return looksLikeOutOfOffice(text);
 }
 
@@ -332,6 +338,7 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  isOooClassification,
   shouldSkipSlackForReply,
   looksLikeWrongPerson,
   looksLikeNotInterested,
