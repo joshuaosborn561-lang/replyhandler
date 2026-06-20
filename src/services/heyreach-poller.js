@@ -108,21 +108,11 @@ function leadId(conv) {
 }
 
 function leadName(conv) {
-  const lead = conv?.lead || conv?.profile || conv?.prospect || {};
-  return (
-    conv?.name ||
-    conv?.lead_name ||
-    conv?.firstName ||
-    lead.full_name ||
-    lead.name ||
-    [lead.first_name || lead.firstName, lead.last_name || lead.lastName].filter(Boolean).join(' ').trim() ||
-    'LinkedIn prospect'
-  );
+  return heyreach.extractHeyreachLeadName(conv);
 }
 
 function linkedinUrl(conv) {
-  const lead = conv?.lead || conv?.profile || conv?.prospect || {};
-  return conv?.linkedinUrl || conv?.linkedin_url || conv?.profileUrl || lead.linkedinUrl || lead.linkedin_url || lead.profile_url || null;
+  return heyreach.extractHeyreachLinkedinUrl(conv);
 }
 
 function listId(conv) {

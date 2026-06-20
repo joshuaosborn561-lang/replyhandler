@@ -147,23 +147,17 @@ function normalizeHeyreachPayload(payload) {
   const prospect = p.prospect && typeof p.prospect === 'object' ? p.prospect : null;
   const fromProspect = recipient || prospect || lead;
 
-  const leadName =
-    (typeof p.name === 'string' && p.name) ||
-    (typeof p.lead_name === 'string' && p.lead_name) ||
-    (typeof p.firstName === 'string' && p.firstName) ||
-    [fromProspect?.first_name, fromProspect?.last_name].filter(Boolean).join(' ').trim() ||
-    (typeof fromProspect?.full_name === 'string' && fromProspect.full_name) ||
-    (typeof p.contact?.full_name === 'string' && p.contact.full_name) ||
-    (typeof p.profile?.full_name === 'string' && p.profile.full_name) ||
-    'LinkedIn prospect';
+  const leadName = heyreach.extractHeyreachLeadName({
+    ...p,
+    lead,
+    profile: p.profile,
+    prospect,
+    recipient,
+  });
 
   const linkedinUrl =
-    p.linkedinUrl ||
-    p.linkedin_url ||
-    p.profileUrl ||
-    fromProspect?.linkedin_url ||
-    fromProspect?.linkedinUrl ||
-    fromProspect?.profile_url ||
+    heyreach.extractHeyreachLinkedinUrl(p) ||
+    heyreach.extractHeyreachLinkedinUrl(fromProspect) ||
     null;
 
   const listId = p.listId ?? p.list_id ?? p.list?.id ?? null;
@@ -658,6 +652,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       try {
         // Webhook payloads can include only the latest reply. Enrich from inbox API so Slack
         // shows "Your last message" and Gemini sees the full context.
+        let resolvedLeadName = leadName;
+        let resolvedLinkedinUrl = linkedinUrl;
+
         if (hrConversationId) {
           try {
             const full = await heyreach.findConversation(client.heyreach_api_key, {
@@ -665,6 +662,13 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
               leadId,
               linkedinUrl,
             });
+            if (full) {
+              const fromApi = heyreach.extractHeyreachLeadName(full);
+              if (fromApi && fromApi !== heyreach.HEYREACH_LEAD_FALLBACK) {
+                resolvedLeadName = fromApi;
+              }
+              resolvedLinkedinUrl = heyreach.extractHeyreachLinkedinUrl(full) || resolvedLinkedinUrl;
+            }
             const fullMessages = Array.isArray(full?.messages) ? full.messages : [];
             if (fullMessages.length) {
               threadContext = fullMessages.map((m) => ({
@@ -692,12 +696,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             client.voice_prompt,
             client.booking_link,
             schedulingPromptBlock,
-            { leadName, digestTimezone: client.digest_timezone },
+            { leadName: resolvedLeadName, digestTimezone: client.digest_timezone },
           );
         } catch (err) {
           console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
           await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-            leadName, platform: 'heyreach', error: err.message,
+            leadName: resolvedLeadName, platform: 'heyreach', error: err.message,
           });
           return;
         }
@@ -713,7 +717,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           heyreach: {
             listId,
             linkedinAccountId,
-            linkedinUrl,
+            linkedinUrl: resolvedLinkedinUrl,
             conversationId: hrConversationId,
             senderId: hrSenderId,
             campaignName: hrCampaignName || (payload.campaign && payload.campaign.name) || null,
@@ -726,12 +730,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           `INSERT INTO pending_replies
             (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-          [clientId, 'heyreach', campaignId, leadIdForRow, leadName, linkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+          [clientId, 'heyreach', campaignId, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
 
         const slackCard = {
           replyId: reply.id,
-          leadName,
+          leadName: resolvedLeadName,
           leadEmail: null,
           platform: 'heyreach',
           classification,
@@ -755,26 +759,26 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           card: slackCard,
         });
 
-        if (isDraft && classification === 'MEETING_PROPOSED' && linkedinUrl) {
+        if (isDraft && classification === 'MEETING_PROPOSED' && resolvedLinkedinUrl) {
           let leadEmail = null;
           try {
-            leadEmail = await profileToEmail(linkedinUrl);
-            console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
+            leadEmail = await profileToEmail(resolvedLinkedinUrl);
+            console.log('[LeadMagic] Email lookup result', { linkedinUrl: resolvedLinkedinUrl, email: leadEmail });
             if (leadEmail) {
               await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
             }
           } catch (err) {
-            console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
+            console.error('[LeadMagic] profileToEmail failed', { linkedinUrl: resolvedLinkedinUrl, err: err.message });
           }
 
           await db.query(
             `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
              VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
-            [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
+            [clientId, reply.id, resolvedLeadName, leadEmail, resolvedLinkedinUrl, proposed_time]
           );
         }
 
-        console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName });
+        console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName: resolvedLeadName });
       } catch (bgErr) {
         console.error('[Webhook] HeyReach async handler error', { clientId, err: bgErr.message, stack: bgErr.stack });
       }

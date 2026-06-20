@@ -31,6 +31,7 @@ async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
 function firstNameFromLead(leadName) {
   const s = String(leadName || '').trim();
   if (!s || s.toLowerCase() === 'unknown') return 'there';
+  if (/^linkedin(\s+prospect)?$/i.test(s) || /^prospect$/i.test(s)) return 'there';
   return s.split(/\s+/)[0];
 }
 

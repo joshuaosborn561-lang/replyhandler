@@ -1,5 +1,82 @@
 const BASE_URL = 'https://api.heyreach.io/api/public';
 
+const HEYREACH_LEAD_FALLBACK = 'Prospect';
+
+function isGenericHeyreachLeadName(name) {
+  const s = String(name || '').trim();
+  if (!s) return true;
+  return /^(linkedin(\s+prospect)?|prospect|unknown)$/i.test(s);
+}
+
+function correspondentProfile(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  return obj.correspondentProfile || obj.correspondent_profile || null;
+}
+
+/** Prospect display name from GetConversationsV2 row or webhook payload. */
+function extractHeyreachLeadName(obj) {
+  if (!obj || typeof obj !== 'object') return HEYREACH_LEAD_FALLBACK;
+
+  const cp = correspondentProfile(obj);
+  if (cp && typeof cp === 'object') {
+    const fromParts = [cp.firstName, cp.lastName].filter(Boolean).join(' ').trim();
+    const fromCp = fromParts
+      || (typeof cp.fullName === 'string' && cp.fullName.trim())
+      || (typeof cp.full_name === 'string' && cp.full_name.trim())
+      || (typeof cp.name === 'string' && cp.name.trim());
+    if (fromCp) return fromCp;
+  }
+
+  const lead = obj.lead && typeof obj.lead === 'object' ? obj.lead : null;
+  const profile = obj.profile && typeof obj.profile === 'object' ? obj.profile : null;
+  const prospect = obj.prospect && typeof obj.prospect === 'object' ? obj.prospect : null;
+  const recipient = obj.recipient && typeof obj.recipient === 'object' ? obj.recipient : null;
+  const fromProspect = recipient || prospect || lead || profile || {};
+
+  const candidates = [
+    obj.name,
+    obj.lead_name,
+    obj.leadName,
+    obj.firstName,
+    obj.first_name,
+    fromProspect.full_name,
+    fromProspect.fullName,
+    fromProspect.name,
+    [fromProspect.first_name || fromProspect.firstName, fromProspect.last_name || fromProspect.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim(),
+    obj.contact?.full_name,
+    obj.profile?.full_name,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim() && !isGenericHeyreachLeadName(c)) return c.trim();
+  }
+  return HEYREACH_LEAD_FALLBACK;
+}
+
+function extractHeyreachLinkedinUrl(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const cp = correspondentProfile(obj);
+  const candidates = [
+    obj.linkedinUrl,
+    obj.linkedin_url,
+    obj.profileUrl,
+    cp?.profileUrl,
+    cp?.linkedinUrl,
+    cp?.linkedin_url,
+    obj.lead?.linkedinUrl,
+    obj.lead?.linkedin_url,
+    obj.lead?.profile_url,
+    obj.profile?.profileUrl,
+    obj.profile?.linkedin_url,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return null;
+}
+
 function toHeyreachInt(value, name) {
   if (value == null) return null;
   const s = String(value).trim();
@@ -239,4 +316,7 @@ module.exports = {
   tryFetchCampaignById,
   getConversations,
   findConversation,
+  extractHeyreachLeadName,
+  extractHeyreachLinkedinUrl,
+  HEYREACH_LEAD_FALLBACK,
 };
