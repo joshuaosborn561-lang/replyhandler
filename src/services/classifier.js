@@ -62,6 +62,8 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
+const NO_BOOKING_CLASSIFICATIONS = new Set(['NOT_INTERESTED', 'COMPETITOR', 'WRONG_PERSON', 'REMOVE_ME']);
+
 function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classification } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
@@ -73,18 +75,19 @@ function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classifica
     s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
   }
 
-  // For MEETING_PROPOSED, guarantee the booking link is present.
+  const link = bookingLink && String(bookingLink).trim().startsWith('http')
+    ? String(bookingLink).trim()
+    : '';
   if (
-    classification === 'MEETING_PROPOSED' &&
-    bookingLink &&
-    typeof bookingLink === 'string' &&
-    bookingLink.trim().startsWith('http') &&
-    !s.includes(bookingLink.trim())
+    link &&
+    classification &&
+    !NO_BOOKING_CLASSIFICATIONS.has(classification) &&
+    !s.includes(link)
   ) {
-    s = `${s.trim()}\n\n${bookingLink.trim()}`;
+    s = `${s.trim()} ${link}`;
   }
 
-  return s;
+  return s.trim();
 }
 
 function looksLikeClearInterest(msg) {
@@ -95,19 +98,16 @@ function looksLikeClearInterest(msg) {
 
 function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
   const name = firstNameFromLead(leadName);
-  const day = nextBusinessDayLabel();
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
-  const msg = String(inboundMessage || '').trim();
-  const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
-  const ack = clearInterest
-    ? 'We\'d love to make sure it\'s a good fit on both sides.'
-    : 'Totally fair question — I\'m sure we can work something out on the call. We want this to make sense and be worth your time.';
-  const close = link
-    ? `Here's our CEO's booking link — would ${day} work? ${link}`
-    : `Would ${day} work for a quick call with our CEO?`;
-  return `Hey ${name}, thanks for getting back to me. ${ack} ${close}`;
+  if (classification && NO_BOOKING_CLASSIFICATIONS.has(classification)) {
+    return `Hey ${name}, totally understand — thanks for letting me know.`;
+  }
+  if (link) {
+    return `Hey ${name}, yes — happy to help with that. Grab a time with our CEO here: ${link}`;
+  }
+  return `Hey ${name}, yes — happy to help with that. Would a quick call with our CEO work?`;
 }
 
 function buildClassifyModel() {
@@ -167,8 +167,8 @@ function buildDraftModel(systemInstruction) {
     model: 'gemini-2.5-flash',
     systemInstruction,
     generationConfig: {
-      maxOutputTokens: 1024,
-      temperature: 0.25,
+      maxOutputTokens: 256,
+      temperature: 0.5,
       responseMimeType: 'text/plain',
     },
   });
@@ -241,55 +241,47 @@ async function draftOnly({
   leadName,
   voicePrompt,
   bookingLink,
-  schedulingPromptBlock,
-  digestTimezone,
 }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '[no booking link configured]';
-  const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
   const name = firstNameFromLead(leadName);
-  const nextDay = nextBusinessDayLabel(digestTimezone || DEFAULT_DRAFT_TZ);
+  const inbound = String(inboundMessage || '').trim() || '(no message)';
 
-  const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
-Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
+  if (classification && NO_BOOKING_CLASSIFICATIONS.has(classification)) {
+    const systemInstruction = `Write one brief, friendly sentence acknowledging their message. PLAIN TEXT only. No booking link. Prospect first name: ${name}.`;
+    try {
+      const model = buildDraftModel(systemInstruction);
+      const res = await withGeminiRetry(() => model.generateContent(
+        `Their message:\n${inbound}\n\nWrite a short polite acknowledgment:`
+      ));
+      return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
+    } catch (err) {
+      console.error('[Classifier] draft call failed', { err: err.message });
+      return fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
+    }
+  }
 
-TONE:
-- Friendly, warm, human — not a rigid sales template.
-- Concise: 2-4 short sentences. Acknowledge what they said.
-- Write dynamically in your own words. Do NOT copy a fixed script verbatim.
+  const systemInstruction = `You ghostwrite short, friendly B2B sales reply emails.
+Output: PLAIN TEXT only. No JSON, no markdown, no "Draft:" prefix.
 
-DO NOT HALLUCINATE — if you do not know the answer from the thread alone, do not guess:
-- Only state facts explicitly present in the thread.
-- Do NOT confirm/deny offer details (pricing, deliverables, ticket types, scope, terms).
-- Do NOT invent or assume what the offer includes.
-- When unsure: acknowledge briefly and book a call with our CEO. Never bluff.
-
-CLIENT VOICE:
-${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
+RULES:
+- 1-3 sentences max. Warm and human — not a rigid template.
+- Read their latest message and say YES to what they asked (more info, a call, pricing, timing, interest, etc.). Mirror their ask in your own words — be specific to their message.
+- Do NOT hedge, defer, or say "let's make sure it's a fit." Be affirmative.
+- End with our CEO's booking link. Include this full URL exactly once: ${booking}
+- Do NOT invent facts, pricing, or deliverables. If details are unclear, still say yes and point them to the CEO call.
+- Do NOT reuse the same wording every time — vary your phrasing.
 
 PROSPECT FIRST NAME: ${name}
-
-STRUCTURE (follow this flow, adapt wording naturally):
-1. Open: greet by first name, thank them for getting back to you.
-2. Acknowledge their message in one short sentence — reflect tone (neutral, skeptical, question, or interest). Defer specifics to our CEO on the call; say you want it to make sense and be worth their time.
-3. Close: mention our CEO's booking link, propose ${nextDay}, include the full URL once: ${booking}
-
-CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge + book the CEO call.
-- MEETING_PROPOSED: confirm warmly; you may mention verified times below instead of only ${nextDay}, but include the CEO booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only (no booking push).
-
-VERIFIED AVAILABILITY:
-${scheduleCtx}
-`;
+${voicePrompt ? `CLIENT VOICE NOTES:\n${voicePrompt}` : ''}`;
 
   try {
     const model = buildDraftModel(systemInstruction);
     const res = await withGeminiRetry(() => model.generateContent(
-      `Thread:\n${summarizeThread(threadContext)}\n\n` +
-      `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
+      `Prior thread (context only):\n${summarizeThread(threadContext)}\n\n` +
+      `Their latest message (reply directly to this):\n${inbound}\n\n` +
+      `Write a short yes-style reply with the CEO booking link:`
     ));
     return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
@@ -329,8 +321,6 @@ async function classifyAndDraft(
       leadName,
       voicePrompt,
       bookingLink,
-      schedulingPromptBlock,
-      digestTimezone,
     })
     : null;
 

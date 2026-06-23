@@ -1,15 +1,14 @@
-const { firstNameFromLead, nextBusinessDayLabel } = require('./classifier');
+const { firstNameFromLead } = require('./classifier');
 
-function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone }) {
+function fallbackReattempt({ leadName, bookingLink }) {
   const name = firstNameFromLead(leadName);
-  const day = nextBusinessDayLabel(digestTimezone);
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
   if (link) {
-    return `Hey ${name}, thanks for getting back to me. Here's our CEO's booking link — would ${day} work? ${link}`;
+    return `Hey ${name}, circling back — would love to connect. Grab a time with our CEO here: ${link}`;
   }
-  return `Hey ${name}, thanks for getting back to me. Would ${day} work for a quick call with our CEO?`;
+  return `Hey ${name}, circling back — would a quick call with our CEO work?`;
 }
 
 /**
@@ -27,7 +26,7 @@ async function draftReattemptToBook({
 }) {
   // Intentionally deterministic: users want a consistent, simple re-attempt.
   // (No LLM call; avoids delays/costs and keeps copy tight.)
-  return fallbackReattempt({ leadName, platform, bookingLink, digestTimezone });
+  return fallbackReattempt({ leadName, bookingLink });
 }
 
 module.exports = { draftReattemptToBook, fallbackReattempt };
