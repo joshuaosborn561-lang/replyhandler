@@ -1,8 +1,8 @@
-const { firstNameFromLead, composeInboundYesDraft } = require('./classifier');
+const { firstNameFromLead, composeInboundDraft } = require('./classifier');
 
 function fallbackReattempt({ leadName, bookingLink, lastInboundMessage }) {
   if (lastInboundMessage && String(lastInboundMessage).trim()) {
-    return composeInboundYesDraft({
+    return composeInboundDraft({
       leadName,
       inboundMessage: lastInboundMessage,
       bookingLink,
@@ -14,9 +14,9 @@ function fallbackReattempt({ leadName, bookingLink, lastInboundMessage }) {
     ? String(bookingLink).trim()
     : '';
   if (link) {
-    return `Hey ${name}, circling back — would love to connect. Here's our CEO's calendar: ${link}`;
+    return `Hey ${name}, thanks for getting back to me. We have a few options for that — easiest is a quick call with our CEO. Here's his calendar: ${link}`;
   }
-  return `Hey ${name}, circling back — would a quick call with our CEO work?`;
+  return `Hey ${name}, thanks for getting back to me. We have a few options for that — would a quick call with our CEO work?`;
 }
 
 async function draftReattemptToBook({
