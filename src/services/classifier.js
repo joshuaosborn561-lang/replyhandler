@@ -1,4 +1,4 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { looksLikePositiveInterest } = require('../utils/smartlead-webhook-helpers');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -342,6 +342,12 @@ async function classifyAndDraft(
   if (classification === 'OTHER') {
     const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
     if (ooo === 'OOO') classification = 'OOO';
+  }
+  if (classification === 'OTHER' && looksLikePositiveInterest(inboundMessage)) {
+    const plain = String(inboundMessage || '');
+    classification = /\b(where are (they|you) located|how much|what does .* cost|pricing)\b/i.test(plain)
+      ? 'QUESTION'
+      : 'INTERESTED';
   }
   if (classification === 'OTHER') {
     const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);

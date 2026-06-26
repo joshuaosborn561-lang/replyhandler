@@ -290,6 +290,28 @@ function looksLikeNotInterested(text) {
   return false;
 }
 
+/** Clear interest / openness to meet — run before NOT_INTERESTED on OTHER replies. */
+function looksLikePositiveInterest(text) {
+  const s = normWs(stripHtmlToText(text));
+  if (!s) return false;
+  if (looksLikeOutOfOffice(s) || looksLikeWrongPerson(s) || looksLikeNotInterested(s)) return false;
+  if (/\b(stop|unsubscribe|remove me)\b/.test(s)) return false;
+  if (/\bnot an msp\b/.test(s) || /\bwe are not an msp\b/.test(s)) return false;
+  if (/\bswitched to a new provider\b/.test(s)) return false;
+  if (/\bno thanks\b/.test(s)) return false;
+
+  if (/\b(might be interested|very interested|i'?m interested|sounds great|tickets sound great)\b/.test(s)) return true;
+  if (/\bopen to a call\b/.test(s)) return true;
+  if (/\b(happy|would love|glad) to (chat|talk|meet|connect|discuss)\b/.test(s)) return true;
+  if (/\blet'?s (talk|chat|meet|connect|discuss)\b/.test(s)) return true;
+  if (/\binterested in (discussing|hearing|learning|chatting|talking)\b/.test(s)) return true;
+  if (/\btell me more\b/.test(s)) return true;
+  if (/\bwhere are (they|you) located\b/.test(s)) return true;
+  if (/\b(schedule|book|set up) (a )?(call|time|meeting)\b/.test(s)) return true;
+  if (/\btomorrow\b/.test(s) && /\b(call|chat|meet|time)\b/.test(s)) return true;
+  return false;
+}
+
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -306,4 +328,5 @@ module.exports = {
   shouldSkipSlackForReply,
   looksLikeWrongPerson,
   looksLikeNotInterested,
+  looksLikePositiveInterest,
 };
