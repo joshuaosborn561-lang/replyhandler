@@ -7,7 +7,6 @@
 const { Client } = require('pg');
 const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 const { postProspectSlackCard } = require('../src/services/slack-reply-post');
-const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
 
 const CULTURE_FITS_POSITIVE_IDS = [
   '34f9925d-49e5-4f20-afc7-762700e05035', // Matt Wood
@@ -57,7 +56,7 @@ async function repostOne(db, replyId) {
     [draft, classification, replyId]
   );
 
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(classification) || classification === 'FOLLOW_UP';
+  const isDraft = true;
 
   await postProspectSlackCard({
     token: row.slack_bot_token,
