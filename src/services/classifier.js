@@ -10,7 +10,23 @@ const CLASSIFICATIONS = [
 
 const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE' && c !== 'OOO');
 
-const DEFAULT_DRAFT_TZ = 'America/Chicago';
+const NO_BOOKING_CLASSIFICATIONS = new Set(['NOT_INTERESTED', 'COMPETITOR', 'WRONG_PERSON', 'REMOVE_ME']);
+
+/** Phrases that mean Gemini ignored the prospect's message and used our old script. */
+const GENERIC_DRAFT_PATTERNS = [
+  /thanks for getting back/i,
+  /thank you for getting back/i,
+  /make sure it'?s a good fit/i,
+  /totally fair question/i,
+  /work something out on the call/i,
+  /worth your time/i,
+  /worth both our time/i,
+  /happy to help with that\. grab a time/i,
+  /we want this to make sense/i,
+  /defer to our ceo on the call/i,
+  /would \w+day work/i,
+  /here'?s our ceo'?s booking link — would/i,
+];
 
 async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
   let lastErr;
@@ -35,79 +51,127 @@ function firstNameFromLead(leadName) {
   return s.split(/\s+/)[0];
 }
 
-/** Next weekday after today in the given IANA timezone (skips Sat/Sun). */
-function nextBusinessDayLabel(timeZone = DEFAULT_DRAFT_TZ) {
-  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
-  let cursor = Date.now();
-  for (let i = 0; i < 8; i += 1) {
-    cursor += 24 * 60 * 60 * 1000;
-    const day = weekdayFmt.format(new Date(cursor));
-    if (day !== 'Sat' && day !== 'Sun') {
-      return longFmt.format(new Date(cursor));
-    }
-  }
-  return 'next week';
+function normalizeInbound(inboundMessage) {
+  return String(inboundMessage || '').replace(/\s+/g, ' ').trim();
 }
 
-function normalizeClassification(raw) {
-  if (!raw) return 'OTHER';
-  const upper = String(raw).toUpperCase();
-  if (/\bOUT_OF_OFFICE\b/.test(upper)) return 'OOO';
-  // Find the first enum value mentioned in the model's response.
-  for (const c of CLASSIFICATIONS) {
-    const re = new RegExp(`\\b${c}\\b`);
-    if (re.test(upper)) return c;
+function inboundSnippet(inboundMessage, maxLen = 100) {
+  const t = normalizeInbound(inboundMessage);
+  if (!t) return '';
+  const first = t.split(/(?<=[.!?])\s+/)[0] || t;
+  if (first.length <= maxLen) return first;
+  return `${first.slice(0, maxLen - 3).trim()}...`;
+}
+
+function significantWords(text) {
+  const stop = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'if', 'to', 'for', 'of', 'in', 'on', 'at', 'is', 'it',
+    'i', 'we', 'you', 'me', 'my', 'your', 'our', 'that', 'this', 'with', 'are', 'was', 'be', 'do',
+    'can', 'could', 'would', 'will', 'just', 'so', 'hi', 'hey', 'thanks', 'thank', 'yes', 'no',
+  ]);
+  return normalizeInbound(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !stop.has(w));
+}
+
+function draftReferencesInbound(draft, inboundMessage) {
+  const draftWords = new Set(significantWords(draft));
+  const inbound = significantWords(inboundMessage);
+  if (!inbound.length) return true;
+  const overlap = inbound.filter((w) => draftWords.has(w)).length;
+  return overlap >= 1 || draft.includes('?');
+}
+
+function isGenericDraft(draft, inboundMessage) {
+  const s = String(draft || '').trim();
+  if (!s) return true;
+  if (GENERIC_DRAFT_PATTERNS.some((re) => re.test(s))) return true;
+  return !draftReferencesInbound(s, inboundMessage);
+}
+
+function topicFromInbound(inboundMessage) {
+  const t = normalizeInbound(inboundMessage).toLowerCase();
+  const topics = [
+    [/\bpric(e|ing)\b|\bcost\b|\bbudget\b|\brate\b/, 'pricing'],
+    [/\bdemo\b|\bwalkthrough\b|\bshow me\b/, 'a demo'],
+    [/\bhow (does|do) it work\b|\bhow this works\b/, 'how it works'],
+    [/\bintegrat(e|ion|es)\b/, 'integration'],
+    [/\btimeline\b|\bwhen can\b|\bhow long\b/, 'timeline'],
+    [/\bcall\b|\bchat\b|\bmeet\b|\bschedule\b|\btimes?\b|\bcalendar\b/, 'scheduling a call'],
+    [/\bmore (info|information|details)\b|\btell me more\b/, 'more details'],
+    [/\binterested\b|\bsounds good\b|\blet'?s talk\b/, 'connecting'],
+  ];
+  for (const [re, label] of topics) {
+    if (re.test(t)) return label;
   }
-  return 'OTHER';
+  return '';
+}
+
+/**
+ * Deterministic yes-style draft — always references what they wrote.
+ */
+function composeInboundYesDraft({ leadName, inboundMessage, bookingLink, classification } = {}) {
+  const name = firstNameFromLead(leadName);
+  const inbound = normalizeInbound(inboundMessage);
+  const link = bookingLink && String(bookingLink).trim().startsWith('http')
+    ? String(bookingLink).trim()
+    : '';
+
+  if (classification && NO_BOOKING_CLASSIFICATIONS.has(classification)) {
+    return `Hey ${name}, totally understand — thanks for letting me know.`;
+  }
+
+  const snippet = inboundSnippet(inbound, 90);
+  const topic = topicFromInbound(inbound);
+  const hasQuestion = /\?/.test(inbound);
+
+  let yesLine;
+  if (hasQuestion && snippet) {
+    if (topic === 'scheduling a call') {
+      yesLine = 'yes — grab a time with our CEO that works for you';
+    } else if (topic) {
+      yesLine = `yes — happy to cover ${topic} with our CEO`;
+    } else {
+      yesLine = `yes — happy to answer that on a call with our CEO`;
+    }
+  } else if (topic) {
+    yesLine = `yes, absolutely — happy to chat about ${topic}`;
+  } else if (snippet) {
+    yesLine = `yes — got your note ("${snippet}")`;
+  } else {
+    yesLine = 'yes, happy to connect';
+  }
+
+  if (link) {
+    return `Hey ${name}, ${yesLine}. Here's his calendar: ${link}`;
+  }
+  return `Hey ${name}, ${yesLine}. Would a quick call with our CEO work?`;
 }
 
 function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classification } = {}) {
   let s = String(text || '').trim();
-  // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
   s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
-  // Only use the template when Gemini returns nothing (API/empty). Never replace a real draft.
-  if (!s) {
-    s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
+  if (!s || isGenericDraft(s, inboundMessage)) {
+    s = composeInboundYesDraft({ leadName, inboundMessage, bookingLink, classification });
   }
 
-  // For MEETING_PROPOSED, guarantee the booking link is present.
-  if (
-    classification === 'MEETING_PROPOSED' &&
-    bookingLink &&
-    typeof bookingLink === 'string' &&
-    bookingLink.trim().startsWith('http') &&
-    !s.includes(bookingLink.trim())
-  ) {
-    s = `${s.trim()}\n\n${bookingLink.trim()}`;
-  }
-
-  return s;
-}
-
-function looksLikeClearInterest(msg) {
-  const m = String(msg || '').trim().toLowerCase();
-  if (!m || /\?/.test(m)) return false;
-  return /\b(tell me more|i'?m interested|sounds good|let'?s (talk|chat|connect)|open to (a )?(chat|call)|would love to hear|happy to (chat|talk|connect))\b/.test(m);
-}
-
-function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
-  const name = firstNameFromLead(leadName);
-  const day = nextBusinessDayLabel();
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
-  const msg = String(inboundMessage || '').trim();
-  const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
-  const ack = clearInterest
-    ? 'We\'d love to make sure it\'s a good fit on both sides.'
-    : 'Totally fair question — I\'m sure we can work something out on the call. We want this to make sense and be worth your time.';
-  const close = link
-    ? `Here's our CEO's booking link — would ${day} work? ${link}`
-    : `Would ${day} work for a quick call with our CEO?`;
-  return `Hey ${name}, thanks for getting back to me. ${ack} ${close}`;
+  if (
+    link &&
+    classification &&
+    !NO_BOOKING_CLASSIFICATIONS.has(classification) &&
+    !s.includes(link)
+  ) {
+    s = `${s.trim()} ${link}`;
+  }
+
+  return s.trim();
 }
 
 function buildClassifyModel() {
@@ -118,11 +182,10 @@ function buildClassifyModel() {
       `Respond with ONLY the category word, nothing else.\n` +
       `Categories: ${CLASSIFICATIONS.join(', ')}.\n\n` +
       `Important:\n` +
-      `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
+      `- Use OOO when the message is an out-of-office / vacation / automatic reply.\n` +
       `- If it is clearly OOO, output OOO (not OTHER).\n` +
       `- OUT_OF_OFFICE is legacy; prefer OOO.`,
     generationConfig: {
-      // ONE WORD. Cannot truncate meaningfully.
       maxOutputTokens: 16,
       temperature: 0,
       responseMimeType: 'text/plain',
@@ -135,9 +198,7 @@ function buildOooCheckModel() {
     model: 'gemini-2.5-flash',
     systemInstruction:
       'You decide if a message is an out-of-office, vacation, or automatic reply.\n' +
-      'Respond with exactly YES or NO, nothing else.\n' +
-      'YES if: out of office, OOO, vacation, away, limited email access, auto-reply, automatic reply, will return on [date], not monitoring email closely.\n' +
-      'NO if: a human is engaging with substance about the offer (even if brief).',
+      'Respond with exactly YES or NO, nothing else.',
     generationConfig: {
       maxOutputTokens: 8,
       temperature: 0,
@@ -151,9 +212,7 @@ function buildNotInterestedCheckModel() {
     model: 'gemini-2.5-flash',
     systemInstruction:
       'You decide if a B2B prospect is clearly declining the offer or saying no.\n' +
-      'Respond with exactly YES or NO, nothing else.\n' +
-      'YES if: not interested, no thanks, no thank you, no interest, not a fit, we are all set, going to pass, pass on this, not at this time.\n' +
-      'NO if: they ask a question, express interest, ask for more info, mention bad timing but still interested, or the message is ambiguous.',
+      'Respond with exactly YES or NO, nothing else.',
     generationConfig: {
       maxOutputTokens: 8,
       temperature: 0,
@@ -167,8 +226,8 @@ function buildDraftModel(systemInstruction) {
     model: 'gemini-2.5-flash',
     systemInstruction,
     generationConfig: {
-      maxOutputTokens: 1024,
-      temperature: 0.25,
+      maxOutputTokens: 200,
+      temperature: 0.55,
       responseMimeType: 'text/plain',
     },
   });
@@ -176,9 +235,9 @@ function buildDraftModel(systemInstruction) {
 
 function summarizeThread(threadContext) {
   if (!threadContext) return '(no prior thread)';
-  if (typeof threadContext === 'string') return threadContext.slice(0, 4000);
+  if (typeof threadContext === 'string') return threadContext.slice(0, 2000);
   try {
-    return JSON.stringify(threadContext, null, 2).slice(0, 4000);
+    return JSON.stringify(threadContext, null, 2).slice(0, 2000);
   } catch {
     return '(unserializable thread)';
   }
@@ -200,12 +259,21 @@ async function classifyOnly(threadContext, inboundMessage) {
   }
 }
 
-/** Second pass: when primary label is OTHER, ask explicitly for OOO vs not. */
+function normalizeClassification(raw) {
+  if (!raw) return 'OTHER';
+  const upper = String(raw).toUpperCase();
+  if (/\bOUT_OF_OFFICE\b/.test(upper)) return 'OOO';
+  for (const c of CLASSIFICATIONS) {
+    const re = new RegExp(`\\b${c}\\b`);
+    if (re.test(upper)) return c;
+  }
+  return 'OTHER';
+}
+
 async function classifyOooSecondPass(threadContext, inboundMessage) {
   try {
     const model = buildOooCheckModel();
     const res = await model.generateContent(
-      `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect message:\n${inboundMessage}\n\n` +
       `Is this an out-of-office / vacation / automatic reply?`
     );
@@ -217,12 +285,10 @@ async function classifyOooSecondPass(threadContext, inboundMessage) {
   return null;
 }
 
-/** Second pass: when primary label is OTHER, ask explicitly for clear no/not-interested. */
 async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
   try {
     const model = buildNotInterestedCheckModel();
     const res = await model.generateContent(
-      `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect message:\n${inboundMessage}\n\n` +
       `Is this a clear decline / not-interested reply?`
     );
@@ -241,67 +307,50 @@ async function draftOnly({
   leadName,
   voicePrompt,
   bookingLink,
-  schedulingPromptBlock,
-  digestTimezone,
 }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
-    : '[no booking link configured]';
-  const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
+    : '';
   const name = firstNameFromLead(leadName);
-  const nextDay = nextBusinessDayLabel(digestTimezone || DEFAULT_DRAFT_TZ);
+  const inbound = normalizeInbound(inboundMessage) || '(no message)';
 
-  const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
-Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
+  if (classification && NO_BOOKING_CLASSIFICATIONS.has(classification)) {
+    return composeInboundYesDraft({ leadName, inboundMessage, bookingLink, classification });
+  }
 
-TONE:
-- Friendly, warm, human — not a rigid sales template.
-- Concise: 2-4 short sentences. Acknowledge what they said.
-- Write dynamically in your own words. Do NOT copy a fixed script verbatim.
+  const systemInstruction = `Write a short B2B email reply. PLAIN TEXT only.
 
-DO NOT HALLUCINATE — if you do not know the answer from the thread alone, do not guess:
-- Only state facts explicitly present in the thread.
-- Do NOT confirm/deny offer details (pricing, deliverables, ticket types, scope, terms).
-- Do NOT invent or assume what the offer includes.
-- When unsure: acknowledge briefly and book a call with our CEO. Never bluff.
+MUST DO:
+- Say YES to what they asked — be affirmative, not hedging.
+- Sentence 1 MUST reference something specific from their message (quote a phrase or name their topic).
+- 1-2 sentences total, then the CEO booking URL on its own or at the end.
+- Friendly, casual tone. No corporate filler.
 
-CLIENT VOICE:
-${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
+NEVER USE these phrases: "thanks for getting back", "good fit on both sides", "totally fair question", "worth your time", "would Tuesday/Wednesday work".
 
-PROSPECT FIRST NAME: ${name}
-
-STRUCTURE (follow this flow, adapt wording naturally):
-1. Open: greet by first name, thank them for getting back to you.
-2. Acknowledge their message in one short sentence — reflect tone (neutral, skeptical, question, or interest). Defer specifics to our CEO on the call; say you want it to make sense and be worth their time.
-3. Close: mention our CEO's booking link, propose ${nextDay}, include the full URL once: ${booking}
-
-CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge + book the CEO call.
-- MEETING_PROPOSED: confirm warmly; you may mention verified times below instead of only ${nextDay}, but include the CEO booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only (no booking push).
-
-VERIFIED AVAILABILITY:
-${scheduleCtx}
-`;
+Prospect first name: ${name}
+CEO booking URL (include exactly once): ${booking || '[no link]'}
+${voicePrompt ? `Voice notes: ${voicePrompt}` : ''}`;
 
   try {
     const model = buildDraftModel(systemInstruction);
     const res = await withGeminiRetry(() => model.generateContent(
-      `Thread:\n${summarizeThread(threadContext)}\n\n` +
-      `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
+      `Their message:\n"""${inbound}"""\n\n` +
+      `Write the reply. You MUST echo or name a specific detail from their message in sentence 1:`
     ));
-    return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
+    const draft = sanitizeDraft(res.response.text(), {
+      leadName, inboundMessage, bookingLink, classification,
+    });
+    if (isGenericDraft(draft, inboundMessage)) {
+      return composeInboundYesDraft({ leadName, inboundMessage, bookingLink, classification });
+    }
+    return draft;
   } catch (err) {
     console.error('[Classifier] draft call failed', { err: err.message });
-    return sanitizeDraft('', { leadName, inboundMessage, bookingLink, classification });
+    return composeInboundYesDraft({ leadName, inboundMessage, bookingLink, classification });
   }
 }
 
-/**
- * Two-call flow: classify, then draft (when needed).
- * Never throws. Always returns { classification, draft, proposed_time, reasoning }.
- */
 async function classifyAndDraft(
   threadContext,
   inboundMessage,
@@ -329,8 +378,6 @@ async function classifyAndDraft(
       leadName,
       voicePrompt,
       bookingLink,
-      schedulingPromptBlock,
-      digestTimezone,
     })
     : null;
 
@@ -347,9 +394,9 @@ module.exports = {
   classifyOnly,
   draftOnly,
   firstNameFromLead,
-  nextBusinessDayLabel,
-  fallbackDraftText,
-  looksLikeClearInterest,
+  composeInboundYesDraft,
+  isGenericDraft,
+  sanitizeDraft,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
 };
