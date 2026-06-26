@@ -20,7 +20,7 @@ const BAD_DRAFT_PATTERNS = [
   /\bgrab a time with our ceo that works\b/i,
   /\bhere'?s his calendar:\s*https?:\/\//i,
   /\bwould \w+day work\b/i,
-  /\bmake sure it'?s a good fit\b/i,
+  /\beasiest is a quick call with our ceo\b/i,
 ];
 
 async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
@@ -70,28 +70,49 @@ function topicFromInbound(inboundMessage) {
   return '';
 }
 
+function topicLabelForOptions(topic) {
+  if (!topic || topic === 'your interest') return 'that';
+  if (topic === 'a demo') return 'a demo';
+  if (topic === 'how it works') return 'how this works';
+  if (topic === 'more detail') return 'that';
+  if (topic === 'the right contact') return 'that';
+  if (topic === 'scheduling') return 'scheduling';
+  return topic;
+}
+
+function gentleOptionsLine(topic) {
+  const label = topicLabelForOptions(topic);
+  return `We have a few options on ${label} — we want to make sure something works for you and that it's a good fit.`;
+}
+
+function gentleCeoClose(link) {
+  if (link) {
+    return `If you're open to it, our CEO can walk through what might make sense on a quick call. Here's his calendar: ${link}`;
+  }
+  return 'If you\'re open to it, would a quick call with our CEO work to see what might make sense?';
+}
+
 function validateLineFromInbound(inboundMessage, classification) {
   const inbound = normalizeInbound(inboundMessage);
   const topic = topicFromInbound(inbound);
   const lower = inbound.toLowerCase();
 
   if (classification === 'OBJECTION') {
-    if (topic === 'timing') return 'I totally get the timing piece.';
-    if (/\bnot sure\b|\bskeptic|\bconcern|\bworr/.test(lower)) return 'I hear the concern — that makes sense.';
-    return 'Totally fair pushback.';
+    if (topic === 'timing') return 'I totally understand — timing can be tricky.';
+    if (/\bnot sure\b|\bskeptic|\bconcern|\bworr/.test(lower)) return 'I hear you, and that concern makes sense.';
+    return 'I appreciate you sharing that — totally fair.';
   }
 
-  if (topic === 'pricing') return 'Totally fair question on pricing.';
-  if (topic === 'a demo') return 'Happy to walk through what a demo would look like.';
+  if (topic === 'pricing') return 'That\'s a fair question on pricing.';
+  if (topic === 'a demo') return 'Happy to talk through what a demo could look like.';
   if (topic === 'how it works') return 'Good question on how this works in practice.';
   if (topic === 'integration') return 'Makes sense you\'d want to understand the integration side.';
   if (topic === 'timeline') return 'Good question on timeline.';
-  if (topic === 'your interest') return 'Great to hear you\'re open to this.';
-  if (topic === 'scheduling') return 'Happy to find a time that works.';
-  if (topic === 'more detail') return 'Happy to share more detail on that.';
+  if (topic === 'your interest') return 'Really appreciate you getting back to me on this.';
+  if (topic === 'scheduling') return 'Happy to find something that works on your end.';
+  if (topic === 'more detail') return 'Happy to share more on that.';
   if (topic === 'the right contact') return 'Appreciate you flagging that.';
-  if (topic === 'your interest') return 'Great to hear you\'re open to this.';
-  if (/\?/.test(inbound)) return 'Good question.';
+  if (/\?/.test(inbound)) return 'That\'s a good question.';
   if (inbound.length > 10) return 'Appreciate you sharing that.';
   return 'Appreciate the note.';
 }
@@ -111,14 +132,10 @@ function composeInboundDraft({ leadName, inboundMessage, bookingLink, classifica
 
   const validate = validateLineFromInbound(inboundMessage, classification);
   const topic = topicFromInbound(inboundMessage);
-  const optionsLine = topic
-    ? `We have a few options for ${topic === 'your interest' ? 'that' : topic} — easiest is a quick call with our CEO.`
-    : 'We have a few options for that — easiest is a quick call with our CEO.';
+  const optionsLine = gentleOptionsLine(topic);
+  const closeLine = gentleCeoClose(link);
 
-  if (link) {
-    return `Hey ${name}, thanks for getting back to me. ${validate} ${optionsLine} Here's his calendar: ${link}`;
-  }
-  return `Hey ${name}, thanks for getting back to me. ${validate} ${optionsLine} Would that work for you?`;
+  return `Hey ${name}, thanks for getting back to me. ${validate} ${optionsLine} ${closeLine}`;
 }
 
 function draftFollowsFormula(draft) {
@@ -127,6 +144,7 @@ function draftFollowsFormula(draft) {
   if (BAD_DRAFT_PATTERNS.some((re) => re.test(s))) return false;
   if (!/thanks for getting back/i.test(s)) return false;
   if (!/few options/i.test(s)) return false;
+  if (!/works for you|good fit/i.test(s)) return false;
   if (!/\bceo\b/i.test(s)) return false;
   return true;
 }
@@ -278,20 +296,21 @@ async function draftOnly({
     return composeInboundDraft({ leadName, inboundMessage, bookingLink, classification });
   }
 
-  const systemInstruction = `Write a short, friendly B2B email reply. PLAIN TEXT only.
+  const systemInstruction = `Write a short, gentle B2B email reply. PLAIN TEXT only.
 
-Follow this EXACT structure (3-4 sentences, warm tone):
+Follow this structure (warm, unhurried tone — not salesy or abrupt):
 1. "Hey {first name}, thanks for getting back to me."
-2. One sentence that validates or acknowledges their specific question/concern/interest — reference what THEY said (pricing, integration, timing, demo, etc.). Do not be generic.
-3. "We have a few options for that" (or "for {topic}") — then propose a quick call with our CEO.
-4. Include the CEO booking URL once: ${booking || '[no link]'}
+2. One sentence validating their specific question, concern, or interest (reference what THEY said).
+3. "We have a few options on {topic} — we want to make sure something works for you and that it's a good fit."
+4. Gently propose a quick call with our CEO and include this URL once: ${booking || '[no link]'}
+   Example close: "If you're open to it, our CEO can walk through what might make sense on a quick call. Here's his calendar: {url}"
 
 Rules:
-- Friendly and human, not salesy or abrupt.
+- Gentle and human. No hard sell, no "easiest is", no jumping straight to booking.
 - Do NOT start with "yes" or "yes — happy to".
 - Do NOT invent pricing, features, or deliverables.
-- Do NOT propose specific weekdays ("Tuesday works") — use the booking link.
-- Vary the validation sentence based on their message.
+- Do NOT propose specific weekdays — use the booking link.
+- MUST include "works for you" and "good fit" in the options sentence.
 
 Prospect first name: ${name}
 ${voicePrompt ? `Voice notes: ${voicePrompt}` : ''}`;

@@ -14,7 +14,7 @@ function fallbackReattempt({ leadName, bookingLink, lastInboundMessage }) {
     ? String(bookingLink).trim()
     : '';
   if (link) {
-    return `Hey ${name}, thanks for getting back to me. We have a few options for that — easiest is a quick call with our CEO. Here's his calendar: ${link}`;
+    return `Hey ${name}, thanks for getting back to me. We have a few options here — we want to make sure something works for you and that it's a good fit. If you're open to it, our CEO can walk through what might make sense on a quick call. Here's his calendar: ${link}`;
   }
   return `Hey ${name}, thanks for getting back to me. We have a few options for that — would a quick call with our CEO work?`;
 }
