@@ -475,6 +475,16 @@ async function postPendingApprovalDigest(token, channelId, { pending, dateLabel 
   });
 }
 
+async function postEphemeral(token, channelId, userId, text) {
+  const slack = getClient(token);
+  return slack.chat.postEphemeral({ channel: channelId, user: userId, text });
+}
+
+async function postChannelNotice(token, channelId, text) {
+  const slack = getClient(token);
+  return slack.chat.postMessage({ channel: channelId, text });
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
@@ -483,6 +493,8 @@ module.exports = {
   postReminder,
   updateMessage,
   openEditReplyModal,
+  postEphemeral,
+  postChannelNotice,
   postPendingNudge,
   postMorningDigestHeader,
   postAttentionDigestHeader,

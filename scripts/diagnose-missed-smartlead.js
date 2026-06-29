@@ -101,6 +101,18 @@ async function main() {
   const replies = pickReplies(inbox);
   console.log(`\nSmartLead inbox recent replies: ${replies.length}`);
 
+  const campaignRes = await fetchJson(
+    `${SL_BASE}/campaigns?api_key=${encodeURIComponent(client.smartlead_api_key)}`,
+  );
+  const campaigns = Array.isArray(campaignRes) ? campaignRes : (campaignRes.data || []);
+  console.log(`SmartLead campaigns visible to API key: ${campaigns.length}`);
+  if (!campaigns.length) {
+    console.log('\n⚠️  INTEGRATION BLOCKED: API key cannot see any campaigns.');
+    console.log('   Replies will NOT post to Slack until you use a client-level SmartLead key');
+    console.log('   for the workspace that owns this client\'s campaigns.');
+    console.log(`   Webhook URL to paste in SmartLead: ${BASE}/webhook/smartlead/${client.id}`);
+  }
+
   const dbKeys = new Set(
     dbRows.map((r) => `${r.campaign_id}|${r.lead_id}|${String(r.lead_email || '').toLowerCase()}`)
   );
