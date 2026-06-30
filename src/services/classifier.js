@@ -1,4 +1,9 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const {
+  looksLikeOutOfOffice,
+  looksLikeNotInterested,
+  looksLikeWrongPerson,
+} = require('../utils/smartlead-webhook-helpers');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -8,7 +13,8 @@ const CLASSIFICATIONS = [
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => c !== 'OUT_OF_OFFICE' && c !== 'OOO');
+const NO_REPLY_NEEDED = new Set(['OOO', 'OUT_OF_OFFICE', 'NOT_INTERESTED', 'WRONG_PERSON', 'REMOVE_ME', 'COMPETITOR']);
+const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => !NO_REPLY_NEEDED.has(c));
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
 
@@ -68,10 +74,10 @@ function sanitizeDraft(text, { leadName, inboundMessage, bookingLink, classifica
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
   s = s.replace(/^(draft|reply|response)\s*:\s*/i, '').trim();
 
-  // Only use the template when Gemini returns nothing (API/empty). Never replace a real draft.
-  if (!s) {
-    s = fallbackDraftText({ leadName, inboundMessage, bookingLink, classification });
-  }
+  // If the model returned nothing, return empty — let the caller decide what to do.
+  // (Old behavior: substitute a canonical fallback template. That template was the source of
+  //  the "We have a few options on X" repetition complaint, so we no longer use it here.)
+  if (!s) return '';
 
   // For MEETING_PROPOSED, guarantee the booking link is present.
   if (
@@ -168,7 +174,7 @@ function buildDraftModel(systemInstruction) {
     systemInstruction,
     generationConfig: {
       maxOutputTokens: 1024,
-      temperature: 0.25,
+      temperature: 0.7,
       responseMimeType: 'text/plain',
     },
   });
@@ -243,59 +249,111 @@ async function draftOnly({
   bookingLink,
   schedulingPromptBlock,
   digestTimezone,
+  platform,
 }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
-    : '[no booking link configured]';
+    : '';
   const scheduleCtx = schedulingPromptBlock || 'No verified availability was loaded.';
   const name = firstNameFromLead(leadName);
   const nextDay = nextBusinessDayLabel(digestTimezone || DEFAULT_DRAFT_TZ);
+  const clientCtx = String(voicePrompt || '').trim() || '(none provided)';
 
-  const systemInstruction = `You ghostwrite a short, warm B2B sales reply in the client's voice.
-Output: PLAIN TEXT reply only. No JSON, no markdown, no "Draft:" prefix. No quotes around the message.
+  const channel = String(platform || 'smartlead').toLowerCase() === 'heyreach' ? 'linkedin' : 'email';
 
-TONE:
-- Friendly, warm, human — not a rigid sales template.
-- Concise: 2-4 short sentences. Acknowledge what they said.
-- Write dynamically in your own words. Do NOT copy a fixed script verbatim.
-
-DO NOT HALLUCINATE — if you do not know the answer from the thread alone, do not guess:
-- Only state facts explicitly present in the thread.
-- Do NOT confirm/deny offer details (pricing, deliverables, ticket types, scope, terms).
-- Do NOT invent or assume what the offer includes.
-- When unsure: acknowledge briefly and book a call with our CEO. Never bluff.
-
-CLIENT VOICE:
-${voicePrompt || 'Professional, direct, practitioner-level. No fluff.'}
-
-PROSPECT FIRST NAME: ${name}
-
-STRUCTURE (follow this flow, adapt wording naturally):
-1. Open: greet by first name, thank them for getting back to you.
-2. Acknowledge their message in one short sentence — reflect tone (neutral, skeptical, question, or interest). Defer specifics to our CEO on the call; say you want it to make sense and be worth their time.
-3. Close: mention our CEO's booking link, propose ${nextDay}, include the full URL once: ${booking}
-
-CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge + book the CEO call.
-- MEETING_PROPOSED: confirm warmly; you may mention verified times below instead of only ${nextDay}, but include the CEO booking link once.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only (no booking push).
-
-VERIFIED AVAILABILITY:
-${scheduleCtx}
-`;
+  const systemInstruction = channel === 'linkedin'
+    ? buildLinkedinSystemPrompt({ name, booking, clientCtx, scheduleCtx, classification })
+    : buildEmailSystemPrompt({ name, booking, clientCtx, scheduleCtx, classification, nextDay });
 
   try {
     const model = buildDraftModel(systemInstruction);
     const res = await withGeminiRetry(() => model.generateContent(
       `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
+      `Write the reply. Match their length and energy. No filler. No template phrases.`
     ));
     return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
     console.error('[Classifier] draft call failed', { err: err.message });
     return sanitizeDraft('', { leadName, inboundMessage, bookingLink, classification });
   }
+}
+
+function buildLinkedinSystemPrompt({ name, booking, clientCtx, classification }) {
+  return `You ghostwrite a LinkedIn reply for a B2B SDR. Output PLAIN TEXT only. No markdown. No "Draft:" prefix. No quotes around the message.
+
+WRITE LIKE THIS:
+- 1-3 short sentences. Median is ONE sentence (~80 characters). Never more than 3.
+- Match the prospect's energy and length. Short prospect = short reply.
+- Often skip the greeting entirely. When you do greet, just first name + comma.
+  Examples: "Sure.", "No worries.", "Thanks!", "Hey ${name},", "${name}, apologies for the delay."
+- NEVER use full name. NEVER end with "Looking forward to..." or a signature line.
+- Casual register. Contractions. All-lowercase is sometimes fine if it matches their vibe.
+- Concrete numbers and proof when they help (only if explicitly in the thread or client context).
+
+WHAT TO ACTUALLY SAY:
+- Mirror their tone: skeptical -> explain and qualify back. Warm -> warm. Short -> short.
+- Often ask ONE qualifying question back instead of pitching:
+  "What caught your interest?", "What's your core offering?", "How are you handling X today?"
+- CTA is a question, not a statement: "Time tomorrow to meet?", "Free to chat Thursday?"
+- Only paste the booking link if you're proposing a time. Drop it casually with the question:
+  "Time tomorrow to meet? ${booking || '{LINK}'}"
+
+DO NOT:
+- Do NOT say "we have a few options", "make sure this is a good fit", "our CEO can walk through",
+  "thanks for getting back to me", "appreciate you sharing that", "happy to find something that works"
+- Do NOT write more than 3 sentences
+- Do NOT add a sign-off line, signature, or full name
+- Do NOT hallucinate offer details (pricing, scope, deliverables). If unsure, defer to a call.
+- Do NOT use em dashes (—) or en dashes (–). Use commas or a single hyphen (-) if needed.
+
+CURRENT CLASSIFICATION: ${classification}
+- INTERESTED / QUESTION / MEETING_PROPOSED: short reply, often ends with a question or booking link.
+- OBJECTION: address it briefly and qualify back with one question.
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful one-liner. No booking push.
+
+CLIENT CONTEXT:
+${clientCtx}
+
+BOOKING LINK (only paste if proposing a time):
+${booking || '(none configured)'}`;
+}
+
+function buildEmailSystemPrompt({ name, booking, clientCtx, classification, nextDay }) {
+  return `You ghostwrite a B2B sales email reply. Output PLAIN TEXT only. No markdown. No "Draft:" prefix. No quotes around the message.
+
+WRITE LIKE THIS:
+- 2-4 short sentences. Conversational, not corporate.
+- Start with first-name greeting: "Hey ${name},"
+- One acknowledgment sentence that reflects what they actually said (not a generic line).
+  Match their tone: skeptical -> explain; warm -> warm; question -> answer briefly or defer to a call.
+- If proposing a time, paste the booking link ONCE, inline with a question.
+  Example: "Open to a quick 15 with our CEO ${nextDay}? ${booking || '{LINK}'}"
+- Optional one-line sign-off with first name only. No "Best regards" / "Looking forward".
+
+CONCRETE DETAILS:
+- Use real numbers when they're in the thread or client context. Never invent them.
+- Reference what they said specifically (not "thanks for sharing that").
+- One thought per sentence. No clauses stacked together.
+
+DO NOT:
+- Do NOT say "we have a few options", "want to make sure this is a good fit",
+  "our CEO can walk through what might make sense", "thanks for getting back to me",
+  "appreciate you sharing that", "happy to find something that works"
+- Do NOT pad with filler ("Just wanted to follow up and...", "Hope you're well")
+- Do NOT promise specifics you can't verify in the thread
+- Do NOT use em dashes (—) or en dashes (–). Use commas or a single hyphen (-) if needed.
+
+CURRENT CLASSIFICATION: ${classification}
+- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge specifically + propose a call, paste link once.
+- MEETING_PROPOSED: confirm warmly; use verified times if listed, otherwise propose ${nextDay}.
+- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only.
+
+CLIENT CONTEXT:
+${clientCtx}
+
+BOOKING LINK (paste once if proposing a time):
+${booking || '(none configured)'}`;
 }
 
 /**
@@ -308,17 +366,28 @@ async function classifyAndDraft(
   voicePrompt,
   bookingLink,
   schedulingPromptBlock,
-  { leadName, digestTimezone } = {},
+  { leadName, digestTimezone, platform } = {},
 ) {
-  let classification = await classifyOnly(threadContext, inboundMessage);
-  if (classification === 'OTHER') {
-    const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
-    if (ooo === 'OOO') classification = 'OOO';
+  // Deterministic pre-classification gates — kill drafts that should not exist.
+  // These are cheap regex checks; they short-circuit Gemini for obvious cases.
+  let classification = null;
+  let preGate = null;
+  if (looksLikeOutOfOffice(inboundMessage)) { classification = 'OOO'; preGate = 'ooo'; }
+  else if (looksLikeWrongPerson(inboundMessage)) { classification = 'WRONG_PERSON'; preGate = 'wrong_person'; }
+  else if (looksLikeNotInterested(inboundMessage)) { classification = 'NOT_INTERESTED'; preGate = 'not_interested'; }
+
+  if (!classification) {
+    classification = await classifyOnly(threadContext, inboundMessage);
+    if (classification === 'OTHER') {
+      const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
+      if (ooo === 'OOO') classification = 'OOO';
+    }
+    if (classification === 'OTHER') {
+      const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
+      if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
+    }
   }
-  if (classification === 'OTHER') {
-    const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
-    if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
-  }
+
   const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
 
   const draft = needsDraft
@@ -331,14 +400,18 @@ async function classifyAndDraft(
       bookingLink,
       schedulingPromptBlock,
       digestTimezone,
+      platform,
     })
     : null;
 
+  const note = preGate ? ` (pre-gate: ${preGate})` : '';
   return {
     classification,
     draft,
     proposed_time: null,
-    reasoning: needsDraft ? `Classified as ${classification}; draft generated.` : `Classified as ${classification}; no draft.`,
+    reasoning: needsDraft
+      ? `Classified as ${classification}; draft generated${note}.`
+      : `Classified as ${classification}; no draft${note}.`,
   };
 }
 
