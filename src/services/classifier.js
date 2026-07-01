@@ -261,16 +261,14 @@ async function draftOnly({
 
   const channel = String(platform || 'smartlead').toLowerCase() === 'heyreach' ? 'linkedin' : 'email';
 
-  const systemInstruction = channel === 'linkedin'
-    ? buildLinkedinSystemPrompt({ name, booking, clientCtx, scheduleCtx, classification })
-    : buildEmailSystemPrompt({ name, booking, clientCtx, scheduleCtx, classification, nextDay });
+  const systemInstruction = buildSdrVoicePrompt({ name, booking, classification, channel });
 
   try {
     const model = buildDraftModel(systemInstruction);
     const res = await withGeminiRetry(() => model.generateContent(
       `Thread:\n${summarizeThread(threadContext)}\n\n` +
       `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply. Match their length and energy. No filler. No template phrases.`
+      `Write the reply now. Match the voice from the examples exactly.`
     ));
     return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
   } catch (err) {
@@ -279,81 +277,103 @@ async function draftOnly({
   }
 }
 
+function buildSdrVoicePrompt({ name, booking, classification, channel }) {
+  const link = booking || '{BOOKING_LINK}';
+  const channelNote = channel === 'linkedin'
+    ? 'This is a LinkedIn message. Keep it shorter - 1-2 sentences when possible. No sign-off or signature.'
+    : 'This is an email reply. 2-4 sentences is fine. Optional first-name sign-off.';
+
+  return `You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.
+
+Study these real examples from our actual SmartLead campaigns and match the voice exactly:
+
+EXAMPLE 1:
+Prospect: "Karl, We have interest in understanding your services. We use recruiters from time to time. When is a good time to talk about it? And we are Rangers fans. :)"
+Reply: "Hey Thomas, Thanks for getting back to me. That sounds great- our CEO would love to chat to see how he can be most helpful. Here is his booking link, and he will send the tickets over after :) Thanks! ${link}"
+
+EXAMPLE 2:
+Prospect: "To a CU game?"
+Reply: "Hey Karen, thanks for getting back to me. Yes Buffs or Rockies, take your pick. If you're open to it, our CEO can meet with you and see if we are a fit? Here's his calendar: ${link}"
+
+EXAMPLE 3:
+Prospect: "where are they located? Sent from my iPhone"
+Reply: "Hey Ken, thanks for getting back to me. We have them in a few places...were you hoping for someone local? If easier you can grab a time with our CEO here and we can send you the tickets: ${link}"
+
+EXAMPLE 4:
+Prospect: "Normally I would, but we switched to a new provider a few months ago."
+Reply: "Ah man, a few months too late! No worries. If you would still want the tickets, we do have quite a few clients that already have a partner....we just fill in any gaps. Not sure if that would be helpful?"
+
+EXAMPLE 5:
+Prospect: "It's possible we may be interested in MS help in the future. As of right now, I don't have any open projects."
+Reply: "That's fair...would love to chat and hand you some tickets if you are open, can tee up a future convo when ready. Your call? Here is booking link with our CEO in case: ${link}"
+
+EXAMPLE 6:
+Prospect: "Thanks, I will pass at this time."
+Reply: "Thanks for getting back to me, Marina. Understood, no problem at all. Can I check back in a few months or should I take you off the list? Ticket offer stands."
+
+EXAMPLE 7:
+Prospect: "Worth a reply. Tell me more."
+Reply: "Awesome, thanks! Easiest will be to chat with our CEO, he is the one who built the whole thing out. Can you do tomorrow or Friday? ${link}"
+
+EXAMPLE 8:
+Prospect: "When is the game?"
+Reply: "Hey Ron, Tickets are flexible. We can also do other teams. We can set something up with our CEO. What makes you think of considering a new partner?"
+
+EXAMPLE 9:
+Prospect: "I'm a Michigan fan"
+Reply: "Oh man, I think that is the unforgivable sin then... Ha..if I made the switch to a Wolverines game would that help a conversation happen?"
+
+EXAMPLE 10:
+Prospect: "Lol I'm used to it. But to be candid I don't want to waste your time. We handle everything in house and have 0% interest in partnering at this time."
+Reply: "Ha fair enough and I appreciate that...let me know if there is ever an opp to help, ticket offer stands."
+
+EXAMPLE 11:
+Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
+Reply: "Hey Tony thanks for getting back. Yes would love to see if this is a fit. Let me set something up with our CEO. Does Tuesday work? You can book something here. ${link}"
+
+EXAMPLE 12:
+Prospect: "Sure, send them on over."
+Reply: "Hey Brian, thanks for getting back to me. I'd be happy to after we hop on a call! We are obviously giving these away in good faith for a strategic call with IT decision makers. What does your day look like tomorrow?"
+
+EXAMPLE 13:
+Prospect: "Please send me your service offerings or direct me to the location on your website."
+Reply: "Hey Kelvin, we tailor our service offerings to each client- would it be easier to chat for 10 minutes about what you need so I can send something over after? ${link}"
+
+EXAMPLE 14:
+Prospect: "We are currently under contract with another MSP but I am open to speaking with you about your capabilities."
+Reply: "Thanks Jeff. Fyi, most of our clients were in the same spot so I understand. You can pick a time that works best here: ${link}"
+
+EXAMPLE 15:
+Prospect: "Unfortunately, I'm not looking for any outside advisory services at this time."
+Reply: "Dustin, thanks for letting me know! I hear you- any chance this is relevant in the next 6 months? If so, my CEO would love to do lunch on him, just to talk shop. Worst case, you DQ us and you get out of the office. Fair enough?"
+
+---
+
+RULES (extracted from the examples above):
+- Greet with "Hey {first name}," — always first name only, never full name
+- Warm, direct, a little playful when the moment fits — match the prospect's energy
+- If they're warm/interested: short acknowledgment + booking link + day suggestion ("Can you do tomorrow or Friday?")
+- If they already have a provider: acknowledge it's fine, mention you fill gaps or can tee up a future conversation
+- If they decline: graceful, offer to check back, keep the ticket offer alive — never push
+- If they ask a logistical question (where, when, what): answer it and redirect to the CEO call
+- Booking link placement: casual, at the end, as part of a question — never a formal line
+- Prospect first name to address: ${name}
+- Booking link: ${link}
+- Classification: ${classification}
+
+${channelNote}
+
+Do NOT hallucinate offer details, pricing, or specifics not in the thread.
+Do NOT use em dashes. Do NOT add a sign-off beyond a casual first name.`;
+}
+
+// Keep old builders for reference but they're no longer called
 function buildLinkedinSystemPrompt({ name, booking, clientCtx, classification }) {
-  return `You ghostwrite a LinkedIn reply for a B2B SDR. Output PLAIN TEXT only. No markdown. No "Draft:" prefix. No quotes around the message.
-
-WRITE LIKE THIS:
-- 1-3 short sentences. Median is ONE sentence (~80 characters). Never more than 3.
-- Match the prospect's energy and length. Short prospect = short reply.
-- Often skip the greeting entirely. When you do greet, just first name + comma.
-  Examples: "Sure.", "No worries.", "Thanks!", "Hey ${name},", "${name}, apologies for the delay."
-- NEVER use full name. NEVER end with "Looking forward to..." or a signature line.
-- Casual register. Contractions. All-lowercase is sometimes fine if it matches their vibe.
-- Concrete numbers and proof when they help (only if explicitly in the thread or client context).
-
-WHAT TO ACTUALLY SAY:
-- Mirror their tone: skeptical -> explain and qualify back. Warm -> warm. Short -> short.
-- Often ask ONE qualifying question back instead of pitching:
-  "What caught your interest?", "What's your core offering?", "How are you handling X today?"
-- CTA is a question, not a statement: "Time tomorrow to meet?", "Free to chat Thursday?"
-- Only paste the booking link if you're proposing a time. Drop it casually with the question:
-  "Time tomorrow to meet? ${booking || '{LINK}'}"
-
-DO NOT:
-- Do NOT say "we have a few options", "make sure this is a good fit", "our CEO can walk through",
-  "thanks for getting back to me", "appreciate you sharing that", "happy to find something that works"
-- Do NOT write more than 3 sentences
-- Do NOT add a sign-off line, signature, or full name
-- Do NOT hallucinate offer details (pricing, scope, deliverables). If unsure, defer to a call.
-- Do NOT use em dashes (—) or en dashes (–). Use commas or a single hyphen (-) if needed.
-
-CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / MEETING_PROPOSED: short reply, often ends with a question or booking link.
-- OBJECTION: address it briefly and qualify back with one question.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful one-liner. No booking push.
-
-CLIENT CONTEXT:
-${clientCtx}
-
-BOOKING LINK (only paste if proposing a time):
-${booking || '(none configured)'}`;
+  return buildSdrVoicePrompt({ name, booking, classification, channel: 'linkedin' });
 }
 
 function buildEmailSystemPrompt({ name, booking, clientCtx, classification, nextDay }) {
-  return `You ghostwrite a B2B sales email reply. Output PLAIN TEXT only. No markdown. No "Draft:" prefix. No quotes around the message.
-
-WRITE LIKE THIS:
-- 2-4 short sentences. Conversational, not corporate.
-- Start with first-name greeting: "Hey ${name},"
-- One acknowledgment sentence that reflects what they actually said (not a generic line).
-  Match their tone: skeptical -> explain; warm -> warm; question -> answer briefly or defer to a call.
-- If proposing a time, paste the booking link ONCE, inline with a question.
-  Example: "Open to a quick 15 with our CEO ${nextDay}? ${booking || '{LINK}'}"
-- Optional one-line sign-off with first name only. No "Best regards" / "Looking forward".
-
-CONCRETE DETAILS:
-- Use real numbers when they're in the thread or client context. Never invent them.
-- Reference what they said specifically (not "thanks for sharing that").
-- One thought per sentence. No clauses stacked together.
-
-DO NOT:
-- Do NOT say "we have a few options", "want to make sure this is a good fit",
-  "our CEO can walk through what might make sense", "thanks for getting back to me",
-  "appreciate you sharing that", "happy to find something that works"
-- Do NOT pad with filler ("Just wanted to follow up and...", "Hope you're well")
-- Do NOT promise specifics you can't verify in the thread
-- Do NOT use em dashes (—) or en dashes (–). Use commas or a single hyphen (-) if needed.
-
-CURRENT CLASSIFICATION: ${classification}
-- INTERESTED / QUESTION / OBJECTION / OTHER: acknowledge specifically + propose a call, paste link once.
-- MEETING_PROPOSED: confirm warmly; use verified times if listed, otherwise propose ${nextDay}.
-- NOT_INTERESTED / COMPETITOR / WRONG_PERSON / REMOVE_ME: brief respectful acknowledgment only.
-
-CLIENT CONTEXT:
-${clientCtx}
-
-BOOKING LINK (paste once if proposing a time):
-${booking || '(none configured)'}`;
+  return buildSdrVoicePrompt({ name, booking, classification, channel: 'email' });
 }
 
 /**
