@@ -15,7 +15,7 @@
 const { Client } = require('pg');
 const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 const { stripHtmlToText } = require('../src/utils/smartlead-webhook-helpers');
-const { postProspectSlackCard } = require('../src/services/slack-reply-post');
+const slackService = require('../src/services/slack');
 const { draftOnly } = require('../src/services/classifier');
 
 const TARGET_CLIENT_NAMES = ['Culture Fits', 'MSRS'];
@@ -283,29 +283,28 @@ async function upsertAndPost(db, client, lead) {
 
   const campaignDisplay = lead.campaignName || (lead.campaignId ? `Campaign ${lead.campaignId}` : undefined);
 
-  await postProspectSlackCard({
-    token: client.slack_bot_token,
-    channelId: client.slack_channel_id,
-    clientId: client.id,
-    platform: 'smartlead',
-    campaignId: lead.campaignId,
-    leadId: lead.leadId,
-    threadContext: lead.threadContext,
-    isDraft: true,
+  // Post as a new top-level message — do NOT thread under old cards for this lead.
+  // (postProspectSlackCard would thread them under June 29 cards, burying them.)
+  const result = await slackService.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
     replyId,
-    card: {
-      replyId,
-      leadName: lead.leadName,
-      leadEmail: lead.leadEmail,
-      platform: 'smartlead',
-      classification,
-      draft,
-      reasoning: 'Positive reply — follow-up card posted by smartlead-positive-followups script.',
-      inboundMessage: lead.inbound,
-      lastOutboundMessage: lead.lastOutbound || undefined,
-      campaignDisplay,
-    },
+    leadName: lead.leadName,
+    leadEmail: lead.leadEmail,
+    platform: 'smartlead',
+    classification,
+    draft,
+    reasoning: 'Positive reply — follow-up card (backfill).',
+    inboundMessage: lead.inbound,
+    lastOutboundMessage: lead.lastOutbound || undefined,
+    campaignDisplay,
   });
+
+  // Store the new top-level message ts
+  if (result?.ts) {
+    await db.query(
+      'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
+      [result.ts, replyId],
+    );
+  }
 
   return replyId;
 }
