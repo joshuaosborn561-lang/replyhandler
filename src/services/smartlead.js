@@ -278,6 +278,49 @@ async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } 
   return null;
 }
 
+async function fetchJson(url, opts) {
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`SmartLead request failed (${res.status}): ${text.slice(0, 300)}`);
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+/** Quick account snapshot for admin health checks (campaign + inbox visibility). */
+async function getIntegrationSummary(apiKey) {
+  if (!apiKey) {
+    return { ok: false, reason: 'no_api_key', campaignCount: 0, inboxReplyCount: 0, emailAccountCount: 0 };
+  }
+  try {
+    const [campaigns, inbox, emailAccounts] = await Promise.all([
+      fetchJson(`${BASE_URL}/campaigns?api_key=${encodeURIComponent(apiKey)}`),
+      fetchJson(`${BASE_URL}/master-inbox/inbox-replies?api_key=${encodeURIComponent(apiKey)}&fetch_message_history=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offset: 0,
+          limit: 5,
+          filters: { emailStatus: 'Replied' },
+          sortBy: 'REPLY_TIME_DESC',
+        }),
+      }),
+      fetchJson(`${BASE_URL}/email-accounts?api_key=${encodeURIComponent(apiKey)}`),
+    ]);
+    const campaignCount = Array.isArray(campaigns) ? campaigns.length : (campaigns?.data || []).length;
+    const inboxReplyCount = Array.isArray(inbox?.data) ? inbox.data.length : 0;
+    const emailAccountCount = Array.isArray(emailAccounts) ? emailAccounts.length : 0;
+    const ok = campaignCount > 0;
+    return {
+      ok,
+      reason: ok ? null : (emailAccountCount > 0 ? 'no_campaigns_visible' : 'no_campaigns_or_mailboxes'),
+      campaignCount,
+      inboxReplyCount,
+      emailAccountCount,
+    };
+  } catch (err) {
+    return { ok: false, reason: 'api_error', error: err.message, campaignCount: 0, inboxReplyCount: 0, emailAccountCount: 0 };
+  }
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -287,4 +330,5 @@ module.exports = {
   extractStatsIdFromHistory,
   formatPlainTextAsSmartleadHtml,
   looksLikeHandwrittenHtmlEmailBody,
+  getIntegrationSummary,
 };

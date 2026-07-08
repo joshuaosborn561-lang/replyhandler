@@ -24,6 +24,36 @@ const {
 
 const router = Router();
 
+/** Throttle integration warnings so a miswired webhook doesn't spam Slack. */
+const integrationWarnedAt = new Map();
+const INTEGRATION_WARN_COOLDOWN_MS = 6 * 3600 * 1000;
+
+async function maybeWarnSmartleadIntegration(client, { campaignId, leadName, leadEmail }) {
+  const key = `${client.id}:${campaignId}`;
+  const now = Date.now();
+  const last = integrationWarnedAt.get(key) || 0;
+  if (now - last < INTEGRATION_WARN_COOLDOWN_MS) return;
+  integrationWarnedAt.set(key, now);
+
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  const webhookUrl = domain
+    ? `https://${domain}/webhook/smartlead/${client.id}`
+    : `/webhook/smartlead/${client.id}`;
+
+  const who = [leadName, leadEmail].filter(Boolean).join(' · ') || 'a prospect';
+  const text =
+    `⚠️ *SmartLead reply ignored for ${client.name}* — campaign \`${campaignId}\` is not visible to this client's API key.\n` +
+    `Reply from *${who}* was skipped (nothing posted to Slack).\n\n` +
+    `*Fix:* In the dashboard, set the SmartLead API key to the workspace that owns campaign ${campaignId}. ` +
+    `Then paste this webhook URL on that campaign in SmartLead:\n${webhookUrl}`;
+
+  try {
+    await slack.postChannelNotice(client.slack_bot_token, client.slack_channel_id, text);
+  } catch (err) {
+    console.error('[Webhook] SmartLead integration warning post failed', { clientId: client.id, err: err.message });
+  }
+}
+
 function stripHtmlToTextLocal(s) {
   if (!s) return '';
   return String(s)
@@ -376,6 +406,11 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (!campaignOk) {
       console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
         clientId, client: client.name, campaignId: resolvedCampaignId,
+      });
+      await maybeWarnSmartleadIntegration(client, {
+        campaignId: resolvedCampaignId,
+        leadName,
+        leadEmail,
       });
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
     }
