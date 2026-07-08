@@ -171,6 +171,11 @@ function buildConversationBlocks({
   return blocks;
 }
 
+async function postEphemeral(token, channelId, userId, text) {
+  const slack = getClient(token);
+  return slack.chat.postEphemeral({ channel: channelId, user: userId, text });
+}
+
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
@@ -483,6 +488,7 @@ module.exports = {
   postReminder,
   updateMessage,
   openEditReplyModal,
+  postEphemeral,
   postPendingNudge,
   postMorningDigestHeader,
   postAttentionDigestHeader,
