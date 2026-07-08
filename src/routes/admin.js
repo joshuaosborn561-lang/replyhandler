@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const db = require('../db');
+const smartlead = require('../services/smartlead');
 
 const router = Router();
 
@@ -59,6 +60,48 @@ router.get('/admin/clients', async (req, res) => {
     res.json(rows.map(formatClient));
   } catch (err) {
     console.error('[Admin] List clients error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SmartLead / Slack wiring health for one client
+router.get('/admin/clients/:clientId/integration-health', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    const urls = webhookUrls(client.id);
+    const smartleadHealth = client.smartlead_api_key
+      ? await smartlead.getIntegrationSummary(client.smartlead_api_key)
+      : { ok: false, reason: 'no_api_key', campaignCount: 0, inboxReplyCount: 0, emailAccountCount: 0 };
+
+    const issues = [];
+    if (client.smartlead_api_key && !smartleadHealth.ok) {
+      if (smartleadHealth.reason === 'no_campaigns_visible') {
+        issues.push(
+          'SmartLead API key can see mailboxes but no campaigns — use a client-level key for the workspace that owns this client\'s campaigns, or create campaigns under this client account.',
+        );
+      } else if (smartleadHealth.reason === 'no_campaigns_or_mailboxes') {
+        issues.push('SmartLead API key cannot see any campaigns or mailboxes — wrong key or empty account.');
+      } else if (smartleadHealth.reason === 'api_error') {
+        issues.push(`SmartLead API error: ${smartleadHealth.error}`);
+      }
+      issues.push(`Paste ${urls.smartlead_webhook_url} into each campaign's webhook settings in SmartLead.`);
+    }
+
+    res.json({
+      clientId: client.id,
+      clientName: client.name,
+      active: client.active,
+      slackChannelId: client.slack_channel_id,
+      smartlead: smartleadHealth,
+      smartlead_webhook_url: urls.smartlead_webhook_url,
+      issues,
+      ready: issues.length === 0,
+    });
+  } catch (err) {
+    console.error('[Admin] Integration health error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

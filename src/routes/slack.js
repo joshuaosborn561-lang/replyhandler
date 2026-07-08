@@ -186,6 +186,11 @@ async function handleEditModalSubmit(interaction) {
 }
 
 async function handleApprove(replyId, interaction) {
+  const { rows: [existing] } = await db.query(
+    'SELECT pr.*, c.slack_bot_token FROM pending_replies pr JOIN clients c ON c.id = pr.client_id WHERE pr.id = $1',
+    [replyId]
+  );
+
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
      WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
@@ -193,7 +198,20 @@ async function handleApprove(replyId, interaction) {
   );
 
   if (!reply) {
-    console.warn('[Slack] Reply not found or already actioned', { replyId });
+    const status = existing?.status || 'unknown';
+    console.warn('[Slack] Reply not found or already actioned', { replyId, status });
+    if (existing?.slack_bot_token && interaction.channel?.id && interaction.user?.id) {
+      const msg = status === 'sent'
+        ? `⚠️ This reply to *${existing.lead_name}* was already sent — Approve won't work on this card. A fresh follow-up card may have been posted below.`
+        : `⚠️ This reply to *${existing.lead_name}* is already *${status}* — can't approve again.`;
+      try {
+        await slackService.postEphemeral(
+          existing.slack_bot_token, interaction.channel.id, interaction.user.id, msg
+        );
+      } catch (e) {
+        console.error('[Slack] ephemeral failed', { err: e.message });
+      }
+    }
     return;
   }
 
