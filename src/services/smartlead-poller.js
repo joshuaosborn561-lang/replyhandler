@@ -11,13 +11,13 @@ const {
   recoverUnpostedSlackCards,
 } = require('./reply-dedupe');
 const {
-  stripHtmlToText,
-  stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   shouldSkipSlackForReply,
+  slackSkipReason,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
+  inboundBodyFromHistoryMessage,
 } = require('../utils/smartlead-webhook-helpers');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
@@ -56,9 +56,7 @@ function latestInboundFromRow(row) {
     const m = list[i];
     if (!m || typeof m !== 'object') continue;
     if (String(m.type || '').toUpperCase() !== 'REPLY') continue;
-    const raw = m.email_body || m.body || m.text || '';
-    let plain = stripHtmlToText(raw) || String(raw).trim();
-    plain = stripEmailQuotePrefix(plain);
+    const plain = inboundBodyFromHistoryMessage(m);
     if (plain) return plain;
   }
   return '';
@@ -87,6 +85,10 @@ async function fetchInboxReplies(apiKey, offset, limit) {
   try { return JSON.parse(body); } catch { return {}; }
 }
 
+function hasUnreadSmartleadReply(row) {
+  return row?.has_new_unread_email === true || row?.hasNewUnreadEmail === true;
+}
+
 async function processInboxRow(client, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
@@ -97,7 +99,10 @@ async function processInboxRow(client, row, options) {
 
   const at = replyTime(row);
   const lookbackMs = options.lookbackHours * 3600 * 1000;
-  if (at && Date.now() - at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
+  const unread = hasUnreadSmartleadReply(row);
+  if (!unread && at && Date.now() - at.getTime() > lookbackMs) {
+    return { skipped: 'older_than_lookback' };
+  }
 
   const unposted = await findUnpostedReply({
     clientId: client.id,
@@ -138,6 +143,8 @@ async function processInboxRow(client, row, options) {
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 
+  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
+
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   const result = await classifyAndDraft(
     threadContext,
@@ -149,7 +156,7 @@ async function processInboxRow(client, row, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
+  if (shouldSkipSlackForReply(inbound, classification)) return { skipped: 'ooo' };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';
@@ -248,7 +255,7 @@ async function pollSmartleadReplies() {
     const clients = await loadClients();
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
     const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
-    const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
+    const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 720);
     const skipCounts = {};
 
     for (const client of clients) {

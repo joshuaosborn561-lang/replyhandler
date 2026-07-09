@@ -19,6 +19,7 @@ const {
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   shouldSkipSlackForReply,
+  slackSkipReason,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -447,6 +448,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
+    if (shouldSkipSlackForReply(inboundEffective)) {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
+    }
+
     let result;
     try {
       result = await classifyAndDraft(
@@ -466,7 +471,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    if (shouldSkipSlackForReply(inboundEffective)) {
+    if (shouldSkipSlackForReply(inboundEffective, classification)) {
       return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
     }
     if (classification === 'REMOVE_ME') {
@@ -688,6 +693,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         // Skip slow Calendly/calendar network calls on the LinkedIn webhook path; include booking link guidance.
         const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
 
+        if (shouldSkipSlackForReply(inboundMessage)) return;
+
         let result;
         try {
           result = await classifyAndDraft(
@@ -707,7 +714,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         const { classification, draft, proposed_time, reasoning } = result;
-        if (shouldSkipSlackForReply(inboundMessage)) return;
+        if (shouldSkipSlackForReply(inboundMessage, classification)) return;
 
         const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
         const status = isDraft ? 'pending' : 'alert_only';

@@ -14,6 +14,12 @@ const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '5
 const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
 const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
 
+function attentionDigestsEnabled() {
+  const v = process.env.ATTENTION_DIGESTS_ENABLED;
+  if (v === undefined || v === '') return false;
+  return /^(1|true|yes|on)$/i.test(String(v).trim());
+}
+
 function clientTimezone(client) {
   return client?.digest_timezone || DEFAULT_TZ;
 }

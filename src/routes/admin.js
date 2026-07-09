@@ -1,5 +1,30 @@
 const { Router } = require('express');
+const crypto = require('crypto');
 const db = require('../db');
+const {
+  fetchSlackSentTrainingPairs,
+  buildVoicePromptFromExamples,
+  toGeminiJsonl,
+  syncVoicePromptForClient,
+  auditClientBookingLinks,
+} = require('../services/voice-training');
+const { clearAllAlerts } = require('../services/clear-alerts');
+
+function assertWebhookTestSecret(req, res) {
+  const secret = process.env.WEBHOOK_TEST_SECRET;
+  if (!secret) {
+    res.status(404).json({ error: 'not found' });
+    return false;
+  }
+  const token = req.get('x-webhook-test-secret') || req.query.secret;
+  const a = Buffer.from(String(token || ''), 'utf8');
+  const b = Buffer.from(secret, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    res.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
 
 const router = Router();
 
@@ -105,6 +130,105 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     res.json(formatClient(client));
   } catch (err) {
     console.error('[Admin] Update client error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Slack-sent replies for Gemini voice training
+router.get('/admin/voice-training/sent-replies', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit || '100', 10);
+    const clientId = req.query.clientId || null;
+    const pairs = await fetchSlackSentTrainingPairs({ clientId, limit });
+    res.json({
+      count: pairs.length,
+      pairs,
+      voicePromptPreview: buildVoicePromptFromExamples(pairs),
+    });
+  } catch (err) {
+    console.error('[Admin] Voice training export error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/admin/voice-training/sent-replies.jsonl', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit || '200', 10);
+    const clientId = req.query.clientId || null;
+    const pairs = await fetchSlackSentTrainingPairs({ clientId, limit });
+    res.type('application/x-ndjson').send(toGeminiJsonl(pairs));
+  } catch (err) {
+    console.error('[Admin] Voice training JSONL export error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Build clients.voice_prompt from Slack-approved sent replies
+router.post('/admin/voice-training/sync-voice-prompt', async (req, res) => {
+  try {
+    const { clientId, limit, maxExamples, mergeManual } = req.body || {};
+    if (clientId) {
+      const result = await syncVoicePromptForClient(clientId, { limit, maxExamples, mergeManual });
+      return res.json(result);
+    }
+
+    const { rows: clients } = await db.query(
+      `SELECT id, name FROM clients WHERE active IS DISTINCT FROM false ORDER BY name`
+    );
+    const results = [];
+    for (const c of clients) {
+      results.push({
+        clientId: c.id,
+        clientName: c.name,
+        ...(await syncVoicePromptForClient(c.id, { limit, maxExamples, mergeManual })),
+      });
+    }
+    res.json({ clients: results });
+  } catch (err) {
+    console.error('[Admin] Voice prompt sync error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/admin/booking-links/audit', async (_req, res) => {
+  try {
+    const clients = await auditClientBookingLinks();
+    const active = clients.filter((c) => c.active);
+    res.json({
+      allActiveHaveBookingLink: active.every((c) => c.hasBookingLink),
+      clients,
+    });
+  } catch (err) {
+    console.error('[Admin] Booking link audit error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/poll/smartlead', async (req, res) => {
+  try {
+    const { pollSmartleadReplies } = require('../services/smartlead-poller');
+    const result = await pollSmartleadReplies();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Admin] SmartLead poll trigger error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Mark all open alerts as actioned (DB + Slack). Requires WEBHOOK_TEST_SECRET. */
+router.post('/admin/alerts/clear-all', async (req, res) => {
+  if (!assertWebhookTestSecret(req, res)) return;
+  try {
+    const { clientId, dryRun, note } = req.body || {};
+    const summary = await clearAllAlerts({
+      clientId: clientId || null,
+      dryRun: !!dryRun,
+      note: note || '✅ Cleared — marked as actioned.',
+    });
+    console.log('[Admin] Cleared all alerts', summary);
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    console.error('[Admin] Clear all alerts error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

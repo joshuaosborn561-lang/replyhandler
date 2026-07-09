@@ -77,6 +77,35 @@ function stripEmailQuotePrefix(raw) {
   return t.trim();
 }
 
+/** Strip quoted prior messages from HTML reply bodies (Outlook, blockquote, Gmail). */
+function stripHtmlQuotedReply(html) {
+  let s = String(html || '');
+  if (!/<[a-z][\s\S]*>/i.test(s)) return s;
+
+  const cutPoints = [];
+  const patterns = [
+    /<(?:div|p)[^>]*>\s*<(?:font|span)[^>]*>\s*<b>\s*From:\s*<\/b>/i,
+    /<blockquote[\s>]/i,
+    /class=["'][^"']*gmail_quote/i,
+    /<div[^>]*id=["']divRplyFwdMsg["']/i,
+  ];
+  for (const re of patterns) {
+    const idx = s.search(re);
+    if (idx > 40) cutPoints.push(idx);
+  }
+  if (cutPoints.length) s = s.slice(0, Math.min(...cutPoints));
+  return s;
+}
+
+function inboundBodyFromHistoryMessage(m) {
+  const raw = m?.email_body || m?.body || m?.text || '';
+  const cleaned = stripHtmlQuotedReply(raw);
+  let plain = stripHtmlToText(cleaned) || String(cleaned || '').trim();
+  plain = stripEmailQuotePrefix(plain);
+  plain = stripHtmlToText(plain) || String(plain || '').trim();
+  return plain;
+}
+
 function messageFromEmail(m) {
   const v = m && (m.from || m.From || m.sender || m.reply_from);
   return v ? String(v).trim().toLowerCase() : '';
@@ -124,12 +153,10 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
         continue;
       }
       const raw = m.email_body || m.body || m.text || '';
-      let plain = stripHtmlToText(raw) || String(raw || '').trim();
-      plain = stripEmailQuotePrefix(plain);
-      plain = stripHtmlToText(plain) || String(plain || '').trim();
+      const plain = inboundBodyFromHistoryMessage(m);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
-      rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
+      rows.push({ time, body: plain, rawForDedupe: plain });
     }
     rows.sort((a, b) => a.time.localeCompare(b.time));
     return rows;
@@ -235,24 +262,48 @@ function looksLikeOutOfOffice(text) {
   return false;
 }
 
-/** Only skip Slack for obvious OOO/auto-replies. Err on the side of posting everything else. */
-function shouldSkipSlackForReply(text) {
-  return looksLikeOutOfOffice(text);
+function isOooClassification(classification) {
+  const c = String(classification || '').toUpperCase();
+  return c === 'OOO' || c === 'OUT_OF_OFFICE';
+}
+
+function isWrongPersonClassification(classification) {
+  return String(classification || '').toUpperCase() === 'WRONG_PERSON';
 }
 
 function looksLikeWrongPerson(text) {
   const s = normWs(text);
   if (!s) return false;
-  // Common "wrong person / no longer employed" / redirect phrases.
+  // Wrong contact / no longer at company / redirect to someone else.
   if (/\bno longer employed\b/.test(s)) return true;
   if (/\bno longer with\b/.test(s)) return true;
+  if (/\bis no longer with\b/.test(s)) return true;
+  if (/\bno longer at\b/.test(s)) return true;
   if (/\bno longer works?\b/.test(s)) return true;
-  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team)\b/.test(s)) return true;
+  if (/\bno longer (works|working) (at|for|with)\b/.test(s)) return true;
+  if (/\bdoesn'?t work (here|at|for|with)\b/.test(s)) return true;
+  if (/\bhas left\b/.test(s) && /\b(company|organization|org|team|firm)\b/.test(s)) return true;
   if (/\bplease contact\b/.test(s) && /\bregarding\b/.test(s)) return true;
   if (/\bplease (reach|contact)\b/.test(s) && /\binstead\b/.test(s)) return true;
   if (/\bwrong person\b/.test(s)) return true;
   if (/\bnot (the )?right (person|contact)\b/.test(s)) return true;
+  if (/\b(reached|contacted) the wrong\b/.test(s)) return true;
   return false;
+}
+
+/** Skip Slack entirely — OOO/auto-replies and wrong-person / left-company (text or classifier). */
+function shouldSkipSlackForReply(text, classification) {
+  if (isOooClassification(classification)) return true;
+  if (isWrongPersonClassification(classification)) return true;
+  if (looksLikeOutOfOffice(text)) return true;
+  if (looksLikeWrongPerson(text)) return true;
+  return false;
+}
+
+function slackSkipReason(text, classification) {
+  if (isOooClassification(classification) || looksLikeOutOfOffice(text)) return 'ooo';
+  if (isWrongPersonClassification(classification) || looksLikeWrongPerson(text)) return 'wrong_person';
+  return null;
 }
 
 function looksLikeNotInterested(text) {
@@ -293,6 +344,8 @@ function looksLikeNotInterested(text) {
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
+  stripHtmlQuotedReply,
+  inboundBodyFromHistoryMessage,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
@@ -303,7 +356,10 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  isOooClassification,
+  isWrongPersonClassification,
   shouldSkipSlackForReply,
+  slackSkipReason,
   looksLikeWrongPerson,
   looksLikeNotInterested,
 };

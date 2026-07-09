@@ -88,6 +88,8 @@ function campaignId(conv) {
     conv?.campaign_id ||
     conv?.campaign?.id ||
     conv?.campaign?.campaignId ||
+    conv?.listCampaignId ||
+    conv?.list_campaign_id ||
     conv?.data?.campaignId ||
     conv?.data?.campaign_id ||
     null
@@ -268,9 +270,6 @@ async function loadClients() {
 }
 
 async function processConversation(client, conv, options) {
-  const cid = campaignId(conv);
-  if (!cid) return { skipped: 'missing_campaign_id' };
-
   const messages = conversationMessages(conv);
   const inbound = latestInbound(messages);
   if (!inbound) return { skipped: 'no_inbound' };
@@ -279,8 +278,11 @@ async function processConversation(client, conv, options) {
 
   const convId = conversationId(conv);
   const lid = leadId(conv);
+  const cid = campaignId(conv);
   const leadKey = lid || convId;
   if (!leadKey) return { skipped: 'missing_thread_id' };
+  // GetConversationsV2 often omits campaign id (webhook payloads include campaign.id).
+  // Match webhook behavior: proceed with conversation/lead id when campaign is absent.
 
   const unposted = await findUnpostedReply({
     clientId: client.id,
@@ -336,6 +338,9 @@ async function processConversation(client, conv, options) {
   })) {
     return { skipped: 'already_processed_enriched' };
   }
+
+  if (shouldSkipSlackForReply(inbound.text)) return { skipped: 'ooo' };
+
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   const result = await classifyAndDraft(
     threadContext,
@@ -347,7 +352,9 @@ async function processConversation(client, conv, options) {
   );
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound.text)) return { skipped: 'ooo' };
+  if (shouldSkipSlackForReply(inbound.text, classification)) {
+    return { skipped: slackSkipReason(inbound.text, classification) || 'no_alert' };
+  }
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';
