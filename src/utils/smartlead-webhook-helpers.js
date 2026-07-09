@@ -77,6 +77,35 @@ function stripEmailQuotePrefix(raw) {
   return t.trim();
 }
 
+/** Strip quoted prior messages from HTML reply bodies (Outlook, blockquote, Gmail). */
+function stripHtmlQuotedReply(html) {
+  let s = String(html || '');
+  if (!/<[a-z][\s\S]*>/i.test(s)) return s;
+
+  const cutPoints = [];
+  const patterns = [
+    /<(?:div|p)[^>]*>\s*<(?:font|span)[^>]*>\s*<b>\s*From:\s*<\/b>/i,
+    /<blockquote[\s>]/i,
+    /class=["'][^"']*gmail_quote/i,
+    /<div[^>]*id=["']divRplyFwdMsg["']/i,
+  ];
+  for (const re of patterns) {
+    const idx = s.search(re);
+    if (idx > 40) cutPoints.push(idx);
+  }
+  if (cutPoints.length) s = s.slice(0, Math.min(...cutPoints));
+  return s;
+}
+
+function inboundBodyFromHistoryMessage(m) {
+  const raw = m?.email_body || m?.body || m?.text || '';
+  const cleaned = stripHtmlQuotedReply(raw);
+  let plain = stripHtmlToText(cleaned) || String(cleaned || '').trim();
+  plain = stripEmailQuotePrefix(plain);
+  plain = stripHtmlToText(plain) || String(plain || '').trim();
+  return plain;
+}
+
 function messageFromEmail(m) {
   const v = m && (m.from || m.From || m.sender || m.reply_from);
   return v ? String(v).trim().toLowerCase() : '';
@@ -124,12 +153,10 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
         continue;
       }
       const raw = m.email_body || m.body || m.text || '';
-      let plain = stripHtmlToText(raw) || String(raw || '').trim();
-      plain = stripEmailQuotePrefix(plain);
-      plain = stripHtmlToText(plain) || String(plain || '').trim();
+      const plain = inboundBodyFromHistoryMessage(m);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
-      rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
+      rows.push({ time, body: plain, rawForDedupe: plain });
     }
     rows.sort((a, b) => a.time.localeCompare(b.time));
     return rows;
@@ -293,6 +320,8 @@ function looksLikeNotInterested(text) {
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
+  stripHtmlQuotedReply,
+  inboundBodyFromHistoryMessage,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
