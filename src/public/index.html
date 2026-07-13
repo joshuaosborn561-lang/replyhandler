@@ -706,6 +706,12 @@
       </div>
 
       <div class="form-group">
+        <label>Client CC Email (optional)</label>
+        <input type="email" id="f_cc_email" placeholder="client@company.com">
+        <div class="hint">When set, SmartLead approval cards in Slack show a <strong>CC client</strong> checkbox. Check it before Approve or Edit &amp; send to copy the client on email replies.</div>
+      </div>
+
+      <div class="form-group">
         <label>Calendly personal access token (optional)</label>
         <input type="text" id="f_calendly_personal_access_token" placeholder="pat_...">
         <div class="hint">Only if <strong>Booking link</strong> is Calendly. With a PAT, we pull <strong>real</strong> open slots from Calendly. For other schedulers, leave blank; connect Google or Outlook below if you want slot suggestions from calendar free/busy — otherwise the draft will use the booking link without invented times.</div>
@@ -812,6 +818,14 @@
           <li><code>https://cal.com/acme/discovery-call</code></li>
           <li><code>https://savvycal.com/acme/chat</code></li>
         </ul>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Client CC Email</summary>
+      <div class="guide-section-body">
+        <p>Optional. One email address for this client (e.g. their owner or AE). When set, <strong>SmartLead</strong> approval cards in Slack show a <strong>CC client</strong> checkbox &mdash; off by default. Check it before Approve or Edit &amp; send to copy them on the email thread with the prospect.</p>
+        <div class="guide-note">LinkedIn / HeyReach replies are not CC&rsquo;d (no email thread). Leave blank if you don&rsquo;t want the option.</div>
       </div>
     </details>
 
@@ -978,6 +992,9 @@ function renderGrid() {
         <span class="${c.booking_link ? 'key-present' : 'key-missing'}">
           ${c.booking_link ? '&#10003;' : '&#10007;'} Booking Link
         </span>
+        <span class="${c.cc_email ? 'key-present' : 'key-missing'}">
+          ${c.cc_email ? '&#10003;' : '&#10007;'} CC Email
+        </span>
         <span style="color: var(--text-muted)">
           Added ${new Date(c.created_at).toLocaleDateString()}
         </span>
@@ -1031,6 +1048,10 @@ function openDetail(id) {
       <div class="detail-row">
         <span class="label">Booking Link</span>
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Client CC Email</span>
+        <span class="value">${c.cc_email ? esc(c.cc_email) : '—'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Calendly PAT</span>
@@ -1113,6 +1134,7 @@ function openEditFromDetail() {
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
   document.getElementById('f_booking_link').value = c.booking_link || '';
+  document.getElementById('f_cc_email').value = c.cc_email || '';
   document.getElementById('f_calendly_personal_access_token').value = c.calendly_personal_access_token || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
 
@@ -1128,6 +1150,7 @@ async function submitForm() {
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
+    cc_email: document.getElementById('f_cc_email').value.trim() || null,
     calendly_personal_access_token: document.getElementById('f_calendly_personal_access_token').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
@@ -1171,7 +1194,7 @@ function toggleGuide() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_booking_link', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_booking_link', 'f_cc_email', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }
