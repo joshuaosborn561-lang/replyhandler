@@ -171,6 +171,99 @@ function buildConversationBlocks({
   return blocks;
 }
 
+function buildSentConfirmationBlocks({
+  leadName,
+  leadEmail,
+  platform,
+  classification,
+  inboundMessage,
+  lastOutboundMessage,
+  contextLabel,
+  campaignDisplay,
+  sentReply,
+  actionKind,
+  userId,
+  extraFooter,
+}) {
+  const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
+  const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
+
+  const headers = {
+    approved: '✅ SENT — Approved & sent',
+    edited: '✏️ SENT — Edited & sent',
+    rejected: '❌ Rejected',
+    already_replied: '✅ Already replied',
+    failed: '⚠️ Send failed',
+  };
+  const footers = {
+    approved: 'Approved & sent',
+    edited: 'Edited & sent',
+    rejected: 'Rejected',
+    already_replied: 'Marked already replied',
+    failed: 'Send failed',
+  };
+  const kind = headers[actionKind] ? actionKind : 'approved';
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: headers[kind] },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Lead*\n${leadLine}` },
+        { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
+      ],
+    },
+    dividerBlock(),
+    ...buildConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft: null,
+      priorLabel: contextLabel || 'You sent',
+    }),
+  ];
+
+  if (sentReply && String(sentReply).trim() && kind !== 'rejected') {
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📤',
+        label: 'Sent to prospect',
+        body: sentReply,
+        neverTruncate: true,
+      })
+    );
+  }
+
+  const userBit = userId ? ` by <@${userId}>` : '';
+  let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
+  if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: footerText }],
+  });
+
+  return blocks;
+}
+
+async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
+  const slack = getClient(token);
+  const blocks = buildSentConfirmationBlocks(opts);
+  const preview = plainTextForSlack(opts.sentReply || opts.inboundMessage).slice(0, 120);
+  const lead = opts.leadName || 'prospect';
+  const text = `${opts.actionKind === 'rejected' ? 'Rejected' : 'Sent'} — ${lead}${preview ? `: ${preview}` : ''}`;
+
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text,
+    blocks,
+  });
+}
+
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
@@ -482,6 +575,8 @@ module.exports = {
   postProspectFollowUpReminder,
   postReminder,
   updateMessage,
+  updateSentConfirmationCard,
+  buildSentConfirmationBlocks,
   openEditReplyModal,
   postPendingNudge,
   postMorningDigestHeader,
