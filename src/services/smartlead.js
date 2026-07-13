@@ -37,6 +37,35 @@ async function getThreadHistory(apiKey, campaignId, leadId) {
   return res.json();
 }
 
+function historyMessages(historyResponse) {
+  if (!historyResponse || typeof historyResponse !== 'object') return [];
+  if (Array.isArray(historyResponse.history)) return historyResponse.history;
+  if (Array.isArray(historyResponse.messages)) return historyResponse.messages;
+  if (Array.isArray(historyResponse)) return historyResponse;
+  return [];
+}
+
+function extractForwardAnchorFromHistory(historyResponse) {
+  const rows = [];
+  for (const m of historyMessages(historyResponse)) {
+    if (!m || typeof m !== 'object') continue;
+    const messageId = m.message_id || m.messageId || null;
+    const statsId = m.stats_id || m.email_stats_id || m.emailStatsId || m.statsId || null;
+    if (!messageId || !statsId) continue;
+    rows.push({
+      messageId: String(messageId),
+      statsId: String(statsId),
+      type: String(m.type || m.direction || '').toUpperCase(),
+      time: m.time || m.sent_at || m.received_at || m.created_at || '',
+    });
+  }
+  if (!rows.length) return null;
+  rows.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+  const replies = rows.filter((r) => r.type === 'REPLY');
+  const pool = replies.length ? replies : rows;
+  return pool[pool.length - 1];
+}
+
 /**
  * Extract the `email_stats_id` to reply against.
  * SmartLead's reply endpoint expects the stats_id of a SENT message in the thread
@@ -196,14 +225,16 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
     throw new Error('SmartLead sendReply internal error: misconstructed reply URL');
   }
 
+  const payload = {
+    email_stats_id: stats,
+    email_body: emailBody,
+    add_signature: true,
+  };
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email_stats_id: stats,
-      email_body: emailBody,
-      add_signature: true,
-    }),
+    body: JSON.stringify(payload),
   });
   const responseBody = await res.text();
   if (!res.ok) {
@@ -211,6 +242,46 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
   }
   // SmartLead's reply endpoint sometimes returns plain text (e.g. "Email added to the queue, will be sent out soon!")
   // even though docs show JSON. Parse defensively.
+  try { return JSON.parse(responseBody); } catch { return { ok: true, raw: responseBody }; }
+}
+
+/**
+ * SmartLead reply-email-thread does not accept cc_emails. Forward the thread instead.
+ * @see https://api.smartlead.ai/api-reference/inbox/forward
+ */
+async function forwardThreadToClient(apiKey, campaignId, leadId, { toEmail, leadName, sentText }) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const to = String(toEmail || '').trim();
+  if (!to) throw new Error('Client CC email is empty');
+
+  let anchor = null;
+  if (leadId != null && leadId !== '') {
+    const lid = toSmartleadId(leadId, 'lead_id');
+    const history = await getThreadHistory(apiKey, cid, lid);
+    anchor = extractForwardAnchorFromHistory(history);
+  }
+  if (!anchor) {
+    throw new Error('Could not find a thread message to forward for the client copy');
+  }
+
+  const lead = String(leadName || 'prospect').trim() || 'prospect';
+  const forwardBody = `<p>FYI — reply sent to ${escapeHtml(lead)}:</p><p>${formatPlainTextAsSmartleadHtml(sentText)}</p>`;
+  const url = `${BASE_URL}/campaigns/${cid}/forward-email?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message_id: anchor.messageId,
+      stats_id: anchor.statsId,
+      to_emails: to,
+      forward_email_subject: `Copy: reply to ${lead}`,
+      forward_email_body: forwardBody,
+    }),
+  });
+  const responseBody = await res.text();
+  if (!res.ok) {
+    throw new Error(`SmartLead forward-email failed (${res.status}): ${responseBody}`);
+  }
   try { return JSON.parse(responseBody); } catch { return { ok: true, raw: responseBody }; }
 }
 
@@ -281,10 +352,12 @@ async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } 
 module.exports = {
   getThreadHistory,
   sendReply,
+  forwardThreadToClient,
   verifyCampaignAccess,
   resolveEmailStatsId,
   resolveIdsFromMasterInbox,
   extractStatsIdFromHistory,
+  extractForwardAnchorFromHistory,
   formatPlainTextAsSmartleadHtml,
   looksLikeHandwrittenHtmlEmailBody,
 };

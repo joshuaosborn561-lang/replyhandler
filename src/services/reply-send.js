@@ -35,13 +35,35 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
+    const ccEmails = reply.cc_on_send && client.cc_email ? String(client.cc_email).trim() : '';
+    if (reply.cc_on_send && !ccEmails) {
+      console.warn('[ReplySend] cc_on_send set but client has no cc_email', { replyId: reply.id, clientId: client.id });
+    }
+
     await smartlead.sendReply(
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
       { replyText, emailStatsId }
     );
-    return;
+
+    let clientCcWarning = '';
+    if (ccEmails) {
+      try {
+        await smartlead.forwardThreadToClient(
+          client.smartlead_api_key,
+          reply.campaign_id,
+          reply.lead_id,
+          { toEmail: ccEmails, leadName: reply.lead_name, sentText: replyText }
+        );
+        console.log('[ReplySend] Client copy forwarded', { replyId: reply.id, to: ccEmails });
+      } catch (err) {
+        console.error('[ReplySend] Client copy forward failed (reply still sent)', { replyId: reply.id, err: err.message });
+        clientCcWarning = `Client copy could not be forwarded: ${err.message}`;
+      }
+    }
+
+    return { clientCcWarning: clientCcWarning || undefined };
   }
 
   if (reply.platform === 'heyreach') {

@@ -56,6 +56,35 @@ function slackCardContextFromReply(reply) {
   return { campaignDisplay: campaignDisplay || undefined, lastOutboundMessage: lastOutbound || undefined };
 }
 
+function normDraft(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFooter, ccUsed }) {
+  return {
+    leadName: reply.lead_name,
+    leadEmail: reply.lead_email,
+    platform: reply.platform,
+    classification: reply.classification,
+    inboundMessage: reply.inbound_message,
+    lastOutboundMessage: ctx.lastOutboundMessage,
+    contextLabel: 'You sent',
+    campaignDisplay: ctx.campaignDisplay,
+    sentReply,
+    actionKind,
+    userId,
+    extraFooter,
+    ccUsed,
+  };
+}
+
+function ccUsedLabel(reply, client, sendResult) {
+  if (reply.platform !== 'smartlead' || !reply.cc_on_send) return undefined;
+  if (sendResult?.clientCcWarning) return undefined;
+  const email = String(client.cc_email || '').trim();
+  return email || undefined;
+}
+
 router.post('/slack/actions', slackVerify, async (req, res) => {
   let interaction;
   try {
@@ -94,6 +123,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleAlreadyRepliedYes(action.value, interaction);
     } else if (action.action_id === 'already_replied_no') {
       await handleAlreadyRepliedNo(action.value, interaction);
+    } else if (action.action_id === 'toggle_cc_client') {
+      await handleToggleCcClient(action);
     } else if (action.action_id === 'snooze_nudge_30') {
       await handleSnoozeNudge(action.value, interaction, 30);
     }
@@ -118,7 +149,27 @@ async function handleOpenEditModal(replyId, interaction) {
     initialDraft: reply.draft_reply || '',
     channelId: interaction.channel?.id,
     messageTs: interaction.message?.ts,
+    ccEmail: reply.platform === 'smartlead' ? client.cc_email : null,
+    ccOnSend: !!reply.cc_on_send,
   });
+}
+
+async function handleToggleCcClient(action) {
+  const blockId = action.block_id || '';
+  const replyId = blockId.startsWith('cc_toggle_') ? blockId.slice('cc_toggle_'.length) : null;
+  if (!replyId) {
+    console.warn('[Slack] toggle_cc_client: missing replyId', { blockId });
+    return;
+  }
+  const ccOn = Array.isArray(action.selected_options) && action.selected_options.length > 0;
+  const { rowCount } = await db.query(
+    `UPDATE pending_replies SET cc_on_send = $1, updated_at = now()
+      WHERE id = $2 AND status IN ('pending', 'flagged')`,
+    [ccOn, replyId]
+  );
+  if (!rowCount) {
+    console.warn('[Slack] toggle_cc_client: reply not pending', { replyId, ccOn });
+  }
 }
 
 async function handleEditModalSubmit(interaction) {
@@ -137,6 +188,12 @@ async function handleEditModalSubmit(interaction) {
   const messageText = (draftState?.value || '').trim();
   if (!messageText) return;
 
+  const ccSelected = (interaction.view.state.values?.cc_block?.cc_checkbox?.selected_options || []).length > 0;
+  await db.query(
+    'UPDATE pending_replies SET cc_on_send = $1, updated_at = now() WHERE id = $2',
+    [ccSelected, replyId]
+  );
+
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
      WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
@@ -150,8 +207,12 @@ async function handleEditModalSubmit(interaction) {
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
 
+  const originalDraft = reply.draft_reply;
+  const wasEdited = normDraft(messageText) !== normDraft(originalDraft);
+  const ctx = slackCardContextFromReply(reply);
+
   try {
-    await sendReplyToPlatform(client, reply, messageText);
+    const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, draft_reply = $2, updated_at = now() WHERE id = $3',
@@ -161,25 +222,39 @@ async function handleEditModalSubmit(interaction) {
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
 
-    let statusMsg = `✅ Reply to ${reply.lead_name} edited and sent by <@${interaction.user.id}>.`;
+    let extraFooter = '';
     if (isSlackTestFixtureReply(reply)) {
-      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+      extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
     }
-    statusMsg += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
+    extraFooter += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
+    if (sendResult.clientCcWarning) {
+      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    }
 
     if (channelId && messageTs) {
-      await slackService.updateMessage(
+      await slackService.updateSentConfirmationCard(
         client.slack_bot_token, channelId, messageTs,
-        statusMsg
+        sentCardPayload(reply, ctx, {
+          sentReply: messageText,
+          actionKind: wasEdited ? 'edited' : 'approved',
+          userId: interaction.user.id,
+          extraFooter: extraFooter.trim() || undefined,
+          ccUsed: ccUsedLabel(reply, client, sendResult),
+        })
       );
     }
   } catch (err) {
     console.error('[Slack] Edit modal send failed', { replyId, err: err.message });
     await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2', ['flagged', replyId]);
     if (channelId && messageTs) {
-      await slackService.updateMessage(
+      await slackService.updateSentConfirmationCard(
         client.slack_bot_token, channelId, messageTs,
-        `⚠️ Reply to ${reply.lead_name} was edited but failed to send: ${err.message}. Please reply manually.`
+        sentCardPayload(reply, ctx, {
+          sentReply: messageText,
+          actionKind: 'failed',
+          userId: interaction.user.id,
+          extraFooter: err.message,
+        })
       );
     }
   }
@@ -198,9 +273,10 @@ async function handleApprove(replyId, interaction) {
   }
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const ctx = slackCardContextFromReply(reply);
 
   try {
-    await sendReplyToPlatform(client, reply, reply.draft_reply);
+    const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
@@ -210,24 +286,38 @@ async function handleApprove(replyId, interaction) {
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
 
-    let statusMsg = `✅ Reply to ${reply.lead_name} approved and sent by <@${interaction.user.id}>.`;
+    let extraFooter = '';
     if (isSlackTestFixtureReply(reply)) {
-      statusMsg += '\n_(Test card from `/admin/test/slack-draft` — no SmartLead/HeyReach message sent.)_';
+      extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
     }
-    statusMsg += await maybeBookMeetingAfterSend(reply, client);
+    extraFooter += await maybeBookMeetingAfterSend(reply, client);
+    if (sendResult.clientCcWarning) {
+      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    }
 
-    await slackService.updateMessage(
+    await slackService.updateSentConfirmationCard(
       client.slack_bot_token, interaction.channel.id, interaction.message.ts,
-      statusMsg
+      sentCardPayload(reply, ctx, {
+        sentReply: reply.draft_reply,
+        actionKind: 'approved',
+        userId: interaction.user.id,
+        extraFooter: extraFooter.trim() || undefined,
+        ccUsed: ccUsedLabel(reply, client, sendResult),
+      })
     );
 
     console.log('[Slack] Reply approved and sent', { replyId, platform: reply.platform, lead: reply.lead_name });
   } catch (err) {
     console.error('[Slack] Failed to send reply after approval', { replyId, err: err.message });
     await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2', ['flagged', replyId]);
-    await slackService.updateMessage(
+    await slackService.updateSentConfirmationCard(
       client.slack_bot_token, interaction.channel.id, interaction.message.ts,
-      `⚠️ Reply to ${reply.lead_name} was approved but failed to send: ${err.message}. Please reply manually.`
+      sentCardPayload(reply, ctx, {
+        sentReply: reply.draft_reply,
+        actionKind: 'failed',
+        userId: interaction.user.id,
+        extraFooter: err.message,
+      })
     );
   }
 }
@@ -241,10 +331,15 @@ async function handleReject(replyId, interaction) {
   if (!reply) return;
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const ctx = slackCardContextFromReply(reply);
 
-  await slackService.updateMessage(
+  await slackService.updateSentConfirmationCard(
     client.slack_bot_token, interaction.channel.id, interaction.message.ts,
-    `❌ Reply to ${reply.lead_name} rejected by <@${interaction.user.id}>.`
+    sentCardPayload(reply, ctx, {
+      sentReply: null,
+      actionKind: 'rejected',
+      userId: interaction.user.id,
+    })
   );
 
   console.log('[Slack] Reply rejected', { replyId, lead: reply.lead_name });
@@ -264,8 +359,10 @@ async function handleAlreadyRepliedYes(replyId, interaction) {
     return;
   }
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const ctx = slackCardContextFromReply(reply);
+  const sentText = reply.sent_reply || reply.draft_reply;
+
   if (interaction.channel?.id && interaction.message?.ts) {
-    // Replace the inline nudge with a confirmation (keeps the original approval card intact above).
     try {
       await slackService.updateMessage(
         client.slack_bot_token, interaction.channel.id, interaction.message.ts,
@@ -277,9 +374,14 @@ async function handleAlreadyRepliedYes(replyId, interaction) {
     const { rows: pendingReply } = await db.query('SELECT slack_message_ts FROM pending_replies WHERE id = $1', [replyId]);
     const parentTs = pendingReply[0]?.slack_message_ts;
     if (parentTs) {
-      await slackService.updateMessage(
+      await slackService.updateSentConfirmationCard(
         client.slack_bot_token, interaction.channel.id, parentTs,
-        `✅ Reply to ${reply.lead_name} marked as already replied by <@${interaction.user.id}> (outside app).`
+        sentCardPayload(reply, ctx, {
+          sentReply: sentText,
+          actionKind: 'already_replied',
+          userId: interaction.user.id,
+          extraFooter: 'Replied outside this app — no message sent from here.',
+        })
       );
     }
   } catch (e) { console.error('[Slack] update parent failed', { err: e.message }); }
