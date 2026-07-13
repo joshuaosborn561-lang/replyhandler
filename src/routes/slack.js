@@ -78,8 +78,9 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
   };
 }
 
-function ccUsedLabel(reply, client) {
+function ccUsedLabel(reply, client, sendResult) {
   if (reply.platform !== 'smartlead' || !reply.cc_on_send) return undefined;
+  if (sendResult?.clientCcWarning) return undefined;
   const email = String(client.cc_email || '').trim();
   return email || undefined;
 }
@@ -211,7 +212,7 @@ async function handleEditModalSubmit(interaction) {
   const ctx = slackCardContextFromReply(reply);
 
   try {
-    await sendReplyToPlatform(client, reply, messageText);
+    const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, draft_reply = $2, updated_at = now() WHERE id = $3',
@@ -226,6 +227,9 @@ async function handleEditModalSubmit(interaction) {
       extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
     }
     extraFooter += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
+    if (sendResult.clientCcWarning) {
+      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    }
 
     if (channelId && messageTs) {
       await slackService.updateSentConfirmationCard(
@@ -235,7 +239,7 @@ async function handleEditModalSubmit(interaction) {
           actionKind: wasEdited ? 'edited' : 'approved',
           userId: interaction.user.id,
           extraFooter: extraFooter.trim() || undefined,
-          ccUsed: ccUsedLabel(reply, client),
+          ccUsed: ccUsedLabel(reply, client, sendResult),
         })
       );
     }
@@ -272,7 +276,7 @@ async function handleApprove(replyId, interaction) {
   const ctx = slackCardContextFromReply(reply);
 
   try {
-    await sendReplyToPlatform(client, reply, reply.draft_reply);
+    const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
@@ -287,6 +291,9 @@ async function handleApprove(replyId, interaction) {
       extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
     }
     extraFooter += await maybeBookMeetingAfterSend(reply, client);
+    if (sendResult.clientCcWarning) {
+      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    }
 
     await slackService.updateSentConfirmationCard(
       client.slack_bot_token, interaction.channel.id, interaction.message.ts,
@@ -295,7 +302,7 @@ async function handleApprove(replyId, interaction) {
         actionKind: 'approved',
         userId: interaction.user.id,
         extraFooter: extraFooter.trim() || undefined,
-        ccUsed: ccUsedLabel(reply, client),
+        ccUsed: ccUsedLabel(reply, client, sendResult),
       })
     );
 

@@ -44,9 +44,26 @@ async function sendReplyToPlatform(client, reply, replyText) {
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      { replyText, emailStatsId, ccEmails: ccEmails || undefined }
+      { replyText, emailStatsId }
     );
-    return;
+
+    let clientCcWarning = '';
+    if (ccEmails) {
+      try {
+        await smartlead.forwardThreadToClient(
+          client.smartlead_api_key,
+          reply.campaign_id,
+          reply.lead_id,
+          { toEmail: ccEmails, leadName: reply.lead_name, sentText: replyText }
+        );
+        console.log('[ReplySend] Client copy forwarded', { replyId: reply.id, to: ccEmails });
+      } catch (err) {
+        console.error('[ReplySend] Client copy forward failed (reply still sent)', { replyId: reply.id, err: err.message });
+        clientCcWarning = `Client copy could not be forwarded: ${err.message}`;
+      }
+    }
+
+    return { clientCcWarning: clientCcWarning || undefined };
   }
 
   if (reply.platform === 'heyreach') {

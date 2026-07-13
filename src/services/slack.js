@@ -261,7 +261,7 @@ function buildSentConfirmationBlocks({
 
   const userBit = userId ? ` by <@${userId}>` : '';
   let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
-  if (ccUsed) footerText += `\n_CC'd ${escMrkdwn(ccUsed)}_`;
+  if (ccUsed) footerText += `\n_Copy forwarded to ${escMrkdwn(ccUsed)}_`;
   if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
 
   blocks.push({
