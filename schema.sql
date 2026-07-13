@@ -11,6 +11,7 @@ CREATE TABLE clients (
   calendly_personal_access_token TEXT,
   voice_prompt TEXT NOT NULL DEFAULT '',
   digest_timezone TEXT,
+  cc_email TEXT,
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -44,6 +45,7 @@ CREATE TABLE pending_replies (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'sent', 'flagged', 'alert_only')),
   slack_message_ts TEXT,
   smartlead_email_stats_id TEXT,
+  cc_on_send BOOLEAN NOT NULL DEFAULT false,
   pending_nudge_sent_at TIMESTAMPTZ,
   reminder_count INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

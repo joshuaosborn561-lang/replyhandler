@@ -171,7 +171,7 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
  * Required: email_stats_id, email_body (lead_id is not a path param on this route).
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }) {
+async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -196,14 +196,18 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
     throw new Error('SmartLead sendReply internal error: misconstructed reply URL');
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const payload = {
       email_stats_id: stats,
       email_body: emailBody,
       add_signature: true,
-    }),
+    };
+  const cc = String(ccEmails || '').trim();
+  if (cc) payload.cc_emails = cc;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
   const responseBody = await res.text();
   if (!res.ok) {

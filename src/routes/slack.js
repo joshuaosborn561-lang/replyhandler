@@ -60,7 +60,7 @@ function normDraft(s) {
   return String(s || '').replace(/\s+/g, ' ').trim();
 }
 
-function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFooter }) {
+function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFooter, ccUsed }) {
   return {
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
@@ -74,7 +74,14 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     actionKind,
     userId,
     extraFooter,
+    ccUsed,
   };
+}
+
+function ccUsedLabel(reply, client) {
+  if (reply.platform !== 'smartlead' || !reply.cc_on_send) return undefined;
+  const email = String(client.cc_email || '').trim();
+  return email || undefined;
 }
 
 router.post('/slack/actions', slackVerify, async (req, res) => {
@@ -115,6 +122,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleAlreadyRepliedYes(action.value, interaction);
     } else if (action.action_id === 'already_replied_no') {
       await handleAlreadyRepliedNo(action.value, interaction);
+    } else if (action.action_id === 'toggle_cc_client') {
+      await handleToggleCcClient(action);
     } else if (action.action_id === 'snooze_nudge_30') {
       await handleSnoozeNudge(action.value, interaction, 30);
     }
@@ -139,7 +148,27 @@ async function handleOpenEditModal(replyId, interaction) {
     initialDraft: reply.draft_reply || '',
     channelId: interaction.channel?.id,
     messageTs: interaction.message?.ts,
+    ccEmail: reply.platform === 'smartlead' ? client.cc_email : null,
+    ccOnSend: !!reply.cc_on_send,
   });
+}
+
+async function handleToggleCcClient(action) {
+  const blockId = action.block_id || '';
+  const replyId = blockId.startsWith('cc_toggle_') ? blockId.slice('cc_toggle_'.length) : null;
+  if (!replyId) {
+    console.warn('[Slack] toggle_cc_client: missing replyId', { blockId });
+    return;
+  }
+  const ccOn = Array.isArray(action.selected_options) && action.selected_options.length > 0;
+  const { rowCount } = await db.query(
+    `UPDATE pending_replies SET cc_on_send = $1, updated_at = now()
+      WHERE id = $2 AND status IN ('pending', 'flagged')`,
+    [ccOn, replyId]
+  );
+  if (!rowCount) {
+    console.warn('[Slack] toggle_cc_client: reply not pending', { replyId, ccOn });
+  }
 }
 
 async function handleEditModalSubmit(interaction) {
@@ -157,6 +186,12 @@ async function handleEditModalSubmit(interaction) {
   const draftState = interaction.view.state.values?.draft_block?.draft_input;
   const messageText = (draftState?.value || '').trim();
   if (!messageText) return;
+
+  const ccSelected = (interaction.view.state.values?.cc_block?.cc_checkbox?.selected_options || []).length > 0;
+  await db.query(
+    'UPDATE pending_replies SET cc_on_send = $1, updated_at = now() WHERE id = $2',
+    [ccSelected, replyId]
+  );
 
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
@@ -200,6 +235,7 @@ async function handleEditModalSubmit(interaction) {
           actionKind: wasEdited ? 'edited' : 'approved',
           userId: interaction.user.id,
           extraFooter: extraFooter.trim() || undefined,
+          ccUsed: ccUsedLabel(reply, client),
         })
       );
     }
@@ -259,6 +295,7 @@ async function handleApprove(replyId, interaction) {
         actionKind: 'approved',
         userId: interaction.user.id,
         extraFooter: extraFooter.trim() || undefined,
+        ccUsed: ccUsedLabel(reply, client),
       })
     );
 

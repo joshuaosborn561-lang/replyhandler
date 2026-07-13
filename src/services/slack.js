@@ -87,6 +87,27 @@ function dividerBlock() {
   return { type: 'divider' };
 }
 
+function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
+  const email = String(ccEmail || '').trim();
+  if (!email || !replyId) return null;
+  const label = email.length > 48 ? `${email.slice(0, 45)}…` : email;
+  const option = {
+    text: { type: 'plain_text', text: `CC ${label}` },
+    value: String(replyId),
+  };
+  return {
+    type: 'section',
+    block_id: `cc_toggle_${replyId}`,
+    text: { type: 'mrkdwn', text: '*Email options*' },
+    accessory: {
+      type: 'checkboxes',
+      action_id: 'toggle_cc_client',
+      options: [option],
+      ...(ccOnSend ? { initial_options: [option] } : {}),
+    },
+  };
+}
+
 /**
  * Build one or more section blocks for a conversation step.
  * @param {object} opts
@@ -184,6 +205,7 @@ function buildSentConfirmationBlocks({
   actionKind,
   userId,
   extraFooter,
+  ccUsed,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
@@ -239,6 +261,7 @@ function buildSentConfirmationBlocks({
 
   const userBit = userId ? ` by <@${userId}>` : '';
   let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
+  if (ccUsed) footerText += `\n_CC'd ${escMrkdwn(ccUsed)}_`;
   if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
 
   blocks.push({
@@ -266,7 +289,7 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
 
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
-  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
+  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -301,7 +324,14 @@ async function postDraftApproval(token, channelId, {
         text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`,
       }],
     },
-    {
+  ];
+
+  const ccBlock = platform === 'smartlead'
+    ? ccCheckboxBlock({ replyId, ccEmail, ccOnSend: !!ccOnSend })
+    : null;
+  if (ccBlock) blocks.push(ccBlock);
+
+  blocks.push({
       type: 'actions',
       elements: [
         {
@@ -325,8 +355,7 @@ async function postDraftApproval(token, channelId, {
           value: replyId,
         },
       ],
-    },
-  ];
+    });
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 
@@ -434,9 +463,43 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
-async function openEditReplyModal(token, triggerId, { replyId, initialDraft, channelId, messageTs }) {
+async function openEditReplyModal(token, triggerId, { replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend }) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
+
+  const blocks = [
+    {
+      type: 'input',
+      block_id: 'draft_block',
+      label: { type: 'plain_text', text: 'Message to send to the prospect' },
+      element: {
+        type: 'plain_text_input',
+        action_id: 'draft_input',
+        multiline: true,
+        ...((initialDraft && String(initialDraft).trim())
+          ? { initial_value: String(initialDraft).slice(0, 2900) }
+          : {}),
+      },
+    },
+  ];
+
+  const email = String(ccEmail || '').trim();
+  if (email) {
+    const label = email.length > 48 ? `${email.slice(0, 45)}…` : email;
+    const option = { text: { type: 'plain_text', text: `CC ${label}` }, value: 'cc' };
+    blocks.push({
+      type: 'input',
+      block_id: 'cc_block',
+      optional: true,
+      label: { type: 'plain_text', text: 'Email options' },
+      element: {
+        type: 'checkboxes',
+        action_id: 'cc_checkbox',
+        options: [option],
+        ...(ccOnSend ? { initial_options: [option] } : {}),
+      },
+    });
+  }
 
   return slack.views.open({
     trigger_id: triggerId,
@@ -447,21 +510,7 @@ async function openEditReplyModal(token, triggerId, { replyId, initialDraft, cha
       title: { type: 'plain_text', text: 'Edit reply' },
       submit: { type: 'plain_text', text: 'Send' },
       close: { type: 'plain_text', text: 'Cancel' },
-      blocks: [
-        {
-          type: 'input',
-          block_id: 'draft_block',
-          label: { type: 'plain_text', text: 'Message to send to the prospect' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'draft_input',
-            multiline: true,
-            ...((initialDraft && String(initialDraft).trim())
-              ? { initial_value: String(initialDraft).slice(0, 2900) }
-              : {}),
-          },
-        },
-      ],
+      blocks,
     },
   });
 }

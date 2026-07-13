@@ -24,6 +24,7 @@ const MIGRATION_FILES = [
   '010_pending_nudge_snooze.sql',
   '011_protect_clients.sql',
   '012_attention_digests.sql',
+  '013_client_cc_email.sql',
 ];
 
 async function clientsTableExists(client) {

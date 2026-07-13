@@ -35,11 +35,16 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
+    const ccEmails = reply.cc_on_send && client.cc_email ? String(client.cc_email).trim() : '';
+    if (reply.cc_on_send && !ccEmails) {
+      console.warn('[ReplySend] cc_on_send set but client has no cc_email', { replyId: reply.id, clientId: client.id });
+    }
+
     await smartlead.sendReply(
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      { replyText, emailStatsId }
+      { replyText, emailStatsId, ccEmails: ccEmails || undefined }
     );
     return;
   }
