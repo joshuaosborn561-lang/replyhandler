@@ -14,6 +14,12 @@ const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '5
 const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
 const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
 
+function attentionDigestsEnabled() {
+  const v = process.env.ATTENTION_DIGESTS_ENABLED;
+  if (v === undefined || v === '') return false;
+  return /^(1|true|yes|on)$/i.test(String(v).trim());
+}
+
 function clientTimezone(client) {
   return client?.digest_timezone || DEFAULT_TZ;
 }
@@ -131,57 +137,62 @@ function startCron() {
     }
   });
 
-  // ─── Morning 8am digest per client timezone (run every 15 min) ────
-  cron.schedule('*/15 * * * *', async () => {
-    try {
-      const { rows: clients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false');
-      for (const client of clients) {
-        const tz = clientTimezone(client);
-        const localHour = hourInTimezone(tz);
-        if (localHour !== 8) continue;
-        const digestDate = dateInTimezone(tz);
+  if (attentionDigestsEnabled()) {
+    // ─── Morning 8am digest per client timezone (run every 15 min) ────
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        const { rows: clients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false');
+        for (const client of clients) {
+          const tz = clientTimezone(client);
+          const localHour = hourInTimezone(tz);
+          if (localHour !== 8) continue;
+          const digestDate = dateInTimezone(tz);
 
-        try {
-          await buildAndPostAttentionDigest(client, {
-            digestDate,
-            tz,
-            digestType: 'morning',
-            dateLabel: digestDate,
-          });
-        } catch (err) {
-          console.error('[Cron] Morning digest failed', { clientId: client.id, err: err.message });
+          try {
+            await buildAndPostAttentionDigest(client, {
+              digestDate,
+              tz,
+              digestType: 'morning',
+              dateLabel: digestDate,
+            });
+          } catch (err) {
+            console.error('[Cron] Morning digest failed', { clientId: client.id, err: err.message });
+          }
         }
+      } catch (err) {
+        console.error('[Cron] Morning digest scan failed', { err: err.message });
       }
-    } catch (err) {
-      console.error('[Cron] Morning digest scan failed', { err: err.message });
-    }
-  });
+    });
 
-  // ─── Afternoon 3pm Central digest (run every 15 min) ───────────────
-  cron.schedule('*/15 * * * *', async () => {
-    try {
-      const localHour = hourInTimezone(AFTERNOON_DIGEST_TZ);
-      if (localHour !== AFTERNOON_DIGEST_HOUR) return;
-      const digestDate = dateInTimezone(AFTERNOON_DIGEST_TZ);
-      const { rows: clients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false');
-      for (const client of clients) {
-        try {
-          await buildAndPostAttentionDigest(client, {
-            digestDate,
-            tz: AFTERNOON_DIGEST_TZ,
-            digestType: 'afternoon',
-            dateLabel: `${digestDate} 3pm CT`,
-          });
-        } catch (err) {
-          console.error('[Cron] Afternoon digest failed', { clientId: client.id, err: err.message });
+    // ─── Afternoon 3pm Central digest (run every 15 min) ───────────────
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        const localHour = hourInTimezone(AFTERNOON_DIGEST_TZ);
+        if (localHour !== AFTERNOON_DIGEST_HOUR) return;
+        const digestDate = dateInTimezone(AFTERNOON_DIGEST_TZ);
+        const { rows: clients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false');
+        for (const client of clients) {
+          try {
+            await buildAndPostAttentionDigest(client, {
+              digestDate,
+              tz: AFTERNOON_DIGEST_TZ,
+              digestType: 'afternoon',
+              dateLabel: `${digestDate} 3pm CT`,
+            });
+          } catch (err) {
+            console.error('[Cron] Afternoon digest failed', { clientId: client.id, err: err.message });
+          }
         }
+      } catch (err) {
+        console.error('[Cron] Afternoon digest scan failed', { err: err.message });
       }
-    } catch (err) {
-      console.error('[Cron] Afternoon digest scan failed', { err: err.message });
-    }
-  });
+    });
+  }
 
-  console.log('[Cron] Jobs scheduled: SmartLead + HeyReach polling, meeting reminders, morning + 3pm attention digests');
+  const digestNote = attentionDigestsEnabled()
+    ? 'morning + 3pm attention digests enabled'
+    : 'morning + 3pm attention digests disabled (set ATTENTION_DIGESTS_ENABLED=1 to enable)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, meeting reminders, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

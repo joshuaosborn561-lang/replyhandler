@@ -126,6 +126,7 @@ function buildClassifyModel() {
       maxOutputTokens: 16,
       temperature: 0,
       responseMimeType: 'text/plain',
+      thinkingConfig: { thinkingBudget: 0 },
     },
   });
 }
@@ -142,6 +143,7 @@ function buildOooCheckModel() {
       maxOutputTokens: 8,
       temperature: 0,
       responseMimeType: 'text/plain',
+      thinkingConfig: { thinkingBudget: 0 },
     },
   });
 }
@@ -158,6 +160,7 @@ function buildNotInterestedCheckModel() {
       maxOutputTokens: 8,
       temperature: 0,
       responseMimeType: 'text/plain',
+      thinkingConfig: { thinkingBudget: 0 },
     },
   });
 }
@@ -167,11 +170,46 @@ function buildDraftModel(systemInstruction) {
     model: 'gemini-2.5-flash',
     systemInstruction,
     generationConfig: {
-      maxOutputTokens: 1024,
+      // gemini-2.5-flash thinking tokens count against maxOutputTokens.
+      // 1024 was frequently exhausted by thinking and cut drafts mid-sentence.
+      maxOutputTokens: 8192,
       temperature: 0.25,
       responseMimeType: 'text/plain',
+      // Disable thinking for short plain-text drafts (thinkingBudget: 0).
+      thinkingConfig: { thinkingBudget: 0 },
     },
   });
+}
+
+/** True when a draft looks cut off mid-sentence (no closing punctuation). */
+function looksTruncatedDraft(text) {
+  const s = String(text || '').trim();
+  if (!s || s.length < 40) return false;
+  if (/https?:\/\/\S+\s*$/i.test(s)) return false; // ends with booking URL — ok
+  // Ends on sentence/punctuation (or closing quote/paren after punctuation)
+  if (/[.!?…]["'`”’)\]]*\s*$/.test(s)) return false;
+  // Signature / name / title closing lines are complete even without a period
+  // e.g. "Joshua Osborn\nSalesGlider Growth" or "Best regards, Randy"
+  const lastLine = s.split(/\n/).map((l) => l.trim()).filter(Boolean).pop() || '';
+  if (
+    lastLine.length <= 60 &&
+    /^(best|thanks|thank you|regards|cheers|sincerely)\b/i.test(lastLine)
+  ) return false;
+  if (
+    lastLine.length <= 48 &&
+    /^[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,5}$/.test(lastLine) &&
+    !/\b(a|an|the|to|for|with|on|in|at|our|your|and|or|of|is|are|be|can|will|would|should|could|if|that|this|about)\b/i.test(lastLine)
+  ) return false;
+  // Mid-phrase cutoff (e.g. "…details on a quick")
+  return true;
+}
+
+function draftPromptBody(threadContext, inboundMessage) {
+  return (
+    `Thread:\n${summarizeThread(threadContext)}\n\n` +
+    `Latest prospect reply:\n${inboundMessage}\n\n` +
+    `Write the full reply now. Finish every sentence. Always end with a complete closing and the booking URL when required. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
+  );
 }
 
 function summarizeThread(threadContext) {
@@ -286,12 +324,30 @@ ${scheduleCtx}
 
   try {
     const model = buildDraftModel(systemInstruction);
-    const res = await withGeminiRetry(() => model.generateContent(
-      `Thread:\n${summarizeThread(threadContext)}\n\n` +
-      `Latest prospect reply:\n${inboundMessage}\n\n` +
-      `Write the reply. If the answer is not clearly in the thread above, do NOT guess or hallucinate — defer to our CEO on the call and ask for the meeting:`
-    ));
-    return sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
+    const prompt = draftPromptBody(threadContext, inboundMessage);
+    let res = await withGeminiRetry(() => model.generateContent(prompt));
+    let draft = sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
+
+    if (looksTruncatedDraft(draft)) {
+      console.warn('[Classifier] Draft looked truncated — regenerating once', {
+        leadName,
+        preview: draft.slice(-80),
+        finishReason: res.response?.candidates?.[0]?.finishReason,
+      });
+      res = await withGeminiRetry(() => model.generateContent(
+        `${prompt}\n\nIMPORTANT: Your previous attempt was cut off mid-sentence. Write the COMPLETE reply ending with a full stop and the booking link if required.`
+      ));
+      draft = sanitizeDraft(res.response.text(), { leadName, inboundMessage, bookingLink, classification });
+      if (looksTruncatedDraft(draft)) {
+        console.warn('[Classifier] Draft still truncated after retry — using fallback', {
+          leadName,
+          preview: draft.slice(-80),
+        });
+        draft = sanitizeDraft('', { leadName, inboundMessage, bookingLink, classification });
+      }
+    }
+
+    return draft;
   } catch (err) {
     console.error('[Classifier] draft call failed', { err: err.message });
     return sanitizeDraft('', { leadName, inboundMessage, bookingLink, classification });
@@ -350,6 +406,7 @@ module.exports = {
   nextBusinessDayLabel,
   fallbackDraftText,
   looksLikeClearInterest,
+  looksTruncatedDraft,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
 };
