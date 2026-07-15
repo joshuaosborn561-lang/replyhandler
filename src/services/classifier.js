@@ -188,8 +188,19 @@ function looksTruncatedDraft(text) {
   if (/https?:\/\/\S+\s*$/i.test(s)) return false; // ends with booking URL — ok
   // Ends on sentence/punctuation (or closing quote/paren after punctuation)
   if (/[.!?…]["'`”’)\]]*\s*$/.test(s)) return false;
-  // Anything else ending without a sentence closer is treated as truncated
-  // (e.g. "…details on a quick")
+  // Signature / name / title closing lines are complete even without a period
+  // e.g. "Joshua Osborn\nSalesGlider Growth" or "Best regards, Randy"
+  const lastLine = s.split(/\n/).map((l) => l.trim()).filter(Boolean).pop() || '';
+  if (
+    lastLine.length <= 60 &&
+    /^(best|thanks|thank you|regards|cheers|sincerely)\b/i.test(lastLine)
+  ) return false;
+  if (
+    lastLine.length <= 48 &&
+    /^[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,5}$/.test(lastLine) &&
+    !/\b(a|an|the|to|for|with|on|in|at|our|your|and|or|of|is|are|be|can|will|would|should|could|if|that|this|about)\b/i.test(lastLine)
+  ) return false;
+  // Mid-phrase cutoff (e.g. "…details on a quick")
   return true;
 }
 
