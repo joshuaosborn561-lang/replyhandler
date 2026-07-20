@@ -145,7 +145,7 @@ async function processInboxRow(client, row, options) {
     client.voice_prompt,
     client.booking_link,
     promptBlock,
-    { leadName, digestTimezone: client.digest_timezone },
+    { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
   );
   const { classification, draft, proposed_time, reasoning } = result;
 

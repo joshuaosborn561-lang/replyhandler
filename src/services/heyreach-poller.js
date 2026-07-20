@@ -343,7 +343,7 @@ async function processConversation(client, conv, options) {
     client.voice_prompt,
     client.booking_link,
     promptBlock,
-    { leadName: leadName(conv), digestTimezone: client.digest_timezone },
+    { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
   );
   const { classification, draft, proposed_time, reasoning } = result;
 

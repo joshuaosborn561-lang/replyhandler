@@ -455,7 +455,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock,
-        { leadName, digestTimezone: client.digest_timezone },
+        { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
       );
     } catch (err) {
       console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
@@ -696,7 +696,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             client.voice_prompt,
             client.booking_link,
             schedulingPromptBlock,
-            { leadName: resolvedLeadName, digestTimezone: client.digest_timezone },
+            { leadName: resolvedLeadName, digestTimezone: client.digest_timezone, platform: 'heyreach' },
           );
         } catch (err) {
           console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
