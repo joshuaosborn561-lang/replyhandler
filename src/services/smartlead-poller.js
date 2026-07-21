@@ -139,14 +139,27 @@ async function processInboxRow(client, row, options) {
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
-  const result = await classifyAndDraft(
-    threadContext,
-    inbound,
-    client.voice_prompt,
-    client.booking_link,
-    promptBlock,
-    { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
-  );
+  let result;
+  try {
+    result = await classifyAndDraft(
+      threadContext,
+      inbound,
+      client.voice_prompt,
+      client.booking_link,
+      promptBlock,
+      { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+    );
+  } catch (err) {
+    console.error('[SmartLeadPoll] classifyAndDraft threw — using OTHER/empty draft', {
+      client: client.name, err: err.message,
+    });
+    result = {
+      classification: 'OTHER',
+      draft: '',
+      proposed_time: null,
+      reasoning: `Classifier failed: ${err.message}`,
+    };
+  }
   const { classification, draft, proposed_time, reasoning } = result;
 
   if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
@@ -177,9 +190,8 @@ async function processInboxRow(client, row, options) {
     lastOutboundMessage: lastOutbound || undefined,
   };
 
-  let slackResult;
-  if (isDraft) {
-    slackResult = await postProspectSlackCard({
+  try {
+    await postProspectSlackCard({
       token: client.slack_bot_token,
       channelId: client.slack_channel_id,
       clientId: client.id,
@@ -187,23 +199,19 @@ async function processInboxRow(client, row, options) {
       campaignId,
       leadId,
       threadContext,
-      isDraft: true,
+      isDraft,
       replyId: reply.id,
       card,
     });
-  } else {
-    slackResult = await postProspectSlackCard({
-      token: client.slack_bot_token,
+  } catch (err) {
+    console.error('[SmartLeadPoll] Slack post failed (row saved for recovery)', {
+      client: client.name,
+      replyId: reply.id,
+      leadName,
       channelId: client.slack_channel_id,
-      clientId: client.id,
-      platform: 'smartlead',
-      campaignId,
-      leadId,
-      threadContext,
-      isDraft: false,
-      replyId: reply.id,
-      card,
+      err: err.message,
     });
+    return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName };
   }
 
   if (classification === 'MEETING_PROPOSED' && leadEmail) {

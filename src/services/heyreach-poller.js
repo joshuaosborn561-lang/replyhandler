@@ -368,14 +368,28 @@ async function processConversation(client, conv, options) {
     return { skipped: 'already_processed_enriched' };
   }
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
-  const result = await classifyAndDraft(
-    threadContext,
-    inbound.text,
-    client.voice_prompt,
-    client.booking_link,
-    promptBlock,
-    { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
-  );
+  let result;
+  try {
+    result = await classifyAndDraft(
+      threadContext,
+      inbound.text,
+      client.voice_prompt,
+      client.booking_link,
+      promptBlock,
+      { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
+    );
+  } catch (err) {
+    // classifyAndDraft is supposed to never throw; keep poll moving if it does.
+    console.error('[HeyReachPoll] classifyAndDraft threw — using OTHER/empty draft', {
+      client: client.name, err: err.message,
+    });
+    result = {
+      classification: 'OTHER',
+      draft: '',
+      proposed_time: null,
+      reasoning: `Classifier failed: ${err.message}`,
+    };
+  }
   const { classification, draft, proposed_time, reasoning } = result;
 
   if (shouldSkipSlackForReply(inbound.text)) return { skipped: 'ooo' };
@@ -401,7 +415,7 @@ async function processConversation(client, conv, options) {
      RETURNING *`,
     [
       client.id,
-      cid,
+      cid == null ? null : String(cid),
       String(leadKey),
       leadName(conv),
       linkedinUrl(conv),
@@ -426,9 +440,8 @@ async function processConversation(client, conv, options) {
     lastOutboundMessage: lastOut || undefined,
   };
 
-  let slackResult;
-  if (isDraft) {
-    slackResult = await postProspectSlackCard({
+  try {
+    await postProspectSlackCard({
       token: client.slack_bot_token,
       channelId: client.slack_channel_id,
       clientId: client.id,
@@ -436,23 +449,19 @@ async function processConversation(client, conv, options) {
       campaignId: cid,
       leadId: leadKey,
       threadContext: meta,
-      isDraft: true,
+      isDraft,
       replyId: reply.id,
       card,
     });
-  } else {
-    slackResult = await postProspectSlackCard({
-      token: client.slack_bot_token,
+  } catch (err) {
+    console.error('[HeyReachPoll] Slack post failed (row saved for recovery)', {
+      client: client.name,
+      replyId: reply.id,
+      leadName: reply.lead_name,
       channelId: client.slack_channel_id,
-      clientId: client.id,
-      platform: 'heyreach',
-      campaignId: cid,
-      leadId: leadKey,
-      threadContext: meta,
-      isDraft: false,
-      replyId: reply.id,
-      card,
+      err: err.message,
     });
+    return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName: reply.lead_name };
   }
 
   if (classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
