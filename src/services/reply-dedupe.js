@@ -9,6 +9,10 @@ function normalizeInboundText(text) {
 /**
  * Skip only when this exact inbound was already posted to Slack (has slack_message_ts).
  * Rows saved to DB without a Slack post must be retried.
+ *
+ * Match on client + platform + inbound text, optionally scoped by lead_id when present.
+ * Do NOT require campaign_id equality — GetConversationsV2 often omits/changes it, which
+ * previously caused duplicate inserts every poll while Slack was failing.
  */
 async function alreadyPostedToSlack({
   clientId,
@@ -25,21 +29,22 @@ async function alreadyPostedToSlack({
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND COALESCE(campaign_id, '') = COALESCE($3::text, '')
-        AND COALESCE(lead_id, '') = COALESCE($4::text, '')
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $5
+        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3
+        AND (
+          $4::text = ''
+          OR COALESCE(lead_id, '') = $4
+        )
+        AND slack_message_ts IS NOT NULL
       ORDER BY created_at DESC
       LIMIT 1`,
     [
       clientId,
       platform,
-      campaignId != null ? String(campaignId) : '',
-      leadId != null ? String(leadId) : '',
       normalized,
+      leadId != null ? String(leadId) : '',
     ]
   );
-  if (!rows.length) return false;
-  return !!rows[0].slack_message_ts;
+  return rows.length > 0;
 }
 
 async function findUnpostedReply({
@@ -57,18 +62,20 @@ async function findUnpostedReply({
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND COALESCE(campaign_id, '') = COALESCE($3::text, '')
-        AND COALESCE(lead_id, '') = COALESCE($4::text, '')
         AND slack_message_ts IS NULL
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $5
-      ORDER BY created_at DESC
+        AND status IN ('pending', 'alert_only')
+        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3
+        AND (
+          $4::text = ''
+          OR COALESCE(lead_id, '') = $4
+        )
+      ORDER BY created_at ASC
       LIMIT 1`,
     [
       clientId,
       platform,
-      campaignId != null ? String(campaignId) : '',
-      leadId != null ? String(leadId) : '',
       normalized,
+      leadId != null ? String(leadId) : '',
     ]
   );
   return rows[0] || null;
