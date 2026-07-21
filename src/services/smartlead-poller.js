@@ -238,6 +238,8 @@ async function pollSmartleadReplies() {
   isPollingRunning = true;
   const started = Date.now();
   const totals = { processed: 0, skipped: 0 };
+  // Declared outside try so finally can log without ReferenceError.
+  const skipCounts = {};
   try {
     const recovery = await recoverUnpostedSlackCards({ limit: 15 });
     if (recovery.recovered) {
@@ -249,7 +251,6 @@ async function pollSmartleadReplies() {
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
     const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
-    const skipCounts = {};
 
     for (const client of clients) {
       let scanned = 0;

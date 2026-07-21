@@ -82,20 +82,43 @@ function conversationId(conv) {
   return conv?.id || conv?.conversationId || conv?.conversation_id || conv?.threadId || conv?.thread_id || null;
 }
 
+function campaignIdFromAutoTags(conv) {
+  const tags = conv?.correspondentProfile?.autoTags || conv?.correspondentProfile?.auto_tags || [];
+  if (!Array.isArray(tags) || !tags.length) return { id: null, name: null };
+  // Prefer the newest tag that has a campaign id.
+  const sorted = [...tags].sort((a, b) => {
+    const at = Date.parse(a?.creationTime || a?.creation_time || 0) || 0;
+    const bt = Date.parse(b?.creationTime || b?.creation_time || 0) || 0;
+    return bt - at;
+  });
+  for (const t of sorted) {
+    const id = t?.campaignId ?? t?.campaign_id ?? null;
+    if (id != null && String(id).trim()) {
+      return { id, name: t?.campaignName || t?.campaign_name || null };
+    }
+  }
+  return { id: null, name: null };
+}
+
 function campaignId(conv) {
+  const fromTags = campaignIdFromAutoTags(conv);
   return (
     conv?.campaignId ||
     conv?.campaign_id ||
     conv?.campaign?.id ||
     conv?.campaign?.campaignId ||
+    conv?.listCampaignId ||
+    conv?.list_campaign_id ||
     conv?.data?.campaignId ||
     conv?.data?.campaign_id ||
+    fromTags.id ||
     null
   );
 }
 
 function campaignDisplay(conv, id) {
-  const name = conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || '';
+  const fromTags = campaignIdFromAutoTags(conv);
+  const name = conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || fromTags.name || '';
   const cid = id != null ? String(id).trim() : '';
   if (name && cid) return `${name} (${cid})`;
   if (name) return name;
@@ -104,7 +127,15 @@ function campaignDisplay(conv, id) {
 }
 
 function leadId(conv) {
-  return conv?.leadId || conv?.lead_id || conv?.lead?.id || conv?.profile?.id || null;
+  return (
+    conv?.leadId ||
+    conv?.lead_id ||
+    conv?.lead?.id ||
+    conv?.profile?.id ||
+    conv?.correspondentProfile?.linkedin_id ||
+    conv?.correspondentProfile?.linkedinId ||
+    null
+  );
 }
 
 function leadName(conv) {
@@ -268,9 +299,6 @@ async function loadClients() {
 }
 
 async function processConversation(client, conv, options) {
-  const cid = campaignId(conv);
-  if (!cid) return { skipped: 'missing_campaign_id' };
-
   const messages = conversationMessages(conv);
   const inbound = latestInbound(messages);
   if (!inbound) return { skipped: 'no_inbound' };
@@ -279,8 +307,11 @@ async function processConversation(client, conv, options) {
 
   const convId = conversationId(conv);
   const lid = leadId(conv);
+  const cid = campaignId(conv);
   const leadKey = lid || convId;
   if (!leadKey) return { skipped: 'missing_thread_id' };
+  // GetConversationsV2 often omits top-level campaign id (webhooks include campaign.id).
+  // Proceed with conversation/lead id when campaign is absent; try autoTags as fallback.
 
   const unposted = await findUnpostedReply({
     clientId: client.id,
@@ -445,6 +476,8 @@ async function pollHeyReachReplies() {
   running = true;
   const started = Date.now();
   const totals = { processed: 0, skipped: 0 };
+  // Declared outside try so finally can log without ReferenceError.
+  const skipCounts = {};
   try {
     const recovery = await recoverUnpostedSlackCards({ limit: 15 });
     if (recovery.recovered) {
@@ -456,7 +489,6 @@ async function pollHeyReachReplies() {
     const limit = numberEnv('HEYREACH_POLL_PAGE_LIMIT', 50);
     const maxConversations = numberEnv('HEYREACH_POLL_MAX_CONVERSATIONS', 100);
     const lookbackHours = numberEnv('HEYREACH_POLL_LOOKBACK_HOURS', 168);
-    const skipCounts = {};
     const accountIds = String(process.env.HEYREACH_POLL_ACCOUNT_IDS || '')
       .split(',')
       .map((s) => parseInt(s.trim(), 10))
