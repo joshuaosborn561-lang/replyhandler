@@ -4,6 +4,10 @@ const {
   looksLikeNotInterested,
   looksLikeWrongPerson,
 } = require('../utils/smartlead-webhook-helpers');
+const {
+  looksLikeBookingLinkRequest,
+  stripBookingUrls,
+} = require('../utils/booking-link-intent');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -68,7 +72,7 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
-function sanitizeDraft(text, { bookingLink, classification } = {}) {
+function sanitizeDraft(text, { bookingLink, includeBookingLink } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
@@ -78,15 +82,18 @@ function sanitizeDraft(text, { bookingLink, classification } = {}) {
   // "Totally fair question" canonical template (that was the repetition bug).
   if (!s) return '';
 
-  // For MEETING_PROPOSED, guarantee the booking link is present.
-  if (
-    classification === 'MEETING_PROPOSED' &&
-    bookingLink &&
-    typeof bookingLink === 'string' &&
-    bookingLink.trim().startsWith('http') &&
-    !s.includes(bookingLink.trim())
-  ) {
-    s = `${s.trim()}\n\n${bookingLink.trim()}`;
+  const link = bookingLink && String(bookingLink).trim().startsWith('http')
+    ? String(bookingLink).trim()
+    : '';
+
+  if (includeBookingLink) {
+    // Prospect asked for / accepted the booking link — guarantee it is present.
+    if (link && !s.includes(link)) {
+      s = `${s.trim()}\n\n${link}`;
+    }
+  } else {
+    // Times-first replies must not leak Calendly / booking URLs.
+    s = stripBookingUrls(s, link);
   }
 
   return s;
@@ -101,19 +108,25 @@ function looksLikeClearInterest(msg) {
 /** Legacy helper kept for scripts/tests — NOT used by sanitizeDraft anymore. */
 function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
   const name = firstNameFromLead(leadName);
-  const day = nextBusinessDayLabel();
+  const [d1, d2] = nextTwoBusinessDayLabels();
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
   const msg = String(inboundMessage || '').trim();
+  if (looksLikeBookingLinkRequest(msg, '')) {
+    return link
+      ? `Hey ${name}, sounds good — here's the booking link: ${link}`
+      : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
+  }
   const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
   const ack = clearInterest
     ? 'We\'d love to make sure it\'s a good fit on both sides.'
     : 'Totally fair question — I\'m sure we can work something out on the call. We want this to make sense and be worth your time.';
-  const close = link
-    ? `Here's our CEO's booking link — would ${day} work? ${link}`
-    : `Would ${day} work for a quick call with our CEO?`;
-  return `Hey ${name}, thanks for getting back to me. ${ack} ${close}`;
+  return (
+    `Hey ${name}, thanks for getting back to me. ${ack} ` +
+    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with our CEO? ` +
+    `If neither works I can send a booking link.`
+  );
 }
 
 function buildClassifyModel() {
@@ -220,88 +233,89 @@ function summarizeThread(threadContext) {
   }
 }
 
-function buildSdrVoicePrompt({ name, booking, classification, channel }) {
+/** Next two weekday labels for time suggestions (skips weekends). */
+function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  const labels = [];
+  let cursor = Date.now();
+  for (let i = 0; i < 14 && labels.length < 2; i += 1) {
+    cursor += 24 * 60 * 60 * 1000;
+    const day = weekdayFmt.format(new Date(cursor));
+    if (day === 'Sat' || day === 'Sun') continue;
+    labels.push(longFmt.format(new Date(cursor)));
+  }
+  while (labels.length < 2) labels.push('next week');
+  return labels;
+}
+
+function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, includeBookingLink }) {
+  if (includeBookingLink) {
+    return 'The prospect wants the booking link — include it once. Keep the reply short.';
+  }
+  if (schedulingPromptBlock && /VERIFIED OPEN START TIMES/i.test(schedulingPromptBlock)) {
+    return (
+      `${schedulingPromptBlock}\n\n` +
+      'TIMES-FIRST RULE: Suggest those two verified times in plain language. ' +
+      'Say if neither works you can send a booking link. Do NOT paste any booking/Calendly URL in this reply.'
+    );
+  }
+  const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
+  return (
+    `TIMES-FIRST RULE: Suggest two concrete options in the next few business days ` +
+    `(e.g. ${d1} mid-morning or ${d2} early afternoon). ` +
+    `Offer to send a booking link if neither works. Do NOT include any booking/Calendly URL or http link in this reply.`
+  );
+}
+
+function buildSdrVoicePrompt({ name, booking, classification, channel, includeBookingLink }) {
   const link = booking || '{BOOKING_LINK}';
   const channelNote = channel === 'linkedin'
     ? 'This is a LinkedIn message. Keep it shorter - 1-2 sentences when possible. No sign-off or signature.'
     : 'This is an email reply. 2-4 sentences is fine. Optional first-name sign-off.';
 
+  const bookingRules = includeBookingLink
+    ? `- BOOKING LINK MODE: The prospect asked for the booking link or accepted our offer to send it.\n` +
+      `- Include this exact URL once near the end: ${link}\n` +
+      `- Keep it casual ("here's the link if easier"). Do not dump a long calendar pitch.`
+    : `- TIMES-FIRST MODE (default): Do NOT include any booking URL, Calendly link, or http link.\n` +
+      `- Suggest 2 concrete times in the next few business days.\n` +
+      `- Close by offering to send a booking link if neither time works.\n` +
+      `- Booking link exists for later follow-up only: ${link} — do not paste it now.`;
+
   return `You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.
 
-Study these real examples from our actual SmartLead campaigns and match the voice exactly:
+Voice reference (match warmth/directness; do NOT copy booking-link habits from older examples):
 
-EXAMPLE 1:
-Prospect: "Karl, We have interest in understanding your services. We use recruiters from time to time. When is a good time to talk about it? And we are Rangers fans. :)"
-Reply: "Hey Thomas, Thanks for getting back to me. That sounds great- our CEO would love to chat to see how he can be most helpful. Here is his booking link, and he will send the tickets over after :) Thanks! ${link}"
+EXAMPLE A (times-first — no link):
+Prospect: "Worth a reply. Tell me more."
+Reply: "Awesome, thanks! Easiest will be a quick chat with our CEO — he built the whole thing out. Can you do Thursday mid-morning or Friday early afternoon? If neither works I can send a booking link."
 
-EXAMPLE 2:
-Prospect: "To a CU game?"
-Reply: "Hey Karen, thanks for getting back to me. Yes Buffs or Rockies, take your pick. If you're open to it, our CEO can meet with you and see if we are a fit? Here's his calendar: ${link}"
+EXAMPLE B (times-first — interest):
+Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
+Reply: "Hey Tony thanks for getting back. Would love to see if this is a fit. Does Tuesday morning or Wednesday around 2 work for a quick call with our CEO? If not, happy to send a booking link."
 
-EXAMPLE 3:
-Prospect: "where are they located? Sent from my iPhone"
-Reply: "Hey Ken, thanks for getting back to me. We have them in a few places...were you hoping for someone local? If easier you can grab a time with our CEO here and we can send you the tickets: ${link}"
+EXAMPLE C (they asked for the link):
+Prospect: "Sure, send the link."
+Reply: "Sounds good — here's the booking link: ${link}"
 
-EXAMPLE 4:
-Prospect: "Normally I would, but we switched to a new provider a few months ago."
-Reply: "Ah man, a few months too late! No worries. If you would still want the tickets, we do have quite a few clients that already have a partner....we just fill in any gaps. Not sure if that would be helpful?"
-
-EXAMPLE 5:
-Prospect: "It's possible we may be interested in MS help in the future. As of right now, I don't have any open projects."
-Reply: "That's fair...would love to chat and hand you some tickets if you are open, can tee up a future convo when ready. Your call? Here is booking link with our CEO in case: ${link}"
-
-EXAMPLE 6:
+EXAMPLE D (decline):
 Prospect: "Thanks, I will pass at this time."
 Reply: "Thanks for getting back to me, Marina. Understood, no problem at all. Can I check back in a few months or should I take you off the list? Ticket offer stands."
 
-EXAMPLE 7:
-Prospect: "Worth a reply. Tell me more."
-Reply: "Awesome, thanks! Easiest will be to chat with our CEO, he is the one who built the whole thing out. Can you do tomorrow or Friday? ${link}"
-
-EXAMPLE 8:
-Prospect: "When is the game?"
-Reply: "Hey Ron, Tickets are flexible. We can also do other teams. We can set something up with our CEO. What makes you think of considering a new partner?"
-
-EXAMPLE 9:
-Prospect: "I'm a Michigan fan"
-Reply: "Oh man, I think that is the unforgivable sin then... Ha..if I made the switch to a Wolverines game would that help a conversation happen?"
-
-EXAMPLE 10:
-Prospect: "Lol I'm used to it. But to be candid I don't want to waste your time. We handle everything in house and have 0% interest in partnering at this time."
-Reply: "Ha fair enough and I appreciate that...let me know if there is ever an opp to help, ticket offer stands."
-
-EXAMPLE 11:
-Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
-Reply: "Hey Tony thanks for getting back. Yes would love to see if this is a fit. Let me set something up with our CEO. Does Tuesday work? You can book something here. ${link}"
-
-EXAMPLE 12:
-Prospect: "Sure, send them on over."
-Reply: "Hey Brian, thanks for getting back to me. I'd be happy to after we hop on a call! We are obviously giving these away in good faith for a strategic call with IT decision makers. What does your day look like tomorrow?"
-
-EXAMPLE 13:
-Prospect: "Please send me your service offerings or direct me to the location on your website."
-Reply: "Hey Kelvin, we tailor our service offerings to each client- would it be easier to chat for 10 minutes about what you need so I can send something over after? ${link}"
-
-EXAMPLE 14:
-Prospect: "We are currently under contract with another MSP but I am open to speaking with you about your capabilities."
-Reply: "Thanks Jeff. Fyi, most of our clients were in the same spot so I understand. You can pick a time that works best here: ${link}"
-
-EXAMPLE 15:
-Prospect: "Unfortunately, I'm not looking for any outside advisory services at this time."
-Reply: "Dustin, thanks for letting me know! I hear you- any chance this is relevant in the next 6 months? If so, my CEO would love to do lunch on him, just to talk shop. Worst case, you DQ us and you get out of the office. Fair enough?"
+EXAMPLE E (provider already):
+Prospect: "Normally I would, but we switched to a new provider a few months ago."
+Reply: "Ah man, a few months too late! No worries. If you would still want the tickets, we do have quite a few clients that already have a partner....we just fill in any gaps. Not sure if that would be helpful?"
 
 ---
 
-RULES (extracted from the examples above):
-- Greet with "Hey {first name}," — always first name only, never full name
-- Warm, direct, a little playful when the moment fits — match the prospect's energy
-- If they're warm/interested: short acknowledgment + booking link + day suggestion ("Can you do tomorrow or Friday?")
-- If they already have a provider: acknowledge it's fine, mention you fill gaps or can tee up a future conversation
-- If they decline: graceful, offer to check back, keep the ticket offer alive — never push
-- If they ask a logistical question (where, when, what): answer it and redirect to the CEO call
-- Booking link placement: casual, at the end, as part of a question — never a formal line
-- Prospect first name to address: ${name}
-- Booking link: ${link}
+RULES:
+- Greet with "Hey {first name}," — first name only
+- Warm, direct, a little playful when it fits — match their energy
+- If they decline: graceful, offer to check back — never push
+- If they ask a logistical question: answer briefly, then suggest a quick CEO call with two times
+${bookingRules}
+- Prospect first name: ${name}
 - Classification: ${classification}
 
 ${channelNote}
@@ -371,39 +385,67 @@ async function draftOnly({
   schedulingPromptBlock,
   digestTimezone,
   platform,
+  includeBookingLink: includeBookingLinkOverride,
 }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
   const name = firstNameFromLead(leadName);
   const channel = String(platform || 'smartlead').toLowerCase() === 'heyreach' ? 'linkedin' : 'email';
-  const systemInstruction = buildSdrVoicePrompt({ name, booking, classification, channel });
 
-  // voicePrompt / schedulingPromptBlock kept in signature for callers; few-shot voice is primary.
+  // Include Calendly only when the prospect asks for / accepts a booking link.
+  // Otherwise suggest concrete times and offer to send a link later.
+  const includeBookingLink = typeof includeBookingLinkOverride === 'boolean'
+    ? includeBookingLinkOverride
+    : looksLikeBookingLinkRequest(inboundMessage, threadContext);
+
+  const systemInstruction = buildSdrVoicePrompt({
+    name,
+    booking,
+    classification,
+    channel,
+    includeBookingLink,
+  });
+
+  // voicePrompt kept in signature for callers; few-shot voice is primary.
   void voicePrompt;
-  void schedulingPromptBlock;
-  void digestTimezone;
+
+  const timeBlock = buildTimeSuggestionBlock({
+    digestTimezone,
+    schedulingPromptBlock,
+    includeBookingLink,
+  });
+
+  const modeNote = includeBookingLink
+    ? 'BOOKING LINK MODE: Include the booking URL once. Keep it short.'
+    : 'TIMES-FIRST MODE: Suggest two concrete times. Offer to send a booking link if neither works. Do NOT include any booking URL.';
 
   const prompt =
     `Thread:\n${summarizeThread(threadContext)}\n\n` +
     `Latest prospect reply:\n${inboundMessage}\n\n` +
+    `${timeBlock}\n\n` +
+    `${modeNote}\n\n` +
     `Write the reply now. Match the voice from the examples exactly. Finish every sentence.`;
 
   try {
     const model = buildDraftModel(systemInstruction);
     let res = await withGeminiRetry(() => model.generateContent(prompt));
-    let draft = sanitizeDraft(res.response.text(), { bookingLink, classification });
+    let draft = sanitizeDraft(res.response.text(), { bookingLink: booking, includeBookingLink });
 
     if (looksTruncatedDraft(draft)) {
       console.warn('[Classifier] Draft looked truncated — regenerating once', {
         leadName,
+        includeBookingLink,
         preview: draft.slice(-80),
         finishReason: res.response?.candidates?.[0]?.finishReason,
       });
+      const retryHint = includeBookingLink
+        ? 'Write the COMPLETE reply ending with a full stop and the booking link.'
+        : 'Write the COMPLETE reply ending with a full stop. Suggest times only — no booking URL.';
       res = await withGeminiRetry(() => model.generateContent(
-        `${prompt}\n\nIMPORTANT: Your previous attempt was cut off mid-sentence. Write the COMPLETE reply ending with a full stop and the booking link if required.`
+        `${prompt}\n\nIMPORTANT: Your previous attempt was cut off mid-sentence. ${retryHint}`
       ));
-      draft = sanitizeDraft(res.response.text(), { bookingLink, classification });
+      draft = sanitizeDraft(res.response.text(), { bookingLink: booking, includeBookingLink });
       if (looksTruncatedDraft(draft)) {
         console.warn('[Classifier] Draft still truncated after retry — keeping model output (no template fallback)', {
           leadName,
@@ -451,6 +493,9 @@ async function classifyAndDraft(
   }
 
   const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+  const includeBookingLink = needsDraft
+    ? looksLikeBookingLinkRequest(inboundMessage, threadContext)
+    : false;
 
   const draft = needsDraft
     ? await draftOnly({
@@ -463,16 +508,21 @@ async function classifyAndDraft(
       schedulingPromptBlock,
       digestTimezone,
       platform,
+      includeBookingLink,
     })
     : null;
 
   const note = preGate ? ` (pre-gate: ${preGate})` : '';
+  const linkNote = needsDraft
+    ? (includeBookingLink ? ' (booking-link follow-up)' : ' (times-first)')
+    : '';
   return {
     classification,
     draft,
     proposed_time: null,
+    includeBookingLink,
     reasoning: needsDraft
-      ? `Classified as ${classification}; draft generated${note}.`
+      ? `Classified as ${classification}; draft generated${note}${linkNote}.`
       : `Classified as ${classification}; no draft${note}.`,
   };
 }
@@ -486,6 +536,9 @@ module.exports = {
   fallbackDraftText,
   looksLikeClearInterest,
   looksTruncatedDraft,
+  looksLikeBookingLinkRequest,
+  buildTimeSuggestionBlock,
+  sanitizeDraft,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
   NO_REPLY_NEEDED,
