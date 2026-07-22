@@ -3,13 +3,13 @@ const { firstNameFromLead, nextBusinessDayLabel } = require('./classifier');
 function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone }) {
   const name = firstNameFromLead(leadName);
   const day = nextBusinessDayLabel(digestTimezone);
-  const link = bookingLink && String(bookingLink).trim().startsWith('http')
-    ? String(bookingLink).trim()
-    : '';
-  if (link) {
-    return `Hey ${name}, thanks for getting back to me. Here's our CEO's booking link — would ${day} work? ${link}`;
-  }
-  return `Hey ${name}, thanks for getting back to me. Would ${day} work for a quick call with our CEO?`;
+  // Times-first: suggest a day, offer to send booking link later — do not dump Calendly.
+  void bookingLink;
+  void platform;
+  return (
+    `Hey ${name}, thanks for getting back to me. Would ${day} mid-morning or early afternoon work ` +
+    `for a quick call with our CEO? If neither works I can send a booking link.`
+  );
 }
 
 /**

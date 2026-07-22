@@ -702,7 +702,7 @@
       <div class="form-group">
         <label>Booking Link</label>
         <input type="text" id="f_booking_link" placeholder="https://cal.com/acme/30min">
-        <div class="hint">Client's scheduling page URL (Calendly, Cal.com, SavvyCal, etc). Always included when a meeting is discussed.</div>
+        <div class="hint">Client's scheduling page URL (Calendly, Cal.com, SavvyCal, etc). First replies suggest times; this link is included only when the prospect asks for / accepts a booking link.</div>
       </div>
 
       <div class="form-group">
@@ -720,7 +720,7 @@
       <div class="form-group">
         <label>Calendly personal access token (optional)</label>
         <input type="text" id="f_calendly_personal_access_token" placeholder="pat_...">
-        <div class="hint">Only if <strong>Booking link</strong> is Calendly. With a PAT, we pull <strong>real</strong> open slots from Calendly. For other schedulers, leave blank; connect Google or Outlook below if you want slot suggestions from calendar free/busy — otherwise the draft will use the booking link without invented times.</div>
+        <div class="hint">Only if <strong>Booking link</strong> is Calendly. With a PAT, we pull <strong>real</strong> open slots from Calendly for times-first drafts. For other schedulers, leave blank; connect Google or Outlook below if you want slot suggestions from calendar free/busy — otherwise the draft suggests rough next-few-days windows.</div>
       </div>
 
       <div class="form-group">
@@ -816,8 +816,8 @@
     <details class="guide-section">
       <summary>Booking Link &amp; Calendly token</summary>
       <div class="guide-section-body">
-        <p><strong>Booking link</strong> &mdash; any scheduler (Calendly, Cal.com, SavvyCal, HubSpot meetings, etc.). The draft always includes this link when it&rsquo;s time to book.</p>
-        <p><strong>Calendly personal access token</strong> (optional) &mdash; only if the booking link is a <code>calendly.com</code> URL. With it, the app pulls <strong>real</strong> open times from Calendly so the AI can suggest two slots that actually exist. Without it (or for non-Calendly links), connect <strong>Google or Outlook</strong> on this client card so we can suggest times from calendar free/busy; otherwise the draft just points them to the link without inventing fake times.</p>
+        <p><strong>Booking link</strong> &mdash; any scheduler (Calendly, Cal.com, SavvyCal, HubSpot meetings, etc.). First replies suggest concrete times and offer to send this link if needed; the URL is only pasted when the prospect asks for it (or says &ldquo;sure&rdquo; after we offered).</p>
+        <p><strong>Calendly personal access token</strong> (optional) &mdash; only if the booking link is a <code>calendly.com</code> URL. With it, the app pulls <strong>real</strong> open times from Calendly so the AI can suggest two slots that actually exist. Without it (or for non-Calendly links), connect <strong>Google or Outlook</strong> on this client card so we can suggest times from calendar free/busy; otherwise the draft suggests rough next-few-days windows without inventing fake wall-clock times.</p>
         <p>Examples:</p>
         <ul>
           <li><code>https://calendly.com/acme-ceo/30min</code></li>
@@ -861,7 +861,7 @@
         <p>When a prospect agrees to meet:</p>
         <ol>
           <li>AI drafts a short friendly reply</li>
-          <li>If we have <strong>real</strong> availability (Calendly API and/or their connected calendar), the draft offers <strong>those</strong> times plus the booking link</li>
+          <li>If we have <strong>real</strong> availability (Calendly API and/or their connected calendar), the draft offers <strong>those</strong> times and offers to send the booking link if neither works</li>
           <li>The message goes to <strong>Slack</strong> &mdash; someone taps <strong>Approve &amp; send</strong> or <strong>Edit &amp; send</strong> (or Reject)</li>
           <li>After approval, the reply goes out on SmartLead or HeyReach; optional calendar invite still depends on Google/Outlook being connected</li>
         </ol>

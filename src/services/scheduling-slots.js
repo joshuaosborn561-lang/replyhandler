@@ -202,9 +202,11 @@ function schedulingPromptBookingLinkOnly(client) {
       : '';
   return {
     slots: [],
+    // Times-first by default: suggest next-few-days windows; booking URL is for
+    // a later follow-up only when the prospect asks for / accepts a link.
     promptBlock: link
-      ? `BOOKING LINK ONLY (no live availability API call — faster webhook path): invite them to book using this URL once when appropriate: ${link}. Do not invent specific wall-clock times unless the prospect explicitly asked for times.`
-      : 'No booking link on this client and no live availability lookup was run. Do not invent specific times.',
+      ? `TIMES-FIRST (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days. Offer to send a booking link if neither works. Do NOT paste the booking URL (${link}) unless the prospect explicitly asked for the link or accepted an offer to send it.`
+      : 'No booking link on this client and no live availability lookup was run. Suggest two rough times in the next few business days; do not invent a fake booking URL.',
   };
 }
 
@@ -258,10 +260,10 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   return {
     slots: two.map((start) => ({ start: start.toISOString(), label: formatSlotLabel(start, timeZone) })),
     promptBlock: two.length >= 2
-      ? `VERIFIED OPEN START TIMES (use exactly these two in the draft wording; do not invent other times):\n${lines.join('\n')}\n\nInclude the client's booking link once so they can self-book.`
+      ? `VERIFIED OPEN START TIMES (use exactly these two in the draft wording; do not invent other times):\n${lines.join('\n')}\n\nTIMES-FIRST: Suggest those two times. Say if neither works you can send a booking link. Do NOT paste any booking/Calendly URL unless the prospect asked for the link.`
       : two.length === 1
-        ? `ONE verified open time: ${lines[0]}. Pair it with the booking link only — do not invent a second specific time; say they can use the link for more options.`
-        : `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Do not invent specific times. Ask them to pick a time via the booking link and include it once.`,
+        ? `ONE verified open time: ${lines[0]}. Suggest that time plus one nearby alternative daypart. Offer to send a booking link if neither works. Do NOT paste a booking URL unless the prospect asked for the link.`
+        : `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Suggest two rough times in the next few business days. Offer to send a booking link if neither works. Do NOT paste a booking URL unless the prospect asked for the link.`,
   };
 }
 
