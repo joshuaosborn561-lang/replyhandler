@@ -3,6 +3,7 @@ const smartlead = require('./smartlead');
 const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
+const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -35,20 +36,47 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
-    const ccEmails = reply.cc_on_send && client.cc_email ? String(client.cc_email).trim() : '';
-    if (reply.cc_on_send && !ccEmails) {
-      console.warn('[ReplySend] cc_on_send set but client has no cc_email', { replyId: reply.id, clientId: client.id });
+    // Always-CC + one round-robin rep whenever configured (no Slack checkbox required).
+    const hasCcConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
+    let ccEmails = '';
+    let ccMeta = null;
+    if (hasCcConfig) {
+      ccMeta = await buildSmartleadCcList(client, { claimRoundRobin: true });
+      ccEmails = ccMeta.ccEmails;
     }
 
-    await smartlead.sendReply(
-      client.smartlead_api_key,
-      reply.campaign_id,
-      reply.lead_id,
-      { replyText, emailStatsId }
-    );
-
     let clientCcWarning = '';
-    if (ccEmails) {
+    let clientCcMode = '';
+
+    try {
+      await smartlead.sendReply(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id,
+        { replyText, emailStatsId, ccEmails: ccEmails || undefined }
+      );
+      if (ccEmails) {
+        clientCcMode = 'cc';
+        console.log('[ReplySend] Client CC’d on SmartLead reply', {
+          replyId: reply.id,
+          to: ccEmails,
+          always: ccMeta?.always,
+          roundRobin: ccMeta?.roundRobin,
+        });
+      }
+    } catch (err) {
+      // Live API accepts `cc` (not `cc_emails`). If CC somehow fails, still send the
+      // prospect reply, then fall back to a thread forward so the client gets a copy.
+      if (!ccEmails) throw err;
+      console.warn('[ReplySend] SmartLead reply with CC failed — retrying without CC + forward fallback', {
+        replyId: reply.id, err: err.message,
+      });
+      await smartlead.sendReply(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id,
+        { replyText, emailStatsId }
+      );
       try {
         await smartlead.forwardThreadToClient(
           client.smartlead_api_key,
@@ -56,14 +84,22 @@ async function sendReplyToPlatform(client, reply, replyText) {
           reply.lead_id,
           { toEmail: ccEmails, leadName: reply.lead_name, sentText: replyText }
         );
-        console.log('[ReplySend] Client copy forwarded', { replyId: reply.id, to: ccEmails });
-      } catch (err) {
-        console.error('[ReplySend] Client copy forward failed (reply still sent)', { replyId: reply.id, err: err.message });
-        clientCcWarning = `Client copy could not be forwarded: ${err.message}`;
+        clientCcMode = 'forward';
+        console.log('[ReplySend] Client copy forwarded (CC fallback)', { replyId: reply.id, to: ccEmails });
+      } catch (fwdErr) {
+        console.error('[ReplySend] Client copy forward failed (reply still sent)', {
+          replyId: reply.id, err: fwdErr.message,
+        });
+        clientCcWarning = `Client copy could not be sent: ${fwdErr.message}`;
       }
     }
 
-    return { clientCcWarning: clientCcWarning || undefined };
+    return {
+      clientCcWarning: clientCcWarning || undefined,
+      clientCcMode: clientCcMode || undefined,
+      clientCcEmails: ccEmails || undefined,
+      clientCcRoundRobin: ccMeta?.roundRobin || undefined,
+    };
   }
 
   if (reply.platform === 'heyreach') {
