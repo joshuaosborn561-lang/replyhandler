@@ -82,7 +82,9 @@ function ccUsedLabel(reply, client, sendResult) {
   if (reply.platform !== 'smartlead' || !reply.cc_on_send) return undefined;
   if (sendResult?.clientCcWarning) return undefined;
   const email = String(client.cc_email || '').trim();
-  return email || undefined;
+  if (!email) return undefined;
+  const mode = sendResult?.clientCcMode === 'forward' ? 'forward' : 'cc';
+  return { email, mode };
 }
 
 router.post('/slack/actions', slackVerify, async (req, res) => {

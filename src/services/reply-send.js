@@ -40,15 +40,33 @@ async function sendReplyToPlatform(client, reply, replyText) {
       console.warn('[ReplySend] cc_on_send set but client has no cc_email', { replyId: reply.id, clientId: client.id });
     }
 
-    await smartlead.sendReply(
-      client.smartlead_api_key,
-      reply.campaign_id,
-      reply.lead_id,
-      { replyText, emailStatsId }
-    );
-
     let clientCcWarning = '';
-    if (ccEmails) {
+    let clientCcMode = '';
+
+    try {
+      await smartlead.sendReply(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id,
+        { replyText, emailStatsId, ccEmails: ccEmails || undefined }
+      );
+      if (ccEmails) {
+        clientCcMode = 'cc';
+        console.log('[ReplySend] Client CC’d on SmartLead reply', { replyId: reply.id, to: ccEmails });
+      }
+    } catch (err) {
+      // Live API accepts `cc` (not `cc_emails`). If CC somehow fails, still send the
+      // prospect reply, then fall back to a thread forward so the client gets a copy.
+      if (!ccEmails) throw err;
+      console.warn('[ReplySend] SmartLead reply with CC failed — retrying without CC + forward fallback', {
+        replyId: reply.id, err: err.message,
+      });
+      await smartlead.sendReply(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id,
+        { replyText, emailStatsId }
+      );
       try {
         await smartlead.forwardThreadToClient(
           client.smartlead_api_key,
@@ -56,14 +74,17 @@ async function sendReplyToPlatform(client, reply, replyText) {
           reply.lead_id,
           { toEmail: ccEmails, leadName: reply.lead_name, sentText: replyText }
         );
-        console.log('[ReplySend] Client copy forwarded', { replyId: reply.id, to: ccEmails });
-      } catch (err) {
-        console.error('[ReplySend] Client copy forward failed (reply still sent)', { replyId: reply.id, err: err.message });
-        clientCcWarning = `Client copy could not be forwarded: ${err.message}`;
+        clientCcMode = 'forward';
+        console.log('[ReplySend] Client copy forwarded (CC fallback)', { replyId: reply.id, to: ccEmails });
+      } catch (fwdErr) {
+        console.error('[ReplySend] Client copy forward failed (reply still sent)', {
+          replyId: reply.id, err: fwdErr.message,
+        });
+        clientCcWarning = `Client copy could not be sent: ${fwdErr.message}`;
       }
     }
 
-    return { clientCcWarning: clientCcWarning || undefined };
+    return { clientCcWarning: clientCcWarning || undefined, clientCcMode: clientCcMode || undefined };
   }
 
   if (reply.platform === 'heyreach') {

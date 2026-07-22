@@ -199,8 +199,11 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * SmartLead reply endpoint.
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
  * Required: email_stats_id, email_body (lead_id is not a path param on this route).
+ *
+ * True CC: API docs say `cc_emails`, but the live validator rejects that key and accepts `cc`
+ * (and `bcc`). Passing `cc` puts the client on the real outbound so they can Reply-all.
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }) {
+async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -230,6 +233,8 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
     email_body: emailBody,
     add_signature: true,
   };
+  const cc = String(ccEmails || '').trim();
+  if (cc) payload.cc = cc;
 
   const res = await fetch(url, {
     method: 'POST',
@@ -246,7 +251,8 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId }
 }
 
 /**
- * SmartLead reply-email-thread does not accept cc_emails. Forward the thread instead.
+ * Fallback when true CC is unavailable: forward a thread copy to the client.
+ * Prefer sendReply({ ccEmails }) — live API accepts `cc` for real Reply-all.
  * @see https://api.smartlead.ai/api-reference/inbox/forward
  */
 async function forwardThreadToClient(apiKey, campaignId, leadId, { toEmail, leadName, sentText }) {

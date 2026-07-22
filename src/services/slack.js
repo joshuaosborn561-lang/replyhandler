@@ -261,7 +261,13 @@ function buildSentConfirmationBlocks({
 
   const userBit = userId ? ` by <@${userId}>` : '';
   let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
-  if (ccUsed) footerText += `\n_Copy forwarded to ${escMrkdwn(ccUsed)}_`;
+  if (ccUsed) {
+    const email = typeof ccUsed === 'object' ? ccUsed.email : ccUsed;
+    const mode = typeof ccUsed === 'object' ? ccUsed.mode : 'forward';
+    footerText += mode === 'cc'
+      ? `\n_CC’d ${escMrkdwn(email)} (can Reply-all)_`
+      : `\n_Copy forwarded to ${escMrkdwn(email)}_`;
+  }
   if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
 
   blocks.push({
