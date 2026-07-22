@@ -79,12 +79,14 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
 }
 
 function ccUsedLabel(reply, client, sendResult) {
-  if (reply.platform !== 'smartlead' || !reply.cc_on_send) return undefined;
+  if (reply.platform !== 'smartlead') return undefined;
   if (sendResult?.clientCcWarning) return undefined;
-  const email = String(client.cc_email || '').trim();
+  const email = String(sendResult?.clientCcEmails || '').trim()
+    || String(client.cc_emails || client.cc_email || '').trim();
   if (!email) return undefined;
   const mode = sendResult?.clientCcMode === 'forward' ? 'forward' : 'cc';
-  return { email, mode };
+  const rr = sendResult?.clientCcRoundRobin || null;
+  return { email, mode, roundRobin: rr };
 }
 
 router.post('/slack/actions', slackVerify, async (req, res) => {
@@ -151,8 +153,9 @@ async function handleOpenEditModal(replyId, interaction) {
     initialDraft: reply.draft_reply || '',
     channelId: interaction.channel?.id,
     messageTs: interaction.message?.ts,
-    ccEmail: reply.platform === 'smartlead' ? client.cc_email : null,
-    ccOnSend: !!reply.cc_on_send,
+    ccEmail: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
+    ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
+    ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
   });
 }
 
@@ -189,12 +192,6 @@ async function handleEditModalSubmit(interaction) {
   const draftState = interaction.view.state.values?.draft_block?.draft_input;
   const messageText = (draftState?.value || '').trim();
   if (!messageText) return;
-
-  const ccSelected = (interaction.view.state.values?.cc_block?.cc_checkbox?.selected_options || []).length > 0;
-  await db.query(
-    'UPDATE pending_replies SET cc_on_send = $1, updated_at = now() WHERE id = $2',
-    [ccSelected, replyId]
-  );
 
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()

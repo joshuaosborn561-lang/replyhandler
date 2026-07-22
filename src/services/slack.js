@@ -108,6 +108,23 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
   };
 }
 
+/** Always-on CC notice (no toggle) — always-CC list + round-robin pool. */
+function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
+  const always = String(ccEmails || '').trim();
+  const rr = String(ccRoundRobinEmails || '').trim();
+  if (!always && !rr) return null;
+  const lines = [];
+  if (always) lines.push(`*Always CC:* ${escMrkdwn(always)}`);
+  if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
+  return {
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `📬 Auto-CC on Approve / Edit & send\n${lines.join('\n')}`,
+    }],
+  };
+}
+
 /**
  * Build one or more section blocks for a conversation step.
  * @param {object} opts
@@ -264,9 +281,12 @@ function buildSentConfirmationBlocks({
   if (ccUsed) {
     const email = typeof ccUsed === 'object' ? ccUsed.email : ccUsed;
     const mode = typeof ccUsed === 'object' ? ccUsed.mode : 'forward';
-    footerText += mode === 'cc'
-      ? `\n_CC’d ${escMrkdwn(email)} (can Reply-all)_`
-      : `\n_Copy forwarded to ${escMrkdwn(email)}_`;
+    const rr = typeof ccUsed === 'object' ? ccUsed.roundRobin : null;
+    let line = mode === 'cc'
+      ? `CC’d ${escMrkdwn(email)} (can Reply-all)`
+      : `Copy forwarded to ${escMrkdwn(email)}`;
+    if (rr) line += ` · RR this send: ${escMrkdwn(rr)}`;
+    footerText += `\n_${line}_`;
   }
   if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
 
@@ -296,6 +316,7 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
+  ccEmails, ccRoundRobinEmails,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -332,10 +353,13 @@ async function postDraftApproval(token, channelId, {
     },
   ];
 
-  const ccBlock = platform === 'smartlead'
-    ? ccCheckboxBlock({ replyId, ccEmail, ccOnSend: !!ccOnSend })
-    : null;
-  if (ccBlock) blocks.push(ccBlock);
+  if (platform === 'smartlead') {
+    const notice = ccAutoNoticeBlock({
+      ccEmails: ccEmails || ccEmail,
+      ccRoundRobinEmails,
+    });
+    if (notice) blocks.push(notice);
+  }
 
   blocks.push({
       type: 'actions',
@@ -469,7 +493,9 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
-async function openEditReplyModal(token, triggerId, { replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend }) {
+async function openEditReplyModal(token, triggerId, {
+  replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
+}) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
 
@@ -489,21 +515,14 @@ async function openEditReplyModal(token, triggerId, { replyId, initialDraft, cha
     },
   ];
 
-  const email = String(ccEmail || '').trim();
-  if (email) {
-    const label = email.length > 48 ? `${email.slice(0, 45)}…` : email;
-    const option = { text: { type: 'plain_text', text: `CC ${label}` }, value: 'cc' };
+  const notice = ccAutoNoticeBlock({
+    ccEmails: ccEmails || ccEmail,
+    ccRoundRobinEmails,
+  });
+  if (notice) {
     blocks.push({
-      type: 'input',
-      block_id: 'cc_block',
-      optional: true,
-      label: { type: 'plain_text', text: 'Email options' },
-      element: {
-        type: 'checkboxes',
-        action_id: 'cc_checkbox',
-        options: [option],
-        ...(ccOnSend ? { initial_options: [option] } : {}),
-      },
+      type: 'section',
+      text: notice.elements[0],
     });
   }
 

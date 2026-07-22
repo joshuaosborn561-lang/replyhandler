@@ -16,21 +16,46 @@ function formatClient(client) {
   return { ...client, ...webhookUrls(client.id) };
 }
 
+function normalizeCcListField(value) {
+  if (value == null) return null;
+  const parts = String(value)
+    .split(/[\n,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@'));
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out.length ? out.join(', ') : null;
+}
+
 // Create client
 router.post('/admin/clients', async (req, res) => {
   try {
     const {
       name, smartlead_api_key, heyreach_api_key, slack_bot_token,
-      slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone, cc_email,
+      slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
+      cc_email, cc_emails, cc_round_robin_emails,
     } = req.body;
 
     if (!name || !slack_bot_token || !slack_channel_id) {
       return res.status(400).json({ error: 'name, slack_bot_token, and slack_channel_id are required' });
     }
 
+    const alwaysCc = normalizeCcListField(cc_emails || cc_email);
+    const rr = normalizeCcListField(cc_round_robin_emails);
+    const legacyCc = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
+
     const { rows: [client] } = await db.query(
-      `INSERT INTO clients (name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone, cc_email)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      `INSERT INTO clients (
+         name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id,
+         booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
+         cc_email, cc_emails, cc_round_robin_emails
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -41,7 +66,9 @@ router.post('/admin/clients', async (req, res) => {
         calendly_personal_access_token || null,
         voice_prompt || '',
         digest_timezone || null,
-        cc_email || null,
+        legacyCc,
+        alwaysCc,
+        rr,
       ]
     );
 
@@ -71,12 +98,24 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const fields = req.body;
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'slack_bot_token',
-      'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt', 'active', 'digest_timezone', 'cc_email',
+      'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt',
+      'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
     ];
 
     const updates = [];
     const values = [];
     let idx = 1;
+
+    // Normalize list fields + keep legacy cc_email in sync with first always-CC address.
+    if (Object.prototype.hasOwnProperty.call(fields, 'cc_emails')
+      || Object.prototype.hasOwnProperty.call(fields, 'cc_email')) {
+      const alwaysCc = normalizeCcListField(fields.cc_emails != null ? fields.cc_emails : fields.cc_email);
+      fields.cc_emails = alwaysCc;
+      fields.cc_email = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'cc_round_robin_emails')) {
+      fields.cc_round_robin_emails = normalizeCcListField(fields.cc_round_robin_emails);
+    }
 
     for (const [key, value] of Object.entries(fields)) {
       if (allowedFields.includes(key)) {

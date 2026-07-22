@@ -3,6 +3,7 @@ const smartlead = require('./smartlead');
 const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
+const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -35,9 +36,13 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
-    const ccEmails = reply.cc_on_send && client.cc_email ? String(client.cc_email).trim() : '';
-    if (reply.cc_on_send && !ccEmails) {
-      console.warn('[ReplySend] cc_on_send set but client has no cc_email', { replyId: reply.id, clientId: client.id });
+    // Always-CC + one round-robin rep whenever configured (no Slack checkbox required).
+    const hasCcConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
+    let ccEmails = '';
+    let ccMeta = null;
+    if (hasCcConfig) {
+      ccMeta = await buildSmartleadCcList(client, { claimRoundRobin: true });
+      ccEmails = ccMeta.ccEmails;
     }
 
     let clientCcWarning = '';
@@ -52,7 +57,12 @@ async function sendReplyToPlatform(client, reply, replyText) {
       );
       if (ccEmails) {
         clientCcMode = 'cc';
-        console.log('[ReplySend] Client CC’d on SmartLead reply', { replyId: reply.id, to: ccEmails });
+        console.log('[ReplySend] Client CC’d on SmartLead reply', {
+          replyId: reply.id,
+          to: ccEmails,
+          always: ccMeta?.always,
+          roundRobin: ccMeta?.roundRobin,
+        });
       }
     } catch (err) {
       // Live API accepts `cc` (not `cc_emails`). If CC somehow fails, still send the
@@ -84,7 +94,12 @@ async function sendReplyToPlatform(client, reply, replyText) {
       }
     }
 
-    return { clientCcWarning: clientCcWarning || undefined, clientCcMode: clientCcMode || undefined };
+    return {
+      clientCcWarning: clientCcWarning || undefined,
+      clientCcMode: clientCcMode || undefined,
+      clientCcEmails: ccEmails || undefined,
+      clientCcRoundRobin: ccMeta?.roundRobin || undefined,
+    };
   }
 
   if (reply.platform === 'heyreach') {

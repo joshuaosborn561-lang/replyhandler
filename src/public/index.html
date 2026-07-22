@@ -706,9 +706,15 @@
       </div>
 
       <div class="form-group">
-        <label>Client CC Email (optional)</label>
-        <input type="email" id="f_cc_email" placeholder="client@company.com">
-        <div class="hint">When set, SmartLead approval cards show a <strong>CC client</strong> checkbox. When checked, the client is CC’d on the real reply (Calendly link included) so they can Reply-all on the thread.</div>
+        <label>Always CC (optional)</label>
+        <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com"></textarea>
+        <div class="hint">Comma or newline separated. These addresses are <strong>always CC’d</strong> on SmartLead Approve / Edit &amp; send (same email the prospect gets, including Calendly) so they can Reply-all.</div>
+      </div>
+
+      <div class="form-group">
+        <label>Round-robin CC reps (optional)</label>
+        <textarea id="f_cc_round_robin_emails" rows="2" placeholder="rep1@client.com, rep2@client.com, rep3@client.com"></textarea>
+        <div class="hint">Comma or newline separated. On each SmartLead send we CC <strong>exactly one</strong> of these, rotating evenly so volume is dispersed.</div>
       </div>
 
       <div class="form-group">
@@ -822,10 +828,20 @@
     </details>
 
     <details class="guide-section">
-      <summary>Client CC Email</summary>
+      <summary>Always CC + Round-robin</summary>
       <div class="guide-section-body">
-        <p>Optional. One email address for this client (e.g. their owner or AE). When set, <strong>SmartLead</strong> approval cards show a <strong>CC client</strong> checkbox &mdash; off by default. Check it before Approve or Edit &amp; send and we CC them on the outbound reply (same email the prospect gets, including any booking link) so they can Reply-all.</p>
-        <div class="guide-note">LinkedIn / HeyReach replies are not CC&rsquo;d (no email thread). Leave blank if you don&rsquo;t want the option.</div>
+        <p><strong>Always CC</strong> — one or more addresses (owner, AE) that are CC’d on <em>every</em> SmartLead Approve / Edit &amp; send. Same email the prospect gets (including Calendly), so they can Reply-all.</p>
+        <p><strong>Round-robin reps</strong> — pool of sales reps. Each send CC’s <em>exactly one</em> from the list, rotating evenly so load is dispersed.</p>
+        <div class="guide-note">LinkedIn / HeyReach replies are not CC’d (no email thread).</div>
+        <p><strong>Keeping CC + Calendly out of spam</strong> (for the CC recipient):</p>
+        <ul>
+          <li>Only CC people who <em>expect</em> these (client owner / your reps) — never strangers.</li>
+          <li>Before adding a <em>new</em> CC address: send them a plain intro from the SmartLead mailbox (no Calendly), ask them to mark it Not Spam / add to contacts, then turn CC on.</li>
+          <li>Prefer a branded booking URL (<code>book.yourdomain.com</code> → Calendly) over a raw <code>calendly.com</code> link when possible.</li>
+          <li>Keep one link max in the reply; avoid image-heavy HTML.</li>
+          <li>Sending domain must have SPF + DKIM + DMARC; warmup SmartLead mailboxes.</li>
+          <li>True CC is better for engage than a forward, but the From address is still the campaign mailbox — whitelist that sender on the CC side.</li>
+        </ul>
       </div>
     </details>
 
@@ -992,8 +1008,11 @@ function renderGrid() {
         <span class="${c.booking_link ? 'key-present' : 'key-missing'}">
           ${c.booking_link ? '&#10003;' : '&#10007;'} Booking Link
         </span>
-        <span class="${c.cc_email ? 'key-present' : 'key-missing'}">
-          ${c.cc_email ? '&#10003;' : '&#10007;'} CC Email
+        <span class="${(c.cc_emails || c.cc_email) ? 'key-present' : 'key-missing'}">
+          ${(c.cc_emails || c.cc_email) ? '&#10003;' : '&#10007;'} Always CC
+        </span>
+        <span class="${c.cc_round_robin_emails ? 'key-present' : 'key-missing'}">
+          ${c.cc_round_robin_emails ? '&#10003;' : '&#10007;'} RR CC
         </span>
         <span style="color: var(--text-muted)">
           Added ${new Date(c.created_at).toLocaleDateString()}
@@ -1050,8 +1069,12 @@ function openDetail(id) {
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
       <div class="detail-row">
-        <span class="label">Client CC Email</span>
-        <span class="value">${c.cc_email ? esc(c.cc_email) : '—'}</span>
+        <span class="label">Always CC</span>
+        <span class="value">${(c.cc_emails || c.cc_email) ? esc(c.cc_emails || c.cc_email) : '—'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Round-robin CC</span>
+        <span class="value">${c.cc_round_robin_emails ? esc(c.cc_round_robin_emails) : '—'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Calendly PAT</span>
@@ -1134,7 +1157,8 @@ function openEditFromDetail() {
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
   document.getElementById('f_booking_link').value = c.booking_link || '';
-  document.getElementById('f_cc_email').value = c.cc_email || '';
+  document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
+  document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
   document.getElementById('f_calendly_personal_access_token').value = c.calendly_personal_access_token || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
 
@@ -1150,7 +1174,8 @@ async function submitForm() {
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
-    cc_email: document.getElementById('f_cc_email').value.trim() || null,
+    cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
+    cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
     calendly_personal_access_token: document.getElementById('f_calendly_personal_access_token').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
@@ -1194,7 +1219,7 @@ function toggleGuide() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_booking_link', 'f_cc_email', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }
