@@ -87,7 +87,7 @@ function ccUsedLabel(reply, client, sendResult) {
   const rr = sendResult?.clientCcRoundRobin || null;
   return {
     email,
-    mode: 'forward',
+    mode: sendResult?.clientCcMode || 'gmail',
     roundRobin: rr,
     cellPhone: sendResult?.leadCellPhone || null,
   };

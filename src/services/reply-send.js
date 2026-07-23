@@ -4,7 +4,9 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
-const { enrichCellPhone } = require('./phone-enrich');
+const { enrichProspect } = require('./prospect-enrich');
+const { buildClientNotifyEmail } = require('./client-notify-email');
+const gmail = require('./gmail-send');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -38,8 +40,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
     }
 
     // Deliverability: reply to the prospect with NO CC.
-    // Then forward a copy to Always-CC + one round-robin rep (if configured),
-    // enriched with a cellphone when enrichment APIs find one.
+    // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
@@ -50,7 +51,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
     let clientCcWarning = '';
     let clientCcMode = '';
-    let phoneMeta = null;
+    let enrichment = null;
 
     await smartlead.sendReply(
       client.smartlead_api_key,
@@ -61,46 +62,87 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
     if (forwardEmails) {
       try {
-        phoneMeta = await enrichCellPhone({
+        enrichment = await enrichProspect({
           email: reply.lead_email,
           linkedinUrl: reply.linkedin_url,
           leadName: reply.lead_name,
         });
       } catch (err) {
-        console.warn('[ReplySend] Phone enrichment failed (forwarding without cell)', {
+        console.warn('[ReplySend] Prospect enrichment failed (notifying without full enrich)', {
           replyId: reply.id, err: err.message,
         });
-        phoneMeta = { phone: null, provider: null };
+        enrichment = {
+          email: reply.lead_email || null,
+          phone: null,
+          linkedinUrl: reply.linkedin_url || null,
+          website: null,
+          sources: {},
+        };
       }
 
+      const notify = buildClientNotifyEmail({
+        leadName: reply.lead_name,
+        clientName: client.name,
+        campaignName: reply.campaign_id,
+        enrichment,
+        threadContext: reply.thread_context,
+        inboundMessage: reply.inbound_message,
+        sentText: replyText,
+      });
+
       try {
-        await smartlead.forwardThreadToClient(
-          client.smartlead_api_key,
-          reply.campaign_id,
-          reply.lead_id,
-          {
-            toEmail: forwardEmails,
-            leadName: reply.lead_name,
-            leadEmail: reply.lead_email,
-            sentText: replyText,
-            cellPhone: phoneMeta?.phone || null,
-            phoneProvider: phoneMeta?.provider || null,
-          }
-        );
-        clientCcMode = 'forward';
-        console.log('[ReplySend] Client copy forwarded (no prospect CC)', {
+        if (!gmail.isConfigured()) {
+          throw new Error('GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET not configured');
+        }
+        const account = await gmail.getAccount();
+        if (!account) {
+          throw new Error(`Primary Gmail not connected — open /auth/gmail/connect (login as ${gmail.expectedFromEmail()})`);
+        }
+
+        await gmail.sendMail({
+          to: forwardEmails,
+          subject: notify.subject,
+          htmlBody: notify.htmlBody,
+          textBody: notify.textBody,
+        });
+        clientCcMode = 'gmail';
+        console.log('[ReplySend] Client notify sent from primary Gmail', {
           replyId: reply.id,
           to: forwardEmails,
+          from: account.email,
           always: ccMeta?.always,
           roundRobin: ccMeta?.roundRobin,
-          cellPhone: phoneMeta?.phone || null,
-          phoneProvider: phoneMeta?.provider || null,
+          cellPhone: enrichment?.phone || null,
+          linkedin: enrichment?.linkedinUrl || null,
+          sources: enrichment?.sources || null,
         });
-      } catch (fwdErr) {
-        console.error('[ReplySend] Client copy forward failed (reply still sent)', {
-          replyId: reply.id, err: fwdErr.message,
+      } catch (mailErr) {
+        // Fallback: SmartLead forward so the client still gets a copy.
+        console.warn('[ReplySend] Primary Gmail notify failed — falling back to SmartLead forward', {
+          replyId: reply.id, err: mailErr.message,
         });
-        clientCcWarning = `Client copy could not be sent: ${fwdErr.message}`;
+        try {
+          await smartlead.forwardThreadToClient(
+            client.smartlead_api_key,
+            reply.campaign_id,
+            reply.lead_id,
+            {
+              toEmail: forwardEmails,
+              leadName: reply.lead_name,
+              leadEmail: enrichment?.email || reply.lead_email,
+              sentText: replyText,
+              cellPhone: enrichment?.phone || null,
+              phoneProvider: enrichment?.sources?.phone || null,
+            }
+          );
+          clientCcMode = 'forward';
+          clientCcWarning = `Primary Gmail failed (${mailErr.message}); used SmartLead forward instead`;
+        } catch (fwdErr) {
+          console.error('[ReplySend] Client copy failed (reply still sent)', {
+            replyId: reply.id, gmailErr: mailErr.message, fwdErr: fwdErr.message,
+          });
+          clientCcWarning = `Client copy could not be sent: ${mailErr.message}`;
+        }
       }
     }
 
@@ -109,8 +151,10 @@ async function sendReplyToPlatform(client, reply, replyText) {
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
-      leadCellPhone: phoneMeta?.phone || undefined,
-      leadCellPhoneProvider: phoneMeta?.provider || undefined,
+      leadCellPhone: enrichment?.phone || undefined,
+      leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
+      leadLinkedinUrl: enrichment?.linkedinUrl || undefined,
+      leadWebsite: enrichment?.website || undefined,
     };
   }
 
