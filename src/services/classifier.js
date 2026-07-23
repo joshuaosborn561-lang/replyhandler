@@ -105,23 +105,36 @@ function looksLikeClearInterest(msg) {
   return /\b(tell me more|i'?m interested|sounds good|let'?s (talk|chat|connect)|open to (a )?(chat|call)|would love to hear|happy to (chat|talk|connect))\b/.test(m);
 }
 
-/** Legacy helper kept for scripts/tests — NOT used by sanitizeDraft anymore. */
-function fallbackDraftText({ leadName, inboundMessage, bookingLink, classification } = {}) {
+/** Deterministic draft when Gemini is unavailable / returns empty. */
+function fallbackDraftText({
+  leadName,
+  inboundMessage,
+  bookingLink,
+  classification,
+  threadContext,
+  digestTimezone,
+  includeBookingLink,
+} = {}) {
   const name = firstNameFromLead(leadName);
-  const [d1, d2] = nextTwoBusinessDayLabels();
+  const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
   const msg = String(inboundMessage || '').trim();
-  if (looksLikeBookingLinkRequest(msg, '')) {
+  const wantLink = typeof includeBookingLink === 'boolean'
+    ? includeBookingLink
+    : looksLikeBookingLinkRequest(msg, threadContext || '');
+
+  if (wantLink) {
     return link
       ? `Hey ${name}, sounds good — here's the booking link: ${link}`
       : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
   }
+
   const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
   const ack = clearInterest
-    ? 'We\'d love to make sure it\'s a good fit on both sides.'
-    : 'Totally fair question — I\'m sure we can work something out on the call. We want this to make sense and be worth your time.';
+    ? 'Would love to see if this is a fit.'
+    : 'Happy to jump on a quick call and walk through it.';
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
     `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with our CEO? ` +
