@@ -4,6 +4,7 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
+const { enrichCellPhone } = require('./phone-enrich');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -36,56 +37,65 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
-    // Always-CC + one round-robin rep whenever configured (no Slack checkbox required).
-    const hasCcConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
-    let ccEmails = '';
+    // Deliverability: reply to the prospect with NO CC.
+    // Then forward a copy to Always-CC + one round-robin rep (if configured),
+    // enriched with a cellphone when enrichment APIs find one.
+    const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
+    let forwardEmails = '';
     let ccMeta = null;
-    if (hasCcConfig) {
+    if (hasForwardConfig) {
       ccMeta = await buildSmartleadCcList(client, { claimRoundRobin: true });
-      ccEmails = ccMeta.ccEmails;
+      forwardEmails = ccMeta.ccEmails;
     }
 
     let clientCcWarning = '';
     let clientCcMode = '';
+    let phoneMeta = null;
 
-    try {
-      await smartlead.sendReply(
-        client.smartlead_api_key,
-        reply.campaign_id,
-        reply.lead_id,
-        { replyText, emailStatsId, ccEmails: ccEmails || undefined }
-      );
-      if (ccEmails) {
-        clientCcMode = 'cc';
-        console.log('[ReplySend] Client CC’d on SmartLead reply', {
-          replyId: reply.id,
-          to: ccEmails,
-          always: ccMeta?.always,
-          roundRobin: ccMeta?.roundRobin,
+    await smartlead.sendReply(
+      client.smartlead_api_key,
+      reply.campaign_id,
+      reply.lead_id,
+      { replyText, emailStatsId }
+    );
+
+    if (forwardEmails) {
+      try {
+        phoneMeta = await enrichCellPhone({
+          email: reply.lead_email,
+          linkedinUrl: reply.linkedin_url,
+          leadName: reply.lead_name,
         });
+      } catch (err) {
+        console.warn('[ReplySend] Phone enrichment failed (forwarding without cell)', {
+          replyId: reply.id, err: err.message,
+        });
+        phoneMeta = { phone: null, provider: null };
       }
-    } catch (err) {
-      // Live API accepts `cc` (not `cc_emails`). If CC somehow fails, still send the
-      // prospect reply, then fall back to a thread forward so the client gets a copy.
-      if (!ccEmails) throw err;
-      console.warn('[ReplySend] SmartLead reply with CC failed — retrying without CC + forward fallback', {
-        replyId: reply.id, err: err.message,
-      });
-      await smartlead.sendReply(
-        client.smartlead_api_key,
-        reply.campaign_id,
-        reply.lead_id,
-        { replyText, emailStatsId }
-      );
+
       try {
         await smartlead.forwardThreadToClient(
           client.smartlead_api_key,
           reply.campaign_id,
           reply.lead_id,
-          { toEmail: ccEmails, leadName: reply.lead_name, sentText: replyText }
+          {
+            toEmail: forwardEmails,
+            leadName: reply.lead_name,
+            leadEmail: reply.lead_email,
+            sentText: replyText,
+            cellPhone: phoneMeta?.phone || null,
+            phoneProvider: phoneMeta?.provider || null,
+          }
         );
         clientCcMode = 'forward';
-        console.log('[ReplySend] Client copy forwarded (CC fallback)', { replyId: reply.id, to: ccEmails });
+        console.log('[ReplySend] Client copy forwarded (no prospect CC)', {
+          replyId: reply.id,
+          to: forwardEmails,
+          always: ccMeta?.always,
+          roundRobin: ccMeta?.roundRobin,
+          cellPhone: phoneMeta?.phone || null,
+          phoneProvider: phoneMeta?.provider || null,
+        });
       } catch (fwdErr) {
         console.error('[ReplySend] Client copy forward failed (reply still sent)', {
           replyId: reply.id, err: fwdErr.message,
@@ -97,8 +107,10 @@ async function sendReplyToPlatform(client, reply, replyText) {
     return {
       clientCcWarning: clientCcWarning || undefined,
       clientCcMode: clientCcMode || undefined,
-      clientCcEmails: ccEmails || undefined,
+      clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
+      leadCellPhone: phoneMeta?.phone || undefined,
+      leadCellPhoneProvider: phoneMeta?.provider || undefined,
     };
   }
 

@@ -84,9 +84,13 @@ function ccUsedLabel(reply, client, sendResult) {
   const email = String(sendResult?.clientCcEmails || '').trim()
     || String(client.cc_emails || client.cc_email || '').trim();
   if (!email) return undefined;
-  const mode = sendResult?.clientCcMode === 'forward' ? 'forward' : 'cc';
   const rr = sendResult?.clientCcRoundRobin || null;
-  return { email, mode, roundRobin: rr };
+  return {
+    email,
+    mode: 'forward',
+    roundRobin: rr,
+    cellPhone: sendResult?.leadCellPhone || null,
+  };
 }
 
 router.post('/slack/actions', slackVerify, async (req, res) => {

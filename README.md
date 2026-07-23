@@ -56,7 +56,8 @@ cp .env.example .env
 | `HEYREACH_POLL_CLIENTS_JSON` | Optional fallback client JSON if DB `clients` rows are unavailable. Prefer restoring clients in Postgres. |
 | `AFTERNOON_DIGEST_TIMEZONE` | Optional. Timezone for the afternoon attention digest (default `America/Chicago`) |
 | `AFTERNOON_DIGEST_HOUR` | Optional. 24h local hour for afternoon attention digest (default `15`, i.e. 3pm) |
-| `LEADMAGIC_API_KEY` | Lead Magic API key for LinkedIn email lookup |
+| `GETLEADS_API_KEY` | GetLeads API key — cellphone lookup for client forwards (preferred) |
+| `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email + mobile-finder fallback |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |

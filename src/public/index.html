@@ -706,15 +706,15 @@
       </div>
 
       <div class="form-group">
-        <label>Always CC (optional)</label>
+        <label>Always forward (optional)</label>
         <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com"></textarea>
-        <div class="hint">Comma or newline separated. These addresses are <strong>always CC’d</strong> on SmartLead Approve / Edit &amp; send (same email the prospect gets, including Calendly) so they can Reply-all.</div>
+        <div class="hint">Comma or newline separated. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>forwarded copy</strong> enriched with the prospect&rsquo;s cell when found (GetLeads → LeadMagic).</div>
       </div>
 
       <div class="form-group">
-        <label>Round-robin CC reps (optional)</label>
+        <label>Round-robin forward reps (optional)</label>
         <textarea id="f_cc_round_robin_emails" rows="2" placeholder="rep1@client.com, rep2@client.com, rep3@client.com"></textarea>
-        <div class="hint">Comma or newline separated. On each SmartLead send we CC <strong>exactly one</strong> of these, rotating evenly so volume is dispersed.</div>
+        <div class="hint">Comma or newline separated. On each SmartLead send we forward to <strong>exactly one</strong> of these (plus Always forward), rotating evenly so volume is dispersed.</div>
       </div>
 
       <div class="form-group">
@@ -828,19 +828,18 @@
     </details>
 
     <details class="guide-section">
-      <summary>Always CC + Round-robin</summary>
+      <summary>Always forward + Round-robin</summary>
       <div class="guide-section-body">
-        <p><strong>Always CC</strong> — one or more addresses (owner, AE) that are CC’d on <em>every</em> SmartLead Approve / Edit &amp; send. Same email the prospect gets (including Calendly), so they can Reply-all.</p>
-        <p><strong>Round-robin reps</strong> — pool of sales reps. Each send CC’s <em>exactly one</em> from the list, rotating evenly so load is dispersed.</p>
-        <div class="guide-note">LinkedIn / HeyReach replies are not CC’d (no email thread).</div>
-        <p><strong>Keeping CC + Calendly out of spam</strong> (for the CC recipient):</p>
+        <p><strong>Always forward</strong> — one or more addresses (owner, AE) that receive a <em>forwarded copy</em> of every SmartLead Approve / Edit &amp; send. The prospect reply itself has <strong>no CC</strong> (better deliverability).</p>
+        <p><strong>Round-robin reps</strong> — pool of sales reps. Each send forwards to <em>exactly one</em> from the list, rotating evenly so load is dispersed.</p>
+        <div class="guide-note">LinkedIn / HeyReach replies are not forwarded (no email thread).</div>
+        <p><strong>Cellphone enrichment</strong> — before forwarding, we look up the prospect&rsquo;s cell via GetLeads, then LeadMagic if needed, and include it on the client copy.</p>
+        <p><strong>Keeping forwards out of spam</strong> (for the recipient):</p>
         <ul>
-          <li>Only CC people who <em>expect</em> these (client owner / your reps) — never strangers.</li>
-          <li>Before adding a <em>new</em> CC address: send them a plain intro from the SmartLead mailbox (no Calendly), ask them to mark it Not Spam / add to contacts, then turn CC on.</li>
-          <li>Prefer a branded booking URL (<code>book.yourdomain.com</code> → Calendly) over a raw <code>calendly.com</code> link when possible.</li>
-          <li>Keep one link max in the reply; avoid image-heavy HTML.</li>
+          <li>Only forward to people who <em>expect</em> these (client owner / your reps) — never strangers.</li>
+          <li>Ask recipients to whitelist the SmartLead campaign From address / mark Not Spam.</li>
+          <li>Prefer addresses that already receive mail from that mailbox.</li>
           <li>Sending domain must have SPF + DKIM + DMARC; warmup SmartLead mailboxes.</li>
-          <li>True CC is better for engage than a forward, but the From address is still the campaign mailbox — whitelist that sender on the CC side.</li>
         </ul>
       </div>
     </details>
@@ -1009,7 +1008,7 @@ function renderGrid() {
           ${c.booking_link ? '&#10003;' : '&#10007;'} Booking Link
         </span>
         <span class="${(c.cc_emails || c.cc_email) ? 'key-present' : 'key-missing'}">
-          ${(c.cc_emails || c.cc_email) ? '&#10003;' : '&#10007;'} Always CC
+          ${(c.cc_emails || c.cc_email) ? '&#10003;' : '&#10007;'} Always forward
         </span>
         <span class="${c.cc_round_robin_emails ? 'key-present' : 'key-missing'}">
           ${c.cc_round_robin_emails ? '&#10003;' : '&#10007;'} RR CC
@@ -1069,11 +1068,11 @@ function openDetail(id) {
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
       <div class="detail-row">
-        <span class="label">Always CC</span>
+        <span class="label">Always forward</span>
         <span class="value">${(c.cc_emails || c.cc_email) ? esc(c.cc_emails || c.cc_email) : '—'}</span>
       </div>
       <div class="detail-row">
-        <span class="label">Round-robin CC</span>
+        <span class="label">Round-robin forward</span>
         <span class="value">${c.cc_round_robin_emails ? esc(c.cc_round_robin_emails) : '—'}</span>
       </div>
       <div class="detail-row">
