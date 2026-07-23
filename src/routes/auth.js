@@ -7,7 +7,9 @@ const gmail = require('../services/gmail-send');
 const router = Router();
 
 function gmailConnectAuthorized(req) {
-  const expected = String(process.env.WEBHOOK_TEST_SECRET || process.env.PRIMARY_GMAIL_CONNECT_SECRET || '').trim();
+  // Only gate if an explicit primary-Gmail connect secret is set.
+  // Do NOT reuse WEBHOOK_TEST_SECRET — that blocked the one-time mailbox connect.
+  const expected = String(process.env.PRIMARY_GMAIL_CONNECT_SECRET || '').trim();
   if (!expected) return true;
   const got = String(req.query.secret || req.headers['x-webhook-test-secret'] || '').trim();
   return got && got === expected;
