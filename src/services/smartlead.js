@@ -200,8 +200,8 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
  * Required: email_stats_id, email_body (lead_id is not a path param on this route).
  *
- * True CC: API docs say `cc_emails`, but the live validator rejects that key and accepts `cc`
- * (and `bcc`). Passing `cc` puts the client on the real outbound so they can Reply-all.
+ * Note: we intentionally do NOT CC clients on the prospect reply (deliverability).
+ * Client notify is via forwardThreadToClient. The live API accepts `cc` if ever needed.
  */
 async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
