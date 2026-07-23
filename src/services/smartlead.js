@@ -251,14 +251,21 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, 
 }
 
 /**
- * Fallback when true CC is unavailable: forward a thread copy to the client.
- * Prefer sendReply({ ccEmails }) — live API accepts `cc` for real Reply-all.
+ * Forward a thread copy to the client (always-CC / round-robin).
+ * Prospect reply is sent separately with no CC — this is the client notify path.
  * @see https://api.smartlead.ai/api-reference/inbox/forward
  */
-async function forwardThreadToClient(apiKey, campaignId, leadId, { toEmail, leadName, sentText }) {
+async function forwardThreadToClient(apiKey, campaignId, leadId, {
+  toEmail,
+  leadName,
+  leadEmail,
+  sentText,
+  cellPhone,
+  phoneProvider,
+}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   const to = String(toEmail || '').trim();
-  if (!to) throw new Error('Client CC email is empty');
+  if (!to) throw new Error('Client forward email is empty');
 
   let anchor = null;
   if (leadId != null && leadId !== '') {
@@ -271,7 +278,19 @@ async function forwardThreadToClient(apiKey, campaignId, leadId, { toEmail, lead
   }
 
   const lead = String(leadName || 'prospect').trim() || 'prospect';
-  const forwardBody = `<p>FYI — reply sent to ${escapeHtml(lead)}:</p><p>${formatPlainTextAsSmartleadHtml(sentText)}</p>`;
+  const emailLine = leadEmail
+    ? ` (${escapeHtml(String(leadEmail).trim())})`
+    : '';
+  const phone = String(cellPhone || '').trim();
+  const phoneLine = phone
+    ? `<p><strong>Cell:</strong> ${escapeHtml(phone)}${phoneProvider ? ` <em>(via ${escapeHtml(phoneProvider)})</em>` : ''}</p>`
+    : '<p><strong>Cell:</strong> not found</p>';
+
+  const forwardBody = (
+    `<p>FYI — reply sent to ${escapeHtml(lead)}${emailLine}:</p>` +
+    phoneLine +
+    `<p>${formatPlainTextAsSmartleadHtml(sentText)}</p>`
+  );
   const url = `${BASE_URL}/campaigns/${cid}/forward-email?api_key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',

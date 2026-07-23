@@ -108,19 +108,19 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
   };
 }
 
-/** Always-on CC notice (no toggle) — always-CC list + round-robin pool. */
+/** Always-on client-notify notice — forward list + round-robin pool. */
 function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
   const always = String(ccEmails || '').trim();
   const rr = String(ccRoundRobinEmails || '').trim();
   if (!always && !rr) return null;
   const lines = [];
-  if (always) lines.push(`*Always CC:* ${escMrkdwn(always)}`);
+  if (always) lines.push(`*Always forward:* ${escMrkdwn(always)}`);
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   return {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `📬 Auto-CC on Approve / Edit & send\n${lines.join('\n')}`,
+      text: `📬 Prospect reply has no CC — copy forwarded on Approve / Edit & send (with cell when found)\n${lines.join('\n')}`,
     }],
   };
 }
@@ -280,12 +280,12 @@ function buildSentConfirmationBlocks({
   let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
   if (ccUsed) {
     const email = typeof ccUsed === 'object' ? ccUsed.email : ccUsed;
-    const mode = typeof ccUsed === 'object' ? ccUsed.mode : 'forward';
     const rr = typeof ccUsed === 'object' ? ccUsed.roundRobin : null;
-    let line = mode === 'cc'
-      ? `CC’d ${escMrkdwn(email)} (can Reply-all)`
-      : `Copy forwarded to ${escMrkdwn(email)}`;
+    let line = `Copy forwarded to ${escMrkdwn(email)}`;
     if (rr) line += ` · RR this send: ${escMrkdwn(rr)}`;
+    if (typeof ccUsed === 'object' && ccUsed.cellPhone) {
+      line += ` · Cell: ${escMrkdwn(ccUsed.cellPhone)}`;
+    }
     footerText += `\n_${line}_`;
   }
   if (extraFooter) footerText += `\n_${escMrkdwn(extraFooter)}_`;
