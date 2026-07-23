@@ -68,9 +68,11 @@ async function findPhoneByEmail(email) {
 
   const phone = normalizePhone(contact.cellphone) || normalizePhone(contact.direct_phone);
   const linkedinUrl = contact.person_linkedin_url || contact.linkedin_url || null;
+  const website = contact.website_org || contact.org_website || contact.org_domain || null;
   return {
     phone,
     linkedinUrl: linkedinUrl ? String(linkedinUrl) : null,
+    website: website ? String(website) : null,
     source: 'getleads',
     raw: { email_address: contact.email_address, job_title: contact.job_title },
   };

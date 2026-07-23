@@ -114,13 +114,13 @@ function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
   const rr = String(ccRoundRobinEmails || '').trim();
   if (!always && !rr) return null;
   const lines = [];
-  if (always) lines.push(`*Always forward:* ${escMrkdwn(always)}`);
+  if (always) lines.push(`*Always notify:* ${escMrkdwn(always)}`);
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   return {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `📬 Prospect reply has no CC — copy forwarded on Approve / Edit & send (with cell when found)\n${lines.join('\n')}`,
+      text: `📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)\n${lines.join('\n')}`,
     }],
   };
 }
@@ -280,8 +280,11 @@ function buildSentConfirmationBlocks({
   let footerText = `_${escMrkdwn(classification || 'reply')}${footers[kind] ? ` · ${footers[kind]}` : ''}${userBit}_`;
   if (ccUsed) {
     const email = typeof ccUsed === 'object' ? ccUsed.email : ccUsed;
+    const mode = typeof ccUsed === 'object' ? (ccUsed.mode || 'gmail') : 'gmail';
     const rr = typeof ccUsed === 'object' ? ccUsed.roundRobin : null;
-    let line = `Copy forwarded to ${escMrkdwn(email)}`;
+    let line = mode === 'gmail'
+      ? `Primary Gmail notify → ${escMrkdwn(email)}`
+      : `Copy forwarded to ${escMrkdwn(email)}`;
     if (rr) line += ` · RR this send: ${escMrkdwn(rr)}`;
     if (typeof ccUsed === 'object' && ccUsed.cellPhone) {
       line += ` · Cell: ${escMrkdwn(ccUsed.cellPhone)}`;

@@ -26,6 +26,7 @@ const MIGRATION_FILES = [
   '012_attention_digests.sql',
   '013_client_cc_email.sql',
   '014_cc_always_and_round_robin.sql',
+  '015_primary_mail_accounts.sql',
 ];
 
 async function clientsTableExists(client) {

@@ -2,8 +2,16 @@ const { Router } = require('express');
 const db = require('../db');
 const google = require('../services/google-calendar');
 const microsoft = require('../services/microsoft-calendar');
+const gmail = require('../services/gmail-send');
 
 const router = Router();
+
+function gmailConnectAuthorized(req) {
+  const expected = String(process.env.WEBHOOK_TEST_SECRET || process.env.PRIMARY_GMAIL_CONNECT_SECRET || '').trim();
+  if (!expected) return true;
+  const got = String(req.query.secret || req.headers['x-webhook-test-secret'] || '').trim();
+  return got && got === expected;
+}
 
 // ─── Google OAuth ────────────────────────────────────────────────────
 router.get('/auth/google/connect/:clientId', async (req, res) => {
@@ -41,6 +49,75 @@ router.get('/auth/google/callback', async (req, res) => {
   } catch (err) {
     console.error('[Auth] Google callback failed', { err: err.message });
     res.redirect(`/dashboard?auth=error&provider=google`);
+  }
+});
+
+// ─── Primary Gmail (SalesGlider notify mailbox) ──────────────────────
+router.get('/auth/gmail/connect', async (req, res) => {
+  if (!gmailConnectAuthorized(req)) {
+    return res.status(401).send('Unauthorized — pass ?secret=WEBHOOK_TEST_SECRET');
+  }
+  if (!gmail.isConfigured()) {
+    return res.status(500).send('GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET not configured on this server');
+  }
+  try {
+    const url = gmail.getAuthUrl();
+    res.redirect(url);
+  } catch (err) {
+    console.error('[Auth] Gmail connect failed', { err: err.message });
+    res.status(500).send(err.message);
+  }
+});
+
+router.get('/auth/gmail/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) {
+    console.error('[Auth] Gmail OAuth error', { error });
+    return res.status(400).send(`Gmail OAuth error: ${error}`);
+  }
+  if (!code) return res.status(400).send('Missing code');
+
+  try {
+    const tokens = await gmail.exchangeCode(code);
+    if (!tokens.refresh_token) {
+      return res.status(400).send(
+        'No refresh_token returned. Revoke app access at https://myaccount.google.com/permissions then retry /auth/gmail/connect with prompt=consent.'
+      );
+    }
+    const email = await gmail.getUserEmail(tokens.access_token);
+    const expected = gmail.expectedFromEmail();
+    if (expected && email !== expected) {
+      console.warn('[Auth] Gmail connected email differs from PRIMARY_GMAIL_FROM', { email, expected });
+    }
+    const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000);
+    await gmail.upsertAccount({
+      email,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      expiresAt,
+    });
+    console.log('[Auth] Primary Gmail connected', { email });
+    res.status(200).send(
+      `Primary Gmail connected as <strong>${email}</strong>. Client notifies will send from this mailbox. You can close this tab.`
+    );
+  } catch (err) {
+    console.error('[Auth] Gmail callback failed', { err: err.message });
+    res.status(500).send(`Gmail connect failed: ${err.message}`);
+  }
+});
+
+router.get('/auth/gmail/status', async (req, res) => {
+  try {
+    const account = await gmail.getAccount();
+    res.json({
+      configured: gmail.isConfigured(),
+      connected: Boolean(account),
+      email: account?.email || null,
+      expectedFrom: gmail.expectedFromEmail(),
+      redirectUri: gmail.getRedirectUri(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
