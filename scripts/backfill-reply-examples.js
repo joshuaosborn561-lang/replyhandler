@@ -53,6 +53,19 @@ async function getRowsOptional(table, query = '') {
   }
 }
 
+async function getRowsByIds(table, ids, select = '*') {
+  const rows = [];
+  const unique = [...new Set(ids.filter(Boolean).map(String))];
+  for (let index = 0; index < unique.length; index += 100) {
+    const batch = unique.slice(index, index + 100);
+    const query =
+      `select=${encodeURIComponent(select)}` +
+      `&id=in.(${batch.map(encodeURIComponent).join(',')})`;
+    rows.push(...await getRowsOptional(table, query));
+  }
+  return rows;
+}
+
 function stripHtml(value) {
   return String(value || '')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -111,7 +124,13 @@ async function main() {
   });
 
   const campaigns = await getRowsOptional('campaigns', 'select=*');
-  const leads = await getRowsOptional('leads', 'select=*');
+  // Do not download the full (60k+) leads table. Join only the leads represented
+  // by the 166-ish qualifying manual messages.
+  const leads = await getRowsByIds(
+    'leads',
+    manual.map((message) => message.lead_id),
+    'id,campaign_id,vertical,category,category_id,client_name'
+  );
   const categories = await getRowsOptional('lead_categories', 'select=*');
 
   const campaignMap = new Map(
@@ -120,15 +139,9 @@ async function main() {
   const leadMap = new Map(
     leads.map((row) => [idKey(row.id || row.lead_id), row])
   );
-  const categoryMap = new Map();
-  for (const row of categories) {
-    const leadId = idKey(row.lead_id || row.lead || row.contact_id);
-    const campaignId = idKey(row.campaign_id || row.campaign);
-    if (leadId) categoryMap.set(`${campaignId}|${leadId}`, categoryFromRow(row));
-    if (leadId && !categoryMap.has(`|${leadId}`)) {
-      categoryMap.set(`|${leadId}`, categoryFromRow(row));
-    }
-  }
+  const categoryMap = new Map(
+    categories.map((row) => [idKey(row.id), categoryFromRow(row)])
+  );
 
   const threads = new Map();
   for (const message of messages) {
@@ -168,9 +181,8 @@ async function main() {
     const campaign = campaignMap.get(idKey(reply.campaign_id)) || {};
     const lead = leadMap.get(idKey(reply.lead_id)) || {};
     const category =
-      categoryMap.get(`${idKey(reply.campaign_id)}|${idKey(reply.lead_id)}`) ||
-      categoryMap.get(`|${idKey(reply.lead_id)}`) ||
       lead.category ||
+      categoryMap.get(idKey(lead.category_id)) ||
       lead.category_name ||
       null;
 
