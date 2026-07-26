@@ -45,7 +45,12 @@ cp .env.example .env
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
-| `GEMINI_API_KEY` | Google Gemini API key for classification and drafting |
+| `GEMINI_API_KEY` | Google Gemini API key for classification and 768-dimensional retrieval embeddings |
+| `SUPABASE_URL` | Supabase project URL containing synced SmartLead `messages` and the `reply_examples` corpus |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role key for retrieval and feedback writes |
+| `ANTHROPIC_API_KEY` | Anthropic API key; Claude Sonnet 5 drafts replies from retrieved manual examples |
+| `ANTHROPIC_REPLY_MODEL` | Optional drafting model override (default `claude-sonnet-5`) |
+| `GEMINI_EMBEDDING_MODEL` | Optional embedding override (default `gemini-embedding-001`; `text-embedding-004` retired Jan 2026) |
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
 | `WEBHOOK_TEST_SECRET` | Optional. Protects `POST /admin/test/slack-draft/:clientId` for Slack-only testing |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
@@ -63,6 +68,25 @@ cp .env.example .env
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
 Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL and a PAT is set, the server uses Calendly’s API to fetch **real** open times. For other schedulers (Cal.com, SavvyCal, etc.), you can **connect Google or Outlook** so two slots may still be inferred from calendar free/busy; if neither Calendly+PAT nor a connected calendar is available, the AI will **not** invent wall-clock times and will rely on the booking link only. On existing databases, run `migrations/004_calendly_pat.sql` once.
+
+### Manual-reply retrieval corpus
+
+Apply `supabase/migrations/001_reply_examples.sql` in the Supabase SQL editor,
+then backfill:
+
+```bash
+SUPABASE_URL=... \
+SUPABASE_SERVICE_ROLE_KEY=... \
+GEMINI_API_KEY=... \
+node scripts/backfill-reply-examples.js
+```
+
+The backfill uses the structural SmartLead signal only:
+`direction = 'outbound' AND sequence_number IS NULL`. Scheduled sequence steps
+are excluded regardless of their wording. It logs total outbound, qualifying
+manual, inserted, skipped, and failed counts. After deployment, approved or
+edited SmartLead replies are added to the corpus automatically. Gemini performs
+embedding/retrieval; Claude Sonnet 5 writes the actual draft.
 
 **If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
 

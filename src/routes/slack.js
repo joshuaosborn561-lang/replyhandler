@@ -6,6 +6,7 @@ const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
+const { learnFromApprovedReply } = require('../services/approved-reply-learning');
 
 const router = Router();
 
@@ -224,6 +225,7 @@ async function handleEditModalSubmit(interaction) {
 
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+    await learnFromApprovedReply({ reply, client, finalText: messageText });
 
     let extraFooter = '';
     if (isSlackTestFixtureReply(reply)) {
@@ -288,6 +290,7 @@ async function handleApprove(replyId, interaction) {
 
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+    await learnFromApprovedReply({ reply, client, finalText: reply.draft_reply });
 
     let extraFooter = '';
     if (isSlackTestFixtureReply(reply)) {
