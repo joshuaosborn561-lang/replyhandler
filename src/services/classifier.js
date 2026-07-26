@@ -467,10 +467,31 @@ async function draftOnly({
       }
     }
 
+    if (!draft) {
+      console.warn('[Classifier] Empty Gemini draft — using times-first fallback', { leadName, classification });
+      return fallbackDraftText({
+        leadName,
+        inboundMessage,
+        bookingLink: booking,
+        classification,
+        threadContext,
+        digestTimezone,
+        includeBookingLink,
+      });
+    }
+
     return draft;
   } catch (err) {
-    console.error('[Classifier] draft call failed', { err: err.message });
-    return '';
+    console.error('[Classifier] draft call failed — using times-first fallback', { err: err.message });
+    return fallbackDraftText({
+      leadName,
+      inboundMessage,
+      bookingLink: booking,
+      classification,
+      threadContext,
+      digestTimezone,
+      includeBookingLink,
+    });
   }
 }
 
