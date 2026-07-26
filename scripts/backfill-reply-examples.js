@@ -11,6 +11,7 @@
  */
 
 const { insertReplyExample } = require('../src/services/reply-examples');
+const { supabaseRequest } = require('../src/services/reply-examples');
 
 const BASE = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
@@ -226,6 +227,13 @@ async function main() {
     skippedNoInbound,
     failed,
   });
+  if (inserted > 0 && failed === 0) {
+    await supabaseRequest('/rest/v1/rpc/refresh_reply_examples_index', {
+      method: 'POST',
+      body: {},
+    });
+    console.log('[Backfill] IVFFlat index refreshed after corpus load');
+  }
   if (failed) process.exitCode = 1;
 }
 

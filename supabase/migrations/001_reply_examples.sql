@@ -39,6 +39,7 @@ returns table (
 )
 language sql
 stable
+set search_path = ''
 as $$
   select
     re.lead_message,
@@ -57,3 +58,23 @@ alter table public.reply_examples enable row level security;
 revoke all on public.reply_examples from anon, authenticated;
 grant all on public.reply_examples to service_role;
 grant execute on function public.match_replies(vector, int) to service_role;
+
+-- IVFFlat must be trained after rows exist. The server-only backfill calls
+-- this once it finishes so vector queries do not hit an empty index.
+create or replace function public.refresh_reply_examples_index()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  execute 'drop index if exists public.reply_examples_embedding_idx';
+  execute 'create index reply_examples_embedding_idx
+             on public.reply_examples
+             using ivfflat (embedding vector_cosine_ops)
+             with (lists = 100)';
+end;
+$$;
+
+revoke all on function public.refresh_reply_examples_index() from public, anon, authenticated;
+grant execute on function public.refresh_reply_examples_index() to service_role;
