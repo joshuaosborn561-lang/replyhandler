@@ -39,7 +39,7 @@ returns table (
 )
 language sql
 stable
-set search_path = ''
+set search_path = public
 as $$
   select
     re.lead_message,
@@ -65,7 +65,7 @@ create or replace function public.refresh_reply_examples_index()
 returns void
 language plpgsql
 security definer
-set search_path = ''
+set search_path = public
 as $$
 begin
   execute 'drop index if exists public.reply_examples_embedding_idx';
