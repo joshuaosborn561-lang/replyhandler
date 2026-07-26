@@ -105,6 +105,7 @@ async function generateClaudeReply({
     `- ${bookingPolicy}`,
     '- The operational booking rule overrides any older retrieved example that pasted a link too early.',
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
+    '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply. If it appears only in a retrieved example, remove it.',
     '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."',
     '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
     '- Before writing, silently check every factual claim against the current thread. If it is not explicitly supported there, leave it out.',
