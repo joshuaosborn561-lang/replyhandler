@@ -93,6 +93,7 @@ const GENERIC_CAPITALIZED_TERMS = new Set([
   'Sorry', 'Sounds', 'Still', 'Sure', 'Talk', 'Totally', 'Want', 'What',
   'When', 'Where', 'Why', 'Work', 'Worth', 'Yes', 'You', 'Zero',
   'For', 'As', 'With', 'Does', 'Some', 'Here', 'Got', 'Be', 'Other', 'AM',
+  'All', 'At', 'To', 'In', 'Of', 'And', 'Or', 'Is', 'Are', 'We', 'By', 'On',
 ].map((term) => term.toLowerCase()));
 
 function containsWholeTerm(text, term) {
@@ -104,7 +105,7 @@ function findExampleOnlyTerms(examples, currentFacts, draft) {
   const exampleText = examples
     .map((example) => `${example.lead_message || ''}\n${example.my_reply || ''}`)
     .join('\n');
-  const candidates = exampleText.match(/\b(?:[A-Z]{2,}|[A-Z][a-z]{2,})\b/g) || [];
+  const candidates = exampleText.match(/\b(?:[A-Z]{3,}|[A-Z][a-z]{2,})\b/g) || [];
   const facts = String(currentFacts || '').toLowerCase();
   const output = String(draft || '').toLowerCase();
   return [...new Set(candidates)].filter((term) => {
@@ -115,27 +116,40 @@ function findExampleOnlyTerms(examples, currentFacts, draft) {
 }
 
 async function callAnthropic(system, user) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
-      max_tokens: 1200,
-      system,
-      messages: [{ role: 'user', content: user }],
-    }),
-  });
-  const responseText = await res.text();
-  let data;
-  try { data = JSON.parse(responseText); } catch { data = {}; }
-  if (!res.ok) {
-    throw new Error(`Anthropic draft failed (${res.status}): ${responseText.slice(0, 500)}`);
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+          max_tokens: 1200,
+          system,
+          messages: [{ role: 'user', content: user }],
+        }),
+      });
+      const responseText = await res.text();
+      let data;
+      try { data = JSON.parse(responseText); } catch { data = {}; }
+      if (res.ok) return data;
+
+      lastError = new Error(
+        `Anthropic draft failed (${res.status}): ${responseText.slice(0, 500)}`
+      );
+      const retryable = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+      if (!retryable || attempt === 3) break;
+    } catch (err) {
+      lastError = err;
+      if (attempt === 3) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
   }
-  return data;
+  throw lastError || new Error('Anthropic draft request failed');
 }
 
 async function generateClaudeReply({
