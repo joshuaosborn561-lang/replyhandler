@@ -92,7 +92,13 @@ const GENERIC_CAPITALIZED_TERMS = new Set([
   'Please', 'PS', 'Quick', 'Really', 'Right', 'See', 'Send', 'Since',
   'Sorry', 'Sounds', 'Still', 'Sure', 'Talk', 'Totally', 'Want', 'What',
   'When', 'Where', 'Why', 'Work', 'Worth', 'Yes', 'You', 'Zero',
-]);
+  'For', 'As', 'With', 'Does', 'Some', 'Here', 'Got', 'Be', 'Other', 'AM',
+].map((term) => term.toLowerCase()));
+
+function containsWholeTerm(text, term) {
+  const escaped = String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(String(text || ''));
+}
 
 function findExampleOnlyTerms(examples, currentFacts, draft) {
   const exampleText = examples
@@ -102,9 +108,9 @@ function findExampleOnlyTerms(examples, currentFacts, draft) {
   const facts = String(currentFacts || '').toLowerCase();
   const output = String(draft || '').toLowerCase();
   return [...new Set(candidates)].filter((term) => {
-    if (GENERIC_CAPITALIZED_TERMS.has(term)) return false;
+    if (GENERIC_CAPITALIZED_TERMS.has(term.toLowerCase())) return false;
     const lower = term.toLowerCase();
-    return output.includes(lower) && !facts.includes(lower);
+    return containsWholeTerm(output, lower) && !containsWholeTerm(facts, lower);
   });
 }
 
