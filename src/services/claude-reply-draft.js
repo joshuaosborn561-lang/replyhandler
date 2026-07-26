@@ -77,6 +77,52 @@ function extractText(data) {
     .trim();
 }
 
+const GENERIC_CAPITALIZED_TERMS = new Set([
+  'Hey', 'Hi', 'Thanks', 'Thank', 'Fair', 'Good', 'Great', 'Honestly',
+  'That', 'This', 'The', 'There', 'Would', 'Could', 'Can', 'Happy',
+  'Our', 'Your', 'If', 'It', 'Rather', 'Monday', 'Tuesday', 'Wednesday',
+  'Thursday', 'Friday', 'Saturday', 'Sunday', 'Josh', 'Joshua', 'CEO',
+  'MSP', 'IT', 'AI', 'B2B', 'SDR', 'CRM', 'PTO',
+]);
+
+function findExampleOnlyTerms(examples, currentFacts, draft) {
+  const exampleText = examples
+    .map((example) => `${example.lead_message || ''}\n${example.my_reply || ''}`)
+    .join('\n');
+  const candidates = exampleText.match(/\b(?:[A-Z]{2,}|[A-Z][a-z]{2,})\b/g) || [];
+  const facts = String(currentFacts || '').toLowerCase();
+  const output = String(draft || '').toLowerCase();
+  return [...new Set(candidates)].filter((term) => {
+    if (GENERIC_CAPITALIZED_TERMS.has(term)) return false;
+    const lower = term.toLowerCase();
+    return output.includes(lower) && !facts.includes(lower);
+  });
+}
+
+async function callAnthropic(system, user) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+      max_tokens: 1200,
+      system,
+      messages: [{ role: 'user', content: user }],
+    }),
+  });
+  const responseText = await res.text();
+  let data;
+  try { data = JSON.parse(responseText); } catch { data = {}; }
+  if (!res.ok) {
+    throw new Error(`Anthropic draft failed (${res.status}): ${responseText.slice(0, 500)}`);
+  }
+  return data;
+}
+
 async function generateClaudeReply({
   inboundMessage,
   threadContext,
@@ -143,28 +189,33 @@ async function generateClaudeReply({
     'Write the reply now.',
   ].join('\n');
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
-      max_tokens: 1200,
-      system,
-      messages: [{ role: 'user', content: user }],
-    }),
-  });
-  const responseText = await res.text();
-  let data;
-  try { data = JSON.parse(responseText); } catch { data = {}; }
-  if (!res.ok) {
-    throw new Error(`Anthropic draft failed (${res.status}): ${responseText.slice(0, 500)}`);
-  }
-  const text = extractText(data);
+  let data = await callAnthropic(system, user);
+  let text = extractText(data);
   if (!text) throw new Error('Anthropic returned an empty draft');
+
+  const currentFacts = [
+    leadName,
+    summarizeThread(threadContext),
+    inboundMessage,
+    schedulingPromptBlock,
+  ].filter(Boolean).join('\n');
+  let leakedTerms = findExampleOnlyTerms(examples, currentFacts, text);
+  if (leakedTerms.length) {
+    console.warn('[ClaudeDraft] Regenerating after example-only term leak', {
+      terms: leakedTerms,
+    });
+    data = await callAnthropic(
+      system,
+      `${user}\n\nFINAL CORRECTION: The prior draft copied these terms from retrieved examples even though they are absent from the current facts: ${leakedTerms.join(', ')}. Write a fresh reply without those terms or any other example-only proper nouns.`
+    );
+    text = extractText(data);
+    if (!text) throw new Error('Anthropic returned an empty corrected draft');
+    leakedTerms = findExampleOnlyTerms(examples, currentFacts, text);
+    if (leakedTerms.length) {
+      throw new Error(`Claude draft retained example-only terms: ${leakedTerms.join(', ')}`);
+    }
+  }
+
   return {
     text,
     model: data.model || process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
