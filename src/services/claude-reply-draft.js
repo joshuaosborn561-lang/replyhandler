@@ -107,6 +107,11 @@ async function generateClaudeReply({
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
     '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."',
     '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
+    '- Before writing, silently check every factual claim against the current thread. If it is not explicitly supported there, leave it out.',
+    '- If the prospect asks for specifics the thread does not answer, say you do not want to guess over email and offer a short call with the right teammate.',
+    '- Never invent lead sources, qualification criteria, locations, pricing structure, service coverage, project types, capabilities, results, or availability.',
+    '- Do not call pricing simple or imply a price/fee structure unless the exact relevant fact appears in the current thread.',
+    '- For a possible fit mismatch, acknowledge it honestly. Do not expand the service to fit their business unless that capability is explicitly in the current thread.',
     '- Do not invent pricing, proof, names, availability, or offer details.',
     '- Keep every sentence complete and usually stay under 120 words.',
     platform === 'heyreach'
