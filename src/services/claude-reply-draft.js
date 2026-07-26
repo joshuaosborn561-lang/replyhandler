@@ -93,7 +93,7 @@ const GENERIC_CAPITALIZED_TERMS = new Set([
   'Sorry', 'Sounds', 'Still', 'Sure', 'Talk', 'Totally', 'Want', 'What',
   'When', 'Where', 'Why', 'Work', 'Worth', 'Yes', 'You', 'Zero',
   'For', 'As', 'With', 'Does', 'Some', 'Here', 'Got', 'Be', 'Other', 'AM',
-  'All', 'At', 'To', 'In', 'Of', 'And', 'Or', 'Is', 'Are', 'We', 'By', 'On',
+  'All', 'At', 'To', 'In', 'Of', 'And', 'Or', 'Is', 'Are', 'We', 'By', 'On', 'But',
 ].map((term) => term.toLowerCase()));
 
 function containsWholeTerm(text, term) {
