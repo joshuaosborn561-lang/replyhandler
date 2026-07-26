@@ -8,6 +8,7 @@ const {
   looksLikeBookingLinkRequest,
   stripBookingUrls,
 } = require('../utils/booking-link-intent');
+const claudeReplyDraft = require('./claude-reply-draft');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -439,6 +440,48 @@ async function draftOnly({
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
     `Write the reply now. Match the voice from the examples exactly. Finish every sentence.`;
+
+  // When the Supabase + Anthropic pipeline is configured, Gemini is used only
+  // for embedding/retrieval and Claude Sonnet 5 writes the actual draft.
+  if (claudeReplyDraft.isConfigured()) {
+    try {
+      const result = await claudeReplyDraft.generateClaudeReply({
+        inboundMessage,
+        threadContext,
+        classification,
+        leadName,
+        bookingLink: booking,
+        schedulingPromptBlock: timeBlock,
+        includeBookingLink,
+        platform,
+      });
+      const draft = sanitizeDraft(result.text, {
+        bookingLink: booking,
+        includeBookingLink,
+      });
+      if (!draft) throw new Error('Claude draft was empty after sanitization');
+      console.log('[Classifier] Claude retrieval draft generated', {
+        model: result.model,
+        examples: result.examples.length,
+        leadName,
+      });
+      return draft;
+    } catch (err) {
+      console.error('[Classifier] Claude retrieval draft failed — using deterministic fallback', {
+        err: err.message,
+        leadName,
+      });
+      return fallbackDraftText({
+        leadName,
+        inboundMessage,
+        bookingLink: booking,
+        classification,
+        threadContext,
+        digestTimezone,
+        includeBookingLink,
+      });
+    }
+  }
 
   try {
     const model = buildDraftModel(systemInstruction);
