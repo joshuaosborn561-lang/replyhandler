@@ -24,7 +24,7 @@ create table if not exists public.reply_examples (
 create index if not exists reply_examples_embedding_idx
   on public.reply_examples
   using ivfflat (embedding vector_cosine_ops)
-  with (lists = 100);
+  with (lists = 10);
 
 create or replace function public.match_replies(
   query_embedding vector(768),
@@ -40,7 +40,6 @@ returns table (
 language sql
 stable
 set search_path = public
-set ivfflat.probes = 10
 as $$
   select
     re.lead_message,
@@ -73,7 +72,7 @@ begin
   execute 'create index reply_examples_embedding_idx
              on public.reply_examples
              using ivfflat (embedding vector_cosine_ops)
-             with (lists = 100)';
+             with (lists = 10)';
 end;
 $$;
 
