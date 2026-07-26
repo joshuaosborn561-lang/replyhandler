@@ -104,6 +104,9 @@ async function generateClaudeReply({
     'OPERATIONAL RULES:',
     `- ${bookingPolicy}`,
     '- The operational booking rule overrides any older retrieved example that pasted a link too early.',
+    '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
+    '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."',
+    '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
     '- Do not invent pricing, proof, names, availability, or offer details.',
     '- Keep every sentence complete and usually stay under 120 words.',
     platform === 'heyreach'
