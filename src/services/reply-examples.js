@@ -57,28 +57,37 @@ async function embedText(text, taskType = 'RETRIEVAL_QUERY') {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}` +
     `:embedContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: `models/${model}`,
-      content: { parts: [{ text: input.slice(0, 24000) }] },
-      taskType,
-      outputDimensionality: EMBEDDING_DIMENSIONS,
-    }),
-  });
-  const responseText = await res.text();
-  let data;
-  try { data = JSON.parse(responseText); } catch { data = {}; }
-  if (!res.ok) {
-    throw new Error(`Gemini embedding failed (${res.status}): ${responseText.slice(0, 400)}`);
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: `models/${model}`,
+        content: { parts: [{ text: input.slice(0, 24000) }] },
+        taskType,
+        outputDimensionality: EMBEDDING_DIMENSIONS,
+      }),
+    });
+    const responseText = await res.text();
+    let data;
+    try { data = JSON.parse(responseText); } catch { data = {}; }
+    if (res.ok) {
+      const values = data?.embedding?.values;
+      if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS) {
+        throw new Error(`Gemini embedding returned ${values?.length || 0} dimensions, expected 768`);
+      }
+      // gemini-embedding-001 requires normalization for truncated vectors.
+      return l2Normalize(values);
+    }
+    lastError = new Error(
+      `Gemini embedding failed (${res.status}): ${responseText.slice(0, 400)}`
+    );
+    const retryable = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+    if (!retryable || attempt === 3) break;
+    await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
   }
-  const values = data?.embedding?.values;
-  if (!Array.isArray(values) || values.length !== EMBEDDING_DIMENSIONS) {
-    throw new Error(`Gemini embedding returned ${values?.length || 0} dimensions, expected 768`);
-  }
-  // gemini-embedding-001 requires normalization for truncated vectors.
-  return l2Normalize(values);
+  throw lastError;
 }
 
 async function matchReplies(inboundMessage, matchCount = 4) {
