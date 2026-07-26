@@ -84,6 +84,12 @@ function threadKey(message) {
   return `${message.campaign_id ?? ''}|${message.lead_id ?? ''}`;
 }
 
+function messageTime(message) {
+  const raw = message.sent_at || message.received_at || message.created_at || '';
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function idKey(value) {
   return value == null ? '' : String(value);
 }
@@ -109,8 +115,9 @@ async function main() {
   // and time rather than by brittle copy matching.
   const messages = await getRows(
     'messages',
-    'select=id,body,subject,direction,sequence_number,lead_id,campaign_id,sent_at&order=sent_at.asc'
+    'select=id,body,subject,direction,sequence_number,lead_id,campaign_id,sent_at,received_at,created_at'
   );
+  messages.sort((a, b) => messageTime(a) - messageTime(b));
   const outbound = messages.filter((m) => String(m.direction).toLowerCase() === 'outbound');
   const manual = outbound.filter(
     (m) => m.sequence_number === null || m.sequence_number === undefined
