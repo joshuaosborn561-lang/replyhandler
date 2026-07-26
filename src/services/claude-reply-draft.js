@@ -83,6 +83,15 @@ const GENERIC_CAPITALIZED_TERMS = new Set([
   'Our', 'Your', 'If', 'It', 'Rather', 'Monday', 'Tuesday', 'Wednesday',
   'Thursday', 'Friday', 'Saturday', 'Sunday', 'Josh', 'Joshua', 'CEO',
   'MSP', 'IT', 'AI', 'B2B', 'SDR', 'CRM', 'PTO',
+  'Actually', 'Already', 'Appreciate', 'Basically', 'Before', 'Best',
+  'Book', 'Chat', 'Check', 'Completely', 'Definitely', 'Details',
+  'Easier', 'Easiest', 'Either', 'Email', 'Exactly', 'First', 'Free',
+  'Get', 'Give', 'Glad', 'Interested', 'Just', 'Know', 'Let', 'Like',
+  'Little', 'Looking', 'Maybe', 'Makes', 'More', 'Most', 'Much', 'Need',
+  'Nice', 'No', 'Not', 'Nothing', 'One', 'Open', 'Otherwise', 'Perfect',
+  'Please', 'PS', 'Quick', 'Really', 'Right', 'See', 'Send', 'Since',
+  'Sorry', 'Sounds', 'Still', 'Sure', 'Talk', 'Totally', 'Want', 'What',
+  'When', 'Where', 'Why', 'Work', 'Worth', 'Yes', 'You', 'Zero',
 ]);
 
 function findExampleOnlyTerms(examples, currentFacts, draft) {
