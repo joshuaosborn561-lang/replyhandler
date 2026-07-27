@@ -62,11 +62,25 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
     if (forwardEmails) {
       try {
-        enrichment = await enrichProspect({
-          email: reply.lead_email,
-          linkedinUrl: reply.linkedin_url,
-          leadName: reply.lead_name,
-        });
+        if (reply.phone_enrichment_status === 'found' ||
+            reply.phone_enrichment_status === 'not_found') {
+          enrichment = {
+            email: reply.lead_email || null,
+            phone: reply.lead_phone || null,
+            linkedinUrl: reply.linkedin_url || null,
+            website: reply.lead_website || null,
+            sources: {
+              email: reply.lead_email ? 'reply' : null,
+              phone: reply.lead_phone_provider || null,
+            },
+          };
+        } else {
+          enrichment = await enrichProspect({
+            email: reply.lead_email,
+            linkedinUrl: reply.linkedin_url,
+            leadName: reply.lead_name,
+          });
+        }
       } catch (err) {
         console.warn('[ReplySend] Prospect enrichment failed (notifying without full enrich)', {
           replyId: reply.id, err: err.message,

@@ -1,6 +1,7 @@
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
+const { enrichPendingReplyPhone } = require('./reply-phone-enrichment');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -145,16 +146,27 @@ async function postProspectSlackCard({
   card,
   replyId,
 }) {
+  let enrichedCard = card;
+  if (replyId) {
+    const phone = await enrichPendingReplyPhone(replyId);
+    enrichedCard = {
+      ...card,
+      leadPhone: phone.phone || undefined,
+      phoneProvider: phone.provider || undefined,
+      phoneEnrichmentStatus: phone.status || undefined,
+    };
+  }
+
   const threadTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId);
   const contextMessage = resolveSlackContextMessage({
     platform,
     threadContext,
-    lastOutboundMessage: card.lastOutboundMessage,
-    inboundMessage: card.inboundMessage,
+    lastOutboundMessage: enrichedCard.lastOutboundMessage,
+    inboundMessage: enrichedCard.inboundMessage,
   });
 
   const payload = {
-    ...card,
+    ...enrichedCard,
     lastOutboundMessage: contextMessage.body || undefined,
     contextLabel: contextMessage.label,
     threadTs: threadTs || undefined,

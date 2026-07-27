@@ -56,6 +56,26 @@ function escMrkdwn(s) {
     .replace(/>/g, '&gt;');
 }
 
+function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus } = {}) {
+  const phone = String(leadPhone || '').trim();
+  const provider = String(phoneProvider || '').trim();
+  if (phone) {
+    const providerLabel = {
+      getleads: 'GetLeads',
+      aiark: 'AI Ark',
+      leadmagic: 'LeadMagic',
+    }[provider.toLowerCase()] || provider;
+    return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
+  }
+  if (phoneEnrichmentStatus === 'not_found') {
+    return '\n📱 _not found after GetLeads → AI Ark → LeadMagic_';
+  }
+  if (phoneEnrichmentStatus === 'failed') {
+    return '\n📱 _enrichment failed_';
+  }
+  return '';
+}
+
 /** Slack block-quote inset (grey bar): prefix each line with `>`. */
 function insetQuote(body) {
   const b = escMrkdwn(body);
@@ -319,11 +339,13 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
-  ccEmails, ccRoundRobinEmails,
+  ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
+  const leadLine =
+    `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
+    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
   const headerText = inThread
     ? `↩️ ${platform.toUpperCase()} — ${classification}`
     : `📩 ${platform.toUpperCase()} — ${classification}`;
@@ -401,7 +423,8 @@ async function postDraftApproval(token, channelId, {
 }
 
 async function postAlert(token, channelId, {
-  leadName, platform, classification, inboundMessage, reasoning,
+  leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
   const slack = getClient(token);
@@ -418,7 +441,13 @@ async function postAlert(token, channelId, {
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Lead*\n*${escMrkdwn(leadName || 'Unknown')}*` },
+        {
+          type: 'mrkdwn',
+          text:
+            `*Lead*\n*${escMrkdwn(leadName || 'Unknown')}*` +
+            `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
+            phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }),
+        },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
     },

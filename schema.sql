@@ -40,6 +40,15 @@ CREATE TABLE pending_replies (
   lead_name TEXT,
   lead_email TEXT,
   linkedin_url TEXT,
+  lead_phone TEXT,
+  lead_phone_provider TEXT,
+  lead_website TEXT,
+  phone_enrichment_status TEXT CHECK (
+    phone_enrichment_status IS NULL
+    OR phone_enrichment_status IN ('processing', 'found', 'not_found', 'failed')
+  ),
+  phone_enrichment_error TEXT,
+  phone_enriched_at TIMESTAMPTZ,
   inbound_message TEXT NOT NULL,
   thread_context JSONB,
   classification TEXT NOT NULL,
