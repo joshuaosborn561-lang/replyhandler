@@ -47,7 +47,7 @@ async function main() {
     leadName: 'Test Person',
   });
 
-  assert.deepStrictEqual(calls, ['getleads', 'aiark-reverse', 'aiark', 'leadmagic']);
+  assert.deepStrictEqual(calls, ['getleads', 'aiark', 'leadmagic']);
   assert.strictEqual(result.phone, '+1 555-0100');
   assert.strictEqual(result.sources.phone, 'leadmagic');
   assert.strictEqual(result.linkedinUrl, 'https://linkedin.com/in/test');
