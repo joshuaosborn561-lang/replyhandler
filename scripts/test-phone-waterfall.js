@@ -60,7 +60,7 @@ async function main() {
   };
 
   const firstHit = await enrichProspect({ email: 'first@example.com' });
-  assert.deepStrictEqual(calls, ['getleads']);
+  assert.deepStrictEqual(calls, ['getleads', 'getleads-linkedin', 'aiark-reverse']);
   assert.strictEqual(firstHit.phone, '+1 555-0199');
   assert.strictEqual(firstHit.sources.phone, 'getleads');
 
