@@ -67,29 +67,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       threadContext = [{ role: 'prospect', message: inboundMessage }];
     }
 
-    // Forward a copy of the reply straight to the account owner, independent of how
-    // (or whether) classification/Slack succeeds below — a resilience net for cases
-    // where the automated approval flow drops or delays a reply.
-    const ownerEmails = client.cc_emails || client.cc_email;
-    if (ownerEmails) {
-      try {
-        const replies = Array.isArray(threadContext?.history) ? threadContext.history.filter(h => h.type === 'REPLY') : [];
-        const latestReply = replies[replies.length - 1];
-        if (latestReply?.message_id && latestReply?.stats_id) {
-          await smartlead.forwardEmail(client.smartlead_api_key, campaignId, {
-            messageId: latestReply.message_id,
-            statsId: latestReply.stats_id,
-            toEmails: ownerEmails,
-          });
-          console.log('[Webhook] Forwarded reply to owner', { clientId, client: client.name, to: ownerEmails });
-        } else {
-          console.warn('[Webhook] Owner forward skipped — no message/stats id in thread history', { clientId, campaignId, leadId });
-        }
-      } catch (err) {
-        console.error('[Webhook] Owner forward failed', { clientId, client: client.name, err: err.message });
-      }
-    }
-
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
     let result;

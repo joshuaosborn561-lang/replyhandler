@@ -91,7 +91,7 @@ async function handleEditModalSubmit(interaction) {
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
 
   try {
-    await sendReplyToPlatform(client, reply, messageText);
+    const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, draft_reply = $2, updated_at = now() WHERE id = $3',
@@ -99,6 +99,7 @@ async function handleEditModalSubmit(interaction) {
     );
 
     let statusMsg = `✅ Reply to ${reply.lead_name} edited and sent by <@${interaction.user.id}>.`;
+    statusMsg += sendResult.notifyStatusLine || '';
     statusMsg += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
 
     if (channelId && messageTs) {
@@ -133,7 +134,7 @@ async function handleApprove(replyId, interaction) {
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
 
   try {
-    await sendReplyToPlatform(client, reply, reply.draft_reply);
+    const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
@@ -141,6 +142,7 @@ async function handleApprove(replyId, interaction) {
     );
 
     let statusMsg = `✅ Reply to ${reply.lead_name} approved and sent by <@${interaction.user.id}>.`;
+    statusMsg += sendResult.notifyStatusLine || '';
     statusMsg += await maybeBookMeetingAfterSend(reply, client);
 
     await slackService.updateMessage(

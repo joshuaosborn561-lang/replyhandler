@@ -712,6 +712,18 @@
       </div>
 
       <div class="form-group">
+        <label>Always forward (optional)</label>
+        <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com"></textarea>
+        <div class="hint">Comma or newline separated. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → AI Ark → LeadMagic).</div>
+      </div>
+
+      <div class="form-group">
+        <label>Round-robin forward reps (optional)</label>
+        <textarea id="f_cc_round_robin_emails" rows="2" placeholder="rep1@client.com, rep2@client.com, rep3@client.com"></textarea>
+        <div class="hint">Comma or newline separated. On each SmartLead send we notify <strong>exactly one</strong> of these (plus Always forward), rotating evenly so volume is dispersed.</div>
+      </div>
+
+      <div class="form-group">
         <label>Voice Prompt</label>
         <textarea id="f_voice_prompt" placeholder="Direct, no-nonsense tone. Speak like a fellow practitioner, not a salesperson. Never use filler phrases. Keep replies to 2-3 sentences."></textarea>
         <div class="hint">Describes how AI-drafted replies should sound for this client.</div>
@@ -812,6 +824,17 @@
           <li><code>https://cal.com/acme/discovery-call</code></li>
           <li><code>https://savvycal.com/acme/chat</code></li>
         </ul>
+      </div>
+    </details>
+
+    <details class="guide-section">
+      <summary>Always forward + Round-robin</summary>
+      <div class="guide-section-body">
+        <p><strong>Always forward</strong> &mdash; one or more addresses (owner, AE) that receive a <em>primary-domain Gmail notify</em> after every SmartLead Approve / Edit &amp; send. The prospect reply itself has <strong>no CC</strong> (better deliverability).</p>
+        <p><strong>Round-robin reps</strong> &mdash; pool of sales reps. Each send notifies <em>exactly one</em> from the list, rotating evenly so load is dispersed.</p>
+        <div class="guide-note">LinkedIn / HeyReach replies are not emailed (no email thread).</div>
+        <p><strong>Enrichment</strong> &mdash; the notify includes LinkedIn, website, email, and cell via GetLeads &rarr; AI Ark &rarr; LeadMagic, plus full thread history and the reply we just sent, with real clickable links.</p>
+        <p><strong>Primary Gmail</strong> &mdash; connect once at <code>/auth/gmail/connect</code> (requires <code>GMAIL_CLIENT_ID</code> / <code>GMAIL_CLIENT_SECRET</code> set on the server). If the Gmail send fails for any reason, the system automatically falls back to a SmartLead thread forward so the client copy still goes out.</p>
       </div>
     </details>
 
@@ -1036,6 +1059,14 @@ function openDetail(id) {
         <span class="label">Calendly PAT</span>
         <span class="value masked" onclick="toggleMask(this, '${esc(c.calendly_personal_access_token || '')}')">${mask(c.calendly_personal_access_token)}</span>
       </div>
+      <div class="detail-row">
+        <span class="label">Always forward</span>
+        <span class="value">${c.cc_emails ? esc(c.cc_emails) : '—'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Round-robin forward</span>
+        <span class="value">${c.cc_round_robin_emails ? esc(c.cc_round_robin_emails) : '—'}</span>
+      </div>
     </div>
 
     <div class="detail-section">
@@ -1114,6 +1145,8 @@ function openEditFromDetail() {
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
   document.getElementById('f_booking_link').value = c.booking_link || '';
   document.getElementById('f_calendly_personal_access_token').value = c.calendly_personal_access_token || '';
+  document.getElementById('f_cc_emails').value = c.cc_emails || '';
+  document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
 
   openModal('formModal');
@@ -1129,6 +1162,8 @@ async function submitForm() {
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
     calendly_personal_access_token: document.getElementById('f_calendly_personal_access_token').value.trim() || null,
+    cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
+    cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
 
@@ -1171,7 +1206,8 @@ function toggleGuide() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_booking_link', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_booking_link', 'f_calendly_personal_access_token',
+   'f_cc_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }

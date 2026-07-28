@@ -10,6 +10,9 @@ CREATE TABLE clients (
   booking_link TEXT,
   calendly_personal_access_token TEXT,
   voice_prompt TEXT NOT NULL DEFAULT '',
+  cc_emails TEXT,
+  cc_round_robin_emails TEXT,
+  cc_round_robin_index INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -67,6 +70,19 @@ CREATE TABLE calendar_connections (
   UNIQUE (client_id, provider)
 );
 
+CREATE TABLE primary_mail_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider TEXT NOT NULL DEFAULT 'gmail' CHECK (provider IN ('gmail')),
+  email TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  refresh_token TEXT NOT NULL,
+  token_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (provider)
+);
+
+CREATE INDEX idx_primary_mail_accounts_email ON primary_mail_accounts (email);
 CREATE INDEX idx_pending_replies_client_id ON pending_replies(client_id);
 CREATE INDEX idx_pending_replies_status ON pending_replies(status);
 CREATE INDEX idx_meetings_client_id ON meetings(client_id);

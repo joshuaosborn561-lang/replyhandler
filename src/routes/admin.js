@@ -16,12 +16,29 @@ function formatClient(client) {
   return { ...client, ...webhookUrls(client.id) };
 }
 
+function normalizeCcListField(value) {
+  if (value == null) return null;
+  const parts = String(value)
+    .split(/[\n,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@'));
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out.length ? out.join(', ') : null;
+}
+
 // Create client
 router.post('/admin/clients', async (req, res) => {
   try {
     const {
       name, smartlead_api_key, heyreach_api_key, slack_bot_token,
       slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt,
+      cc_emails, cc_round_robin_emails,
     } = req.body;
 
     if (!name || !slack_bot_token || !slack_channel_id) {
@@ -29,8 +46,11 @@ router.post('/admin/clients', async (req, res) => {
     }
 
     const { rows: [client] } = await db.query(
-      `INSERT INTO clients (name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO clients (
+         name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id,
+         booking_link, calendly_personal_access_token, voice_prompt, cc_emails, cc_round_robin_emails
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -40,6 +60,8 @@ router.post('/admin/clients', async (req, res) => {
         booking_link || null,
         calendly_personal_access_token || null,
         voice_prompt || '',
+        normalizeCcListField(cc_emails),
+        normalizeCcListField(cc_round_robin_emails),
       ]
     );
 
@@ -70,7 +92,15 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'slack_bot_token',
       'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt', 'active',
+      'cc_emails', 'cc_round_robin_emails',
     ];
+
+    if (Object.prototype.hasOwnProperty.call(fields, 'cc_emails')) {
+      fields.cc_emails = normalizeCcListField(fields.cc_emails);
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'cc_round_robin_emails')) {
+      fields.cc_round_robin_emails = normalizeCcListField(fields.cc_round_robin_emails);
+    }
 
     const updates = [];
     const values = [];
