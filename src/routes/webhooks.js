@@ -111,14 +111,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
 
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
+      // No Slack notification — opt-outs are handled automatically, not a reply that needs SDR attention
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
 
     } else {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
+      // Not a positive/engaged reply — log only, don't notify the channel
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
@@ -240,14 +238,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
     } else if (classification === 'REMOVE_ME') {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
+      // No Slack notification — opt-outs don't need SDR attention
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'heyreach' });
 
     } else {
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
+      // Not a positive/engaged reply — log only, don't notify the channel
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'heyreach' });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
