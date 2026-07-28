@@ -2,14 +2,16 @@ const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
-const { profileToEmail } = require('../services/leadmagic');
+const { classifyAndDraft, draftSmartleadReply, HEYREACH_DRAFT_CLASSIFICATIONS } = require('../services/classifier');
+const { resolveSmartleadCategory } = require('../services/smartlead-category');
 const slack = require('../services/slack');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 
 const router = Router();
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
+// Classification comes from SmartLead's own native reply category, not Gemini.
+// Gemini is only used here to draft the reply text once we know it's worth one.
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
@@ -67,27 +69,47 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       threadContext = [{ role: 'prospect', message: inboundMessage }];
     }
 
-    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
+    // SmartLead's own reply category decides the action — never Gemini.
+    // Unknown/unparsed categories default to notify_draft (never silently assumed remove_me/ooo).
+    const { category, action } = await resolveSmartleadCategory({
+      apiKey: client.smartlead_api_key,
+      campaignId,
+      leadId,
+      webhookPayload: payload,
+      threadHistory: threadContext,
+    });
 
-    let result;
-    try {
-      result = await classifyAndDraft(
-        threadContext,
-        inboundMessage,
-        client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock
-      );
-    } catch (err) {
-      console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', error: err.message,
-      });
-      return res.status(200).json({ ok: true, error: 'classifier failed' });
+    const classification = category || 'Unknown';
+    const reasoning = category
+      ? `SmartLead category: ${category}`
+      : 'SmartLead did not return a category — defaulting to notify for safety';
+
+    let draft = null;
+    let proposed_time = null;
+
+    if (action === 'meeting_proposed' || action === 'notify_draft') {
+      const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
+      try {
+        const draftResult = await draftSmartleadReply(
+          threadContext,
+          inboundMessage,
+          client.voice_prompt,
+          client.booking_link,
+          schedulingPromptBlock,
+          { isMeetingRequest: action === 'meeting_proposed' }
+        );
+        draft = draftResult.draft;
+        proposed_time = draftResult.proposed_time || null;
+      } catch (err) {
+        console.error('[Classifier] Draft failed for SmartLead reply', { clientId, client: client.name, err: err.message });
+        await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+          leadName, platform: 'smartlead', error: err.message,
+        });
+        return res.status(200).json({ ok: true, error: 'draft failed' });
+      }
     }
 
-    const { classification, draft, proposed_time, reasoning } = result;
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+    const isDraft = action === 'meeting_proposed' || action === 'notify_draft';
     const status = isDraft ? 'pending' : 'alert_only';
 
     const { rows: [reply] } = await db.query(
@@ -98,8 +120,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     );
 
     if (isDraft) {
-      // Track meetings separately for reporting
-      if (classification === 'MEETING_PROPOSED') {
+      if (action === 'meeting_proposed') {
         await db.query(
           `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
            VALUES ($1, $2, $3, $4, $5, 'proposed')`,
@@ -113,7 +134,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
-    } else if (classification === 'REMOVE_ME') {
+    } else if (action === 'remove_me') {
       try {
         const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${campaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
         await fetch(unsubUrl, { method: 'POST' });
@@ -122,19 +143,11 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
 
-      // Always alert — if this classification was a misfire on an actual positive reply,
-      // someone needs to see it and manually resubscribe/reply. Recall over quiet.
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
 
     } else {
-      // Every non-draft classification still gets an alert — a misclassified positive
-      // reply (INTERESTED/OBJECTION mistakenly filed as NOT_INTERESTED/OTHER/etc.) must
-      // stay visible, not vanish into a console log nobody watches.
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
-      });
+      // silent_ooo — obvious out-of-office bounce, no draft, no notification.
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
@@ -146,6 +159,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 });
 
 // ─── HeyReach Webhook ────────────────────────────────────────────────
+// Gemini still classifies + drafts here — narrowed to INTERESTED / REMOVE_ME /
+// OUT_OF_OFFICE / UNSURE. INTERESTED and UNSURE always notify.
 router.post('/webhook/heyreach/:clientId', async (req, res) => {
   const { clientId } = req.params;
   const payload = req.body;
@@ -204,16 +219,13 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
     const threadContext = payload.conversationHistory || payload.thread || [{ role: 'prospect', message: inboundMessage }];
 
-    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
-
     let result;
     try {
       result = await classifyAndDraft(
         threadContext,
         inboundMessage,
         client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock
+        client.booking_link
       );
     } catch (err) {
       console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
@@ -223,8 +235,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'classifier failed' });
     }
 
-    const { classification, draft, proposed_time, reasoning } = result;
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+    const { classification, draft, reasoning } = result;
+    const isDraft = HEYREACH_DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
 
     const contextWithMeta = {
@@ -240,43 +252,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     );
 
     if (isDraft) {
-      // For MEETING_PROPOSED on LinkedIn, look up email for meeting tracking
-      let leadEmail = null;
-      if (classification === 'MEETING_PROPOSED' && linkedinUrl) {
-        try {
-          leadEmail = await profileToEmail(linkedinUrl);
-          console.log('[LeadMagic] Email lookup result', { linkedinUrl, email: leadEmail });
-          if (leadEmail) {
-            await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
-          }
-        } catch (err) {
-          console.error('[LeadMagic] profileToEmail failed', { linkedinUrl, err: err.message });
-        }
-
-        await db.query(
-          `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
-          [clientId, reply.id, leadName, leadEmail, linkedinUrl, proposed_time]
-        );
-      }
-
       const slackResult = await slack.postDraftApproval(client.slack_bot_token, client.slack_channel_id, {
-        replyId: reply.id, leadName, leadEmail, platform: 'heyreach',
+        replyId: reply.id, leadName, leadEmail: null, platform: 'heyreach',
         classification, draft, reasoning, inboundMessage,
       });
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
-    } else if (classification === 'REMOVE_ME') {
-      // Always alert — catches a REMOVE_ME misfire on an actual positive reply.
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
-
     } else {
-      // Every non-draft classification still gets an alert — recall over quiet.
-      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
-      });
+      // REMOVE_ME or OUT_OF_OFFICE — silent by design (obvious cases only, per classifier bias).
+      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'heyreach' });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
