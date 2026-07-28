@@ -5,11 +5,12 @@
  * Out Of Office, Wrong Person, Team member) — we use that directly instead
  * of asking Gemini to classify SmartLead email replies.
  *
- * Only "Do Not Contact" (remove_me) and "Out Of Office" are ever silent.
- * Everything else — including Not Interested / Wrong Person, and any
- * category we fail to determine — defaults to notify + draft. Missing a
- * real interested/objection reply is worse than an extra approval card
- * that gets rejected.
+ * Silent (no Slack notification): Do Not Contact (also auto-unsubscribes),
+ * Out Of Office, Not Interested, Wrong Person.
+ * Everything else — Interested, Meeting Request, Information Request,
+ * Team member, and any category we fail to determine — notifies with a
+ * drafted reply. An unrecognized category defaults to notify+draft rather
+ * than silent: never guess your way into a silent drop.
  */
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
 
@@ -64,18 +65,24 @@ function mapCategoryToAction(categoryName) {
     return 'remove_me';
   }
   if (normalized.includes('out of office') || normalized === 'ooo') {
-    return 'silent_ooo';
+    return 'silent';
+  }
+  if (normalized.includes('not interested')) {
+    return 'silent';
+  }
+  if (normalized.includes('wrong person')) {
+    return 'silent';
   }
   if (normalized.includes('meeting')) {
     return 'meeting_proposed';
   }
-  // Interested, Not Interested, Information Request, Wrong Person, Team member,
-  // or anything else SmartLead surfaces — all come to Slack with a draft.
+  // Interested, Information Request, Team member, or anything else SmartLead
+  // surfaces that isn't one of the silent buckets above — notify with a draft.
   return 'notify_draft';
 }
 
 /**
- * @returns {Promise<{ category: string|null, action: 'remove_me'|'silent_ooo'|'meeting_proposed'|'notify_draft' }>}
+ * @returns {Promise<{ category: string|null, action: 'remove_me'|'silent'|'meeting_proposed'|'notify_draft' }>}
  */
 async function resolveSmartleadCategory({ apiKey, campaignId, leadId, webhookPayload, threadHistory }) {
   let category = categoryFromPayload(webhookPayload) || categoryFromHistoryResponse(threadHistory);

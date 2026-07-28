@@ -146,7 +146,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
 
     } else {
-      // silent_ooo — obvious out-of-office bounce, no draft, no notification.
+      // 'silent' — Out Of Office, Not Interested, or Wrong Person. No draft, no notification.
       console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
     }
 
