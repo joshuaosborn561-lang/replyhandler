@@ -122,12 +122,19 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
 
-      // No Slack notification — opt-outs are handled automatically, not a reply that needs SDR attention
-      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
+      // Always alert — if this classification was a misfire on an actual positive reply,
+      // someone needs to see it and manually resubscribe/reply. Recall over quiet.
+      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
+      });
 
     } else {
-      // Not a positive/engaged reply — log only, don't notify the channel
-      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'smartlead' });
+      // Every non-draft classification still gets an alert — a misclassified positive
+      // reply (INTERESTED/OBJECTION mistakenly filed as NOT_INTERESTED/OTHER/etc.) must
+      // stay visible, not vanish into a console log nobody watches.
+      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+        leadName, platform: 'smartlead', classification, inboundMessage, reasoning,
+      });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });
@@ -260,12 +267,16 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       await db.query('UPDATE pending_replies SET slack_message_ts = $1 WHERE id = $2', [slackResult.ts, reply.id]);
 
     } else if (classification === 'REMOVE_ME') {
-      // No Slack notification — opt-outs don't need SDR attention
-      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'heyreach' });
+      // Always alert — catches a REMOVE_ME misfire on an actual positive reply.
+      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+      });
 
     } else {
-      // Not a positive/engaged reply — log only, don't notify the channel
-      console.log('[Webhook] Classified (no Slack notification)', { clientId, classification, leadName, platform: 'heyreach' });
+      // Every non-draft classification still gets an alert — recall over quiet.
+      await slack.postAlert(client.slack_bot_token, client.slack_channel_id, {
+        leadName, platform: 'heyreach', classification, inboundMessage, reasoning,
+      });
     }
 
     res.status(200).json({ ok: true, classification, replyId: reply.id });

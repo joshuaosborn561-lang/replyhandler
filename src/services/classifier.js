@@ -23,6 +23,18 @@ Your job:
 CLASSIFICATION CATEGORIES (pick exactly one):
 ${CLASSIFICATIONS.map(c => `- ${c}`).join('\n')}
 
+CLASSIFICATION BIAS — READ CAREFULLY:
+Missing a real INTERESTED, QUESTION, OBJECTION, or MEETING_PROPOSED reply is far worse than
+occasionally drafting a reply that turns out not to be needed. When a reply is genuinely
+ambiguous between one of those four and a negative/neutral category (NOT_INTERESTED,
+OUT_OF_OFFICE, REMOVE_ME, WRONG_PERSON, COMPETITOR, OTHER), choose the positive/engaged
+category. Only pick a negative/neutral category when the reply is clearly and
+unambiguously that — e.g. an auto-generated out-of-office bounce, an explicit and
+unmistakable opt-out request, or a flat "not interested" with no hedging or questions
+mixed in. If the prospect asks anything, pushes back while still engaging, or shows any
+sign of curiosity or hesitation-but-not-refusal, that is QUESTION or OBJECTION, not OTHER
+or NOT_INTERESTED. Err toward false positives, never false negatives, on these four.
+
 RULES FOR DRAFTING:
 - Draft a reply for: INTERESTED, QUESTION, OBJECTION, MEETING_PROPOSED
 - For all other classifications: no draft needed
