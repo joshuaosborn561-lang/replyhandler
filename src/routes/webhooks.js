@@ -39,6 +39,17 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, skipped: true, reason: 'no_smartlead_api_key' });
     }
 
+    const { rows: [dup] } = await db.query(
+      `SELECT id FROM pending_replies
+       WHERE client_id = $1 AND platform = 'smartlead' AND campaign_id = $2 AND lead_id = $3 AND inbound_message = $4
+       LIMIT 1`,
+      [clientId, campaignId, leadId, inboundMessage]
+    );
+    if (dup) {
+      console.log('[Webhook] Duplicate SmartLead reply ignored (retry redelivery)', { clientId, campaignId, leadId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
+    }
+
     const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, campaignId);
     if (!campaignOk) {
       console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
@@ -157,6 +168,17 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     if (!campaignId) {
       console.warn('[Webhook] HeyReach skipped — missing campaign id (cannot tie to client campaigns)', { clientId });
       return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
+    }
+
+    const { rows: [dup] } = await db.query(
+      `SELECT id FROM pending_replies
+       WHERE client_id = $1 AND platform = 'heyreach' AND campaign_id = $2 AND lead_id = $3 AND inbound_message = $4
+       LIMIT 1`,
+      [clientId, campaignId, leadId, inboundMessage]
+    );
+    if (dup) {
+      console.log('[Webhook] Duplicate HeyReach reply ignored (retry redelivery)', { clientId, campaignId, leadId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate' });
     }
 
     let heyreachCampaignOk = false;
