@@ -98,20 +98,6 @@ async function postError(token, channelId, { leadName, platform, error }) {
   });
 }
 
-async function postReminder(token, channelId, messageTs, { replyId, leadName, minutes, escalate }) {
-  const slack = getClient(token);
-
-  const text = escalate
-    ? `<!here> 🚨 Reply to *${leadName}* has been pending for ${minutes} minutes. Please take action now.`
-    : `⏰ Reminder: Reply to *${leadName}* has been pending for ${minutes} minutes.`;
-
-  return slack.chat.postMessage({
-    channel: channelId,
-    thread_ts: messageTs,
-    text,
-  });
-}
-
 async function updateMessage(token, channelId, messageTs, text) {
   const slack = getClient(token);
 
@@ -159,7 +145,6 @@ module.exports = {
   postDraftApproval,
   postAlert,
   postError,
-  postReminder,
   updateMessage,
   openEditReplyModal,
 };
