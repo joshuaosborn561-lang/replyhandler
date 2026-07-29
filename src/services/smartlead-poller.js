@@ -15,7 +15,7 @@ const {
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
-  shouldSkipSlackForReply,
+  slackSuppressionReason,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
@@ -162,7 +162,8 @@ async function processInboxRow(client, row, options) {
   }
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound)) return { skipped: 'ooo' };
+  const suppressed = slackSuppressionReason(inbound);
+  if (suppressed) return { skipped: suppressed };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

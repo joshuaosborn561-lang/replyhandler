@@ -11,7 +11,7 @@ const {
   recoverUnpostedSlackCards,
 } = require('./reply-dedupe');
 const {
-  shouldSkipSlackForReply,
+  slackSuppressionReason,
 } = require('../utils/smartlead-webhook-helpers');
 
 const HR_BASE = 'https://api.heyreach.io/api/public';
@@ -392,7 +392,8 @@ async function processConversation(client, conv, options) {
   }
   const { classification, draft, proposed_time, reasoning } = result;
 
-  if (shouldSkipSlackForReply(inbound.text)) return { skipped: 'ooo' };
+  const suppressed = slackSuppressionReason(inbound.text);
+  if (suppressed) return { skipped: suppressed };
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';

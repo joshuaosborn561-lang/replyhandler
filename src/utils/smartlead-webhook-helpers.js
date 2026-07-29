@@ -241,7 +241,15 @@ function looksLikeOutOfOffice(text) {
  * objection — must still reach Slack. Err on the side of posting.
  */
 function shouldSkipSlackForReply(text) {
-  return looksLikeOutOfOffice(text) || looksLikeUnsubscribe(text) || looksLikeWrongPerson(text);
+  return Boolean(slackSuppressionReason(text));
+}
+
+/** Which rule silenced this reply, or null if it should reach Slack. For logging. */
+function slackSuppressionReason(text) {
+  if (looksLikeOutOfOffice(text)) return 'ooo';
+  if (looksLikeUnsubscribe(text)) return 'unsubscribe';
+  if (looksLikeWrongPerson(text)) return 'wrong_person';
+  return null;
 }
 
 /** Explicit opt-out requests only — never a soft "not interested". */
@@ -323,6 +331,7 @@ module.exports = {
   looksLikeOutOfOffice,
   looksLikeUnsubscribe,
   shouldSkipSlackForReply,
+  slackSuppressionReason,
   looksLikeWrongPerson,
   looksLikeNotInterested,
 };
