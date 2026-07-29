@@ -146,4 +146,49 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
   }
 });
 
+/**
+ * Read-only production diagnostics: recent stored replies, optionally filtered.
+ * GET /admin/test/replies?secret=...&client=parlay&lead=doug&days=7&limit=50
+ */
+router.get('/admin/test/replies', async (req, res) => {
+  if (!assertSecret(req, res)) return;
+
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+  const clientLike = req.query.client ? `%${req.query.client}%` : null;
+  const leadLike = req.query.lead ? `%${req.query.lead}%` : null;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT pr.id, cl.name AS client_name, pr.platform, pr.campaign_id, pr.lead_name,
+              pr.lead_email, pr.classification, pr.status, pr.slack_message_ts, pr.created_at,
+              left(pr.inbound_message, 400) AS inbound_preview
+         FROM pending_replies pr
+         JOIN clients cl ON cl.id = pr.client_id
+        WHERE pr.created_at > now() - ($1::int * interval '1 day')
+          AND ($2::text IS NULL OR cl.name ILIKE $2)
+          AND ($3::text IS NULL OR pr.lead_name ILIKE $3 OR pr.lead_email ILIKE $3)
+        ORDER BY pr.created_at DESC
+        LIMIT $4`,
+      [days, clientLike, leadLike, limit]
+    );
+
+    const { rows: summary } = await db.query(
+      `SELECT cl.name AS client_name, pr.platform, pr.classification, pr.status,
+              count(*)::int AS n, max(pr.created_at) AS latest
+         FROM pending_replies pr
+         JOIN clients cl ON cl.id = pr.client_id
+        WHERE pr.created_at > now() - ($1::int * interval '1 day')
+        GROUP BY 1, 2, 3, 4
+        ORDER BY latest DESC`,
+      [days]
+    );
+
+    return res.json({ ok: true, days, count: rows.length, rows, summary });
+  } catch (err) {
+    console.error('[TestWebhook] replies diagnostics error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

@@ -251,14 +251,12 @@ function buildSentConfirmationBlocks({
     approved: '✅ SENT — Approved & sent',
     edited: '✏️ SENT — Edited & sent',
     rejected: '❌ Rejected',
-    already_replied: '✅ Already replied',
     failed: '⚠️ Send failed',
   };
   const footers = {
     approved: 'Approved & sent',
     edited: 'Edited & sent',
     rejected: 'Rejected',
-    already_replied: 'Marked already replied',
     failed: 'Send failed',
   };
   const kind = headers[actionKind] ? actionKind : 'approved';
@@ -499,21 +497,6 @@ async function postProspectFollowUpReminder(token, channelId, {
   });
 }
 
-async function postReminder(token, channelId, messageTs, { replyId, leadName, minutes, escalate }) {
-  const slack = getClient(token);
-
-  const text = escalate
-    ? `<!here> 🚨 Reply to *${leadName}* has been pending for ${minutes} minutes. Please take action now.`
-    : `⏰ Reminder: Reply to *${leadName}* has been pending for ${minutes} minutes.`;
-
-  return slack.chat.postMessage({
-    channel: channelId,
-    thread_ts: messageTs,
-    reply_broadcast: true,
-    text,
-  });
-}
-
 async function updateMessage(token, channelId, messageTs, text) {
   const slack = getClient(token);
 
@@ -569,36 +552,6 @@ async function openEditReplyModal(token, triggerId, {
       close: { type: 'plain_text', text: 'Cancel' },
       blocks,
     },
-  });
-}
-
-/**
- * Threaded reminder attached to a still-pending approval card.
- * Asks "did you already reply?" with two buttons:
- *   already_replied_yes -> mark the row sent, update the parent card
- *   already_replied_no  -> post the draft below with Approve/Edit/Reject again
- */
-async function postPendingNudge(token, channelId, messageTs, { replyId, leadName, minutes }) {
-  const slack = getClient(token);
-  return slack.chat.postMessage({
-    channel: channelId,
-    thread_ts: messageTs,
-    reply_broadcast: true,
-    text: `:bell: You haven't actioned the draft to *${leadName}* yet (${minutes} min). Did you already reply to them (e.g. on a warm call)?`,
-    blocks: [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: `:bell: You haven't actioned the draft to *${leadName}* yet (*${minutes} min*). Did you already reply to them (e.g. on a warm call)?` },
-      },
-      {
-        type: 'actions',
-        elements: [
-          { type: 'button', text: { type: 'plain_text', text: '✅ Yes, already replied' }, action_id: 'already_replied_yes', value: replyId, style: 'primary' },
-          { type: 'button', text: { type: 'plain_text', text: '❌ No, show me the draft' }, action_id: 'already_replied_no', value: replyId },
-          { type: 'button', text: { type: 'plain_text', text: '💤 Snooze 30 min' }, action_id: 'snooze_nudge_30', value: replyId },
-        ],
-      },
-    ],
   });
 }
 
@@ -679,12 +632,10 @@ module.exports = {
   postAlert,
   postError,
   postProspectFollowUpReminder,
-  postReminder,
   updateMessage,
   updateSentConfirmationCard,
   buildSentConfirmationBlocks,
   openEditReplyModal,
-  postPendingNudge,
   postMorningDigestHeader,
   postAttentionDigestHeader,
   postPendingApprovalDigest,

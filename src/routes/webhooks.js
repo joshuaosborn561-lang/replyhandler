@@ -19,6 +19,7 @@ const {
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   shouldSkipSlackForReply,
+  looksLikeUnsubscribe,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -466,10 +467,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }
 
     const { classification, draft, proposed_time, reasoning } = result;
-    if (shouldSkipSlackForReply(inboundEffective)) {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'ooo' });
-    }
-    if (classification === 'REMOVE_ME') {
+    if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
       try {
         const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${resolvedCampaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
         await fetch(unsubUrl, { method: 'POST' });
@@ -477,6 +475,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       } catch (err) {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
+    }
+    if (shouldSkipSlackForReply(inboundEffective)) {
+      console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'suppressed' });
     }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
@@ -707,7 +709,10 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         const { classification, draft, proposed_time, reasoning } = result;
-        if (shouldSkipSlackForReply(inboundMessage)) return;
+        if (shouldSkipSlackForReply(inboundMessage)) {
+          console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification });
+          return;
+        }
 
         const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
         const status = isDraft ? 'pending' : 'alert_only';

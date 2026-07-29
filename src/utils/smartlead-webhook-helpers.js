@@ -235,9 +235,27 @@ function looksLikeOutOfOffice(text) {
   return false;
 }
 
-/** Only skip Slack for obvious OOO/auto-replies. Err on the side of posting everything else. */
+/**
+ * Only skip Slack for obvious OOO/auto-replies, unsubscribe requests, and
+ * wrong-person bounces. Everything else — including "not interested" and any
+ * objection — must still reach Slack. Err on the side of posting.
+ */
 function shouldSkipSlackForReply(text) {
-  return looksLikeOutOfOffice(text);
+  return looksLikeOutOfOffice(text) || looksLikeUnsubscribe(text) || looksLikeWrongPerson(text);
+}
+
+/** Explicit opt-out requests only — never a soft "not interested". */
+function looksLikeUnsubscribe(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bunsubscribe\b/.test(s)) return true;
+  if (/\bopt(ed)? out\b/.test(s)) return true;
+  if (/\bremove me\b/.test(s)) return true;
+  if (/\btake me off\b/.test(s)) return true;
+  if (/\bdo not (contact|email)\b/.test(s)) return true;
+  if (/\bdon'?t (contact|email) me\b/.test(s)) return true;
+  if (/\bstop (emailing|contacting|messaging)\b/.test(s)) return true;
+  return false;
 }
 
 function looksLikeWrongPerson(text) {
@@ -303,6 +321,7 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  looksLikeUnsubscribe,
   shouldSkipSlackForReply,
   looksLikeWrongPerson,
   looksLikeNotInterested,

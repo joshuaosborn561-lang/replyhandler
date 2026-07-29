@@ -128,14 +128,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleReject(action.value, interaction);
     } else if (action.action_id === 'open_edit_modal') {
       await handleOpenEditModal(action.value, interaction);
-    } else if (action.action_id === 'already_replied_yes') {
-      await handleAlreadyRepliedYes(action.value, interaction);
-    } else if (action.action_id === 'already_replied_no') {
-      await handleAlreadyRepliedNo(action.value, interaction);
     } else if (action.action_id === 'toggle_cc_client') {
       await handleToggleCcClient(action);
-    } else if (action.action_id === 'snooze_nudge_30') {
-      await handleSnoozeNudge(action.value, interaction, 30);
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });
@@ -349,120 +343,6 @@ async function handleReject(replyId, interaction) {
   );
 
   console.log('[Slack] Reply rejected', { replyId, lead: reply.lead_name });
-}
-
-
-async function handleAlreadyRepliedYes(replyId, interaction) {
-  const { rows: [reply] } = await db.query(
-    `UPDATE pending_replies SET status = 'sent', updated_at = now(),
-        sent_reply = COALESCE(sent_reply, draft_reply)
-      WHERE id = $1 AND status IN ('pending','approved')
-      RETURNING *`,
-    [replyId]
-  );
-  if (!reply) {
-    console.warn('[Slack] already_replied_yes: row not pending', { replyId });
-    return;
-  }
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
-  const ctx = slackCardContextFromReply(reply);
-  const sentText = reply.sent_reply || reply.draft_reply;
-
-  if (interaction.channel?.id && interaction.message?.ts) {
-    try {
-      await slackService.updateMessage(
-        client.slack_bot_token, interaction.channel.id, interaction.message.ts,
-        `✅ Marked as already replied by <@${interaction.user.id}> — ${reply.lead_name}.`
-      );
-    } catch (e) { console.error('[Slack] update nudge failed', { err: e.message }); }
-  }
-  try {
-    const { rows: pendingReply } = await db.query('SELECT slack_message_ts FROM pending_replies WHERE id = $1', [replyId]);
-    const parentTs = pendingReply[0]?.slack_message_ts;
-    if (parentTs) {
-      await slackService.updateSentConfirmationCard(
-        client.slack_bot_token, interaction.channel.id, parentTs,
-        sentCardPayload(reply, ctx, {
-          sentReply: sentText,
-          actionKind: 'already_replied',
-          userId: interaction.user.id,
-          extraFooter: 'Replied outside this app — no message sent from here.',
-        })
-      );
-    }
-  } catch (e) { console.error('[Slack] update parent failed', { err: e.message }); }
-  console.log('[Slack] already replied marked', { replyId, lead: reply.lead_name });
-}
-
-async function handleAlreadyRepliedNo(replyId, interaction) {
-  const { rows: [reply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
-  if (!reply) {
-    console.warn('[Slack] already_replied_no: reply not found', { replyId });
-    return;
-  }
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
-  const draft = reply.draft_reply || '(no draft stored — use Edit & send)';
-  const ctx = slackCardContextFromReply(reply);
-
-  // Post the draft as a fresh approval card so user can Approve/Edit/Reject with the same send path.
-  await postProspectSlackCard({
-    token: client.slack_bot_token,
-    channelId: client.slack_channel_id,
-    clientId: reply.client_id,
-    platform: reply.platform,
-    campaignId: reply.campaign_id,
-    leadId: reply.lead_id,
-    threadContext: reply.thread_context,
-    isDraft: true,
-    replyId: reply.id,
-    card: {
-      replyId: reply.id,
-      leadName: reply.lead_name,
-      leadEmail: reply.lead_email,
-      platform: reply.platform,
-      classification: reply.classification || 'FOLLOW_UP',
-      draft,
-      reasoning: 'Re-surfaced because you said you have not replied yet.',
-      inboundMessage: reply.inbound_message || '(no inbound)',
-      campaignDisplay: ctx.campaignDisplay,
-      lastOutboundMessage: ctx.lastOutboundMessage,
-    },
-  });
-  await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2',
-    ['pending', replyId]
-  );
-}
-
-
-async function handleSnoozeNudge(replyId, interaction, minutes) {
-  const mins = Math.max(1, parseInt(minutes, 10) || 30);
-  const { rows: [reply] } = await db.query(
-    `UPDATE pending_replies
-        SET pending_nudge_snoozed_until = now() + ($2::int * interval '1 minute'),
-            pending_nudge_next_at = now() + ($2::int * interval '1 minute'),
-            updated_at = now()
-      WHERE id = $1 AND status = 'pending'
-      RETURNING *`,
-    [replyId, mins]
-  );
-  if (!reply) {
-    console.warn('[Slack] snooze: reply not pending', { replyId });
-    return;
-  }
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
-  if (interaction.channel?.id && interaction.message?.ts) {
-    try {
-      await slackService.updateMessage(
-        client.slack_bot_token,
-        interaction.channel.id,
-        interaction.message.ts,
-        `💤 Nudge snoozed ${mins} min for *${reply.lead_name}* by <@${interaction.user.id}>.`
-      );
-    } catch (e) {
-      console.error('[Slack] snooze update failed', { err: e.message });
-    }
-  }
-  console.log('[Slack] nudge snoozed', { replyId, lead: reply.lead_name, mins });
 }
 
 module.exports = router;
