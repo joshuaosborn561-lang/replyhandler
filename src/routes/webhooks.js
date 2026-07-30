@@ -260,6 +260,30 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
   return rows.length > 0;
 }
 
+/**
+ * SmartLead redelivers the same EMAIL_REPLY event on retry. Without this, each
+ * redelivery burned a fresh Gemini classification and posted a duplicate Slack
+ * card. Unbounded window on purpose: an identical body from the same lead in the
+ * same campaign is a redelivery, not a new reply.
+ * Originally by cayden-design (e23f6b5); reworked onto the current handler.
+ */
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
+  const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return false;
+  const { rows } = await db.query(
+    `SELECT 1
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'smartlead'
+        AND COALESCE(campaign_id, '') = $2
+        AND COALESCE(lead_id, '') = $3
+        AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+      LIMIT 1`,
+    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized]
+  );
+  return rows.length > 0;
+}
+
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
   const { clientId } = req.params;
@@ -445,6 +469,11 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
         ? lastOutboundBodyFromSmartleadHistory(threadContext)
         : '');
+
+    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective })) {
+      console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
+    }
 
     const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
 
