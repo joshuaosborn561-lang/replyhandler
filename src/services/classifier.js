@@ -18,7 +18,9 @@ const CLASSIFICATIONS = [
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const NO_REPLY_NEEDED = new Set(['OOO', 'OUT_OF_OFFICE', 'NOT_INTERESTED', 'WRONG_PERSON', 'REMOVE_ME', 'COMPETITOR']);
+const NO_REPLY_NEEDED = new Set(['OOO', 'OUT_OF_OFFICE', 'WRONG_PERSON', 'REMOVE_ME', 'COMPETITOR']);
+/** Declines still get a draft, but a graceful check-back one — never a times-first push. */
+const DECLINE_CLASSIFICATIONS = new Set(['NOT_INTERESTED']);
 const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => !NO_REPLY_NEEDED.has(c));
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
@@ -130,6 +132,13 @@ function fallbackDraftText({
     return link
       ? `Hey ${name}, sounds good — here's the booking link: ${link}`
       : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
+  }
+
+  if (DECLINE_CLASSIFICATIONS.has(classification)) {
+    return (
+      `Hey ${name}, thanks for getting back to me. Understood, no problem at all. ` +
+      `Can I check back in a few months, or would you rather I take you off the list?`
+    );
   }
 
   const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
@@ -283,12 +292,21 @@ function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, inclu
 }
 
 function buildSdrVoicePrompt({ name, booking, classification, channel, includeBookingLink }) {
+  const isDecline = DECLINE_CLASSIFICATIONS.has(classification);
   const link = booking || '{BOOKING_LINK}';
   const channelNote = channel === 'linkedin'
     ? 'This is a LinkedIn message. Keep it shorter - 1-2 sentences when possible. No sign-off or signature.'
     : 'This is an email reply. 2-4 sentences is fine. Optional first-name sign-off.';
 
-  const bookingRules = includeBookingLink
+  const declineRules =
+    `- DECLINE MODE: They said no or are not interested. Do NOT pitch, do NOT suggest times, do NOT include any link.\n` +
+    `- Acknowledge gracefully in one line, no pushback and no guilt.\n` +
+    `- Then ask ONE light question: whether you can check back in a few months, or should take them off the list.\n` +
+    `- Keep it to 2 sentences. Never argue with their reason.`;
+
+  const bookingRules = isDecline
+    ? declineRules
+    : includeBookingLink
     ? `- BOOKING LINK MODE: The prospect asked for the booking link or accepted our offer to send it.\n` +
       `- Include this exact URL once near the end: ${link}\n` +
       `- Keep it casual ("here's the link if easier"). Do not dump a long calendar pitch.`
@@ -618,5 +636,6 @@ module.exports = {
   sanitizeDraft,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
+  DECLINE_CLASSIFICATIONS,
   NO_REPLY_NEEDED,
 };
