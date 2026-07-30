@@ -75,6 +75,38 @@ function normalizeClassification(raw) {
   return 'OTHER';
 }
 
+const CLOSING_WORDS = /^(best|best regards|kind regards|warm regards|regards|thanks|thanks again|thank you|cheers|talk soon|speak soon|sincerely|all the best|appreciate it|looking forward)[,!.]?$/i;
+
+/**
+ * Drop a trailing sign-off from a draft. SmartLead sends with add_signature: true,
+ * so anything the model adds here is a second signature stacked on the real one.
+ * Conservative on purpose: only strips a closing word, an optional name line after
+ * it, or a "- Name" dash line. Never touches a line that reads as a sentence.
+ */
+function stripSignOff(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+
+  const isNameLine = (l) => (
+    // One or two capitalized words, no sentence punctuation — e.g. "Josh" / "Josh O".
+    /^[A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*)?$/u.test(l) && l.length <= 40
+  );
+
+  for (let guard = 0; guard < 4; guard += 1) {
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (!lines.length) break;
+    const last = lines[lines.length - 1].trim();
+
+    if (CLOSING_WORDS.test(last)) { lines.pop(); continue; }
+    if (/^[-–—]\s*[A-Z][\p{L}'’.-]*$/u.test(last)) { lines.pop(); continue; }
+
+    // A bare name line only counts as a sign-off when something precedes it.
+    if (lines.length > 1 && isNameLine(last)) { lines.pop(); continue; }
+    break;
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function sanitizeDraft(text, { bookingLink, includeBookingLink } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
@@ -83,6 +115,9 @@ function sanitizeDraft(text, { bookingLink, includeBookingLink } = {}) {
 
   // If the model returned nothing, return empty — never substitute the old
   // "Totally fair question" canonical template (that was the repetition bug).
+  if (!s) return '';
+
+  s = stripSignOff(s);
   if (!s) return '';
 
   const link = bookingLink && String(bookingLink).trim().startsWith('http')
@@ -296,7 +331,7 @@ function buildSdrVoicePrompt({ name, booking, classification, channel, includeBo
   const link = booking || '{BOOKING_LINK}';
   const channelNote = channel === 'linkedin'
     ? 'This is a LinkedIn message. Keep it shorter - 1-2 sentences when possible. No sign-off or signature.'
-    : 'This is an email reply. 2-4 sentences is fine. Optional first-name sign-off.';
+    : 'This is an email reply. 2-4 sentences is fine. No sign-off and no signature — the sending mailbox appends its own.';
 
   const declineRules =
     `- DECLINE MODE: They said no or are not interested. Do NOT pitch, do NOT suggest times, do NOT include any link.\n` +
@@ -353,7 +388,7 @@ ${bookingRules}
 ${channelNote}
 
 Do NOT hallucinate offer details, pricing, or specifics not in the thread.
-Do NOT use em dashes. Do NOT add a sign-off beyond a casual first name.
+Do NOT use em dashes. Do NOT add any sign-off, closing line, or signature — no "Best," no "Thanks," and no name at the end. The mailbox appends the real signature on send. End on the last sentence of the message itself.
 Always finish every sentence. Never cut off mid-thought.`;
 }
 
@@ -634,6 +669,7 @@ module.exports = {
   looksLikeBookingLinkRequest,
   buildTimeSuggestionBlock,
   sanitizeDraft,
+  stripSignOff,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
   DECLINE_CLASSIFICATIONS,
