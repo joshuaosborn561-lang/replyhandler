@@ -20,16 +20,21 @@ async function alreadyPostedToSlack({
   campaignId,
   leadId,
   inboundMessage,
+  emailStatsId,
 }) {
   const normalized = normalizeInboundText(inboundMessage);
-  if (!normalized) return false;
+  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
+  if (!normalized && !stats) return false;
 
   const { rows } = await db.query(
     `SELECT slack_message_ts
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3
+        AND (
+          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
+          OR ($3::text <> '' AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3)
+        )
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -42,6 +47,7 @@ async function alreadyPostedToSlack({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
+      stats,
     ]
   );
   return rows.length > 0;
@@ -53,9 +59,11 @@ async function findUnpostedReply({
   campaignId,
   leadId,
   inboundMessage,
+  emailStatsId,
 }) {
   const normalized = normalizeInboundText(inboundMessage);
-  if (!normalized) return null;
+  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
+  if (!normalized && !stats) return null;
 
   const { rows } = await db.query(
     `SELECT *
@@ -64,7 +72,10 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3
+        AND (
+          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
+          OR ($3::text <> '' AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3)
+        )
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -76,6 +87,7 @@ async function findUnpostedReply({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
+      stats,
     ]
   );
   return rows[0] || null;

@@ -99,12 +99,19 @@ async function processInboxRow(client, row, options) {
   const lookbackMs = options.lookbackHours * 3600 * 1000;
   if (at && Date.now() - at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
 
+  // Derived before the dedupe checks: the webhook and this poller build the inbound
+  // text differently (payload body vs rebuilt history), so an exact text match is not
+  // a reliable identity. stats_id comes from the same thread history in both paths.
+  const threadContext = historyFromRow(row);
+  const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+
   const unposted = await findUnpostedReply({
     clientId: client.id,
     platform: 'smartlead',
     campaignId,
     leadId,
     inboundMessage: inbound,
+    emailStatsId: smartleadEmailStatsId,
   });
   if (unposted) {
     await repostReplyRowToSlack(client, unposted, {
@@ -119,6 +126,7 @@ async function processInboxRow(client, row, options) {
     campaignId,
     leadId,
     inboundMessage: inbound,
+    emailStatsId: smartleadEmailStatsId,
   })) {
     return { skipped: 'already_posted' };
   }
@@ -133,8 +141,6 @@ async function processInboxRow(client, row, options) {
 
   const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
   const leadEmail = row.lead_email || null;
-  const threadContext = historyFromRow(row);
-  const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
   const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
 

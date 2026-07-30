@@ -267,19 +267,26 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, emailStatsId }) {
   const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!normalized) return false;
+  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
+  if (!normalized && !stats) return false;
   const { rows } = await db.query(
     `SELECT 1
        FROM pending_replies
       WHERE client_id = $1
         AND platform = 'smartlead'
-        AND COALESCE(campaign_id, '') = $2
         AND COALESCE(lead_id, '') = $3
-        AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+        AND (
+          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
+          OR (
+            $4::text <> ''
+            AND COALESCE(campaign_id, '') = $2
+            AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+          )
+        )
       LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized]
+    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, stats]
   );
   return rows.length > 0;
 }
@@ -470,7 +477,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         ? lastOutboundBodyFromSmartleadHistory(threadContext)
         : '');
 
-    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective })) {
+    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective, emailStatsId: smartleadEmailStatsId })) {
       console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
