@@ -5,6 +5,7 @@ const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { runDueFollowUps } = require('./services/follow-up-runner');
+const { logIntegrationStatus } = require('./services/integration-check');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
@@ -207,6 +208,11 @@ function startCron() {
       }
     });
   }
+
+  // Fire and forget — never delays startup.
+  logIntegrationStatus().catch((err) =>
+    console.error('[Startup] Integration check failed', { err: err.message })
+  );
 
   const digestNote = attentionDigestsEnabled()
     ? 'morning + 3pm attention digests enabled'
