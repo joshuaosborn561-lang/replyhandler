@@ -6,6 +6,7 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classif
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
+const { inboundPrefix, STORED_PREFIX_SQL } = require('../services/reply-dedupe');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
@@ -210,7 +211,9 @@ const heyreachDedupe = new Map();
 function heyreachDedupeKey({
   clientId, campaignId, leadId, conversationId, inboundMessage, linkedinUrl, listId, linkedinAccountId,
 }) {
-  const msg = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 500);
+  // Same 120-char key as the DB check, so the two never disagree about
+  // whether a redelivery is a duplicate.
+  const msg = inboundPrefix(inboundMessage);
   const threadKey = String(conversationId || '').trim() || String(leadId || '');
   return [
     clientId,
@@ -239,7 +242,7 @@ function isHeyreachDuplicate(key) {
 }
 
 async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage }) {
-  const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const normalized = inboundPrefix(inboundMessage);
   if (!normalized) return false;
   const threadKey = conversationId != null && String(conversationId).trim() !== ''
     ? String(conversationId).trim()
@@ -253,8 +256,7 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
         AND platform = 'heyreach'
         AND campaign_id = $2
         AND COALESCE(lead_id, '') = $3
-        AND created_at > now() - interval '30 minutes'
-        AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+        AND ${STORED_PREFIX_SQL} = $4
       LIMIT 1`,
     [clientId, String(campaignId || ''), threadKey, normalized]
   );
@@ -269,7 +271,7 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  */
 async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, emailStatsId }) {
-  const normalized = String(inboundMessage || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const normalized = inboundPrefix(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return false;
   const { rows } = await db.query(
@@ -283,7 +285,7 @@ async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMes
           OR (
             $4::text <> ''
             AND COALESCE(campaign_id, '') = $2
-            AND lower(regexp_replace(inbound_message, '\s+', ' ', 'g')) = $4
+            AND ${STORED_PREFIX_SQL} = $4
           )
         )
       LIMIT 1`,

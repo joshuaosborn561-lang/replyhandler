@@ -7,6 +7,27 @@ function normalizeInboundText(text) {
 }
 
 /**
+ * Dedupe key for a reply body.
+ *
+ * The webhook and the poller render the same reply differently — one keeps the
+ * quoted "From:" header, the other expands links and image alt-text — so the
+ * two texts agree for a long opening run and then diverge in the tail. Exact
+ * comparison misses that; a leading slice does not. Measured on a real pair:
+ * identical for 165 chars, total lengths 182 vs 350.
+ *
+ * Shorter than the window means the whole message is compared, so short
+ * replies still need to match exactly.
+ */
+const PREFIX_LEN = 120;
+
+function inboundPrefix(text) {
+  return normalizeInboundText(text).slice(0, PREFIX_LEN);
+}
+
+/** SQL for the same key, applied to the stored column. */
+const STORED_PREFIX_SQL = `left(lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')), ${PREFIX_LEN})`;
+
+/**
  * Skip only when this exact inbound was already posted to Slack (has slack_message_ts).
  * Rows saved to DB without a Slack post must be retried.
  *
@@ -22,7 +43,7 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
-  const normalized = normalizeInboundText(inboundMessage);
+  const normalized = inboundPrefix(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return false;
 
@@ -33,7 +54,7 @@ async function alreadyPostedToSlack({
         AND platform = $2
         AND (
           ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ($3::text <> '' AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3)
+          OR ($3::text <> '' AND ${STORED_PREFIX_SQL} = $3)
         )
         AND (
           $4::text = ''
@@ -61,7 +82,7 @@ async function findUnpostedReply({
   inboundMessage,
   emailStatsId,
 }) {
-  const normalized = normalizeInboundText(inboundMessage);
+  const normalized = inboundPrefix(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return null;
 
@@ -74,7 +95,7 @@ async function findUnpostedReply({
         AND status IN ('pending', 'alert_only')
         AND (
           ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ($3::text <> '' AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $3)
+          OR ($3::text <> '' AND ${STORED_PREFIX_SQL} = $3)
         )
         AND (
           $4::text = ''
@@ -192,6 +213,8 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 }
 
 module.exports = {
+  inboundPrefix,
+  STORED_PREFIX_SQL,
   normalizeInboundText,
   alreadyPostedToSlack,
   findUnpostedReply,
