@@ -72,8 +72,54 @@ events otherwise burn a Gemini call and post a duplicate card.
 Lookback defaults to 168h. Anything dropped longer ago than that will not
 self-recover and needs a manual sweep.
 
+## Follow-ups: 3h, gated on four booking signals
+
+`follow-up-runner.js` posts a re-attempt card once a send goes unanswered for
+`FOLLOW_UP_HOURS` (3). Before posting it asks `booking-check.js` whether the
+prospect already booked — a `meetings` row, a later reply proposing a time or
+confirming, a calendar event with them as attendee, or a call transcript.
+Any one suppresses the card silently and records `skip_reason`.
+
+Rows more than `FOLLOW_UP_MAX_AGE_HOURS` (24) past due are retired as `stale`
+rather than posted. That guard matters: the table accumulated for months while
+nothing read it, and without it the whole backlog would have posted at once.
+
+Every external lookup in this path — Allo, Drive, Gemini, calendar — treats its
+own failure as **not booked**. A broken integration produces a redundant nudge,
+never a silently swallowed follow-up. Keep it that way.
+
+## Call recordings
+
+Allo (`withallo.com`) transcribes its own calls, so `GET /v1/api/calls` returns
+`transcript` and `summary` inline — never download its audio. Auth is the raw
+key in `Authorization` with **no `Bearer ` prefix**, and the key needs the
+`CONVERSATIONS_READ` scope. Numbers are discovered from `GET /numbers`, not
+configured; `ALLO_PHONE_NUMBERS` only pins a subset.
+
+Cube ACR drops raw audio in Drive under date subfolders, named by phone number.
+Matching keys on the **last 10 digits**, which survives `+1` / `1` / bare forms.
+Those recordings do need transcribing — Gemini takes the audio directly.
+
+Drive access rides on the primary Gmail OAuth token (`drive.readonly`). Two
+separate things must both be true, and they fail with different errors:
+
+1. The mailbox must be re-consented at `/auth/gmail/connect` after the scope
+   was added — an older token silently lacks it.
+2. **The Drive API must be enabled in the Google Cloud project behind
+   `GMAIL_CLIENT_ID`.** That project only had Gmail enabled, so Drive returned
+   403 "has not been used in project ... before or it is disabled" even with a
+   correctly-scoped token. Enabling the API is a one-time console action.
+
 ## Diagnostics
 
 `GET /admin/test/replies?secret=$WEBHOOK_TEST_SECRET&client=<name>&days=N`
 — read-only view of stored replies and a per-classification summary. Returns
 404 if `WEBHOOK_TEST_SECRET` is unset.
+
+`GET /health` returns `gitSha` from `RAILWAY_GIT_COMMIT_SHA` — the fastest way
+to confirm what is actually deployed rather than assuming a push went live.
+
+`integration-check.js` probes Allo and Drive once at boot and logs
+`[Startup] Allo ready` / `[Startup] Drive ready`, so a bad key, missing scope
+or disabled API surfaces immediately instead of hours later inside a skipped
+booking check.
