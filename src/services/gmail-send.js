@@ -12,6 +12,10 @@ const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/userinfo.email',
+  // Read-only Drive, for the Cube ACR call recordings folder. Reconnect at
+  // /auth/gmail/connect after this is added — an existing token predates the
+  // scope and Drive calls will 403 until re-consented.
+  'https://www.googleapis.com/auth/drive.readonly',
 ].join(' ');
 
 function clientId() {
@@ -217,6 +221,7 @@ async function sendMail({ to, subject, htmlBody, textBody }) {
 }
 
 module.exports = {
+  getValidAccessToken,
   isConfigured,
   getAuthUrl,
   getRedirectUri,
