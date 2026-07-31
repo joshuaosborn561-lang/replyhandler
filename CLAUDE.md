@@ -3,6 +3,19 @@
 Read this before changing the reply pipeline. These are load-bearing rules that
 have each broken production at least once.
 
+**These rules are enforced, not just documented.** `test/invariants.test.js`
+fails the build on any change that violates one, and CI runs it on every push
+and pull request. If a guard fails, the rule below explains why it exists —
+change the rule deliberately and update its guard, rather than deleting the
+guard to go green.
+
+## Working alongside someone else on this repo
+
+Railway auto-deploys the branch below, so a push there is a production deploy.
+Two people pushing to it directly is how work gets silently overwritten — it
+already happened once (`3f97035` and `e23f6b5` sat on a branch nothing deployed
+for two days). Branch off, open a PR, let CI run.
+
 ## Deployment
 
 Railway auto-deploys **`claude/prospect-reply-automation-q2jei`**, not `main`.

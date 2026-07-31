@@ -1,0 +1,27 @@
+name: CI
+
+# The invariant guards in test/ encode rules that have each broken production.
+# They run on every push and pull request so a change that violates one fails
+# here rather than in a client's Slack channel.
+
+on:
+  push:
+    branches: [main, claude/prospect-reply-automation-q2jei]
+  pull_request:
+
+jobs:
+  invariants:
+    name: Invariant guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm install --omit=dev
+      - name: Every module loads
+        run: |
+          node -e "require('./src/routes/webhooks');require('./src/routes/slack');require('./src/cron');require('./src/services/follow-up-runner');require('./src/services/booking-check')"
+      - name: Guard tests
+        run: npm test
