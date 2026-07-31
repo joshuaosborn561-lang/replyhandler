@@ -15,12 +15,25 @@ function apiKey() {
   return String(process.env.ALLO_API_KEY || '').trim();
 }
 
-function alloNumber() {
-  return normalizeE164(process.env.ALLO_PHONE_NUMBER);
+/**
+ * Every Allo number we own. Calls are searched across all of them, because a
+ * prospect may have been dialled from either line.
+ * ALLO_PHONE_NUMBERS takes a comma / semicolon / newline separated list;
+ * ALLO_PHONE_NUMBER stays supported for a single line.
+ */
+function alloNumbers() {
+  const raw = process.env.ALLO_PHONE_NUMBERS || process.env.ALLO_PHONE_NUMBER || '';
+  const seen = new Set();
+  const out = [];
+  for (const part of String(raw).split(/[,;\n]+/)) {
+    const n = normalizeE164(part);
+    if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
 }
 
 function isConfigured() {
-  return Boolean(apiKey() && alloNumber());
+  return Boolean(apiKey() && alloNumbers().length);
 }
 
 /** Allo requires E.164. Assume North America when a bare 10-digit number arrives. */
@@ -61,19 +74,46 @@ async function alloFetch(path, params = {}) {
  * @returns {Promise<Array>} Call objects: { id, type, start_date, summary, transcript[], recording_url }
  */
 async function searchCalls(contactNumber, { page, size = 20 } = {}) {
-  const from = alloNumber();
-  if (!from) throw new Error('ALLO_PHONE_NUMBER not set');
+  const numbers = alloNumbers();
+  if (!numbers.length) throw new Error('ALLO_PHONE_NUMBERS not set');
   const contact = normalizeE164(contactNumber);
   if (!contact) return [];
 
-  const data = await alloFetch('/calls', {
-    allo_number: from,
-    contact_number: contact,
-    page,
-    size,
-  });
-  const results = data?.data?.results;
-  return Array.isArray(results) ? results : [];
+  const byId = new Map();
+  const failures = [];
+
+  for (const from of numbers) {
+    try {
+      const data = await alloFetch('/calls', {
+        allo_number: from,
+        contact_number: contact,
+        page,
+        size,
+      });
+      const results = data?.data?.results;
+      for (const call of Array.isArray(results) ? results : []) {
+        // Same call can surface under either line; key on id, fall back to a
+        // composite so an id-less row is not silently dropped.
+        const key = call?.id || `${from}|${call?.start_date}|${call?.to_number}`;
+        if (!byId.has(key)) byId.set(key, { ...call, allo_number: from });
+      }
+    } catch (err) {
+      failures.push(`${from}: ${err.message}`);
+    }
+  }
+
+  // Only surface an error when every line failed — one bad line should not
+  // hide calls found on the other.
+  if (!byId.size && failures.length === numbers.length) {
+    throw new Error(`Allo /calls failed for all numbers — ${failures.join('; ')}`);
+  }
+  if (failures.length) {
+    console.warn('[Allo] Some numbers failed', { failures });
+  }
+
+  return [...byId.values()].sort(
+    (a, b) => new Date(b?.start_date || 0) - new Date(a?.start_date || 0)
+  );
 }
 
 /** Flatten a call's transcript turns into plain text. */
@@ -95,5 +135,5 @@ module.exports = {
   searchCalls,
   transcriptText,
   normalizeE164,
-  alloNumber,
+  alloNumbers,
 };
