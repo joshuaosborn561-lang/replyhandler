@@ -15,13 +15,8 @@ function apiKey() {
   return String(process.env.ALLO_API_KEY || '').trim();
 }
 
-/**
- * Every Allo number we own. Calls are searched across all of them, because a
- * prospect may have been dialled from either line.
- * ALLO_PHONE_NUMBERS takes a comma / semicolon / newline separated list;
- * ALLO_PHONE_NUMBER stays supported for a single line.
- */
-function alloNumbers() {
+/** Numbers pinned by env, if any. Overrides discovery. */
+function configuredNumbers() {
   const raw = process.env.ALLO_PHONE_NUMBERS || process.env.ALLO_PHONE_NUMBER || '';
   const seen = new Set();
   const out = [];
@@ -32,8 +27,52 @@ function alloNumbers() {
   return out;
 }
 
+let numberCache = { at: 0, numbers: [] };
+const NUMBER_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Every Allo line on the account. Calls are searched across all of them,
+ * because a prospect may have been dialled from either.
+ *
+ * Discovered from GET /numbers rather than configured by hand — the API key
+ * already scopes to the account, so a new line is picked up automatically.
+ * Set ALLO_PHONE_NUMBERS to pin a specific subset instead.
+ */
+async function alloNumbers() {
+  const pinned = configuredNumbers();
+  if (pinned.length) return pinned;
+  if (!apiKey()) return [];
+
+  if (numberCache.numbers.length && Date.now() - numberCache.at < NUMBER_TTL_MS) {
+    return numberCache.numbers;
+  }
+
+  try {
+    const data = await alloFetch('/numbers');
+    const list = Array.isArray(data?.data) ? data.data : [];
+    const seen = new Set();
+    const out = [];
+    for (const row of list) {
+      const n = normalizeE164(row?.number);
+      if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+    }
+    numberCache = { at: Date.now(), numbers: out };
+    console.log('[Allo] Discovered numbers', {
+      count: out.length,
+      numbers: out,
+      names: list.map((r) => r?.name).filter(Boolean),
+    });
+    return out;
+  } catch (err) {
+    console.warn('[Allo] Could not list numbers', { err: err.message });
+    // Keep any previously discovered set rather than going dark on a blip.
+    return numberCache.numbers;
+  }
+}
+
+/** Cheap check — number discovery happens lazily on first use. */
 function isConfigured() {
-  return Boolean(apiKey() && alloNumbers().length);
+  return Boolean(apiKey());
 }
 
 /** Allo requires E.164. Assume North America when a bare 10-digit number arrives. */
@@ -74,8 +113,8 @@ async function alloFetch(path, params = {}) {
  * @returns {Promise<Array>} Call objects: { id, type, start_date, summary, transcript[], recording_url }
  */
 async function searchCalls(contactNumber, { page, size = 20 } = {}) {
-  const numbers = alloNumbers();
-  if (!numbers.length) throw new Error('ALLO_PHONE_NUMBERS not set');
+  const numbers = await alloNumbers();
+  if (!numbers.length) throw new Error('No Allo numbers available (discovery failed and ALLO_PHONE_NUMBERS unset)');
   const contact = normalizeE164(contactNumber);
   if (!contact) return [];
 
@@ -136,4 +175,5 @@ module.exports = {
   transcriptText,
   normalizeE164,
   alloNumbers,
+  configuredNumbers,
 };
