@@ -7,6 +7,7 @@ const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { inboundPrefix, STORED_PREFIX_SQL } = require('../services/reply-dedupe');
+const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
@@ -20,7 +21,7 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
-  shouldSkipSlackForReply,
+  slackSuppressionReason,
   looksLikeUnsubscribe,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
@@ -514,9 +515,15 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
     }
-    if (shouldSkipSlackForReply(inboundEffective)) {
-      console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'suppressed' });
+    const suppressedReason = slackSuppressionReason(inboundEffective);
+    if (suppressedReason) {
+      console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
+      await recordSuppressedReply({
+        clientId, platform: 'smartlead', campaignId: resolvedCampaignId, leadId,
+        leadName, leadEmail, inboundMessage: inboundEffective,
+        classification, reason: suppressedReason, emailStatsId: smartleadEmailStatsId,
+      });
+      return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
     }
     const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
     const status = isDraft ? 'pending' : 'alert_only';
@@ -747,8 +754,14 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         const { classification, draft, proposed_time, reasoning } = result;
-        if (shouldSkipSlackForReply(inboundMessage)) {
-          console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification });
+        const hrSuppressed = slackSuppressionReason(inboundMessage);
+        if (hrSuppressed) {
+          console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });
+          await recordSuppressedReply({
+            clientId, platform: 'heyreach', campaignId, leadId: leadId || hrConversationId,
+            leadName: resolvedLeadName, linkedinUrl: resolvedLinkedinUrl,
+            inboundMessage, classification, reason: hrSuppressed,
+          });
           return;
         }
 

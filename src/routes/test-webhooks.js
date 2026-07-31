@@ -150,6 +150,7 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
 /**
  * Read-only production diagnostics: recent stored replies, optionally filtered.
  * GET /admin/test/replies?secret=...&client=parlay&lead=doug&days=7&limit=50
+ * Add &status=suppressed to see only replies that were silenced, and why.
  */
 router.get('/admin/test/replies', async (req, res) => {
   if (!assertSecret(req, res)) return;
@@ -162,25 +163,27 @@ router.get('/admin/test/replies', async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT pr.id, cl.name AS client_name, pr.platform, pr.campaign_id, pr.lead_name,
-              pr.lead_email, pr.classification, pr.status, pr.slack_message_ts, pr.created_at,
+              pr.lead_email, pr.classification, pr.status, pr.suppression_reason,
+              pr.slack_message_ts, pr.created_at,
               left(pr.inbound_message, 400) AS inbound_preview
          FROM pending_replies pr
          JOIN clients cl ON cl.id = pr.client_id
         WHERE pr.created_at > now() - ($1::int * interval '1 day')
           AND ($2::text IS NULL OR cl.name ILIKE $2)
           AND ($3::text IS NULL OR pr.lead_name ILIKE $3 OR pr.lead_email ILIKE $3)
+          AND ($5::text IS NULL OR pr.status = $5)
         ORDER BY pr.created_at DESC
         LIMIT $4`,
-      [days, clientLike, leadLike, limit]
+      [days, clientLike, leadLike, limit, req.query.status || null]
     );
 
     const { rows: summary } = await db.query(
       `SELECT cl.name AS client_name, pr.platform, pr.classification, pr.status,
-              count(*)::int AS n, max(pr.created_at) AS latest
+              pr.suppression_reason, count(*)::int AS n, max(pr.created_at) AS latest
          FROM pending_replies pr
          JOIN clients cl ON cl.id = pr.client_id
         WHERE pr.created_at > now() - ($1::int * interval '1 day')
-        GROUP BY 1, 2, 3, 4
+        GROUP BY 1, 2, 3, 4, 5
         ORDER BY latest DESC`,
       [days]
     );

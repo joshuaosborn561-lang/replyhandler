@@ -1,6 +1,7 @@
 const db = require('../db');
 const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
+const { recordSuppressedReply } = require('./suppressed-replies');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
@@ -169,7 +170,14 @@ async function processInboxRow(client, row, options) {
   const { classification, draft, proposed_time, reasoning } = result;
 
   const suppressed = slackSuppressionReason(inbound);
-  if (suppressed) return { skipped: suppressed };
+  if (suppressed) {
+    await recordSuppressedReply({
+      clientId: client.id, platform: 'smartlead', campaignId, leadId,
+      leadName, leadEmail, inboundMessage: inbound,
+      classification, reason: suppressed, emailStatsId: smartleadEmailStatsId,
+    });
+    return { skipped: suppressed };
+  }
 
   const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
   const status = isDraft ? 'pending' : 'alert_only';
