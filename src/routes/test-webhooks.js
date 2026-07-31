@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
+const { logIntegrationStatus, getIntegrationStatus } = require('../services/integration-check');
 
 const router = Router();
 
@@ -187,6 +188,23 @@ router.get('/admin/test/replies', async (req, res) => {
     return res.json({ ok: true, days, count: rows.length, rows, summary });
   } catch (err) {
     console.error('[TestWebhook] replies diagnostics error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Live check of the call-recording integrations. Re-runs the probe unless
+ * ?cached=1, so a config change can be verified without a redeploy.
+ * GET /admin/test/integrations?secret=...
+ */
+router.get('/admin/test/integrations', async (req, res) => {
+  if (!assertSecret(req, res)) return;
+  try {
+    const status = /^(1|true|yes)$/i.test(String(req.query.cached || ''))
+      ? getIntegrationStatus()
+      : await logIntegrationStatus();
+    return res.json({ ok: true, ...status });
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
