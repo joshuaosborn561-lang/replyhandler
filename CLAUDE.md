@@ -3,13 +3,30 @@
 Read this before changing the reply pipeline. These are load-bearing rules that
 have each broken production at least once.
 
-**These rules are enforced, not just documented.** `test/invariants.test.js`
-fails the build on any change that violates one, and CI runs it on every push
-and pull request. If a guard fails, the rule below explains why it exists —
-change the rule deliberately and update its guard, rather than deleting the
-guard to go green.
+**These rules are enforced, not just documented.** CI runs the guard tests on
+every push and pull request:
 
-## Working alongside someone else on this repo
+- `test/invariants.test.js` — safety rules. Each corresponds to a change that
+  broke production. Anyone should keep these.
+- `test/owner-intent.test.js` — **Josh's product decisions.** A failure here is
+  not a bug, it is a reversal of a decision he made.
+
+When a guard fails, read the reason in the assertion and the entry in
+`DECISIONS.md`. Fix the change, not the guard.
+
+## Who can change what
+
+**Add features, fix bugs, refactor freely** — as long as `npm test` passes.
+
+**`DECISIONS.md` records Josh's calls and needs Josh to change.** Reversing one
+is not an implementation decision. Several were already reversed once during
+the conversation that produced them, so what is written there is the settled
+answer, not the first instinct. If a guard blocks something that looks
+genuinely wrong, raise it rather than deleting the guard.
+
+**When Josh makes a new call, append it to `DECISIONS.md` in that same
+session** — the decision, why, and the guard test name if it is testable. That
+file is the durable memory; chat history is not.
 
 Railway auto-deploys the branch below, so a push there is a production deploy.
 Two people pushing to it directly is how work gets silently overwritten — it

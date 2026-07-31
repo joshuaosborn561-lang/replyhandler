@@ -1,0 +1,165 @@
+# Decision log
+
+Josh's product decisions, in his words, with the reasoning that produced them.
+**Append-only.** A decision is superseded by adding a new entry, never by
+editing or deleting an old one — the reversals are the most useful part of this
+file, because they record where the obvious answer turned out to be wrong.
+
+## How this file is maintained
+
+Whenever Josh makes a call in a session — a preference, a reversal, a "no, do
+it this way" — the agent working with him appends an entry here **in the same
+session**, before the work is considered done. Not a summary at the end of a
+project: at the moment the decision is made, while the reasoning is still
+available.
+
+Each entry records:
+
+- **the decision**, quoting him where the wording matters
+- **why**, including what was tried and rejected
+- **the guard**, if the decision is testable — the test name in
+  `test/owner-intent.test.js` that fails when someone reverses it
+
+Decisions with a guard are enforced. Decisions without one rely on this file
+being read — so prefer adding a guard when the decision can be expressed as
+one.
+
+## Scope of authority
+
+Anyone may add features, fix bugs, and change implementation freely, provided
+the guard tests still pass. Reversing an entry below is not an implementation
+change — it needs Josh. If a guard blocks something that seems genuinely wrong,
+raise it rather than deleting the guard.
+
+---
+
+## 2026-07-31
+
+### Only three kinds of reply are silent
+
+Out-of-office, explicit unsubscribe/opt-out, and wrong-person. Everything else
+reaches Slack.
+
+This moved twice. First ask was "only obvious remove me and out of office
+should not" come through. Then Not Interested and Wrong Person were added to
+the silent set. Then Not Interested was explicitly pulled back out: *"not
+interested should be on there but everything else is right."*
+
+An objection is worth working. A dead lead is not the same thing as a lead who
+said no once.
+
+Known tradeoff, accepted: wrong-person also matches "please contact Jane
+instead", so genuine referrals are silenced too.
+
+Guard: `NOT_INTERESTED reaches Slack and drafts — reversed once, settled`
+
+### NOT_INTERESTED gets a draft, in decline mode
+
+*"still draft for not interested replies"*
+
+It had been alert-only — visible but with no draft and no Approve/Edit buttons.
+The default times-first prompt would have pushed meeting slots at someone who
+just declined, so declines route through a separate mode: acknowledge in one
+line, no pitch, no times, no link, then ask about checking back later.
+
+Guard: `declines draft without pitch, times or link`
+
+### The prospect's signature stays on the card
+
+*"no i like the sig on there"*
+
+Their signature block was stripped as noise. It isn't — title, phone numbers
+and booking link are useful context on a reply. Only quoted thread history and
+`[cid:]` image refs are removed.
+
+Cost of this decision, accepted knowingly: keeping signatures means the webhook
+and poller renderings of one reply diverge again in the tail, so duplicate
+detection cannot rely on comparing full text. That is why dedupe keys on a
+leading slice instead.
+
+Guard: `the prospect's signature stays on inbound cards`
+
+### Our drafts carry no sign-off
+
+*"remove sigs from ai drafts. just keep the sig on the email account"*
+
+SmartLead sends with `add_signature: true`, so a model-written closing name
+stacked a second signature on the real one. The prompt had been explicitly
+asking for one.
+
+Guard: `our drafts add no sign-off, mailbox signature only`
+
+### Times-first — the booking link waits until asked
+
+Offered the alternative of including the link in every draft; he kept
+times-first. Two concrete times convert better on a cold reply than a link
+dump, and it matches his own voice examples.
+
+Guard: `booking link is withheld until the prospect asks`
+
+### The `{BOOKING_LINK}` placeholder bug stays unfixed
+
+A client with no `booking_link` set can get a draft containing the literal text
+`{BOOKING_LINK}`. Offered a fix; he declined — it only bites when a client has
+no link configured *and* a prospect asks for one.
+
+No guard. Deliberately unfixed, not forgotten.
+
+### No "you haven't actioned this" alerts, ever
+
+*"for the love of gof delete all the you havent actioned alerts. just erase
+those from the code"*
+
+Erased, not disabled: `postPendingNudge`, `postReminder`,
+`already_replied_yes` / `already_replied_no` / `snooze_nudge_30`, and their
+cron jobs. Approval cards post once and are left alone. The `pending_nudge_*`
+columns remain only because dropping them is riskier than leaving them unused.
+
+Guard: `no nudge system is reintroduced`
+
+### Client notification is his enriched forward, on send
+
+A second forward firing on *inbound* receipt was written by Cayden
+(`3f97035`) and rejected: it ran before classification so it would have emailed
+clients every OOO auto-reply and bounce, and it keyed off `cc_emails`, which
+now drives CC-on-send, so clients would receive raw inbound replies they never
+opted into.
+
+His path anchors to a real thread message so the client sees the actual
+conversation, and adds lead name, email and cell phone from enrichment.
+
+Guard: `client notification stays on the enriched send path`
+
+### Follow-ups after 3 hours, from this deploy onward
+
+*"if a prospect doesnt reply to our reply after 3 hours and it looks like they
+havent booked, then draft a follow up and post in slack"* — and on the
+accumulated backlog, *"yea no backlog just from here on out."*
+
+Skipped when the prospect already booked, proposed a time, has a calendar event,
+or a call transcript shows the meeting was set. Both SmartLead and LinkedIn.
+
+Guard: `follow-ups wait 3h and never replay a backlog`
+
+### A call that booked skips silently
+
+Offered a Slack note with the transcript excerpt on skip; he chose silent. The
+follow-up resolves with `skip_reason = 'call_transcript_booked'` and posts
+nothing.
+
+Guard: `a call-transcript booking suppresses without posting`
+
+### Both Allo lines are tracked
+
+*"there are 2 allo numbers track them both"* — `+1 214 910 7558` and
+`+1 863 304 9904`. Discovered from the API rather than configured, so a third
+line is picked up automatically.
+
+Guard: `all Allo lines are searched, discovered from the API`
+
+### Cell recordings come from Cube ACR in Drive
+
+*"it will be in sub folders of the date and be the phone number"* — matched on
+the last 10 digits so `+1` / `1` / bare formats all resolve.
+
+Guard: `Cube ACR recordings match on the last 10 digits`

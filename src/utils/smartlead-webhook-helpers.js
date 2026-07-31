@@ -6,6 +6,10 @@
 function stripHtmlToText(s) {
   if (!s) return '';
   return String(s)
+    // Angle-bracket addresses look like tags to the stripper below. Unwrap them
+    // first, or "From: Name <a@b.com>" loses its address and the quote-cut in
+    // stripEmailQuotePrefix — which anchors on that address — stops matching.
+    .replace(/<([\w.+-]+@[\w.-]+\.[a-z]{2,})>/gi, '$1')
     // Keep block boundaries as newlines so quote/signature cutting still has anchors.
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
