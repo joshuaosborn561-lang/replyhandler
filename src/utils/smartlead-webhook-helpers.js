@@ -6,8 +6,19 @@
 function stripHtmlToText(s) {
   if (!s) return '';
   return String(s)
+    // Keep block boundaries as newlines so quote/signature cutting still has anchors.
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&rsquo;|&apos;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -67,13 +78,68 @@ function normalizeSmartleadCampaignId(payload = {}, leadData = {}) {
   return null;
 }
 
+/**
+ * Cut quoted thread history off a reply. Anchors must not require a newline:
+ * HTML replies arrive as one collapsed line, which made the old \n-anchored
+ * patterns never match and left the whole quoted thread in the card.
+ */
 function stripEmailQuotePrefix(raw) {
   let t = String(raw || '').replace(/\r\n/g, '\n');
-  const splitRe = /\nOn .{8,200}?wrote:\s*\n/i;
-  const idx = t.search(splitRe);
-  if (idx > 0) t = t.slice(0, idx);
-  t = t.replace(/\n-----Original Message-----\s*[\s\S]*/i, '');
-  t = t.replace(/\n_{20,}\s*[\s\S]*/, '');
+
+  const cutAt = (re) => {
+    const m = t.match(re);
+    if (m && m.index > 0) t = t.slice(0, m.index);
+  };
+
+  cutAt(/\bOn\s.{8,200}?\bwrote:/i);
+  cutAt(/-----\s*Original Message\s*-----/i);
+  cutAt(/_{20,}/);
+  // Outlook-style quoted header. Requires an address right after so a sentence
+  // containing "from:" is never mistaken for a quote boundary.
+  cutAt(/\bFrom:\s+[^\n]{0,80}?<?[\w.+-]+@[\w.-]+/i);
+  cutAt(/\bSent from my (iPhone|iPad|Android|Samsung)/i);
+
+  return t.trim();
+}
+
+/** Inline image refs and the bracketed URL/address echoes Outlook leaves behind. */
+function stripEmailArtifacts(raw) {
+  return String(raw || '')
+    .replace(/\[cid:[^\]]+\]/gi, ' ')
+    .replace(/\[(https?:\/\/[^\]]+)\]/gi, ' ')
+    .replace(/\[([\w.+-]+@[\w.-]+)\]/gi, ' ')
+    .replace(/<(https?:\/\/[^>]+)>/gi, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+const SIG_MARKER = /(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b(managing partner|president|ceo|cto|coo|cfo|founder|director|manager|vp|vice president|principal|owner|partner)\b|[\w.+-]+@[\w.-]+|\bcid:)/i;
+
+/**
+ * Drop a trailing signature block. Only cuts at a closing word ("Best, Chris")
+ * when what follows actually looks like a signature — a phone number, a job
+ * title, an address or an image ref — so a reply that merely ends politely is
+ * left alone.
+ */
+function stripTrailingSignature(raw) {
+  const t = String(raw || '');
+  const re = /\b(best regards|kind regards|warm regards|best|thanks again|thanks|thank you|regards|cheers|sincerely|talk soon)\b[,!.]?[\s]+/gi;
+  let cut = -1;
+  for (const m of t.matchAll(re)) {
+    const tail = t.slice(m.index + m[0].length);
+    if (tail.length >= 8 && tail.length <= 600 && SIG_MARKER.test(tail)) { cut = m.index; break; }
+  }
+  return (cut > 0 ? t.slice(0, cut) : t).trim();
+}
+
+/** Full cleanup for a prospect reply: quotes, artifacts, signature. */
+function cleanInboundReply(raw) {
+  let t = stripHtmlToText(raw) || String(raw || '');
+  t = stripEmailQuotePrefix(t);
+  t = stripEmailArtifacts(t);
+  t = stripTrailingSignature(t);
   return t.trim();
 }
 
@@ -124,9 +190,7 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
         continue;
       }
       const raw = m.email_body || m.body || m.text || '';
-      let plain = stripHtmlToText(raw) || String(raw || '').trim();
-      plain = stripEmailQuotePrefix(plain);
-      plain = stripHtmlToText(plain) || String(plain || '').trim();
+      const plain = cleanInboundReply(raw);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
       rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
@@ -319,6 +383,9 @@ function looksLikeNotInterested(text) {
 module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
+  stripEmailArtifacts,
+  stripTrailingSignature,
+  cleanInboundReply,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,

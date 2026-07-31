@@ -11,6 +11,7 @@ const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
   stripHtmlToText,
   stripEmailQuotePrefix,
+  cleanInboundReply,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
@@ -439,8 +440,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     let inboundEffective = String(inboundMessage || '').trim();
     if (slEnhance && inboundEffective) {
-      inboundEffective = stripEmailQuotePrefix(inboundEffective);
-      inboundEffective = stripHtmlToText(inboundEffective) || inboundEffective;
+      inboundEffective = cleanInboundReply(inboundEffective) || inboundEffective;
     }
 
     if (slEnhance && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
