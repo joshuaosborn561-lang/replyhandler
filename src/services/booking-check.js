@@ -2,11 +2,12 @@ const db = require('../db');
 const google = require('./google-calendar');
 const microsoft = require('./microsoft-calendar');
 const { replySuppressesFollowUp } = require('../utils/booking-signals');
+const { callSaysBooked } = require('./call-booking-check');
 
 /**
  * "Does it look like this prospect already booked?"
  *
- * Three independent signals, cheapest first. Any one is enough — a follow-up
+ * Four independent signals, cheapest first. Any one is enough — a follow-up
  * nudging someone who already has time on the calendar is worse than a missed
  * nudge, so this errs toward saying yes.
  *
@@ -111,6 +112,10 @@ async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, lea
   if (fromReply) return fromReply;
 
   if (await calendarHasEventWith(clientId, { leadEmail, leadName })) return 'calendar_event_found';
+
+  // 4. We called them back and the transcript shows a meeting was set.
+  const fromCall = await callSaysBooked(clientId, { platform, leadEmail, leadId, since });
+  if (fromCall) return fromCall;
 
   return null;
 }
