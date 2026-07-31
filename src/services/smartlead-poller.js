@@ -2,6 +2,7 @@ const db = require('../db');
 const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
+const { classifyFromSmartlead } = require('./smartlead-category');
 const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
@@ -167,7 +168,16 @@ async function processInboxRow(client, row, options) {
       reasoning: `Classifier failed: ${err.message}`,
     };
   }
-  const { classification, draft, proposed_time, reasoning } = result;
+  let { classification, draft, proposed_time, reasoning } = result;
+
+  const slCategory = classifyFromSmartlead(row, threadContext);
+  if (slCategory && slCategory.classification !== classification) {
+    console.log('[SmartLeadPoll] Using SmartLead category over Gemini', {
+      leadName, smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+    });
+    classification = slCategory.classification;
+    reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+  }
 
   const suppressed = slackSuppressionReason(inbound);
   if (suppressed) {

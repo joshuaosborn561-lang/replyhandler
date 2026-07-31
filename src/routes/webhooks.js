@@ -8,6 +8,7 @@ const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { inboundPrefix, STORED_PREFIX_SQL } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
+const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
@@ -505,7 +506,20 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'classifier failed' });
     }
 
-    const { classification, draft, proposed_time, reasoning } = result;
+    let { classification, draft, proposed_time, reasoning } = result;
+
+    // SmartLead already categorised this reply. Prefer its answer over Gemini's
+    // for email; Gemini's draft is still used. LinkedIn has no equivalent and
+    // stays fully on Gemini.
+    const slCategory = classifyFromSmartlead(payload, threadContext);
+    if (slCategory && slCategory.classification !== classification) {
+      console.log('[Webhook] Using SmartLead category over Gemini', {
+        leadName, smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+      });
+      classification = slCategory.classification;
+      reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+    }
+
     if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
       try {
         const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${resolvedCampaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;

@@ -27,14 +27,6 @@ function inboundPrefix(text) {
 /** SQL for the same key, applied to the stored column. */
 const STORED_PREFIX_SQL = `left(lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')), ${PREFIX_LEN})`;
 
-/**
- * Skip only when this exact inbound was already posted to Slack (has slack_message_ts).
- * Rows saved to DB without a Slack post must be retried.
- *
- * Match on client + platform + inbound text, optionally scoped by lead_id when present.
- * Do NOT require campaign_id equality — GetConversationsV2 often omits/changes it, which
- * previously caused duplicate inserts every poll while Slack was failing.
- */
 async function alreadyPostedToSlack({
   clientId,
   platform,

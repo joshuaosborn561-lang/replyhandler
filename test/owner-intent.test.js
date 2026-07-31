@@ -177,6 +177,47 @@ test('Cube ACR recordings match on the last 10 digits', () => {
   assert.strictEqual(phoneKey('123'), '', 'too short to identify anyone');
 });
 
+// ── Decision: one card per prospect ───────────────────────────────────
+// "stop sending me doubles for the same guy." Text comparison kept losing
+// to rendering differences, so the final backstop ignores text entirely.
+test('a second card for the same lead is blocked', () => {
+  const post = read('src/services/slack-reply-post.js');
+  assert.match(post, /leadCardPostedRecently/,
+    reversal('one card per prospect', 'the lead-level duplicate check has been removed from the posting path'));
+  assert.match(post, /classification !== 'FOLLOW_UP'/,
+    reversal('one card per prospect', 'follow-ups must stay exempt — they are a deliberate second touch'));
+
+  const { leadWindowMinutes } = require('../src/services/lead-card-dedupe');
+  delete process.env.LEAD_CARD_WINDOW_MINUTES;
+  assert.ok(leadWindowMinutes() >= 60,
+    reversal('one card per prospect', 'the dedupe window is too short to cover a webhook/poller race'));
+});
+
+// ── Decision: SmartLead classifies its own email replies ──────────────
+// "just use smartleads classifier." Gemini still writes the draft, and
+// LinkedIn stays fully on Gemini since it has no category.
+test("SmartLead's category wins over Gemini for email", () => {
+  const { categoryToClassification, classifyFromSmartlead } = require('../src/services/smartlead-category');
+
+  assert.strictEqual(categoryToClassification('Interested'), 'INTERESTED',
+    reversal("SmartLead's category classifies email", 'the category mapping is broken'));
+  assert.strictEqual(categoryToClassification('Meeting Request'), 'MEETING_PROPOSED');
+  assert.strictEqual(categoryToClassification('Not Interested'), 'NOT_INTERESTED');
+  assert.strictEqual(categoryToClassification('Out Of Office'), 'OOO');
+
+  // An unrecognised category must still surface, never silently drop.
+  const unmapped = classifyFromSmartlead({ lead_category: 'Referred to colleague' });
+  assert.strictEqual(unmapped.classification, 'OTHER',
+    reversal("SmartLead's category classifies email", 'an unknown category is no longer surfaced'));
+
+  // No category at all → fall back to Gemini rather than guessing.
+  assert.strictEqual(classifyFromSmartlead({ foo: 1 }), null);
+
+  const webhooks = read('src/routes/webhooks.js');
+  assert.match(webhooks, /classifyFromSmartlead/,
+    reversal("SmartLead's category classifies email", 'the SmartLead webhook no longer consults its category'));
+});
+
 // ── Decision: the pending-nudge system stays deleted ──────────────────
 // "for the love of gof delete all the you havent actioned alerts."
 // Also covered in invariants.test.js; repeated here because it is his call,

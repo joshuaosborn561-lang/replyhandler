@@ -1,4 +1,5 @@
 const db = require('../db');
+const { leadCardPostedRecently } = require('./lead-card-dedupe');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { enrichPendingReplyPhone } = require('./reply-phone-enrichment');
@@ -146,6 +147,18 @@ async function postProspectSlackCard({
   card,
   replyId,
 }) {
+  // Last line of defence against a second card for the same prospect. Every
+  // posting path funnels through here, so one check covers webhooks, pollers,
+  // recovery and follow-ups. Skipped for follow-ups, which are deliberately a
+  // second touch on a lead we already carded.
+  if (card?.classification !== 'FOLLOW_UP') {
+    const already = await leadCardPostedRecently({
+      clientId, platform, leadId,
+      conversationId: threadContext?.heyreach?.conversationId,
+    });
+    if (already) return { ts: null, skipped: 'lead_already_carded' };
+  }
+
   let enrichedCard = card;
   if (replyId) {
     const phone = await enrichPendingReplyPhone(replyId);

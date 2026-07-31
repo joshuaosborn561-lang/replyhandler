@@ -163,3 +163,44 @@ Guard: `all Allo lines are searched, discovered from the API`
 the last 10 digits so `+1` / `1` / bare formats all resolve.
 
 Guard: `Cube ACR recordings match on the last 10 digits`
+
+### One card per prospect, full stop
+
+*"stop sending me doubles for the same guy."*
+
+Duplicate detection had been compared on the reply text — first the whole body,
+then a 120-character prefix — and kept losing, because the webhook and the
+poller render the same reply differently and keeping the prospect's signature
+guarantees the tails diverge.
+
+The final backstop ignores the text entirely: if a card for this lead already
+reached Slack inside `LEAD_CARD_WINDOW_MINUTES` (90), no second card is posted.
+It sits in `postProspectSlackCard`, the one point every path funnels through,
+so webhooks, pollers, recovery and digests are all covered by one check.
+
+Follow-ups are exempt — they are a deliberate second touch on a lead we already
+carded.
+
+Tradeoff accepted: a genuinely new reply from the same prospect inside 90
+minutes will not get its own card. That is the cost of never seeing a double.
+
+Guard: `a second card for the same lead is blocked`
+
+### SmartLead classifies its own email replies
+
+*"just use smartleads classifier."*
+
+SmartLead already categorises every reply in the master inbox. Running Gemini
+over the same text produced a second, sometimes disagreeing opinion for no
+benefit. Its category now decides the classification for email; Gemini still
+writes the draft. LinkedIn has no equivalent and stays fully on Gemini.
+
+Category names are user-editable in SmartLead, so matching is on normalised
+substrings, not exact strings. A category we do not recognise becomes `OTHER`
+and still reaches Slack — never a silent drop. No category at all falls back to
+Gemini rather than guessing.
+
+Note: this was asked for earlier in the day and was lost when the branch was
+restored from the last known-good deploy. Reinstated.
+
+Guard: `SmartLead's category wins over Gemini for email`
