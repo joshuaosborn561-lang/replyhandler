@@ -177,20 +177,50 @@ test('Cube ACR recordings match on the last 10 digits', () => {
   assert.strictEqual(phoneKey('123'), '', 'too short to identify anyone');
 });
 
-// ── Decision: one card per prospect ───────────────────────────────────
-// "stop sending me doubles for the same guy." Text comparison kept losing
-// to rendering differences, so the final backstop ignores text entirely.
-test('a second card for the same lead is blocked', () => {
-  const post = read('src/services/slack-reply-post.js');
-  assert.match(post, /leadCardPostedRecently/,
-    reversal('one card per prospect', 'the lead-level duplicate check has been removed from the posting path'));
-  assert.match(post, /classification !== 'FOLLOW_UP'/,
-    reversal('one card per prospect', 'follow-ups must stay exempt — they are a deliberate second touch'));
+// ── Decision: same text = duplicate, new text = always show me ────────
+// "no the same text from the same client shouldnt come through. i need to
+// see if a client responds, ever." An earlier fix used a 90-minute
+// lead-level window; that could swallow a genuinely new reply, which is
+// worse than a double. Dedupe is on the text only, and unbounded in time.
+test('the same reply never repeats, a new reply always shows', () => {
+  const { inboundPrefix, normalizeInboundText, MIN_CONTAINMENT_LEN } = require('../src/services/reply-dedupe');
 
-  const { leadWindowMinutes } = require('../src/services/lead-card-dedupe');
-  delete process.env.LEAD_CARD_WINDOW_MINUTES;
-  assert.ok(leadWindowMinutes() >= 60,
-    reversal('one card per prospect', 'the dedupe window is too short to cover a webhook/poller race'));
+  const sameReply = (x, y) => {
+    if (inboundPrefix(x) && inboundPrefix(x) === inboundPrefix(y)) return true;
+    const a = normalizeInboundText(x);
+    const b = normalizeInboundText(y);
+    return a.length >= MIN_CONTAINMENT_LEN && b.length >= MIN_CONTAINMENT_LEN
+      && (a.startsWith(b) || b.startsWith(a));
+  };
+
+  // One reply, rendered two ways by the webhook and the poller.
+  const withQuote = 'Joshua: Got my attention! What are the next steps? Best, Chris Chris Arnold Managing Partner CA Partners P (727)828-9021 Book time with Chris From: Joshua Osborn';
+  const withLinks = 'Joshua: Got my attention! What are the next steps? Best, Chris Chris Arnold Managing Partner CA Partners P (727)828-9021 Book time with Chris [https://x] [cid:i.png]';
+  const truncated = 'Joshua: Got my attention! What are the next steps?';
+  assert.ok(sameReply(withQuote, withLinks),
+    reversal('the same text must not come through twice', 'divergent renderings are being treated as different replies'));
+  assert.ok(sameReply(withQuote, truncated),
+    reversal('the same text must not come through twice', 'a truncated rendering is being treated as a different reply'));
+
+  // Different replies from the same person must every one reach Slack.
+  for (const [x, y] of [
+    ['Got my attention! What are the next steps?', 'Actually can we do Thursday instead?'],
+    ['Sounds good, Tuesday works', 'Sounds good, Wednesday works'],
+    ['Yes', 'No'],
+    ['Thanks, let me review with my team and come back to you', 'Reviewed it — what does pricing look like for 20 seats?'],
+  ]) {
+    assert.ok(!sameReply(x, y),
+      reversal('every new reply must reach Slack', `a different reply is being suppressed as a duplicate: "${y}"`));
+  }
+});
+
+// No time-based suppression may exist on the posting path: a prospect who
+// replies twice in an hour must produce two cards.
+test('no time window can swallow a reply', () => {
+  const post = read('src/services/slack-reply-post.js');
+  assert.ok(!/leadCardPostedRecently|LEAD_CARD_WINDOW/.test(post),
+    reversal('every new reply must reach Slack',
+      'a time-window lead check is back on the posting path — it suppresses real replies'));
 });
 
 // ── Decision: SmartLead classifies its own email replies ──────────────

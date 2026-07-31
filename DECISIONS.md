@@ -204,3 +204,34 @@ Note: this was asked for earlier in the day and was lost when the branch was
 restored from the last known-good deploy. Reinstated.
 
 Guard: `SmartLead's category wins over Gemini for email`
+
+### Correction: dedupe on text only, never on time
+
+*"no the same text from the same client shouldnt come through. i need to see if
+a client responds, ever."*
+
+Supersedes the 90-minute lead window in the entry above, which was wrong. That
+window suppressed *any* second card for a prospect regardless of what they
+said, so a genuinely new reply arriving soon after the first would have
+vanished. Missing a real reply is worse than showing a double — that is the
+whole point of this system.
+
+The rule is:
+
+- **same text, same person → duplicate**, never comes through twice
+- **different text, same person → a new reply**, always comes through, however
+  soon it arrives
+
+So dedupe compares the reply text and nothing else, and is unbounded in time.
+Two renderings of one reply are matched two ways, because the webhook and the
+poller differ in both directions: a shared 120-character leading slice catches
+divergent tails (signature, quoted headers), and prefix containment catches one
+rendering being truncated earlier than the other. Below 40 characters only the
+exact leading slice counts, so short replies never collapse together.
+
+Verified both directions: the two real Chris Arnold renderings and a truncated
+variant all match; "Tuesday works" vs "Wednesday works", "Yes" vs "No", and two
+genuinely different replies from one prospect all still produce their own card.
+
+Guards: `the same reply never repeats, a new reply always shows`,
+`no time window can swallow a reply`

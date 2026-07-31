@@ -27,6 +27,43 @@ function inboundPrefix(text) {
 /** SQL for the same key, applied to the stored column. */
 const STORED_PREFIX_SQL = `left(lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')), ${PREFIX_LEN})`;
 
+/** The stored body, normalised the same way as inboundPrefix does in JS. */
+const STORED_NORM_SQL = `lower(regexp_replace(inbound_message, '\\s+', ' ', 'g'))`;
+
+/**
+ * Shortest text that can safely be called "the same reply". Below this, a
+ * containment match would collapse genuinely different short replies.
+ */
+const MIN_CONTAINMENT_LEN = 40;
+
+/**
+ * SQL that matches a stored reply against one we are considering.
+ *
+ * Two ways the same reply can look different between the webhook and the
+ * poller, and both must count as a duplicate:
+ *   - divergent tails (signature, quoted headers) → compare leading slices
+ *   - one rendering truncated earlier than the other → prefix containment
+ *
+ * Deliberately NOT time-bounded. The same text from the same person is always
+ * a duplicate; different text from the same person is always a new reply that
+ * must come through, however soon it arrives.
+ *
+ * $p = 120-char prefix, $f = full normalised text.
+ */
+function sameReplySql(prefixParam, fullParam) {
+  return `(
+    (${prefixParam}::text <> '' AND ${STORED_PREFIX_SQL} = ${prefixParam})
+    OR (
+      length(${fullParam}::text) >= ${MIN_CONTAINMENT_LEN}
+      AND length(${STORED_NORM_SQL}) >= ${MIN_CONTAINMENT_LEN}
+      AND (
+        left(${STORED_NORM_SQL}, length(${fullParam}::text)) = ${fullParam}
+        OR left(${fullParam}::text, length(${STORED_NORM_SQL})) = ${STORED_NORM_SQL}
+      )
+    )
+  )`;
+}
+
 async function alreadyPostedToSlack({
   clientId,
   platform,
@@ -36,6 +73,7 @@ async function alreadyPostedToSlack({
   emailStatsId,
 }) {
   const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return false;
 
@@ -46,7 +84,7 @@ async function alreadyPostedToSlack({
         AND platform = $2
         AND (
           ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ($3::text <> '' AND ${STORED_PREFIX_SQL} = $3)
+          OR ${sameReplySql('$3', '$6')}
         )
         AND (
           $4::text = ''
@@ -61,6 +99,7 @@ async function alreadyPostedToSlack({
       normalized,
       leadId != null ? String(leadId) : '',
       stats,
+      fullNorm,
     ]
   );
   return rows.length > 0;
@@ -75,6 +114,7 @@ async function findUnpostedReply({
   emailStatsId,
 }) {
   const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return null;
 
@@ -87,7 +127,7 @@ async function findUnpostedReply({
         AND status IN ('pending', 'alert_only')
         AND (
           ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ($3::text <> '' AND ${STORED_PREFIX_SQL} = $3)
+          OR ${sameReplySql('$3', '$6')}
         )
         AND (
           $4::text = ''
@@ -101,6 +141,7 @@ async function findUnpostedReply({
       normalized,
       leadId != null ? String(leadId) : '',
       stats,
+      fullNorm,
     ]
   );
   return rows[0] || null;
@@ -206,6 +247,9 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 
 module.exports = {
   inboundPrefix,
+  normalizeInboundText,
+  sameReplySql,
+  MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
   normalizeInboundText,
   alreadyPostedToSlack,

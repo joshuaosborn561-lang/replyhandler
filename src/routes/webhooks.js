@@ -6,7 +6,7 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classif
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
-const { inboundPrefix, STORED_PREFIX_SQL } = require('../services/reply-dedupe');
+const { inboundPrefix, normalizeInboundText, sameReplySql } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
@@ -245,6 +245,7 @@ function isHeyreachDuplicate(key) {
 
 async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage }) {
   const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
   if (!normalized) return false;
   const threadKey = conversationId != null && String(conversationId).trim() !== ''
     ? String(conversationId).trim()
@@ -258,9 +259,9 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
         AND platform = 'heyreach'
         AND campaign_id = $2
         AND COALESCE(lead_id, '') = $3
-        AND ${STORED_PREFIX_SQL} = $4
+        AND ${sameReplySql('$4', '$5')}
       LIMIT 1`,
-    [clientId, String(campaignId || ''), threadKey, normalized]
+    [clientId, String(campaignId || ''), threadKey, normalized, fullNorm]
   );
   return rows.length > 0;
 }
@@ -274,6 +275,7 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  */
 async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, emailStatsId }) {
   const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   if (!normalized && !stats) return false;
   const { rows } = await db.query(
@@ -284,14 +286,10 @@ async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMes
         AND COALESCE(lead_id, '') = $3
         AND (
           ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR (
-            $4::text <> ''
-            AND COALESCE(campaign_id, '') = $2
-            AND ${STORED_PREFIX_SQL} = $4
-          )
+          OR ${sameReplySql('$4', '$6')}
         )
       LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, stats]
+    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, stats, fullNorm]
   );
   return rows.length > 0;
 }
