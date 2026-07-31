@@ -4,6 +4,7 @@ const slack = require('./services/slack');
 const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
+const { runDueFollowUps } = require('./services/follow-up-runner');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
@@ -100,6 +101,24 @@ function startCron() {
     });
   }
 
+  // ─── Follow-up re-attempts — post as soon as they come due ────────
+  if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_FOLLOW_UP_RUNNER || '').trim())) {
+    const fuEvery = (() => {
+      const n = parseInt(process.env.FOLLOW_UP_CHECK_MINUTES || '5', 10);
+      return Number.isFinite(n) && n > 0 && n <= 59 ? n : 5;
+    })();
+    cron.schedule(`*/${fuEvery} * * * *`, async () => {
+      try {
+        const result = await runDueFollowUps({ limit: 50 });
+        if (result.posted || result.skipped || result.failed) {
+          console.log('[Cron] Follow-up run complete', result);
+        }
+      } catch (err) {
+        console.error('[Cron] Follow-up run failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
@@ -192,7 +211,7 @@ function startCron() {
   const digestNote = attentionDigestsEnabled()
     ? 'morning + 3pm attention digests enabled'
     : 'morning + 3pm attention digests disabled (set ATTENTION_DIGESTS_ENABLED=1 to enable)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, meeting reminders, ${digestNote}`);
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, meeting reminders, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

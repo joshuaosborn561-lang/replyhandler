@@ -103,6 +103,25 @@ async function getAvailability(connection, timeMin, timeMax) {
   return data.value?.[0]?.scheduleItems || [];
 }
 
+/** Upcoming events matching a free-text query. Mirrors the Google helper. */
+async function findUpcomingEvents(connection, query, { days = 60 } = {}) {
+  const token = await getValidToken(connection);
+  const start = new Date().toISOString();
+  const end = new Date(Date.now() + days * 86400000).toISOString();
+  const params = new URLSearchParams({
+    startDateTime: start,
+    endDateTime: end,
+    $search: `"${String(query || '').replace(/"/g, '')}"`,
+    $top: '25',
+  });
+  const res = await fetch(`${GRAPH_API}/me/calendarView?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Microsoft calendarView failed: ${await res.text()}`);
+  const data = await res.json();
+  return Array.isArray(data.value) ? data.value : [];
+}
+
 async function createEvent(connection, { summary, description, startTime, endTime, attendeeEmail, attendeeName }) {
   const token = await getValidToken(connection);
 
@@ -131,4 +150,4 @@ async function createEvent(connection, { summary, description, startTime, endTim
   return res.json();
 }
 
-module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, createEvent, getValidToken };
+module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, createEvent, getValidToken };

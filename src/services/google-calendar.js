@@ -102,6 +102,28 @@ async function getAvailability(connection, timeMin, timeMax) {
   return busy;
 }
 
+/**
+ * Upcoming events matching a free-text query (used to check whether a prospect
+ * already has time on the calendar, however it got booked — Calendly, a manual
+ * invite, or a reply we never saw).
+ */
+async function findUpcomingEvents(connection, query, { days = 60 } = {}) {
+  const token = await getValidToken(connection);
+  const params = new URLSearchParams({
+    timeMin: new Date().toISOString(),
+    timeMax: new Date(Date.now() + days * 86400000).toISOString(),
+    q: String(query || ''),
+    singleEvents: 'true',
+    maxResults: '25',
+  });
+  const res = await fetch(`${CALENDAR_API}/calendars/primary/events?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Google events.list failed: ${await res.text()}`);
+  const data = await res.json();
+  return Array.isArray(data.items) ? data.items : [];
+}
+
 async function createEvent(connection, { summary, description, startTime, endTime, attendeeEmail, attendeeName }) {
   const token = await getValidToken(connection);
   const res = await fetch(`${CALENDAR_API}/calendars/primary/events?sendUpdates=all&conferenceDataVersion=0`, {
@@ -123,4 +145,4 @@ async function createEvent(connection, { summary, description, startTime, endTim
   return res.json();
 }
 
-module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, createEvent, getValidToken };
+module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, createEvent, getValidToken };

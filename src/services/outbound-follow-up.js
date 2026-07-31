@@ -2,8 +2,9 @@ const db = require('../db');
 const { isSlackTestFixtureReply } = require('./reply-send');
 
 function followUpHours() {
-  const h = parseInt(process.env.FOLLOW_UP_REMINDER_HOURS || '24', 10);
-  return Number.isFinite(h) && h > 0 ? h : 24;
+  const raw = process.env.FOLLOW_UP_HOURS || process.env.FOLLOW_UP_REMINDER_HOURS || '3';
+  const h = parseFloat(raw);
+  return Number.isFinite(h) && h > 0 ? h : 3;
 }
 
 function parseThreadContext(reply) {
@@ -45,7 +46,7 @@ async function scheduleAfterOutboundSend(clientId, reply) {
   }
 
   const hours = followUpHours();
-  const due = new Date(Date.now() + hours * 3600 * 1000);
+  const due = new Date(Date.now() + Math.round(hours * 3600 * 1000));
 
   await db.query(
     `UPDATE outbound_follow_ups SET status = 'cancelled', updated_at = now()

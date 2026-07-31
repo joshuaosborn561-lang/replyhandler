@@ -28,6 +28,7 @@ const MIGRATION_FILES = [
   '014_cc_always_and_round_robin.sql',
   '015_primary_mail_accounts.sql',
   '016_reply_phone_enrichment.sql',
+  '017_follow_up_skip_reasons.sql',
 ];
 
 async function clientsTableExists(client) {
