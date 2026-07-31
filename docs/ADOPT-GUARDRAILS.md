@@ -42,8 +42,18 @@ Do all of this:
        someone is reversing me, not that they hit a bug.
    Use the language's built-in test runner and no new dependencies if possible.
    Tests must not need a database, network, or credentials.
-   Each assertion's failure message must explain WHY the rule exists, so
-   whoever hits it learns something instead of deleting the guard to go green.
+   Each owner-intent failure must read as a hand-off, not an assertion error.
+   Name the decision, say what the change would reverse, point at DECISIONS.md,
+   and tell them to check with me before changing it. Something like:
+
+     STOP — this reverses one of my decisions.
+       Decision: <the call I made>
+       Problem:  <what this change would do>
+     This is not a bug. See DECISIONS.md for the reasoning and the tradeoff.
+     Check with me before changing it. Do not delete this guard to go green.
+
+   The point is that my collaborator gets a clear prompt to ask me, instead of
+   guessing at intent or working around a test he doesn't understand.
 
 5. PROVE THE GUARDS WORK. For at least two rules, actually break the code,
    show me the test failing, then restore it. A guard that passes whatever
@@ -90,6 +100,11 @@ defeated the quoted-header cut that anchors on that address.
 **Two test files, not one.** "You broke a safety rule" and "you reversed the
 owner's decision" call for different responses. Mixing them makes both easier
 to dismiss.
+
+**The failure message is the handoff.** A bare assertion error invites someone
+to work around the test. A message that names the decision and says "check with
+Josh" turns a red build into a conversation — which is the actual goal. The
+collaborator is not being blocked, he is being told who to ask.
 
 **Append-only.** A log showing only the final state loses the reasoning, and
 someone re-derives the rejected answer later. Several ReplyHandler decisions

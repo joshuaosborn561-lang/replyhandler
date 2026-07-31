@@ -18,6 +18,30 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+/**
+ * Failure text for an owner decision.
+ *
+ * A red test here is not a bug report — it means someone is about to reverse a
+ * call Josh made. Say so plainly, name the decision, and ask them to check with
+ * him rather than leaving them to guess or delete the guard.
+ */
+function reversal(decision, detail) {
+  return [
+    '',
+    'STOP — this reverses one of Josh\'s decisions.',
+    '',
+    `  Decision: ${decision}`,
+    `  Problem:  ${detail}`,
+    '',
+    '  This is not a bug. Josh chose this deliberately — see DECISIONS.md for',
+    '  the reasoning and the tradeoff he accepted. Several of these were already',
+    '  reversed once before settling, so the current state is the considered one.',
+    '',
+    '  Check with Josh before changing it. Do not delete this guard to go green.',
+    '',
+  ].join('\n');
+}
+
 // ── Decision: silence exactly three things ────────────────────────────
 // Asked for OOO + unsubscribe silent, then added wrong-person, then
 // explicitly pulled NOT_INTERESTED back out: "not interested should be on
@@ -26,9 +50,12 @@ test('NOT_INTERESTED reaches Slack and drafts — reversed once, settled', () =>
   const { slackSuppressionReason } = require('../src/utils/smartlead-webhook-helpers');
   const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
 
-  assert.strictEqual(slackSuppressionReason('Not interested at this time'), null);
-  assert.strictEqual(slackSuppressionReason('We are not interested'), null);
-  assert.ok(DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'));
+  assert.strictEqual(slackSuppressionReason('Not interested at this time'), null,
+    reversal('NOT_INTERESTED must reach Slack', 'a not-interested reply is being silenced'));
+  assert.strictEqual(slackSuppressionReason('We are not interested'), null,
+    reversal('NOT_INTERESTED must reach Slack', 'a not-interested reply is being silenced'));
+  assert.ok(DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
+    reversal('NOT_INTERESTED must get a draft', 'it has been moved back to alert-only'));
 });
 
 // ── Decision: declines get a graceful draft, never a pitch ────────────
@@ -36,7 +63,8 @@ test('NOT_INTERESTED reaches Slack and drafts — reversed once, settled', () =>
 // prompt would have pushed meeting slots at someone who just said no.
 test('declines draft without pitch, times or link', () => {
   const { DECLINE_CLASSIFICATIONS, fallbackDraftText } = require('../src/services/classifier');
-  assert.ok(DECLINE_CLASSIFICATIONS.has('NOT_INTERESTED'), 'NOT_INTERESTED must use decline mode');
+  assert.ok(DECLINE_CLASSIFICATIONS.has('NOT_INTERESTED'),
+    reversal('declines draft in decline mode', 'NOT_INTERESTED no longer uses decline mode'));
 
   const draft = fallbackDraftText({
     leadName: 'Marina Chen',
@@ -44,9 +72,12 @@ test('declines draft without pitch, times or link', () => {
     bookingLink: 'https://cal.com/x',
     digestTimezone: 'America/Chicago',
   });
-  assert.ok(!/https?:\/\//.test(draft), 'a decline draft must not contain a link');
-  assert.ok(!/\b(mid-morning|early afternoon)\b/.test(draft), 'a decline draft must not suggest times');
-  assert.match(draft, /check back|take you off/i, 'a decline draft should ask about checking back');
+  assert.ok(!/https?:\/\//.test(draft),
+    reversal('a decline draft carries no pitch', 'a booking link is being sent to someone who declined'));
+  assert.ok(!/\b(mid-morning|early afternoon)\b/.test(draft),
+    reversal('a decline draft carries no pitch', 'meeting times are being pushed at someone who declined'));
+  assert.match(draft, /check back|take you off/i,
+    reversal('a decline draft asks about checking back later', 'that closing question has been removed'));
 });
 
 // ── Decision: keep the prospect's signature on the card ───────────────
@@ -57,9 +88,12 @@ test("the prospect's signature stays on inbound cards", () => {
   const raw = 'Got my attention! What are the next steps? Best, Chris Chris Arnold Managing Partner P (727)828-9021 chrisa@capmri.com From: Joshua Osborn <j@x.org>';
   const out = cleanInboundReply(raw);
 
-  assert.match(out, /Managing Partner/, 'job title must survive');
-  assert.match(out, /\(727\)828-9021/, 'phone must survive');
-  assert.match(out, /chrisa@capmri\.com/, 'email must survive');
+  assert.match(out, /Managing Partner/,
+    reversal("the prospect's signature stays on cards", 'the job title is being stripped'));
+  assert.match(out, /\(727\)828-9021/,
+    reversal("the prospect's signature stays on cards", 'the phone number is being stripped'));
+  assert.match(out, /chrisa@capmri\.com/,
+    reversal("the prospect's signature stays on cards", 'the email address is being stripped'));
   // Quoted thread history is still noise and must go.
   assert.ok(!/From:\s*Joshua Osborn/.test(out), 'quoted thread history must still be stripped');
 });
@@ -69,11 +103,8 @@ test("the prospect's signature stays on inbound cards", () => {
 // SmartLead sends with add_signature: true, so a draft sign-off stacks.
 test('our drafts add no sign-off, mailbox signature only', () => {
   const classifier = read('src/services/classifier.js');
-  assert.match(
-    classifier,
-    /Do NOT add any sign-off/i,
-    'the prompt must forbid sign-offs — the mailbox appends the real signature'
-  );
+  assert.match(classifier, /Do NOT add any sign-off/i,
+    reversal('our drafts carry no sign-off', 'the prompt no longer forbids one; the mailbox already signs'));
   assert.match(read('src/services/smartlead.js'), /add_signature:\s*true/, 'SmartLead must keep appending the real signature');
 });
 
@@ -85,7 +116,8 @@ test('booking link is withheld until the prospect asks', () => {
 
   // Model leaked a link on a times-first reply — it must be stripped.
   const stripped = sanitizeDraft(`Does Tuesday work? ${link}`, { bookingLink: link, includeBookingLink: false });
-  assert.ok(!stripped.includes(link), 'times-first drafts must not contain a booking URL');
+  assert.ok(!stripped.includes(link),
+    reversal('times-first — the link waits until asked', 'a booking link is leaking into an unasked-for draft'));
 
   // Asked for it — it must be present.
   const withLink = sanitizeDraft('Sure, here you go.', { bookingLink: link, includeBookingLink: true });
@@ -105,8 +137,10 @@ test('follow-ups wait 3h and never replay a backlog', () => {
   const { followUpHours } = require('../src/services/outbound-follow-up');
   const { maxAgeHours, retireStaleFollowUps } = require('../src/services/follow-up-runner');
 
-  assert.strictEqual(followUpHours(), 3, 'the follow-up wait must default to 3 hours');
-  assert.strictEqual(maxAgeHours(), 24, 'stale follow-ups must be retired, not posted');
+  assert.strictEqual(followUpHours(), 3,
+    reversal('follow up after 3 hours', 'the wait has been changed'));
+  assert.strictEqual(maxAgeHours(), 24,
+    reversal('no backlog — follow-ups from deploy onward', 'the stale guard has been widened or removed'));
   assert.strictEqual(typeof retireStaleFollowUps, 'function', 'the backlog guard must remain');
 });
 
@@ -115,10 +149,8 @@ test('follow-ups wait 3h and never replay a backlog', () => {
 test('a call-transcript booking suppresses without posting', () => {
   const runner = read('src/services/follow-up-runner.js');
   const skipBlock = runner.slice(runner.indexOf('if (bookedReason)'), runner.indexOf('await postFollowUpCard'));
-  assert.ok(
-    !/postProspectSlackCard|postAlert|postError/.test(skipBlock),
-    'a skipped follow-up must post nothing to Slack — it records skip_reason only'
-  );
+  assert.ok(!/postProspectSlackCard|postAlert|postError/.test(skipBlock),
+    reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
 // ── Decision: track both Allo lines ───────────────────────────────────
@@ -126,7 +158,8 @@ test('a call-transcript booking suppresses without posting', () => {
 test('all Allo lines are searched, discovered from the API', () => {
   const allo = read('src/services/allo.js');
   assert.match(allo, /\/numbers/, 'numbers must be discovered from GET /numbers');
-  assert.match(allo, /for \(const from of numbers\)/, 'every line must be searched, not just the first');
+  assert.match(allo, /for \(const from of numbers\)/,
+    reversal('track both Allo lines', 'only one line is being searched'));
   // Auth is the raw key — a Bearer prefix silently 401s.
   assert.ok(
     !/Bearer \$\{?\s*(key|apiKey)/.test(allo),
