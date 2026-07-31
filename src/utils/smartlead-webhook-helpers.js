@@ -102,44 +102,28 @@ function stripEmailQuotePrefix(raw) {
   return t.trim();
 }
 
-/** Inline image refs and the bracketed URL/address echoes Outlook leaves behind. */
+/**
+ * Inline image refs only. The rest of a prospect's signature — title, phone,
+ * booking link — is kept on purpose: it is useful context on the card.
+ */
 function stripEmailArtifacts(raw) {
   return String(raw || '')
     .replace(/\[cid:[^\]]+\]/gi, ' ')
-    .replace(/\[(https?:\/\/[^\]]+)\]/gi, ' ')
-    .replace(/\[([\w.+-]+@[\w.-]+)\]/gi, ' ')
-    .replace(/<(https?:\/\/[^>]+)>/gi, ' ')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-const SIG_MARKER = /(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b(managing partner|president|ceo|cto|coo|cfo|founder|director|manager|vp|vice president|principal|owner|partner)\b|[\w.+-]+@[\w.-]+|\bcid:)/i;
-
 /**
- * Drop a trailing signature block. Only cuts at a closing word ("Best, Chris")
- * when what follows actually looks like a signature — a phone number, a job
- * title, an address or an image ref — so a reply that merely ends politely is
- * left alone.
+ * Cleanup for a prospect reply: drop quoted thread history and image refs.
+ * The prospect's own signature is deliberately left in — it carries their
+ * title, phone and booking link.
  */
-function stripTrailingSignature(raw) {
-  const t = String(raw || '');
-  const re = /\b(best regards|kind regards|warm regards|best|thanks again|thanks|thank you|regards|cheers|sincerely|talk soon)\b[,!.]?[\s]+/gi;
-  let cut = -1;
-  for (const m of t.matchAll(re)) {
-    const tail = t.slice(m.index + m[0].length);
-    if (tail.length >= 8 && tail.length <= 600 && SIG_MARKER.test(tail)) { cut = m.index; break; }
-  }
-  return (cut > 0 ? t.slice(0, cut) : t).trim();
-}
-
-/** Full cleanup for a prospect reply: quotes, artifacts, signature. */
 function cleanInboundReply(raw) {
   let t = stripHtmlToText(raw) || String(raw || '');
   t = stripEmailQuotePrefix(t);
   t = stripEmailArtifacts(t);
-  t = stripTrailingSignature(t);
   return t.trim();
 }
 
@@ -384,7 +368,6 @@ module.exports = {
   stripHtmlToText,
   stripEmailQuotePrefix,
   stripEmailArtifacts,
-  stripTrailingSignature,
   cleanInboundReply,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
