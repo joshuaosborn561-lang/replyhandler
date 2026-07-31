@@ -29,6 +29,7 @@ const MIGRATION_FILES = [
   '015_primary_mail_accounts.sql',
   '016_reply_phone_enrichment.sql',
   '017_follow_up_skip_reasons.sql',
+  '018_clear_follow_up_backlog.sql',
 ];
 
 async function clientsTableExists(client) {
