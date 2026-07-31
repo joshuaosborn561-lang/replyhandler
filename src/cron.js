@@ -109,8 +109,8 @@ function startCron() {
     })();
     cron.schedule(`*/${fuEvery} * * * *`, async () => {
       try {
-        const result = await runDueFollowUps({ limit: 50 });
-        if (result.posted || result.skipped || result.failed) {
+        const result = await runDueFollowUps({ limit: 25 });
+        if (result.posted || result.skipped || result.failed || result.retired) {
           console.log('[Cron] Follow-up run complete', result);
         }
       } catch (err) {

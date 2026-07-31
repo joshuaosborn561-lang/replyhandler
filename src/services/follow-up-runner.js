@@ -122,6 +122,34 @@ async function resolve(fu, status, skipReason) {
   );
 }
 
+function maxAgeHours() {
+  const n = parseFloat(process.env.FOLLOW_UP_MAX_AGE_HOURS || '24');
+  return Number.isFinite(n) && n > 0 ? n : 24;
+}
+
+/**
+ * Retire follow-ups that came due long ago.
+ *
+ * Rows have been written on every send since this table existed but nothing
+ * ever read them, so the backlog is large and stale. Nudging someone about a
+ * thread from weeks ago is worse than staying quiet, and posting the whole
+ * backlog would bury the channel. Retired in bulk, with no Slack post and no
+ * per-row API calls.
+ */
+async function retireStaleFollowUps() {
+  const { rowCount } = await db.query(
+    `UPDATE outbound_follow_ups
+        SET status = 'skipped', skip_reason = 'stale', last_checked_at = now(), updated_at = now()
+      WHERE status = 'pending'
+        AND due_at < now() - ($1::float * interval '1 hour')`,
+    [maxAgeHours()]
+  );
+  if (rowCount) {
+    console.log('[FollowUp] Retired stale follow-ups', { count: rowCount, olderThanHours: maxAgeHours() });
+  }
+  return rowCount || 0;
+}
+
 /** Due follow-ups across all active clients, newest-per-thread only. */
 async function dueFollowUps(limit) {
   const { rows } = await db.query(
@@ -132,10 +160,11 @@ async function dueFollowUps(limit) {
        JOIN clients c ON c.id = f.client_id
       WHERE f.status = 'pending'
         AND f.due_at <= now()
+        AND f.due_at > now() - ($2::float * interval '1 hour')
         AND c.active IS DISTINCT FROM false
       ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at DESC
       LIMIT $1`,
-    [limit]
+    [limit, maxAgeHours()]
   );
   return rows;
 }
@@ -144,9 +173,10 @@ async function dueFollowUps(limit) {
  * Process every due follow-up: skip the ones that already booked or proposed a
  * time, post a Slack card for the rest.
  */
-async function runDueFollowUps({ limit = 50 } = {}) {
+async function runDueFollowUps({ limit = 25 } = {}) {
+  const retired = await retireStaleFollowUps();
   const rows = await dueFollowUps(limit);
-  const totals = { posted: 0, skipped: 0, failed: 0, skipReasons: {} };
+  const totals = { posted: 0, skipped: 0, failed: 0, retired, skipReasons: {} };
 
   for (const fu of rows) {
     const client = {
@@ -196,4 +226,4 @@ async function runDueFollowUps({ limit = 50 } = {}) {
   return totals;
 }
 
-module.exports = { runDueFollowUps, postFollowUpCard, dueFollowUps };
+module.exports = { runDueFollowUps, postFollowUpCard, dueFollowUps, retireStaleFollowUps, maxAgeHours };
