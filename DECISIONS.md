@@ -235,3 +235,19 @@ genuinely different replies from one prospect all still produce their own card.
 
 Guards: `the same reply never repeats, a new reply always shows`,
 `no time window can swallow a reply`
+
+### Wrong-person referrals are a dead end, not a lead
+
+*"no that's a dead end. I'm not going to contact x instead."*
+
+Twice I flagged that `looksLikeWrongPerson` matches "please contact X instead"
+and suggested routing those to Slack as live referrals. Settled: they are not
+worth surfacing. He is not going to chase the named alternative, so silencing
+them is correct and the earlier "known tradeoff" note is resolved, not
+outstanding.
+
+Wrong-person stays in the silent set with no carve-out for referrals.
+
+Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
+settled`, which asserts the silent set is exactly ooo / unsubscribe /
+wrong_person.

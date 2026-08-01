@@ -336,4 +336,4 @@ async function pollSmartleadReplies() {
   return totals;
 }
 
-module.exports = { pollSmartleadReplies };
+module.exports = { pollSmartleadReplies, fetchInboxReplies, historyFromRow, latestInboundFromRow, replyTime };

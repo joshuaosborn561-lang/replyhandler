@@ -3,6 +3,7 @@ const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { logIntegrationStatus, getIntegrationStatus } = require('../services/integration-check');
+const { sweepInterested } = require('../services/interested-sweep');
 
 const router = Router();
 
@@ -208,6 +209,24 @@ router.get('/admin/test/integrations', async (req, res) => {
       : await logIntegrationStatus();
     return res.json({ ok: true, ...status });
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Who booked? Sweeps every client's SmartLead inbox for replies SmartLead
+ * marked Interested / Meeting Request, then checks each against the booking
+ * signals. Read-only — stores nothing, posts nothing.
+ * GET /admin/test/interested?secret=...&hours=24
+ */
+router.get('/admin/test/interested', async (req, res) => {
+  if (!assertSecret(req, res)) return;
+  const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 168);
+  try {
+    const result = await sweepInterested({ hours });
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[TestWebhook] interested sweep error', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });
