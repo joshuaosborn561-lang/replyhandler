@@ -155,7 +155,12 @@ async function processInboxRow(client, row, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+      {
+        leadName,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        draftMode: 'bulk',
+      },
     );
   } catch (err) {
     console.error('[SmartLeadPoll] classifyAndDraft threw — using OTHER/empty draft', {

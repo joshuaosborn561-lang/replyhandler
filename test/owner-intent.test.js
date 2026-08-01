@@ -164,6 +164,19 @@ test('booking checks include SmartLead thread and call transcript signals', () =
     reversal('check Allo\/Cube call transcripts for booked signals', 'call transcript verification was removed'));
 });
 
+// ── Decision: bulk sweeps should not fan out Anthropic calls ───────────────
+test('pollers classify in bulk mode with Anthropic disabled by default', () => {
+  const classifier = read('src/services/classifier.js');
+  const smartleadPoller = read('src/services/smartlead-poller.js');
+  const heyreachPoller = read('src/services/heyreach-poller.js');
+  assert.match(classifier, /ANTHROPIC_BULK_DRAFTS_ENABLED/,
+    reversal('keep Anthropic off for bulk sweeps by default', 'bulk Anthropic guard is missing'));
+  assert.match(smartleadPoller, /draftMode:\s*'bulk'/,
+    reversal('treat SmartLead poll runs as bulk', 'SmartLead poller no longer marks bulk mode'));
+  assert.match(heyreachPoller, /draftMode:\s*'bulk'/,
+    reversal('treat HeyReach poll runs as bulk', 'HeyReach poller no longer marks bulk mode'));
+});
+
 // ── Decision: track both Allo lines ───────────────────────────────────
 // "there are 2 allo numbers track them both" — discovered, not configured.
 test('all Allo lines are searched, discovered from the API', () => {
