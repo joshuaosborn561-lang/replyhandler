@@ -32,6 +32,7 @@ const MIGRATION_FILES = [
   '018_clear_follow_up_backlog.sql',
   '019_suppressed_replies.sql',
   '020_smartlead_campaign_routes.sql',
+  '021_phone_enrichment_claim_lease.sql',
 ];
 
 async function clientsTableExists(client) {

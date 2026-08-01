@@ -30,7 +30,7 @@ Or on Railway, provision a Postgres plugin and apply the base schema once (requi
 railway run psql $DATABASE_URL < schema.sql
 ```
 
-After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–020, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
+After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–021, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
 
 **Backups and avoiding data loss:** This app never deletes `clients` rows. If client rows vanish, the Postgres **volume was reset or a new database was attached** (e.g. recreating the Postgres service in Railway). Mitigations: enable **Railway Postgres backups** in the dashboard (plan-dependent); avoid detaching/recreating the Postgres plugin; periodically run `pg_dump` off-platform, e.g. `railway run --service <App> pg_dump "$DATABASE_URL" > backup-$(date +%Y%m%d).sql` (use the app service so `DATABASE_URL` points at your data). Client API keys must be **re-entered** after a restore if you only have SQL dumps without secrets elsewhere.
 
@@ -52,7 +52,7 @@ cp .env.example .env
 | `ANTHROPIC_REPLY_MODEL` | Optional drafting model override (default `claude-sonnet-5`) |
 | `GEMINI_EMBEDDING_MODEL` | Optional embedding override (default `gemini-embedding-001`; `text-embedding-004` retired Jan 2026) |
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
-| `WEBHOOK_TEST_SECRET` | Required in production. Protects `/dashboard`, client CRUD, OAuth admin routes, and `/admin/test/*`. First browser visit: `/dashboard?secret=...` |
+| `WEBHOOK_TEST_SECRET` | Required in production. Protects `/dashboard`, client CRUD, OAuth admin routes, and `/admin/test/*`. Browser login: `/dashboard/login` |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
 | `FOLLOW_UP_HOURS` | Hours after an unanswered approved send before posting a follow-up approval card (default `3`) |
 | `FOLLOW_UP_MAX_AGE_HOURS` | Retire overdue follow-ups instead of replaying a backlog (default `24`) |
