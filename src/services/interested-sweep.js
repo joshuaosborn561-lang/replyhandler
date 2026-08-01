@@ -115,4 +115,35 @@ async function sweepInterested({ hours = 24, pages = 4, pageSize = 50 } = {}) {
   };
 }
 
-module.exports = { sweepInterested };
+/**
+ * Run the sweep and print a compact digest.
+ *
+ * Exists because the endpoint is not always reachable — the deploy log always
+ * is. One line per lead so it can be read straight out of Railway.
+ */
+async function logInterestedSweep({ hours = 24 } = {}) {
+  try {
+    const r = await sweepInterested({ hours });
+    console.log('[Sweep] Interested replies', {
+      hours: r.hours,
+      clients: r.clientsScanned,
+      scanned: r.repliesScanned,
+      interested: r.interestedFound,
+      likelyBooked: r.likelyBooked.length,
+      noEvidence: r.interestedNoBookingEvidence.length,
+    });
+    for (const b of r.likelyBooked) {
+      console.log(`[Sweep] BOOKED? ${b.confidence} | ${b.client} | ${b.lead} <${b.email || 'no email'}> | ${b.smartleadCategory || '?'} | ${b.signals.join(',')}`);
+    }
+    for (const n of r.interestedNoBookingEvidence) {
+      console.log(`[Sweep] OPEN     | ${n.client} | ${n.lead} <${n.email || 'no email'}> | ${n.smartleadCategory || '?'} | ${String(n.reply).replace(/\s+/g, ' ').slice(0, 120)}`);
+    }
+    for (const e of r.errors) console.warn('[Sweep] error', e);
+    return r;
+  } catch (err) {
+    console.error('[Sweep] Interested sweep failed', { err: err.message });
+    return null;
+  }
+}
+
+module.exports = { sweepInterested, logInterestedSweep };

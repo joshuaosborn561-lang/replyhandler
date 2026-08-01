@@ -6,6 +6,7 @@ const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { runDueFollowUps } = require('./services/follow-up-runner');
 const { logIntegrationStatus } = require('./services/integration-check');
+const { logInterestedSweep } = require('./services/interested-sweep');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
@@ -213,6 +214,13 @@ function startCron() {
   logIntegrationStatus().catch((err) =>
     console.error('[Startup] Integration check failed', { err: err.message })
   );
+
+  // Print who looks booked, straight into the deploy log. Read-only.
+  if (/^(1|true|yes|on)$/i.test(String(process.env.SWEEP_INTERESTED_ON_BOOT || '1').trim())) {
+    logInterestedSweep({ hours: 24 }).catch((err) =>
+      console.error('[Startup] Interested sweep failed', { err: err.message })
+    );
+  }
 
   const digestNote = attentionDigestsEnabled()
     ? 'morning + 3pm attention digests enabled'
