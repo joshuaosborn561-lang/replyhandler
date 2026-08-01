@@ -4,6 +4,7 @@ const google = require('../services/google-calendar');
 const microsoft = require('../services/microsoft-calendar');
 const gmail = require('../services/gmail-send');
 const { requireAdminSecret } = require('../middleware/adminSecret');
+const { createOAuthState, verifyOAuthState } = require('../utils/oauth-state');
 
 const router = Router();
 
@@ -13,12 +14,15 @@ router.get('/auth/google/connect/:clientId', requireAdminSecret, async (req, res
   const { rows: [client] } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
   if (!client) return res.status(404).send('Client not found');
 
-  const url = google.getAuthUrl(clientId);
+  const url = google.getAuthUrl(clientId, createOAuthState({ provider: 'google', clientId }));
   res.redirect(url);
 });
 
-router.get('/auth/google/callback', async (req, res) => {
-  const { code, state: clientId, error } = req.query;
+router.get('/auth/google/callback', requireAdminSecret, async (req, res) => {
+  const { code, state, error } = req.query;
+  const oauth = verifyOAuthState(state, 'google');
+  if (!oauth?.clientId) return res.status(400).send('Invalid or expired OAuth state');
+  const clientId = oauth.clientId;
 
   if (error) {
     console.error('[Auth] Google OAuth error', { error });
@@ -52,7 +56,7 @@ router.get('/auth/gmail/connect', requireAdminSecret, async (req, res) => {
     return res.status(500).send('GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET not configured on this server');
   }
   try {
-    const url = gmail.getAuthUrl();
+    const url = gmail.getAuthUrl(createOAuthState({ provider: 'gmail' }));
     res.redirect(url);
   } catch (err) {
     console.error('[Auth] Gmail connect failed', { err: err.message });
@@ -60,8 +64,11 @@ router.get('/auth/gmail/connect', requireAdminSecret, async (req, res) => {
   }
 });
 
-router.get('/auth/gmail/callback', async (req, res) => {
-  const { code, error } = req.query;
+router.get('/auth/gmail/callback', requireAdminSecret, async (req, res) => {
+  const { code, state, error } = req.query;
+  if (!verifyOAuthState(state, 'gmail')) {
+    return res.status(400).send('Invalid or expired OAuth state');
+  }
   if (error) {
     console.error('[Auth] Gmail OAuth error', { error });
     return res.status(400).send(`Gmail OAuth error: ${error}`);
@@ -78,7 +85,8 @@ router.get('/auth/gmail/callback', async (req, res) => {
     const email = await gmail.getUserEmail(tokens.access_token);
     const expected = gmail.expectedFromEmail();
     if (expected && email !== expected) {
-      console.warn('[Auth] Gmail connected email differs from PRIMARY_GMAIL_FROM', { email, expected });
+      console.error('[Auth] Gmail connected email differs from PRIMARY_GMAIL_FROM', { email, expected });
+      return res.status(400).send(`Connect the configured primary mailbox (${expected}), not ${email}.`);
     }
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000);
     await gmail.upsertAccount({
@@ -118,12 +126,18 @@ router.get('/auth/microsoft/connect/:clientId', requireAdminSecret, async (req, 
   const { rows: [client] } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
   if (!client) return res.status(404).send('Client not found');
 
-  const url = microsoft.getAuthUrl(clientId);
+  const url = microsoft.getAuthUrl(
+    clientId,
+    createOAuthState({ provider: 'microsoft', clientId })
+  );
   res.redirect(url);
 });
 
-router.get('/auth/microsoft/callback', async (req, res) => {
-  const { code, state: clientId, error } = req.query;
+router.get('/auth/microsoft/callback', requireAdminSecret, async (req, res) => {
+  const { code, state, error } = req.query;
+  const oauth = verifyOAuthState(state, 'microsoft');
+  if (!oauth?.clientId) return res.status(400).send('Invalid or expired OAuth state');
+  const clientId = oauth.clientId;
 
   if (error) {
     console.error('[Auth] Microsoft OAuth error', { error });

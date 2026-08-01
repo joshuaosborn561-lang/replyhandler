@@ -27,6 +27,7 @@ app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' }));
 // ─── Dashboard UI ────────────────────────────────────────────────────
 app.use(
   '/dashboard',
+  express.urlencoded({ extended: false }),
   requireAdminSecretOrSetCookie,
   express.static(path.join(__dirname, 'public'))
 );

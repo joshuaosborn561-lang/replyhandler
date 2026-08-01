@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   COOKIE_NAME,
+  verifySessionToken,
   verifyAdminSecret,
   requireAdminSecret,
   requireAdminSecretOrSetCookie,
@@ -41,7 +42,14 @@ test('admin secret accepts header, query, and cookie', () => {
   process.env.WEBHOOK_TEST_SECRET = 'super-secret';
   assert.equal(verifyAdminSecret(req({ header: 'super-secret' })), true);
   assert.equal(verifyAdminSecret(req({ query: { secret: 'super-secret' } })), true);
-  assert.equal(verifyAdminSecret(req({ cookie: `${COOKIE_NAME}=super-secret` })), true);
+  const loginResponse = res();
+  requireAdminSecretOrSetCookie(
+    { ...req({ accept: 'text/html', url: '/dashboard/login' }), method: 'POST', path: '/login', body: { secret: 'super-secret' } },
+    loginResponse,
+    () => {}
+  );
+  const session = loginResponse.cookieArgs[1];
+  assert.equal(verifyAdminSecret(req({ cookie: `${COOKIE_NAME}=${session}` })), true);
   assert.equal(verifyAdminSecret(req({ header: 'wrong' })), false);
 });
 
@@ -77,19 +85,37 @@ test('dashboard query secret sets HttpOnly cookie and cleans URL', () => {
   );
   assert.equal(response.redirectTo, '/dashboard');
   assert.equal(response.cookieArgs[0], COOKIE_NAME);
-  assert.equal(response.cookieArgs[1], 'super-secret');
+  assert.equal(verifySessionToken(response.cookieArgs[1], 'super-secret'), true);
   assert.equal(response.cookieArgs[2].httpOnly, true);
   assert.equal(response.cookieArgs[2].secure, true);
 });
 
 test('dashboard cookie allows subsequent requests', () => {
   process.env.WEBHOOK_TEST_SECRET = 'super-secret';
+  const loginResponse = res();
+  requireAdminSecretOrSetCookie(
+    { ...req({ accept: 'text/html', url: '/dashboard/login' }), method: 'POST', path: '/login', body: { secret: 'super-secret' } },
+    loginResponse,
+    () => {}
+  );
   const response = res();
   let nextCalled = false;
   requireAdminSecretOrSetCookie(
-    req({ cookie: `${COOKIE_NAME}=super-secret`, accept: 'text/html', url: '/dashboard' }),
+    req({ cookie: `${COOKIE_NAME}=${loginResponse.cookieArgs[1]}`, accept: 'text/html', url: '/dashboard' }),
     response,
     () => { nextCalled = true; }
   );
   assert.equal(nextCalled, true);
+});
+
+test('dashboard login rejects the wrong secret and never stores the raw secret', () => {
+  process.env.WEBHOOK_TEST_SECRET = 'super-secret';
+  const response = res();
+  requireAdminSecretOrSetCookie(
+    { ...req({ accept: 'text/html', url: '/dashboard/login' }), method: 'POST', path: '/login', body: { secret: 'wrong' } },
+    response,
+    () => {}
+  );
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.cookieArgs, null);
 });
