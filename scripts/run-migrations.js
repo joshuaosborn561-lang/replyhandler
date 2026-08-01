@@ -12,7 +12,7 @@ const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 
-/** Filenames in lexical order (002 … 010). */
+/** Filenames in lexical order (002 … current). */
 const MIGRATION_FILES = [
   '002_booking_link.sql',
   '003_calendar_connections.sql',
