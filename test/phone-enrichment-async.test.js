@@ -8,9 +8,12 @@ const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 
 test('Slack cards post before phone enrichment runs', () => {
   const source = read('src/services/slack-reply-post.js');
+  const postStart = source.indexOf('async function postProspectSlackCard');
+  const backgroundStart = source.indexOf('setImmediate(async () =>', postStart);
+  const synchronousPath = source.slice(postStart, backgroundStart);
   assert.doesNotMatch(
-    source,
-    /await\s+enrichPendingReplyPhone\(replyId\)[\s\S]*postDraftApproval/
+    synchronousPath,
+    /enrichPendingReplyPhone\(replyId\)/
   );
   assert.match(source, /setImmediate\(async \(\) =>/);
   assert.match(source, /updateTs:\s*result\.ts/);
