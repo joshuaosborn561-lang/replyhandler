@@ -251,3 +251,18 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-01
+
+### A proposed meeting row is not a booking
+
+Josh does not have reliable calendar access for every client. A row created
+because a prospect merely discussed scheduling cannot be treated as proof that
+the meeting was booked.
+
+Follow-up suppression now treats only `confirmed` and `booked` meeting rows as
+authoritative. A `proposed` row is ignored; instead, the app makes its best
+guess from the source inbound message, later replies, call transcripts, and any
+calendar connection that actually exists.
+
+Guard: `proposed meeting rows do not suppress follow-ups by themselves`

@@ -196,6 +196,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
         leadName: fu.lead_name,
         leadId: fu.lead_id,
         since: fu.sent_at,
+        sourcePendingReplyId: fu.source_pending_reply_id,
       });
 
       if (bookedReason) {

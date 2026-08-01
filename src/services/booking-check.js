@@ -14,7 +14,7 @@ const { callSaysBooked } = require('./call-booking-check');
  * Returns a reason string when booked, or null.
  */
 
-/** 1. We booked it ourselves through the approve/send path. */
+/** 1. We confirmed/booked it ourselves through the approve/send path. */
 async function meetingRowExists(clientId, { leadEmail, leadName }) {
   const email = String(leadEmail || '').trim().toLowerCase();
   const name = String(leadName || '').trim();
@@ -23,7 +23,7 @@ async function meetingRowExists(clientId, { leadEmail, leadName }) {
   const { rows } = await db.query(
     `SELECT 1 FROM meetings
       WHERE client_id = $1
-        AND status IN ('proposed', 'confirmed', 'booked')
+        AND status IN ('confirmed', 'booked')
         AND (
           ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
           OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
@@ -34,7 +34,20 @@ async function meetingRowExists(clientId, { leadEmail, leadName }) {
   return rows.length > 0;
 }
 
-/** 2. The prospect said so in a later reply. */
+/** 2. The inbound context that caused our sent reply already moved scheduling forward. */
+async function sourceReplySaysBooked(sourcePendingReplyId) {
+  if (!sourcePendingReplyId) return null;
+  const { rows } = await db.query(
+    `SELECT inbound_message
+       FROM pending_replies
+      WHERE id = $1
+      LIMIT 1`,
+    [sourcePendingReplyId]
+  );
+  return rows[0] ? replySuppressesFollowUp(rows[0].inbound_message) : null;
+}
+
+/** 3. The prospect said so in a later reply. */
 async function laterReplySaysBooked(clientId, { leadEmail, leadId, platform, since }) {
   const email = String(leadEmail || '').trim().toLowerCase();
   const lead = leadId != null ? String(leadId) : '';
@@ -63,7 +76,7 @@ async function laterReplySaysBooked(clientId, { leadEmail, leadId, platform, sin
 }
 
 /**
- * 3. Something is on the calendar with them — covers Calendly, a manual invite,
+ * 4. Something is on the calendar with them — covers Calendly, a manual invite,
  * or a booking that happened entirely outside this app.
  */
 async function calendarHasEventWith(clientId, { leadEmail, leadName }) {
@@ -103,8 +116,18 @@ async function calendarHasEventWith(clientId, { leadEmail, leadName }) {
 /**
  * @returns {Promise<string|null>} reason the follow-up should be skipped, or null
  */
-async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, leadId, since }) {
+async function looksAlreadyBooked(clientId, {
+  platform,
+  leadEmail,
+  leadName,
+  leadId,
+  since,
+  sourcePendingReplyId,
+}) {
   if (await meetingRowExists(clientId, { leadEmail, leadName })) return 'meeting_row_exists';
+
+  const fromSource = await sourceReplySaysBooked(sourcePendingReplyId);
+  if (fromSource) return fromSource;
 
   const fromReply = await laterReplySaysBooked(clientId, {
     leadEmail, leadId, platform, since: since || new Date(0),
@@ -113,7 +136,7 @@ async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, lea
 
   if (await calendarHasEventWith(clientId, { leadEmail, leadName })) return 'calendar_event_found';
 
-  // 4. We called them back and the transcript shows a meeting was set.
+  // 5. We called them back and the transcript shows a meeting was set.
   const fromCall = await callSaysBooked(clientId, { platform, leadEmail, leadId, since });
   if (fromCall) return fromCall;
 
@@ -123,6 +146,7 @@ async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, lea
 module.exports = {
   looksAlreadyBooked,
   meetingRowExists,
+  sourceReplySaysBooked,
   laterReplySaysBooked,
   calendarHasEventWith,
 };

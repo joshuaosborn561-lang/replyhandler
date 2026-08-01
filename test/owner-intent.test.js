@@ -259,3 +259,36 @@ test('no nudge system is reintroduced', () => {
     assert.ok(!/postPendingNudge|already_replied|snooze_nudge/.test(body), `${name} must stay free of nudge code`);
   }
 });
+
+// ── Decision: proposal alone is not a booking ────────────────────────
+// Without calendar access, use the actual conversation/call context as the
+// best guess. A DB row created at MEETING_PROPOSED is not confirmation.
+test('proposed meeting rows do not suppress follow-ups by themselves', () => {
+  const booking = read('src/services/booking-check.js');
+  const runner = read('src/services/follow-up-runner.js');
+
+  assert.doesNotMatch(
+    booking,
+    /status IN \('proposed', 'confirmed', 'booked'\)/,
+    reversal(
+      'a proposed meeting row is not a booking',
+      'meeting_row_exists is treating an unconfirmed proposal as booked'
+    )
+  );
+  assert.match(
+    booking,
+    /sourceReplySaysBooked[\s\S]*replySuppressesFollowUp/,
+    reversal(
+      'use conversation context as the best guess when calendar access is absent',
+      'the source inbound scheduling context is not checked'
+    )
+  );
+  assert.match(
+    runner,
+    /sourcePendingReplyId:\s*fu\.source_pending_reply_id/,
+    reversal(
+      'use conversation context as the best guess when calendar access is absent',
+      'the follow-up runner does not pass the source reply into booking checks'
+    )
+  );
+});
