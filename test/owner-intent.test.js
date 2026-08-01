@@ -153,6 +153,17 @@ test('a call-transcript booking suppresses without posting', () => {
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
+// ── Decision: verify "booked" from SmartLead + calls before nudging ───────
+// "prospect explicitly says booked or proposes a time counts", and use
+// SmartLead + Allo/Cube ACR before drafting a follow-up.
+test('booking checks include SmartLead thread and call transcript signals', () => {
+  const booking = read('src/services/booking-check.js');
+  assert.match(booking, /smartleadThreadSaysBooked/,
+    reversal('check SmartLead for booked signals', 'SmartLead thread verification was removed'));
+  assert.match(booking, /callSaysBooked/,
+    reversal('check Allo\/Cube call transcripts for booked signals', 'call transcript verification was removed'));
+});
+
 // ── Decision: track both Allo lines ───────────────────────────────────
 // "there are 2 allo numbers track them both" — discovered, not configured.
 test('all Allo lines are searched, discovered from the API', () => {

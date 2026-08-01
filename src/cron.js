@@ -5,6 +5,7 @@ const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
 const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { runDueFollowUps } = require('./services/follow-up-runner');
+const { looksAlreadyBooked } = require('./services/booking-check');
 const { logIntegrationStatus } = require('./services/integration-check');
 const { logInterestedSweep } = require('./services/interested-sweep');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
@@ -333,8 +334,28 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   }
 
   let posted = 0;
+  const skipReasons = {};
   for (const fu of pendingFollowUps) {
     try {
+      const bookedReason = await looksAlreadyBooked(fu.client_id, {
+        platform: fu.platform,
+        campaignId: fu.campaign_id,
+        leadEmail: fu.lead_email,
+        leadName: fu.lead_name,
+        leadId: fu.lead_id,
+        since: fu.sent_at,
+      });
+      if (bookedReason) {
+        skipReasons[bookedReason] = (skipReasons[bookedReason] || 0) + 1;
+        await db.query(
+          `UPDATE outbound_follow_ups
+              SET status = 'skipped', skip_reason = $1, last_checked_at = now(), updated_at = now()
+            WHERE id = $2`,
+          [bookedReason, fu.id]
+        );
+        continue;
+      }
+
       const draft = await draftReattemptToBook({
         leadName: fu.lead_name,
         platform: fu.platform,
@@ -448,6 +469,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     digestType,
     pending: pendingApprovals.length,
     followUpsPosted: posted,
+    followUpsSkipped: skipReasons,
   });
 }
 

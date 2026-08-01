@@ -83,6 +83,7 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
 
         const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
         const leadEmail = row.lead_email || null;
+        const campaignId = row.email_campaign_id || row.campaign_id || null;
         const leadId = row.email_lead_id || row.lead_id || null;
         const inbound = cleanInboundReply(latestInboundFromRow(row) || '');
 
@@ -90,7 +91,7 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
         try {
           if (client.id) {
             const reason = await looksAlreadyBooked(client.id, {
-              platform: 'smartlead', leadEmail, leadName, leadId, since: at || new Date(cutoff),
+              platform: 'smartlead', campaignId, leadEmail, leadName, leadId, since: at || new Date(cutoff),
             });
             if (reason) signals.push(reason);
           }
