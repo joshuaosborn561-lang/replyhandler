@@ -1,5 +1,19 @@
 # ReplyHandler
 
+## Contributing
+
+Josh and Cayden use one task branch per change and merge only through pull
+requests. Start with:
+
+```bash
+npm run task:start -- cayden lead-scraper-fix
+```
+
+Read `CONTRIBUTING.md` before editing the reply pipeline. Settled product
+decisions live in append-only `DECISIONS.md` and are enforced by CI.
+Repository-admin branch protection setup is documented in
+`docs/GITHUB-REPOSITORY-SETUP.md`.
+
 Automated prospect reply handling for B2B outbound campaigns. Processes inbound replies from SmartLead (email) and HeyReach (LinkedIn), classifies them with Gemini 2.5 Flash, drafts responses in each client's voice, and routes them through Slack for one-tap approval.
 
 ## Architecture

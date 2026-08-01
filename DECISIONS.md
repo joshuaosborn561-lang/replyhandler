@@ -251,3 +251,23 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-01
+
+### All work lands through a task branch and Josh-reviewed PR
+
+Josh and Cayden work in the same repository. Neither person commits directly
+to `main` or the Railway deployment branch. Each task starts from freshly
+pulled `main`, has one named owner, and lands through a focused PR after CI.
+
+Josh remains CODEOWNER for the repository and must approve product/pipeline
+changes. Cayden can create and push feature branches, but cannot merge over a
+settled decision or modify its guard without Josh's review. Ownership of shared
+files is announced before work starts.
+
+GitHub must enforce this with protected branches, required PRs, one approval,
+required CODEOWNER review, stale-review dismissal, and required CI. Repo files
+cannot enable those server-side settings; the one-time ruleset is documented in
+`docs/GITHUB-REPOSITORY-SETUP.md`.
+
+Guard: `repo collaboration requires feature branches and Josh review`
