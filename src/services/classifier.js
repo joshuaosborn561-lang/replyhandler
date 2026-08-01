@@ -24,6 +24,20 @@ const DECLINE_CLASSIFICATIONS = new Set(['NOT_INTERESTED']);
 const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => !NO_REPLY_NEEDED.has(c));
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
+let loggedAnthropicBulkDisabled = false;
+
+function envTruthy(name, fallback = false) {
+  const v = process.env[name];
+  if (v === undefined || v === '') return fallback;
+  return /^(1|true|yes|on)$/i.test(String(v).trim());
+}
+
+function shouldUseAnthropicDrafts({ draftMode } = {}) {
+  const mode = String(draftMode || 'realtime').toLowerCase();
+  if (!claudeReplyDraft.isConfigured()) return false;
+  if (mode !== 'bulk') return true;
+  return envTruthy('ANTHROPIC_BULK_DRAFTS_ENABLED', false);
+}
 
 async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
   let lastErr;
@@ -452,6 +466,7 @@ async function draftOnly({
   schedulingPromptBlock,
   digestTimezone,
   platform,
+  draftMode = 'realtime',
   includeBookingLink: includeBookingLinkOverride,
 }) {
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
@@ -496,7 +511,7 @@ async function draftOnly({
 
   // When the Supabase + Anthropic pipeline is configured, Gemini is used only
   // for embedding/retrieval and Claude Sonnet 5 writes the actual draft.
-  if (claudeReplyDraft.isConfigured()) {
+  if (shouldUseAnthropicDrafts({ draftMode })) {
     try {
       const result = await claudeReplyDraft.generateClaudeReply({
         inboundMessage,
@@ -534,6 +549,14 @@ async function draftOnly({
         includeBookingLink,
       });
     }
+  } else if (
+    String(draftMode || 'realtime').toLowerCase() === 'bulk'
+    && claudeReplyDraft.isConfigured()
+    && !loggedAnthropicBulkDisabled
+  ) {
+    // Backfills/poller sweeps can fan out quickly; keep Anthropic off unless explicitly opted in.
+    console.log('[Classifier] Anthropic drafts are disabled for bulk mode (set ANTHROPIC_BULK_DRAFTS_ENABLED=1 to opt in).');
+    loggedAnthropicBulkDisabled = true;
   }
 
   try {
@@ -601,7 +624,7 @@ async function classifyAndDraft(
   voicePrompt,
   bookingLink,
   schedulingPromptBlock,
-  { leadName, digestTimezone, platform } = {},
+  { leadName, digestTimezone, platform, draftMode = 'realtime' } = {},
 ) {
   // Deterministic pre-classification gates — kill drafts that should not exist.
   let classification = null;
@@ -638,6 +661,7 @@ async function classifyAndDraft(
       schedulingPromptBlock,
       digestTimezone,
       platform,
+      draftMode,
       includeBookingLink,
     })
     : null;

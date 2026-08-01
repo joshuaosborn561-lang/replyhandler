@@ -9,7 +9,35 @@ on:
     branches: [main, claude/prospect-reply-automation-q2jei]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  branch-policy:
+    name: Branch policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Require a feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_BRANCH" == "main" ||
+                "$HEAD_BRANCH" == "claude/prospect-reply-automation-q2jei" ]]; then
+            echo "Pull requests must come from a feature branch, never a protected branch."
+            exit 1
+          fi
+          if [[ ! "$HEAD_BRANCH" =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "Branch must be <owner>/<short-kebab-case-task>; got: $HEAD_BRANCH"
+            exit 1
+          fi
+
   invariants:
     name: Invariant guards
     runs-on: ubuntu-latest
@@ -19,7 +47,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install
-        run: npm install --omit=dev
+        run: npm ci --omit=dev
       - name: Every module loads
         run: |
           node -e "require('./src/routes/webhooks');require('./src/routes/slack');require('./src/cron');require('./src/services/follow-up-runner');require('./src/services/booking-check')"

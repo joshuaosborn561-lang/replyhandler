@@ -153,6 +153,30 @@ test('a call-transcript booking suppresses without posting', () => {
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
+// ── Decision: verify "booked" from SmartLead + calls before nudging ───────
+// "prospect explicitly says booked or proposes a time counts", and use
+// SmartLead + Allo/Cube ACR before drafting a follow-up.
+test('booking checks include SmartLead thread and call transcript signals', () => {
+  const booking = read('src/services/booking-check.js');
+  assert.match(booking, /smartleadThreadSaysBooked/,
+    reversal('check SmartLead for booked signals', 'SmartLead thread verification was removed'));
+  assert.match(booking, /callSaysBooked/,
+    reversal('check Allo\/Cube call transcripts for booked signals', 'call transcript verification was removed'));
+});
+
+// ── Decision: bulk sweeps should not fan out Anthropic calls ───────────────
+test('pollers classify in bulk mode with Anthropic disabled by default', () => {
+  const classifier = read('src/services/classifier.js');
+  const smartleadPoller = read('src/services/smartlead-poller.js');
+  const heyreachPoller = read('src/services/heyreach-poller.js');
+  assert.match(classifier, /ANTHROPIC_BULK_DRAFTS_ENABLED/,
+    reversal('keep Anthropic off for bulk sweeps by default', 'bulk Anthropic guard is missing'));
+  assert.match(smartleadPoller, /draftMode:\s*'bulk'/,
+    reversal('treat SmartLead poll runs as bulk', 'SmartLead poller no longer marks bulk mode'));
+  assert.match(heyreachPoller, /draftMode:\s*'bulk'/,
+    reversal('treat HeyReach poll runs as bulk', 'HeyReach poller no longer marks bulk mode'));
+});
+
 // ── Decision: track both Allo lines ───────────────────────────────────
 // "there are 2 allo numbers track them both" — discovered, not configured.
 test('all Allo lines are searched, discovered from the API', () => {

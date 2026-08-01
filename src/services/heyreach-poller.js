@@ -377,7 +377,12 @@ async function processConversation(client, conv, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
+      {
+        leadName: leadName(conv),
+        digestTimezone: client.digest_timezone,
+        platform: 'heyreach',
+        draftMode: 'bulk',
+      },
     );
   } catch (err) {
     // classifyAndDraft is supposed to never throw; keep poll moving if it does.

@@ -1,0 +1,17 @@
+# Josh must review every production change. GitHub enforces this only when the
+# branch ruleset enables "Require review from Code Owners".
+* @joshuaosborn561-lang
+
+# Load-bearing product decisions and deployment behavior (listed explicitly so
+# GitHub's UI makes the reason for the requested review obvious).
+/DECISIONS.md @joshuaosborn561-lang
+/CLAUDE.md @joshuaosborn561-lang
+/test/owner-intent.test.js @joshuaosborn561-lang
+/.github/ @joshuaosborn561-lang
+/schema.sql @joshuaosborn561-lang
+/migrations/ @joshuaosborn561-lang
+/src/routes/webhooks.js @joshuaosborn561-lang
+/src/services/classifier.js @joshuaosborn561-lang
+/src/services/smartlead-poller.js @joshuaosborn561-lang
+/src/services/slack.js @joshuaosborn561-lang
+/src/cron.js @joshuaosborn561-lang

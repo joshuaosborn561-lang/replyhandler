@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "task:start": "bash scripts/start-task.sh"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",

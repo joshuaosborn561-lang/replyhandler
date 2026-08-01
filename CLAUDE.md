@@ -18,6 +18,18 @@ When a guard fails, read the reason in the assertion and the entry in
 
 **Add features, fix bugs, refactor freely** — as long as `npm test` passes.
 
+**Every task gets its own branch and PR.** Start from current `origin/main`
+using `./scripts/start-task.sh <owner> <task>`. Never commit directly to
+`main` or the Railway deployment branch. Before touching shared pipeline files,
+announce the task/files/branch in Slack so Josh and Cayden do not edit the same
+subsystem unknowingly. Full workflow: `CONTRIBUTING.md`.
+
+**CODEOWNERS makes Josh the required product reviewer.** Do not work around
+that review by weakening CI, changing ownership files, or merging through an
+unprotected branch. Repository administrators must enable the GitHub ruleset
+documented in `docs/GITHUB-REPOSITORY-SETUP.md`; CODEOWNERS alone does not
+enforce approval.
+
 **`DECISIONS.md` records Josh's calls and needs Josh to change.** Reversing one
 is not an implementation decision. Several were already reversed once during
 the conversation that produced them, so what is written there is the settled

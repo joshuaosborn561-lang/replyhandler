@@ -192,6 +192,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
     try {
       const bookedReason = await looksAlreadyBooked(fu.client_id, {
         platform: fu.platform,
+        campaignId: fu.campaign_id,
         leadEmail: fu.lead_email,
         leadName: fu.lead_name,
         leadId: fu.lead_id,
