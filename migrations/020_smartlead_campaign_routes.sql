@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS smartlead_campaign_routes (
   client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
   campaign_name TEXT,
   source TEXT NOT NULL CHECK (
-    source IN ('seed_history', 'webhook', 'poller', 'manual')
+    source IN ('seed_api', 'webhook', 'poller', 'manual')
   ),
   learned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -15,17 +15,7 @@ CREATE TABLE IF NOT EXISTS smartlead_campaign_routes (
 CREATE INDEX IF NOT EXISTS idx_smartlead_campaign_routes_client
   ON smartlead_campaign_routes(client_id);
 
--- Seed only unambiguous historical ownership. If one campaign has appeared
--- under multiple clients, leave it unrouted for explicit/manual correction.
-INSERT INTO smartlead_campaign_routes (campaign_id, client_id, source)
-SELECT
-  campaign_id,
-  min(client_id::text)::uuid,
-  'seed_history'
-FROM pending_replies
-WHERE platform = 'smartlead'
-  AND campaign_id IS NOT NULL
-  AND btrim(campaign_id) <> ''
-GROUP BY campaign_id
-HAVING count(DISTINCT client_id) = 1
-ON CONFLICT (campaign_id) DO NOTHING;
+-- Historical pending_replies are deliberately not trusted: an earlier
+-- shared-master-key incident inserted some rows under the wrong client.
+-- Routes are seeded from dedicated SmartLead keys at runtime and learned from
+-- verified client-specific webhook URLs.

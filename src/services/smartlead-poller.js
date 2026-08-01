@@ -9,6 +9,7 @@ const { cancelForInboundReply } = require('./outbound-follow-up');
 const {
   learnRoute,
   loadRouteMap,
+  seedRoutesFromDedicatedKeys,
 } = require('./smartlead-campaign-route');
 const {
   alreadyPostedToSlack,
@@ -392,19 +393,26 @@ async function pollSmartleadMasterRecovery() {
   const skipCounts = {};
   const unroutableCampaignIds = new Set();
   try {
+    await seedRoutesFromDedicatedKeys();
     const routeMap = await loadRouteMap();
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
-    const maxReplies = numberEnv('SMARTLEAD_MASTER_POLL_MAX_REPLIES', 80);
+    const maxRoutedReplies = numberEnv('SMARTLEAD_MASTER_POLL_MAX_REPLIES', 80);
+    const maxScannedReplies = numberEnv('SMARTLEAD_MASTER_POLL_SCAN_LIMIT', 400);
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
     let scanned = 0;
+    let routed = 0;
 
-    for (let offset = 0; scanned < maxReplies; offset += pageLimit) {
+    for (
+      let offset = 0;
+      scanned < maxScannedReplies && routed < maxRoutedReplies;
+      offset += pageLimit
+    ) {
       const payload = await fetchInboxReplies(masterKey, offset, pageLimit);
       const rows = Array.isArray(payload?.data) ? payload.data : [];
       if (!rows.length) break;
 
       for (const row of rows) {
-        if (scanned >= maxReplies) break;
+        if (scanned >= maxScannedReplies || routed >= maxRoutedReplies) break;
         scanned++;
         const campaignId =
           normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
@@ -416,6 +424,7 @@ async function pollSmartleadMasterRecovery() {
           if (campaignId) unroutableCampaignIds.add(String(campaignId));
           continue;
         }
+        routed++;
 
         try {
           const result = await processInboxRow(client, row, {
@@ -440,6 +449,8 @@ async function pollSmartleadMasterRecovery() {
       }
       if (rows.length < pageLimit) break;
     }
+    totals.scanned = scanned;
+    totals.routed = routed;
   } catch (err) {
     console.error('[SmartLeadMasterPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {

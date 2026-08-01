@@ -1,9 +1,37 @@
 const { Router } = require('express');
 const db = require('../db');
 const { requireAdminSecret } = require('../middleware/adminSecret');
+const { setManualRoute } = require('../services/smartlead-campaign-route');
 
 const router = Router();
 router.use(requireAdminSecret);
+
+// Explicit repair/override for campaign ownership. Never infer by name.
+router.put('/admin/smartlead-routes/:campaignId', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const clientId = String(req.body?.client_id || '').trim();
+    if (!campaignId || !clientId) {
+      return res.status(400).json({ error: 'campaignId and client_id are required' });
+    }
+    const { rows } = await db.query('SELECT id, name FROM clients WHERE id = $1', [clientId]);
+    if (!rows[0]) return res.status(404).json({ error: 'client not found' });
+    const route = await setManualRoute({
+      campaignId,
+      clientId,
+      campaignName: req.body?.campaign_name || null,
+    });
+    console.log('[Admin] SmartLead campaign route set manually', {
+      campaignId,
+      clientId,
+      client: rows[0].name,
+    });
+    return res.json(route);
+  } catch (err) {
+    console.error('[Admin] SmartLead route update failed', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 function webhookUrls(clientId) {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + (process.env.PORT || 3000);
