@@ -36,8 +36,22 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
   const cutoff = Date.now() - hours * 3600 * 1000;
   const { rows: clients } = await db.query(
     `SELECT id, name, smartlead_api_key FROM clients
-      WHERE active IS DISTINCT FROM false AND smartlead_api_key IS NOT NULL`
+      WHERE active IS DISTINCT FROM false`
   );
+
+  // An account-level master key sees every campaign, including any whose
+  // client row has no key of its own — otherwise those campaigns are invisible
+  // to this sweep. Per-client keys still win when present, so each result stays
+  // attributed to the right client.
+  const master = String(process.env.SMARTLEAD_MASTER_API_KEY || '').trim();
+  const targets = clients
+    .map((c) => ({ ...c, key: c.smartlead_api_key || master }))
+    .filter((c) => c.key);
+  if (master && !clients.some((c) => c.smartlead_api_key === master)) {
+    // Sweep the whole account once too, so campaigns not mapped to any client
+    // row are still seen.
+    targets.push({ id: null, name: '(account-wide)', key: master });
+  }
 
   const booked = [];
   const notBooked = [];
@@ -45,11 +59,11 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
   let scanned = 0;
   let interested = 0;
 
-  for (const client of clients) {
+  for (const client of targets) {
     for (let page = 0; page < pages; page += 1) {
       let payload;
       try {
-        payload = await fetchInboxReplies(client.smartlead_api_key, page * pageSize, pageSize);
+        payload = await fetchInboxReplies(client.key, page * pageSize, pageSize);
       } catch (err) {
         errors.push({ client: client.name, err: err.message });
         break;
@@ -74,10 +88,12 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
 
         const signals = [];
         try {
-          const reason = await looksAlreadyBooked(client.id, {
-            platform: 'smartlead', leadEmail, leadName, leadId, since: at || new Date(cutoff),
-          });
-          if (reason) signals.push(reason);
+          if (client.id) {
+            const reason = await looksAlreadyBooked(client.id, {
+              platform: 'smartlead', leadEmail, leadName, leadId, since: at || new Date(cutoff),
+            });
+            if (reason) signals.push(reason);
+          }
         } catch (err) {
           errors.push({ client: client.name, lead: leadName, err: err.message });
         }
@@ -107,7 +123,8 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
 
   return {
     hours,
-    clientsScanned: clients.length,
+    clientsScanned: targets.length,
+    usingMasterKey: Boolean(master),
     repliesScanned: scanned,
     interestedFound: interested,
     likelyBooked: booked,
