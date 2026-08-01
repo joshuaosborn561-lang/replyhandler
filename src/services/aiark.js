@@ -4,6 +4,7 @@
  */
 
 const BASE = 'https://api.ai-ark.com/api/developer-portal';
+const { fetchWithTimeout } = require('../utils/fetch-with-timeout');
 
 function apiKey() {
   return String(process.env.AIARK_API_KEY || process.env.AI_ARK_API_KEY || '').trim();
@@ -25,7 +26,7 @@ function normalizePhone(raw) {
 async function postJson(path, body) {
   const key = apiKey();
   if (!key) throw new Error('AIARK_API_KEY not configured');
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

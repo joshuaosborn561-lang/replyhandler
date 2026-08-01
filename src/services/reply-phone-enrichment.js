@@ -127,4 +127,40 @@ async function enrichPendingReplyPhone(replyId) {
   }
 }
 
-module.exports = { enrichPendingReplyPhone, storedResult };
+async function waitForReplyPhoneEnrichment(replyId, { timeoutMs = 12000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let row = await getReply(replyId);
+  while (row && row.phone_enrichment_status === 'processing' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    row = await getReply(replyId);
+  }
+  return row ? storedResult(row) : { status: 'skipped', error: 'reply_not_found' };
+}
+
+/**
+ * Single spend-safe entry point for approve/send. It never bypasses the DB
+ * claim with a direct provider call.
+ */
+async function getOrAwaitReplyEnrichment(replyId, options = {}) {
+  const existing = await getReply(replyId);
+  if (!existing) return { status: 'skipped', error: 'reply_not_found' };
+  if (existing.phone_enrichment_status === 'found' ||
+      existing.phone_enrichment_status === 'not_found') {
+    return storedResult(existing);
+  }
+  if (existing.phone_enrichment_status === 'processing') {
+    return waitForReplyPhoneEnrichment(replyId, options);
+  }
+  const claimed = await enrichPendingReplyPhone(replyId);
+  if (claimed.status === 'processing') {
+    return waitForReplyPhoneEnrichment(replyId, options);
+  }
+  return claimed;
+}
+
+module.exports = {
+  enrichPendingReplyPhone,
+  waitForReplyPhoneEnrichment,
+  getOrAwaitReplyEnrichment,
+  storedResult,
+};

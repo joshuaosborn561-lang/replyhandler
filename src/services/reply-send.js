@@ -4,7 +4,7 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
-const { enrichProspect } = require('./prospect-enrich');
+const { getOrAwaitReplyEnrichment } = require('./reply-phone-enrichment');
 const { buildClientNotifyEmail } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 
@@ -62,25 +62,19 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
     if (forwardEmails) {
       try {
-        if (reply.phone_enrichment_status === 'found' ||
-            reply.phone_enrichment_status === 'not_found') {
-          enrichment = {
-            email: reply.lead_email || null,
-            phone: reply.lead_phone || null,
-            linkedinUrl: reply.linkedin_url || null,
-            website: reply.lead_website || null,
-            sources: {
-              email: reply.lead_email ? 'reply' : null,
-              phone: reply.lead_phone_provider || null,
-            },
-          };
-        } else {
-          enrichment = await enrichProspect({
-            email: reply.lead_email,
-            linkedinUrl: reply.linkedin_url,
-            leadName: reply.lead_name,
-          });
-        }
+        const stored = await getOrAwaitReplyEnrichment(reply.id, {
+          timeoutMs: parseInt(process.env.ENRICH_SEND_WAIT_MS || '12000', 10),
+        });
+        enrichment = {
+          email: stored.email || reply.lead_email || null,
+          phone: stored.phone || null,
+          linkedinUrl: stored.linkedinUrl || reply.linkedin_url || null,
+          website: stored.website || null,
+          sources: {
+            email: (stored.email || reply.lead_email) ? 'reply' : null,
+            phone: stored.provider || null,
+          },
+        };
       } catch (err) {
         console.warn('[ReplySend] Prospect enrichment failed (notifying without full enrich)', {
           replyId: reply.id, err: err.message,

@@ -146,16 +146,9 @@ async function postProspectSlackCard({
   card,
   replyId,
 }) {
-  let enrichedCard = card;
-  if (replyId) {
-    const phone = await enrichPendingReplyPhone(replyId);
-    enrichedCard = {
-      ...card,
-      leadPhone: phone.phone || undefined,
-      phoneProvider: phone.provider || undefined,
-      phoneEnrichmentStatus: phone.status || undefined,
-    };
-  }
+  const enrichedCard = replyId
+    ? { ...card, phoneEnrichmentStatus: card.phoneEnrichmentStatus || 'processing' }
+    : card;
 
   const threadTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId);
   const contextMessage = resolveSlackContextMessage({
@@ -198,6 +191,39 @@ async function postProspectSlackCard({
       'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
       [result.ts, replyId]
     );
+
+    // Phone providers are paid and can be slow. Post the card first, then
+    // enrich in the background and update the same card in place.
+    setImmediate(async () => {
+      try {
+        const phone = await enrichPendingReplyPhone(replyId);
+        const { rows } = await db.query(
+          `SELECT status
+             FROM pending_replies
+            WHERE id = $1`,
+          [replyId]
+        );
+        if (!rows[0] || !['pending', 'alert_only'].includes(rows[0].status)) return;
+
+        const updatedPayload = {
+          ...payload,
+          leadPhone: phone.phone || undefined,
+          phoneProvider: phone.provider || undefined,
+          phoneEnrichmentStatus: phone.status || undefined,
+          updateTs: result.ts,
+        };
+        if (isDraft) {
+          await slack.postDraftApproval(token, channelId, updatedPayload);
+        } else {
+          await slack.postAlert(token, channelId, updatedPayload);
+        }
+      } catch (err) {
+        console.error('[SlackReplyPost] Background phone enrichment failed', {
+          replyId,
+          err: err.message,
+        });
+      }
+    });
   }
 
   return { ...result, threadRootTs: threadTs || result.ts };
