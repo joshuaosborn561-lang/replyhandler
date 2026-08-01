@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const { startCron } = require('./cron');
 const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
+const { requireAdminSecretOrSetCookie } = require('./middleware/adminSecret');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,7 +25,11 @@ app.use('/slack', express.urlencoded({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' }));
 
 // ─── Dashboard UI ────────────────────────────────────────────────────
-app.use('/dashboard', express.static(path.join(__dirname, 'public')));
+app.use(
+  '/dashboard',
+  requireAdminSecretOrSetCookie,
+  express.static(path.join(__dirname, 'public'))
+);
 app.get('/', (_req, res) => res.redirect('/dashboard'));
 
 // ─── Health check (fails with 503 if schema or active clients missing — Railway should not route traffic) ───

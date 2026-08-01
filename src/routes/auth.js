@@ -3,20 +3,12 @@ const db = require('../db');
 const google = require('../services/google-calendar');
 const microsoft = require('../services/microsoft-calendar');
 const gmail = require('../services/gmail-send');
+const { requireAdminSecret } = require('../middleware/adminSecret');
 
 const router = Router();
 
-function gmailConnectAuthorized(req) {
-  // Only gate if an explicit primary-Gmail connect secret is set.
-  // Do NOT reuse WEBHOOK_TEST_SECRET — that blocked the one-time mailbox connect.
-  const expected = String(process.env.PRIMARY_GMAIL_CONNECT_SECRET || '').trim();
-  if (!expected) return true;
-  const got = String(req.query.secret || req.headers['x-webhook-test-secret'] || '').trim();
-  return got && got === expected;
-}
-
 // ─── Google OAuth ────────────────────────────────────────────────────
-router.get('/auth/google/connect/:clientId', async (req, res) => {
+router.get('/auth/google/connect/:clientId', requireAdminSecret, async (req, res) => {
   const { clientId } = req.params;
   const { rows: [client] } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
   if (!client) return res.status(404).send('Client not found');
@@ -55,10 +47,7 @@ router.get('/auth/google/callback', async (req, res) => {
 });
 
 // ─── Primary Gmail (SalesGlider notify mailbox) ──────────────────────
-router.get('/auth/gmail/connect', async (req, res) => {
-  if (!gmailConnectAuthorized(req)) {
-    return res.status(401).send('Unauthorized — pass ?secret=WEBHOOK_TEST_SECRET');
-  }
+router.get('/auth/gmail/connect', requireAdminSecret, async (req, res) => {
   if (!gmail.isConfigured()) {
     return res.status(500).send('GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET not configured on this server');
   }
@@ -108,7 +97,7 @@ router.get('/auth/gmail/callback', async (req, res) => {
   }
 });
 
-router.get('/auth/gmail/status', async (req, res) => {
+router.get('/auth/gmail/status', requireAdminSecret, async (req, res) => {
   try {
     const account = await gmail.getAccount();
     res.json({
@@ -124,7 +113,7 @@ router.get('/auth/gmail/status', async (req, res) => {
 });
 
 // ─── Microsoft OAuth ─────────────────────────────────────────────────
-router.get('/auth/microsoft/connect/:clientId', async (req, res) => {
+router.get('/auth/microsoft/connect/:clientId', requireAdminSecret, async (req, res) => {
   const { clientId } = req.params;
   const { rows: [client] } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
   if (!client) return res.status(404).send('Client not found');
@@ -163,7 +152,7 @@ router.get('/auth/microsoft/callback', async (req, res) => {
 });
 
 // ─── Status endpoint for dashboard ──────────────────────────────────
-router.get('/auth/calendar-status/:clientId', async (req, res) => {
+router.get('/auth/calendar-status/:clientId', requireAdminSecret, async (req, res) => {
   const { rows } = await db.query(
     'SELECT provider, email, created_at FROM calendar_connections WHERE client_id = $1',
     [req.params.clientId]
@@ -172,7 +161,7 @@ router.get('/auth/calendar-status/:clientId', async (req, res) => {
 });
 
 // ─── Disconnect ─────────────────────────────────────────────────────
-router.delete('/auth/calendar/:clientId/:provider', async (req, res) => {
+router.delete('/auth/calendar/:clientId/:provider', requireAdminSecret, async (req, res) => {
   await db.query(
     'DELETE FROM calendar_connections WHERE client_id = $1 AND provider = $2',
     [req.params.clientId, req.params.provider]
