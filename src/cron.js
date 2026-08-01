@@ -103,6 +103,24 @@ function startCron() {
     });
   }
 
+  // ─── Interested/booked sweep — recurring, results go to the log ───
+  // The app can reach SmartLead; a restricted session may not. Publishing the
+  // answer on a schedule means "who booked?" is always available from the
+  // deploy log without anyone querying SmartLead by hand.
+  if (!/^(0|false|no|off)$/i.test(String(process.env.SWEEP_INTERESTED_ENABLED || '1').trim())) {
+    const sweepEvery = (() => {
+      const n = parseInt(process.env.SWEEP_INTERESTED_MINUTES || '30', 10);
+      return Number.isFinite(n) && n > 0 && n <= 59 ? n : 30;
+    })();
+    cron.schedule(`*/${sweepEvery} * * * *`, async () => {
+      try {
+        await logInterestedSweep({ hours: 24 });
+      } catch (err) {
+        console.error('[Cron] Interested sweep failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Follow-up re-attempts — post as soon as they come due ────────
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_FOLLOW_UP_RUNNER || '').trim())) {
     const fuEvery = (() => {
@@ -225,7 +243,7 @@ function startCron() {
   const digestNote = attentionDigestsEnabled()
     ? 'morning + 3pm attention digests enabled'
     : 'morning + 3pm attention digests disabled (set ATTENTION_DIGESTS_ENABLED=1 to enable)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, meeting reminders, ${digestNote}`);
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {
