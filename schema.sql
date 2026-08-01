@@ -64,6 +64,15 @@ CREATE TABLE pending_replies (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE smartlead_campaign_routes (
+  campaign_id TEXT PRIMARY KEY,
+  client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  campaign_name TEXT,
+  source TEXT NOT NULL CHECK (source IN ('seed_history', 'webhook', 'poller', 'manual')),
+  learned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE meetings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id UUID NOT NULL REFERENCES clients(id),

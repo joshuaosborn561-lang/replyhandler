@@ -7,6 +7,10 @@ const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const {
+  learnRoute,
+  loadRouteMap,
+} = require('./smartlead-campaign-route');
+const {
   alreadyPostedToSlack,
   findUnpostedReply,
   repostReplyRowToSlack,
@@ -93,6 +97,31 @@ async function processInboxRow(client, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
+
+  const campaignKey = String(campaignId);
+  if (!options.routedByMaster) {
+    const existingRoute = options.routeMap?.get(campaignKey);
+    if (existingRoute && String(existingRoute.id) !== String(client.id)) {
+      return { skipped: 'route_conflict' };
+    }
+    if (!existingRoute) {
+      const effectiveKey = String(options.apiKey || client.smartlead_api_key || '').trim();
+      const masterKey = String(process.env.SMARTLEAD_MASTER_API_KEY || '').trim();
+      if (masterKey && effectiveKey === masterKey) {
+        // A master inbox row without an explicit route is never attributed to
+        // whichever client happens to be iterating.
+        return { skipped: 'unroutable_campaign' };
+      }
+      const learned = await learnRoute({
+        campaignId: campaignKey,
+        clientId: client.id,
+        campaignName: row.email_campaign_name || null,
+        source: 'poller',
+      });
+      if (!learned.ok) return { skipped: learned.reason };
+      options.routeMap?.set(campaignKey, client);
+    }
+  }
 
   const inbound = latestInboundFromRow(row);
   if (!inbound) return { skipped: 'no_inbound' };
@@ -281,6 +310,7 @@ async function pollSmartleadReplies() {
     }
 
     const clients = await loadClients();
+    const routeMap = await loadRouteMap();
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
     const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
@@ -307,7 +337,11 @@ async function pollSmartleadReplies() {
           if (scanned >= maxReplies) break;
           scanned++;
           try {
-            const result = await processInboxRow(client, row, { lookbackHours });
+            const result = await processInboxRow(client, row, {
+              lookbackHours,
+              apiKey: client.smartlead_api_key,
+              routeMap,
+            });
             if (result.posted) {
               posted++;
               totals.processed++;
@@ -336,4 +370,96 @@ async function pollSmartleadReplies() {
   return totals;
 }
 
-module.exports = { pollSmartleadReplies, fetchInboxReplies, historyFromRow, latestInboundFromRow, replyTime };
+let isMasterPollingRunning = false;
+
+/**
+ * Poll the account-wide inbox once, then route each row through an explicit
+ * campaign -> client mapping. Unknown campaigns are logged and skipped.
+ */
+async function pollSmartleadMasterRecovery() {
+  const masterKey = String(process.env.SMARTLEAD_MASTER_API_KEY || '').trim();
+  if (!masterKey || !envFlag('SMARTLEAD_MASTER_POLL_ENABLED', true)) {
+    return { processed: 0, skipped: 0, disabled: true };
+  }
+  if (isMasterPollingRunning) {
+    console.log('[SmartLeadMasterPoll] Previous run still active; skipping');
+    return { processed: 0, skipped: 0 };
+  }
+
+  isMasterPollingRunning = true;
+  const started = Date.now();
+  const totals = { processed: 0, skipped: 0 };
+  const skipCounts = {};
+  const unroutableCampaignIds = new Set();
+  try {
+    const routeMap = await loadRouteMap();
+    const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
+    const maxReplies = numberEnv('SMARTLEAD_MASTER_POLL_MAX_REPLIES', 80);
+    const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
+    let scanned = 0;
+
+    for (let offset = 0; scanned < maxReplies; offset += pageLimit) {
+      const payload = await fetchInboxReplies(masterKey, offset, pageLimit);
+      const rows = Array.isArray(payload?.data) ? payload.data : [];
+      if (!rows.length) break;
+
+      for (const row of rows) {
+        if (scanned >= maxReplies) break;
+        scanned++;
+        const campaignId =
+          normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
+        const client = campaignId ? routeMap.get(String(campaignId)) : null;
+        if (!client) {
+          const reason = campaignId ? 'unroutable_campaign' : 'missing_ids';
+          skipCounts[reason] = (skipCounts[reason] || 0) + 1;
+          totals.skipped++;
+          if (campaignId) unroutableCampaignIds.add(String(campaignId));
+          continue;
+        }
+
+        try {
+          const result = await processInboxRow(client, row, {
+            lookbackHours,
+            apiKey: masterKey,
+            routeMap,
+            routedByMaster: true,
+          });
+          if (result.posted) totals.processed++;
+          else if (result.skipped) {
+            totals.skipped++;
+            skipCounts[result.skipped] = (skipCounts[result.skipped] || 0) + 1;
+          }
+        } catch (err) {
+          console.error('[SmartLeadMasterPoll] Row processing failed', {
+            campaignId,
+            clientId: client.id,
+            client: client.name,
+            err: err.message,
+          });
+        }
+      }
+      if (rows.length < pageLimit) break;
+    }
+  } catch (err) {
+    console.error('[SmartLeadMasterPoll] Poll failed', { err: err.message, stack: err.stack });
+  } finally {
+    isMasterPollingRunning = false;
+    console.log('[SmartLeadMasterPoll] Finished', {
+      ms: Date.now() - started,
+      ...totals,
+      skipCounts,
+      unroutableCampaignIds: [...unroutableCampaignIds],
+    });
+  }
+  return totals;
+}
+
+module.exports = {
+  pollSmartleadReplies,
+  pollSmartleadMasterRecovery,
+  processInboxRow,
+  fetchInboxReplies,
+  historyFromRow,
+  latestInboundFromRow,
+  replyTime,
+};

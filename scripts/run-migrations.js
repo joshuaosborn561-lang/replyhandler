@@ -31,6 +31,7 @@ const MIGRATION_FILES = [
   '017_follow_up_skip_reasons.sql',
   '018_clear_follow_up_backlog.sql',
   '019_suppressed_replies.sql',
+  '020_smartlead_campaign_routes.sql',
 ];
 
 async function clientsTableExists(client) {

@@ -20,6 +20,13 @@ async function sendReplyToPlatform(client, reply, replyText) {
   }
 
   if (reply.platform === 'smartlead') {
+    // Targeted campaign/lead operations are safe with the account-level key;
+    // unlike inbox polling, they cannot cross-route a row to another client.
+    const smartleadApiKey = String(
+      process.env.SMARTLEAD_MASTER_API_KEY || client.smartlead_api_key || ''
+    ).trim();
+    if (!smartleadApiKey) throw new Error('No SmartLead API key configured');
+
     // Primary: the stats_id captured at webhook ingestion.
     // Fallback: resolve live from message-history (for older rows that predate the column).
     let emailStatsId = reply.smartlead_email_stats_id || null;
@@ -29,7 +36,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
       console.log('[ReplySend] SmartLead stats_id missing on row — resolving live', {
         replyId: reply.id, campaignId: reply.campaign_id, leadId: reply.lead_id,
       });
-      emailStatsId = await smartlead.resolveEmailStatsId(client.smartlead_api_key, reply.campaign_id, leadId);
+      emailStatsId = await smartlead.resolveEmailStatsId(smartleadApiKey, reply.campaign_id, leadId);
       if (emailStatsId) {
         await db.query('UPDATE pending_replies SET smartlead_email_stats_id = $1 WHERE id = $2', [emailStatsId, reply.id]);
       }
@@ -54,7 +61,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
     let enrichment = null;
 
     await smartlead.sendReply(
-      client.smartlead_api_key,
+      smartleadApiKey,
       reply.campaign_id,
       reply.lead_id,
       { replyText, emailStatsId }
@@ -131,7 +138,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
         });
         try {
           await smartlead.forwardThreadToClient(
-            client.smartlead_api_key,
+            smartleadApiKey,
             reply.campaign_id,
             reply.lead_id,
             {

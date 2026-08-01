@@ -266,3 +266,15 @@ guess from the source inbound message, later replies, call transcripts, and any
 calendar connection that actually exists.
 
 Guard: `proposed meeting rows do not suppress follow-ups by themselves`
+
+### The SmartLead master inbox routes by campaign, never by client iteration
+
+The account-level key can see every campaign. Reusing it once per client caused
+every reply to post in every client's Slack channel.
+
+Master recovery now polls the account once and requires an explicit
+`campaign_id -> client_id` route. Routes are learned from verified webhook
+URLs or unambiguous history. An unknown or conflicting campaign is logged and
+skipped; the app never guesses from a name and never posts it to all clients.
+
+Guard: `master SmartLead polling requires an explicit campaign route`
