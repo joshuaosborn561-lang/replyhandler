@@ -31,7 +31,8 @@ function confidence(signals) {
   return 'no evidence';
 }
 
-async function sweepInterested({ hours = 24, pages = 4, pageSize = 50 } = {}) {
+// SmartLead caps inbox-replies at 20 per request; more than that is a 400.
+async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
   const cutoff = Date.now() - hours * 3600 * 1000;
   const { rows: clients } = await db.query(
     `SELECT id, name, smartlead_api_key FROM clients
