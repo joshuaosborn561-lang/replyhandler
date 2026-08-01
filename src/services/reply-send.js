@@ -70,7 +70,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
     if (forwardEmails) {
       try {
         const stored = await getOrAwaitReplyEnrichment(reply.id, {
-          timeoutMs: parseInt(process.env.ENRICH_SEND_WAIT_MS || '12000', 10),
+          timeoutMs: parseInt(process.env.ENRICH_SEND_WAIT_MS || '30000', 10),
         });
         enrichment = {
           email: stored.email || reply.lead_email || null,

@@ -7,6 +7,7 @@
 
 const db = require('../db');
 const { enrichProspect } = require('./prospect-enrich');
+const { randomUUID } = require('crypto');
 
 function storedResult(reply) {
   return {
@@ -25,7 +26,8 @@ async function getReply(replyId) {
   const { rows } = await db.query(
     `SELECT id, campaign_id, lead_name, lead_email, linkedin_url, lead_phone,
             lead_phone_provider, lead_website, phone_enrichment_status,
-            phone_enrichment_error, phone_enriched_at
+            phone_enrichment_error, phone_enriched_at,
+            phone_enrichment_claim_token, updated_at
        FROM pending_replies
       WHERE id = $1`,
     [replyId]
@@ -49,22 +51,34 @@ async function enrichPendingReplyPhone(replyId) {
       existing.phone_enrichment_status === 'not_found') {
     return storedResult(existing);
   }
-  if (existing.phone_enrichment_status === 'processing') {
+  const staleMinutes = Math.max(
+    1,
+    parseInt(process.env.ENRICH_STALE_PROCESSING_MINUTES || '10', 10) || 10
+  );
+  const staleBefore = new Date(Date.now() - staleMinutes * 60 * 1000);
+  if (existing.phone_enrichment_status === 'processing' &&
+      existing.updated_at && new Date(existing.updated_at) >= staleBefore) {
     return storedResult(existing);
   }
 
+  const claimToken = randomUUID();
   const { rows: claimedRows } = await db.query(
     `UPDATE pending_replies
         SET phone_enrichment_status = 'processing',
             phone_enrichment_error = NULL,
+            phone_enrichment_claim_token = $2,
             updated_at = now()
       WHERE id = $1
         AND (
           phone_enrichment_status IS NULL
           OR phone_enrichment_status = 'failed'
+          OR (
+            phone_enrichment_status = 'processing'
+            AND updated_at < now() - ($3::float * interval '1 minute')
+          )
         )
       RETURNING id, lead_name, lead_email, linkedin_url`,
-    [replyId]
+    [replyId, claimToken, staleMinutes]
   );
   const claimed = claimedRows[0];
   if (!claimed) return storedResult(await getReply(replyId));
@@ -76,7 +90,18 @@ async function enrichPendingReplyPhone(replyId) {
       leadName: claimed.lead_name,
     });
     const provider = enriched.sources?.phone || null;
-    const status = enriched.phone ? 'found' : 'not_found';
+    const transientOnlyFailure =
+      !enriched.phone &&
+      enriched.phoneErrors?.length > 0 &&
+      enriched.phoneLookupsCompleted === 0;
+    const status = enriched.phone
+      ? 'found'
+      : transientOnlyFailure
+        ? 'failed'
+        : 'not_found';
+    const enrichmentError = transientOnlyFailure
+      ? enriched.phoneErrors.map((item) => `${item.provider}: ${item.error}`).join('; ').slice(0, 1000)
+      : null;
 
     const { rows } = await db.query(
       `UPDATE pending_replies
@@ -85,10 +110,12 @@ async function enrichPendingReplyPhone(replyId) {
               linkedin_url = COALESCE(linkedin_url, $3),
               lead_website = $4,
               phone_enrichment_status = $5,
-              phone_enrichment_error = NULL,
+              phone_enrichment_error = $8,
+              phone_enrichment_claim_token = NULL,
               phone_enriched_at = now(),
               updated_at = now()
         WHERE id = $6
+          AND phone_enrichment_claim_token = $7
         RETURNING id, lead_name, lead_email, linkedin_url, lead_phone,
                   lead_phone_provider, lead_website, phone_enrichment_status,
                   phone_enrichment_error, phone_enriched_at`,
@@ -99,6 +126,8 @@ async function enrichPendingReplyPhone(replyId) {
         enriched.website || null,
         status,
         replyId,
+        claimToken,
+        enrichmentError,
       ]
     );
     console.log('[ReplyPhone] Enrichment complete', {
@@ -107,16 +136,18 @@ async function enrichPendingReplyPhone(replyId) {
       provider,
       phone: enriched.phone || null,
     });
-    return storedResult(rows[0]);
+    return rows[0] ? storedResult(rows[0]) : storedResult(await getReply(replyId));
   } catch (err) {
     await db.query(
       `UPDATE pending_replies
           SET phone_enrichment_status = 'failed',
               phone_enrichment_error = $1,
+              phone_enrichment_claim_token = NULL,
               phone_enriched_at = now(),
               updated_at = now()
-        WHERE id = $2`,
-      [String(err.message || err).slice(0, 1000), replyId]
+        WHERE id = $2
+          AND phone_enrichment_claim_token = $3`,
+      [String(err.message || err).slice(0, 1000), replyId, claimToken]
     );
     console.error('[ReplyPhone] Enrichment failed', { replyId, err: err.message });
     return {
@@ -142,6 +173,9 @@ async function waitForReplyPhoneEnrichment(replyId, { timeoutMs = 12000 } = {}) 
  * claim with a direct provider call.
  */
 async function getOrAwaitReplyEnrichment(replyId, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Number(options.timeoutMs)
+    : 30000;
   const existing = await getReply(replyId);
   if (!existing) return { status: 'skipped', error: 'reply_not_found' };
   if (existing.phone_enrichment_status === 'found' ||
@@ -149,11 +183,19 @@ async function getOrAwaitReplyEnrichment(replyId, options = {}) {
     return storedResult(existing);
   }
   if (existing.phone_enrichment_status === 'processing') {
-    return waitForReplyPhoneEnrichment(replyId, options);
+    return waitForReplyPhoneEnrichment(replyId, { timeoutMs });
   }
-  const claimed = await enrichPendingReplyPhone(replyId);
+  const timeoutMarker = Symbol('enrichment-timeout');
+  const claimed = await Promise.race([
+    enrichPendingReplyPhone(replyId),
+    new Promise((resolve) => setTimeout(() => resolve(timeoutMarker), timeoutMs)),
+  ]);
+  if (claimed === timeoutMarker) {
+    const current = await getReply(replyId);
+    return current ? storedResult(current) : { status: 'skipped', error: 'reply_not_found' };
+  }
   if (claimed.status === 'processing') {
-    return waitForReplyPhoneEnrichment(replyId, options);
+    return waitForReplyPhoneEnrichment(replyId, { timeoutMs });
   }
   return claimed;
 }

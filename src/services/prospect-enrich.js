@@ -32,6 +32,8 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
   let phone = null;
   let website = null;
   const sources = {};
+  const phoneErrors = [];
+  let phoneLookupsCompleted = 0;
 
   const domainHint = domainFromEmail(workEmail);
 
@@ -39,6 +41,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
   if (getleads.isConfigured() && workEmail) {
     try {
       const gl = await getleads.findPhoneByEmail(workEmail);
+      phoneLookupsCompleted++;
       if (gl.phone && !phone) {
         phone = gl.phone;
         sources.phone = 'getleads';
@@ -59,6 +62,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
         }
       }
     } catch (err) {
+      phoneErrors.push({ provider: 'getleads', error: err.message });
       console.warn('[ProspectEnrich] GetLeads failed', { err: err.message, email: workEmail });
     }
   }
@@ -78,11 +82,8 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
         }
       }
       if (!phone) {
-        const mob = await aiark.findMobile({
-          linkedinUrl: li,
-          name: leadName,
-          domain: domainHint || (companyName ? null : null),
-        });
+        const mob = await aiark.findMobile({ linkedinUrl: li, name: leadName, domain: domainHint });
+        if (!mob.skipped || mob.skipped === 'not_found') phoneLookupsCompleted++;
         if (mob.phone) {
           phone = mob.phone;
           sources.phone = 'aiark';
@@ -93,6 +94,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
         }
       }
     } catch (err) {
+      phoneErrors.push({ provider: 'aiark', error: err.message });
       console.warn('[ProspectEnrich] AI Ark failed', { err: err.message, email: workEmail });
     }
   }
@@ -104,11 +106,13 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
         workEmail,
         profileUrl: li,
       });
+      if (!lm.skipped || lm.skipped === 'not_found') phoneLookupsCompleted++;
       if (lm.phone) {
         phone = lm.phone;
         sources.phone = 'leadmagic';
       }
     } catch (err) {
+      phoneErrors.push({ provider: 'leadmagic', error: err.message });
       console.warn('[ProspectEnrich] LeadMagic failed', { err: err.message, email: workEmail });
     }
   }
@@ -126,6 +130,8 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
     linkedinUrl: li,
     website,
     sources,
+    phoneErrors,
+    phoneLookupsCompleted,
   };
 }
 

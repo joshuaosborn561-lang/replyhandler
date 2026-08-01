@@ -45,3 +45,20 @@ test('provider fetches are bounded by a timeout', async () => {
     global.fetch = originalFetch;
   }
 });
+
+test('phone enrichment claims have stale recovery and ownership tokens', () => {
+  const source = read('src/services/reply-phone-enrichment.js');
+  const migration = read('migrations/021_phone_enrichment_claim_lease.sql');
+  assert.match(source, /ENRICH_STALE_PROCESSING_MINUTES/);
+  assert.match(source, /phone_enrichment_claim_token = \$2/);
+  assert.match(source, /phone_enrichment_claim_token = \$7/);
+  assert.match(source, /phone_enrichment_status = 'processing'[\s\S]*updated_at </);
+  assert.match(migration, /phone_enrichment_claim_token UUID/);
+});
+
+test('transient provider-only failures remain retryable', () => {
+  const source = read('src/services/reply-phone-enrichment.js');
+  assert.match(source, /phoneErrors\?\.length > 0/);
+  assert.match(source, /phoneLookupsCompleted === 0/);
+  assert.match(source, /transientOnlyFailure[\s\S]*'failed'/);
+});
