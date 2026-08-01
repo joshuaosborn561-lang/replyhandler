@@ -291,4 +291,25 @@ test('proposed meeting rows do not suppress follow-ups by themselves', () => {
       'the follow-up runner does not pass the source reply into booking checks'
     )
   );
+
+  const { looksLikeProposedTime } = require('../src/utils/booking-signals');
+  const { categoryBackedSchedulingAcceptance } = require('../src/services/booking-check');
+  assert.equal(looksLikeProposedTime('Your product works for me; what does pricing look like?'), false);
+  assert.equal(looksLikeProposedTime("I'm available if you have questions."), false);
+  assert.equal(looksLikeProposedTime('Tuesday at 2pm works for me.'), true);
+  assert.equal(looksLikeProposedTime("I'm available Tuesday afternoon."), true);
+  assert.equal(
+    categoryBackedSchedulingAcceptance({
+      inbound_message: 'Works for me',
+      classification: 'MEETING_PROPOSED',
+    }),
+    'prospect_proposed_time'
+  );
+  assert.equal(
+    categoryBackedSchedulingAcceptance({
+      inbound_message: 'Your product works for me',
+      classification: 'INTERESTED',
+    }),
+    null
+  );
 });

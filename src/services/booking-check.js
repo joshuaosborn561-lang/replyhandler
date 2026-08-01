@@ -38,13 +38,23 @@ async function meetingRowExists(clientId, { leadEmail, leadName }) {
 async function sourceReplySaysBooked(sourcePendingReplyId) {
   if (!sourcePendingReplyId) return null;
   const { rows } = await db.query(
-    `SELECT inbound_message
+    `SELECT inbound_message, classification
        FROM pending_replies
       WHERE id = $1
       LIMIT 1`,
     [sourcePendingReplyId]
   );
-  return rows[0] ? replySuppressesFollowUp(rows[0].inbound_message) : null;
+  if (!rows[0]) return null;
+  return replySuppressesFollowUp(rows[0].inbound_message) ||
+    categoryBackedSchedulingAcceptance(rows[0]);
+}
+
+function categoryBackedSchedulingAcceptance({ inbound_message: text, classification }) {
+  if (classification !== 'MEETING_PROPOSED') return null;
+  return /\b(works for me|either works|both work|sounds good|that works|send (me )?(an |a )?invite)\b/i
+    .test(String(text || ''))
+    ? 'prospect_proposed_time'
+    : null;
 }
 
 /** 3. The prospect said so in a later reply. */
@@ -54,7 +64,7 @@ async function laterReplySaysBooked(clientId, { leadEmail, leadId, platform, sin
   if (!email && !lead) return null;
 
   const { rows } = await db.query(
-    `SELECT inbound_message
+    `SELECT inbound_message, classification
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
@@ -69,7 +79,8 @@ async function laterReplySaysBooked(clientId, { leadEmail, leadId, platform, sin
   );
 
   for (const r of rows) {
-    const reason = replySuppressesFollowUp(r.inbound_message);
+    const reason = replySuppressesFollowUp(r.inbound_message) ||
+      categoryBackedSchedulingAcceptance(r);
     if (reason) return reason;
   }
   return null;
@@ -147,6 +158,7 @@ module.exports = {
   looksAlreadyBooked,
   meetingRowExists,
   sourceReplySaysBooked,
+  categoryBackedSchedulingAcceptance,
   laterReplySaysBooked,
   calendarHasEventWith,
 };

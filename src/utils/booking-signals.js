@@ -34,13 +34,16 @@ function looksLikeProposedTime(text) {
   const day = /\b(mon|tues?|wed(nes)?|thur?s?|fri|sat(ur)?|sun)(day)?\b/;
   const clock = /\b(1[0-2]|0?[1-9])(:[0-5][0-9])?\s*(am|pm)\b/;
   const vagueTime = /\b(morning|afternoon|evening|noon|midday|eod|cob)\b/;
+  const schedulingNoun = /\b(call|meeting|calendar|invite|invitation|slot|time)\b/;
+  const hasSchedulingAnchor =
+    day.test(s) || clock.test(s) || vagueTime.test(s) || schedulingNoun.test(s);
 
   // "how about Tuesday", "does 2pm work", "Tuesday at 10 works"
   if ((day.test(s) || clock.test(s) || vagueTime.test(s)) && /\b(work|works|good|fine|free|available|open|ok|okay|suits?)\b/.test(s)) return true;
   if (/\b(how about|what about|does|can we do|let'?s do|how'?s)\b/.test(s) && (day.test(s) || clock.test(s) || vagueTime.test(s))) return true;
-  if (/\b(i'?m|i am|we'?re|we are)\s+(free|available|open)\b/.test(s)) return true;
+  if (hasSchedulingAnchor && /\b(i'?m|i am|we'?re|we are)\s+(free|available|open)\b/.test(s)) return true;
   if (/\b(send|shoot) (me|over) (an|a) invite\b/.test(s)) return true;
-  if (/\bworks for me\b/.test(s)) return true;
+  if (hasSchedulingAnchor && /\bworks for me\b/.test(s)) return true;
   if (/\b(either|both) (of those|times|work)\b/.test(s)) return true;
 
   return false;
