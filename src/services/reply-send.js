@@ -23,7 +23,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
     // Targeted campaign/lead operations are safe with the account-level key;
     // unlike inbox polling, they cannot cross-route a row to another client.
     const smartleadApiKey = String(
-      process.env.SMARTLEAD_MASTER_API_KEY || client.smartlead_api_key || ''
+      client.smartlead_api_key || process.env.SMARTLEAD_MASTER_API_KEY || ''
     ).trim();
     if (!smartleadApiKey) throw new Error('No SmartLead API key configured');
 

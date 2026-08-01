@@ -32,7 +32,7 @@ test('master key is used only for targeted send operations', () => {
   const send = read('src/services/reply-send.js');
   assert.match(
     send,
-    /SMARTLEAD_MASTER_API_KEY \|\| client\.smartlead_api_key/
+    /client\.smartlead_api_key \|\| process\.env\.SMARTLEAD_MASTER_API_KEY/
   );
   assert.match(send, /smartlead\.sendReply\(\s*smartleadApiKey/);
 });
