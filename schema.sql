@@ -49,6 +49,7 @@ CREATE TABLE pending_replies (
   ),
   phone_enrichment_error TEXT,
   phone_enriched_at TIMESTAMPTZ,
+  phone_enrichment_claim_token UUID,
   inbound_message TEXT NOT NULL,
   thread_context JSONB,
   classification TEXT NOT NULL,
@@ -61,6 +62,15 @@ CREATE TABLE pending_replies (
   pending_nudge_sent_at TIMESTAMPTZ,
   reminder_count INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE smartlead_campaign_routes (
+  campaign_id TEXT PRIMARY KEY,
+  client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  campaign_name TEXT,
+  source TEXT NOT NULL CHECK (source IN ('seed_api', 'webhook', 'poller', 'manual')),
+  learned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

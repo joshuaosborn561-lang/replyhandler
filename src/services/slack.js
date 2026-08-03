@@ -73,6 +73,9 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
   if (phoneEnrichmentStatus === 'failed') {
     return '\n📱 _enrichment failed_';
   }
+  if (phoneEnrichmentStatus === 'processing') {
+    return '\n📱 _looking up…_';
+  }
   return '';
 }
 
@@ -338,6 +341,7 @@ async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  updateTs,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -412,18 +416,22 @@ async function postDraftApproval(token, channelId, {
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 
-  return slack.chat.postMessage({
+  const message = {
     channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
     text: `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`,
     blocks,
+  };
+  if (updateTs) return slack.chat.update({ ...message, ts: updateTs });
+  return slack.chat.postMessage({
+    ...message,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
   });
 }
 
 async function postAlert(token, channelId, {
   leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
   platform, classification, inboundMessage, reasoning,
-  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
+  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, updateTs,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -465,11 +473,15 @@ async function postAlert(token, channelId, {
     },
   ];
 
-  return slack.chat.postMessage({
+  const message = {
     channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
     text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
     blocks,
+  };
+  if (updateTs) return slack.chat.update({ ...message, ts: updateTs });
+  return slack.chat.postMessage({
+    ...message,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
   });
 }
 

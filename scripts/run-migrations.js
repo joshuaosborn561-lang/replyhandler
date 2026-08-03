@@ -12,7 +12,7 @@ const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 
-/** Filenames in lexical order (002 … 010). */
+/** Filenames in lexical order (002 … current). */
 const MIGRATION_FILES = [
   '002_booking_link.sql',
   '003_calendar_connections.sql',
@@ -31,6 +31,8 @@ const MIGRATION_FILES = [
   '017_follow_up_skip_reasons.sql',
   '018_clear_follow_up_backlog.sql',
   '019_suppressed_replies.sql',
+  '020_smartlead_campaign_routes.sql',
+  '021_phone_enrichment_claim_lease.sql',
 ];
 
 async function clientsTableExists(client) {

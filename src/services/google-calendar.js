@@ -16,7 +16,7 @@ function getRedirectUri() {
   return `${protocol}://${domain}/auth/google/callback`;
 }
 
-function getAuthUrl(clientId) {
+function getAuthUrl(clientId, state = clientId) {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
     redirect_uri: getRedirectUri(),
@@ -24,7 +24,7 @@ function getAuthUrl(clientId) {
     scope: SCOPES,
     access_type: 'offline',
     prompt: 'consent',
-    state: clientId,
+    state,
   });
   return `${GOOGLE_AUTH_URL}?${params}`;
 }

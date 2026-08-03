@@ -9,7 +9,10 @@ const { logIntegrationStatus } = require('./services/integration-check');
 const { logInterestedSweep } = require('./services/interested-sweep');
 const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
-const { pollSmartleadReplies } = require('./services/smartlead-poller');
+const {
+  pollSmartleadReplies,
+  pollSmartleadMasterRecovery,
+} = require('./services/smartlead-poller');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
@@ -79,6 +82,11 @@ function startCron() {
         const result = await pollSmartleadReplies();
         if (result && (result.processed || result.skipped)) {
           console.log('[Cron] SmartLead poll complete', result);
+        }
+        const masterResult = await pollSmartleadMasterRecovery();
+        if (masterResult && !masterResult.disabled &&
+            (masterResult.processed || masterResult.skipped)) {
+          console.log('[Cron] SmartLead master recovery complete', masterResult);
         }
       } catch (err) {
         console.error('[Cron] SmartLead poll failed', { err: err.message });

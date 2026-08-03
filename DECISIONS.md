@@ -251,3 +251,30 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-01
+
+### A proposed meeting row is not a booking
+
+Josh does not have reliable calendar access for every client. A row created
+because a prospect merely discussed scheduling cannot be treated as proof that
+the meeting was booked.
+
+Follow-up suppression now treats only `confirmed` and `booked` meeting rows as
+authoritative. A `proposed` row is ignored; instead, the app makes its best
+guess from the source inbound message, later replies, call transcripts, and any
+calendar connection that actually exists.
+
+Guard: `proposed meeting rows do not suppress follow-ups by themselves`
+
+### The SmartLead master inbox routes by campaign, never by client iteration
+
+The account-level key can see every campaign. Reusing it once per client caused
+every reply to post in every client's Slack channel.
+
+Master recovery now polls the account once and requires an explicit
+`campaign_id -> client_id` route. Routes are learned from verified webhook
+URLs or unambiguous history. An unknown or conflicting campaign is logged and
+skipped; the app never guesses from a name and never posts it to all clients.
+
+Guard: `master SmartLead polling requires an explicit campaign route`

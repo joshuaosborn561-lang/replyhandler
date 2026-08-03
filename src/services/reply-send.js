@@ -4,7 +4,7 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
-const { enrichProspect } = require('./prospect-enrich');
+const { getOrAwaitReplyEnrichment } = require('./reply-phone-enrichment');
 const { buildClientNotifyEmail } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 
@@ -20,6 +20,13 @@ async function sendReplyToPlatform(client, reply, replyText) {
   }
 
   if (reply.platform === 'smartlead') {
+    // Targeted campaign/lead operations are safe with the account-level key;
+    // unlike inbox polling, they cannot cross-route a row to another client.
+    const smartleadApiKey = String(
+      client.smartlead_api_key || process.env.SMARTLEAD_MASTER_API_KEY || ''
+    ).trim();
+    if (!smartleadApiKey) throw new Error('No SmartLead API key configured');
+
     // Primary: the stats_id captured at webhook ingestion.
     // Fallback: resolve live from message-history (for older rows that predate the column).
     let emailStatsId = reply.smartlead_email_stats_id || null;
@@ -29,7 +36,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
       console.log('[ReplySend] SmartLead stats_id missing on row — resolving live', {
         replyId: reply.id, campaignId: reply.campaign_id, leadId: reply.lead_id,
       });
-      emailStatsId = await smartlead.resolveEmailStatsId(client.smartlead_api_key, reply.campaign_id, leadId);
+      emailStatsId = await smartlead.resolveEmailStatsId(smartleadApiKey, reply.campaign_id, leadId);
       if (emailStatsId) {
         await db.query('UPDATE pending_replies SET smartlead_email_stats_id = $1 WHERE id = $2', [emailStatsId, reply.id]);
       }
@@ -54,7 +61,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
     let enrichment = null;
 
     await smartlead.sendReply(
-      client.smartlead_api_key,
+      smartleadApiKey,
       reply.campaign_id,
       reply.lead_id,
       { replyText, emailStatsId }
@@ -62,25 +69,19 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
     if (forwardEmails) {
       try {
-        if (reply.phone_enrichment_status === 'found' ||
-            reply.phone_enrichment_status === 'not_found') {
-          enrichment = {
-            email: reply.lead_email || null,
-            phone: reply.lead_phone || null,
-            linkedinUrl: reply.linkedin_url || null,
-            website: reply.lead_website || null,
-            sources: {
-              email: reply.lead_email ? 'reply' : null,
-              phone: reply.lead_phone_provider || null,
-            },
-          };
-        } else {
-          enrichment = await enrichProspect({
-            email: reply.lead_email,
-            linkedinUrl: reply.linkedin_url,
-            leadName: reply.lead_name,
-          });
-        }
+        const stored = await getOrAwaitReplyEnrichment(reply.id, {
+          timeoutMs: parseInt(process.env.ENRICH_SEND_WAIT_MS || '30000', 10),
+        });
+        enrichment = {
+          email: stored.email || reply.lead_email || null,
+          phone: stored.phone || null,
+          linkedinUrl: stored.linkedinUrl || reply.linkedin_url || null,
+          website: stored.website || null,
+          sources: {
+            email: (stored.email || reply.lead_email) ? 'reply' : null,
+            phone: stored.provider || null,
+          },
+        };
       } catch (err) {
         console.warn('[ReplySend] Prospect enrichment failed (notifying without full enrich)', {
           replyId: reply.id, err: err.message,
@@ -137,7 +138,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
         });
         try {
           await smartlead.forwardThreadToClient(
-            client.smartlead_api_key,
+            smartleadApiKey,
             reply.campaign_id,
             reply.lead_id,
             {

@@ -9,6 +9,7 @@ const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { inboundPrefix, normalizeInboundText, sameReplySql } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead } = require('../services/smartlead-category');
+const { learnRoute } = require('../services/smartlead-campaign-route');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const {
@@ -413,6 +414,16 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         clientId, client: client.name, campaignId: resolvedCampaignId,
       });
       return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
+    }
+
+    const route = await learnRoute({
+      campaignId: resolvedCampaignId,
+      clientId,
+      campaignName: payload.email_campaign_name || payload.campaign_name || null,
+      source: 'webhook',
+    });
+    if (!route.ok) {
+      return res.status(200).json({ ok: true, skipped: true, reason: route.reason });
     }
 
     await cancelForInboundReply({

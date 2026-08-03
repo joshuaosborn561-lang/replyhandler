@@ -18,14 +18,14 @@ function getRedirectUri() {
   return `${protocol}://${domain}/auth/microsoft/callback`;
 }
 
-function getAuthUrl(clientId) {
+function getAuthUrl(clientId, state = clientId) {
   const params = new URLSearchParams({
     client_id: process.env.MICROSOFT_CLIENT_ID,
     redirect_uri: getRedirectUri(),
     response_type: 'code',
     scope: SCOPES,
     response_mode: 'query',
-    state: clientId,
+    state,
   });
   return `${MS_AUTH_URL}?${params}`;
 }

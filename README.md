@@ -30,7 +30,7 @@ Or on Railway, provision a Postgres plugin and apply the base schema once (requi
 railway run psql $DATABASE_URL < schema.sql
 ```
 
-After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–010, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
+After that, each deploy runs `scripts/apply-schema-to-db.js` (empty DB only: full `schema.sql` + migrations) then `scripts/run-migrations.js` (incremental 002–021, tracked in `schema_migrations`). Set `SKIP_DB_MIGRATIONS=1` only if you intentionally manage SQL by hand.
 
 **Backups and avoiding data loss:** This app never deletes `clients` rows. If client rows vanish, the Postgres **volume was reset or a new database was attached** (e.g. recreating the Postgres service in Railway). Mitigations: enable **Railway Postgres backups** in the dashboard (plan-dependent); avoid detaching/recreating the Postgres plugin; periodically run `pg_dump` off-platform, e.g. `railway run --service <App> pg_dump "$DATABASE_URL" > backup-$(date +%Y%m%d).sql` (use the app service so `DATABASE_URL` points at your data). Client API keys must be **re-entered** after a restore if you only have SQL dumps without secrets elsewhere.
 
@@ -52,22 +52,28 @@ cp .env.example .env
 | `ANTHROPIC_REPLY_MODEL` | Optional drafting model override (default `claude-sonnet-5`) |
 | `GEMINI_EMBEDDING_MODEL` | Optional embedding override (default `gemini-embedding-001`; `text-embedding-004` retired Jan 2026) |
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
-| `WEBHOOK_TEST_SECRET` | Optional. Protects `POST /admin/test/slack-draft/:clientId` for Slack-only testing |
+| `WEBHOOK_TEST_SECRET` | Required in production. Protects `/dashboard`, client CRUD, OAuth admin routes, and `/admin/test/*`. Browser login: `/dashboard/login` |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
-| `FOLLOW_UP_REMINDER_HOURS` | Optional. After you **send** an approved reply, Slack gets a **follow-up nudge** if the prospect hasn’t replied again within this many hours (default `24`) |
+| `FOLLOW_UP_HOURS` | Hours after an unanswered approved send before posting a follow-up approval card (default `3`) |
+| `FOLLOW_UP_MAX_AGE_HOURS` | Retire overdue follow-ups instead of replaying a backlog (default `24`) |
 | `HEYREACH_POLL_ENABLED` | Optional. Backstop poller for HeyReach inbox replies if webhooks are late/missed (default `true`) |
 | `HEYREACH_POLL_MINUTES` | Optional. Poll interval in minutes (default `3`) |
-| `HEYREACH_POLL_LOOKBACK_HOURS` | Optional. How far back the poller scans recent conversations (default `8`) |
+| `HEYREACH_POLL_LOOKBACK_HOURS` | Optional. How far back the poller scans recent conversations (default `168`) |
 | `HEYREACH_POLL_CLIENTS_JSON` | Optional fallback client JSON if DB `clients` rows are unavailable. Prefer restoring clients in Postgres. |
 | `AFTERNOON_DIGEST_TIMEZONE` | Optional. Timezone for the afternoon attention digest (default `America/Chicago`) |
 | `AFTERNOON_DIGEST_HOUR` | Optional. 24h local hour for afternoon attention digest (default `15`, i.e. 3pm) |
-| `GETLEADS_API_KEY` | GetLeads API key — cellphone lookup for client forwards (preferred) |
+| `GETLEADS_API_KEY` | First provider in the inbound cellphone enrichment waterfall |
+| `AIARK_API_KEY` | Second provider in the inbound cellphone enrichment waterfall |
 | `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email + mobile-finder fallback |
-| `CALCOM_API_KEY` | Cal.com API key (if required) |
+| `ENRICH_PROVIDER_TIMEOUT_MS` | Per-provider phone enrichment timeout (default `8000`) |
+| `SMARTLEAD_MASTER_API_KEY` | Account-wide key for targeted sends, interested sweep, and explicitly routed recovery polling |
+| `SMARTLEAD_MASTER_POLL_ENABLED` | Enable the account-wide recovery pass (default on when master key exists) |
+| `ALLO_API_KEY` | Allo call transcript access for booking detection |
+| `CUBE_ACR_DRIVE_FOLDER_ID` | Google Drive root containing Cube ACR call recordings |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
-Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL and a PAT is set, the server uses Calendly’s API to fetch **real** open times. For other schedulers (Cal.com, SavvyCal, etc.), you can **connect Google or Outlook** so two slots may still be inferred from calendar free/busy; if neither Calendly+PAT nor a connected calendar is available, the AI will **not** invent wall-clock times and will rely on the booking link only. On existing databases, run `migrations/004_calendly_pat.sql` once.
+Each client may store an optional **`calendly_personal_access_token`**. When their **booking link** is a Calendly URL and a PAT is set, the server uses Calendly’s API to fetch **real** open times. For other schedulers (Cal.com, SavvyCal, etc.), you can connect Google or Outlook for free/busy. Without calendar access, follow-up suppression uses the conversation and call transcripts as its best guess; a merely `proposed` meeting row is not treated as booked.
 
 ### Manual-reply retrieval corpus
 
@@ -90,7 +96,7 @@ embedding/retrieval; Claude Sonnet 5 writes the actual draft.
 
 **If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
 
-**Attention digests:** run `migrations/007_outbound_follow_ups.sql` and `migrations/012_attention_digests.sql`. The app no longer pings every 5 minutes. Instead, it posts an attention digest in the morning (client timezone) and at 3pm Central (configurable) listing pending approval cards and follow-up-needed prospects. Follow-up cards still use the existing Approve/Edit flow.
+**Follow-ups:** the dedicated runner posts an approval card after 3 unanswered hours and checks reply context, confirmed/booked rows, calendar (when connected), Allo, and Cube ACR first. Attention digests are separate and off by default; set `ATTENTION_DIGESTS_ENABLED=1` for morning and 3pm summaries.
 
 ### 3. Install and Run
 
@@ -113,6 +119,7 @@ Use the admin API to create a client. This returns webhook URLs ready to paste i
 curl -X POST https://your-app.up.railway.app/admin/clients \
   \
   -H "Content-Type: application/json" \
+  -H "x-webhook-test-secret: $WEBHOOK_TEST_SECRET" \
   -d '{
     "name": "Acme Corp",
     "smartlead_api_key": "sl_key_abc123",
@@ -139,7 +146,8 @@ Response includes:
 ### List all clients
 
 ```bash
-curl https://your-app.up.railway.app/admin/clients
+curl https://your-app.up.railway.app/admin/clients \
+  -H "x-webhook-test-secret: $WEBHOOK_TEST_SECRET"
 ```
 
 ### Update a client
@@ -148,6 +156,7 @@ curl https://your-app.up.railway.app/admin/clients
 curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
   \
   -H "Content-Type: application/json" \
+  -H "x-webhook-test-secret: $WEBHOOK_TEST_SECRET" \
   -d '{"voice_prompt": "Updated voice instructions here"}'
 ```
 
@@ -161,6 +170,13 @@ Each client has **unique** URLs (`/webhook/smartlead/<client-uuid>`, `/webhook/h
 Paste **each client’s** webhook URL only into campaigns that belong to **that** client’s SmartLead/HeyReach workspace (the same API keys you saved in the dashboard). If someone pastes Client A’s URL into Client B’s campaign, events are **skipped** (no Slack noise).
 
 **HeyReach polling backstop:** HeyReach webhooks can occasionally sync late. The app also runs an API poller (default every 3 minutes) that scans each active client's HeyReach inbox using the client-level `heyreach_api_key`, dedupes against `pending_replies`, and posts missed replies to the same Slack approval flow. Webhooks remain the primary path; polling is a safety net.
+
+**SmartLead master recovery:** the account-level inbox is polled once and each
+row is routed through `smartlead_campaign_routes`. Unknown/conflicting campaigns
+are logged and skipped—never guessed and never posted to every client. Migration
+020 seeds unambiguous history; after deploy run
+`node scripts/seed-smartlead-campaign-routes.js` once to seed dedicated-key
+campaigns.
 
 ### SmartLead
 
@@ -209,33 +225,13 @@ Invite the Slack bot to each client's approval channel:
 /invite @YourBotName
 ```
 
-## Cal.com Setup
+## Booking Link / Calendar Setup
 
-### 1. Create a Cal.com Organization
-
-1. Sign up at [cal.com](https://cal.com) and create an organization for SalesGlider Growth
-
-### 2. Add Client Sub-Teams
-
-For each client:
-1. Create a sub-team under your organization
-2. Have the client connect their Google/Outlook calendar under their team profile
-
-### 3. Create an Event Type
-
-1. Under the client's team, create an event type (e.g., "30 Minute Discovery Call")
-2. Configure the duration, availability, and confirmation email template
-3. Find the **Event Type ID** — it's in the URL when editing the event type: `cal.com/event-types/123456`
-4. Add this ID to the client record via the admin API:
-
-```bash
-curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
-  \
-  -H "Content-Type: application/json" \
-  -d '{"calcom_event_type_id": "123456"}'
-```
-
-Cal.com handles sending calendar invites and confirmation emails automatically — the system just creates the booking.
+Store each client's public scheduler URL in `booking_link` (Calendly, Cal.com,
+SavvyCal, etc.). For Calendly, an optional personal access token lets the app
+retrieve verified slots. Google/Microsoft OAuth is optional; without calendar
+access the app proposes reasonable times and decides whether to follow up from
+reply/call context rather than pretending a proposal is booked.
 
 ## Client Onboarding Checklist (Under 10 Minutes)
 
@@ -254,22 +250,22 @@ Cal.com handles sending calendar invites and confirmation emails automatically �
 
 | Classification | Action |
 |---|---|
-| `INTERESTED` | Gemini drafts reply → Slack approval → send |
-| `QUESTION` | Gemini drafts reply → Slack approval → send |
-| `OBJECTION` | Gemini drafts reply → Slack approval → send |
-| `MEETING_PROPOSED` | Draft includes two suggested times + Calendly-style link → Slack approval → send; optional calendar invite if a calendar is connected |
-| `NOT_INTERESTED` | Slack alert only |
-| `OUT_OF_OFFICE` | Slack alert only |
-| `REMOVE_ME` | Unsubscribe lead + Slack alert |
-| `WRONG_PERSON` | Slack alert only |
+| `INTERESTED` | Claude/RAG draft (Gemini fallback) → Slack approval → send |
+| `QUESTION` | Claude/RAG draft (Gemini fallback) → Slack approval → send |
+| `OBJECTION` | Claude/RAG draft (Gemini fallback) → Slack approval → send |
+| `MEETING_PROPOSED` | Times-first draft; booking link waits until requested |
+| `NOT_INTERESTED` | Graceful decline draft, no pitch/times/link |
+| `OUT_OF_OFFICE` | Stored as suppressed; no Slack |
+| `REMOVE_ME` | Unsubscribe + stored as suppressed; no Slack |
+| `WRONG_PERSON` | Stored as suppressed; no Slack |
 | `COMPETITOR` | Slack alert only |
-| `OTHER` | Slack alert only |
+| `OTHER` | Draft → Slack approval → send |
 
-## Timeout Reminders
+## Follow-up Timing
 
-- **30 minutes**: A reminder is posted as a thread reply on the original Slack message
-- **2 hours**: An escalation with `@here` is posted to the channel
-- Checked every 10 minutes via cron job
+Approval cards are posted once; there are no “you haven’t actioned this”
+reminders. After an approved prospect reply goes unanswered for 3 hours, the
+app may post a separate prospect-facing follow-up draft after booking checks.
 
 ## API Endpoints
 
@@ -278,9 +274,10 @@ Cal.com handles sending calendar invites and confirmation emails automatically �
 | `POST` | `/webhook/smartlead/:clientId` | None | SmartLead inbound webhook |
 | `POST` | `/webhook/heyreach/:clientId` | None | HeyReach inbound webhook |
 | `POST` | `/slack/actions` | Slack signature | Button interactions |
-| `POST` | `/admin/clients` | None | Create client |
-| `GET` | `/admin/clients` | None | List clients |
-| `PATCH` | `/admin/clients/:clientId` | None | Update client |
+| `GET` | `/dashboard` | `WEBHOOK_TEST_SECRET` cookie/query | Admin dashboard |
+| `POST` | `/admin/clients` | `WEBHOOK_TEST_SECRET` | Create client |
+| `GET` | `/admin/clients` | `WEBHOOK_TEST_SECRET` | List clients |
+| `PATCH` | `/admin/clients/:clientId` | `WEBHOOK_TEST_SECRET` | Update client |
 | `POST` | `/admin/test/slack-draft/:clientId` | `WEBHOOK_TEST_SECRET` (header `x-webhook-test-secret` or `?secret=`) | Post a fake approval card to Slack (no Gemini / no outbound APIs) |
 | `GET` | `/health` | None | Health check |
 

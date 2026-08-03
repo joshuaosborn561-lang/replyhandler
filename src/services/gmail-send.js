@@ -40,7 +40,7 @@ function getRedirectUri() {
   return `${protocol}://${domain}/auth/gmail/callback`;
 }
 
-function getAuthUrl() {
+function getAuthUrl(state) {
   if (!isConfigured()) throw new Error('GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET not configured');
   const params = new URLSearchParams({
     client_id: clientId(),
@@ -50,6 +50,7 @@ function getAuthUrl() {
     access_type: 'offline',
     prompt: 'consent',
     login_hint: expectedFromEmail(),
+    ...(state ? { state } : {}),
   });
   return `${GOOGLE_AUTH_URL}?${params}`;
 }

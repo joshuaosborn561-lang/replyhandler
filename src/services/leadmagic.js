@@ -1,3 +1,5 @@
+const { fetchWithTimeout } = require('../utils/fetch-with-timeout');
+
 function apiKey() {
   return String(process.env.LEADMAGIC_API_KEY || '').trim();
 }
@@ -21,7 +23,7 @@ function normalizePhone(raw) {
 
 async function profileToEmail(linkedinUrl) {
   if (!apiKey()) throw new Error('LEADMAGIC_API_KEY not configured');
-  const res = await fetch('https://api.leadmagic.io/v1/people/profile-to-email', {
+  const res = await fetchWithTimeout('https://api.leadmagic.io/v1/people/profile-to-email', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -55,7 +57,7 @@ async function findMobile({ workEmail, personalEmail, profileUrl } = {}) {
     return { phone: null, skipped: 'no_identifier' };
   }
 
-  const res = await fetch('https://api.leadmagic.io/v1/people/mobile-finder', {
+  const res = await fetchWithTimeout('https://api.leadmagic.io/v1/people/mobile-finder', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

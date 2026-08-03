@@ -4,6 +4,7 @@
  */
 
 const BASE = 'https://api.ai-ark.com/api/developer-portal';
+const { fetchWithTimeout } = require('../utils/fetch-with-timeout');
 
 function apiKey() {
   return String(process.env.AIARK_API_KEY || process.env.AI_ARK_API_KEY || '').trim();
@@ -25,7 +26,7 @@ function normalizePhone(raw) {
 async function postJson(path, body) {
   const key = apiKey();
   if (!key) throw new Error('AIARK_API_KEY not configured');
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -50,6 +51,9 @@ async function reverseLookupByEmail(email) {
 
   const { ok, status, data } = await postJson('/v1/people/reverse-lookup', { search: workEmail });
   if (!ok || !data) {
+    if (status === 429 || status >= 500) {
+      throw new Error(`AI Ark reverse lookup failed (${status})`);
+    }
     return { linkedinUrl: null, website: null, phone: null, skipped: `http_${status}` };
   }
 
@@ -94,6 +98,9 @@ async function findMobile({ linkedinUrl, name, domain } = {}) {
 
   const { ok, status, data } = await postJson('/v2/people/mobile-phone-finder', body);
   if (!ok) {
+    if (status === 429 || status >= 500) {
+      throw new Error(`AI Ark mobile finder failed (${status})`);
+    }
     return { phone: null, skipped: `http_${status}` };
   }
 
