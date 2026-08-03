@@ -2,8 +2,20 @@ const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { DRAFT_CLASSIFICATIONS } = require('./classifier');
 
+/**
+ * Collapse every Unicode space (including NBSP U+00A0) to a single ASCII space.
+ *
+ * Critical: Postgres POSIX `\s` does NOT match NBSP, while JavaScript `\s`
+ * does. LinkedIn/HeyReach bodies often contain NBSP (e.g. before a URL).
+ * If SQL keeps the NBSP and JS turns it into a normal space, dedupe never
+ * matches and the poller re-posts the same card every cycle.
+ */
 function normalizeInboundText(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(text || '')
+    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 /**
@@ -24,11 +36,18 @@ function inboundPrefix(text) {
   return normalizeInboundText(text).slice(0, PREFIX_LEN);
 }
 
-/** SQL for the same key, applied to the stored column. */
-const STORED_PREFIX_SQL = `left(lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')), ${PREFIX_LEN})`;
+/**
+ * SQL that mirrors normalizeInboundText on the stored column.
+ * chr(160)=NBSP, chr(8239)=narrow NBSP — replace before `\s+` collapse.
+ */
+const STORED_NORM_SQL = (
+  `lower(trim(both from regexp_replace(` +
+  `replace(replace(inbound_message, chr(160), ' '), chr(8239), ' '), ` +
+  `'\\s+', ' ', 'g')))`
+);
 
-/** The stored body, normalised the same way as inboundPrefix does in JS. */
-const STORED_NORM_SQL = `lower(regexp_replace(inbound_message, '\\s+', ' ', 'g'))`;
+/** SQL for the same key, applied to the stored column. */
+const STORED_PREFIX_SQL = `left(${STORED_NORM_SQL}, ${PREFIX_LEN})`;
 
 /**
  * Shortest text that can safely be called "the same reply". Below this, a
@@ -251,7 +270,7 @@ module.exports = {
   sameReplySql,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
-  normalizeInboundText,
+  STORED_NORM_SQL,
   alreadyPostedToSlack,
   findUnpostedReply,
   repostReplyRowToSlack,
