@@ -272,24 +272,28 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * card. Unbounded window on purpose: an identical body from the same lead in the
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
+ *
+ * Text only — never smartlead_email_stats_id alone. That id is resolved from
+ * thread history as "the most recent outbound SENT message" (see
+ * smartlead.extractStatsIdFromHistory), which stays identical across multiple
+ * *different* replies to the same send. Matching on it alone silently dropped
+ * a genuinely new reply with zero trace (2026-08-03, Doug Baden/Parlay Tech —
+ * no pending_replies row was ever created). Per DECISIONS.md: "dedupe on text
+ * only, never on time" — same text = duplicate, different text always shows.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, emailStatsId }) {
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return false;
+  if (!normalized) return false;
   const { rows } = await db.query(
     `SELECT 1
        FROM pending_replies
       WHERE client_id = $1
         AND platform = 'smartlead'
         AND COALESCE(lead_id, '') = $3
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$4', '$6')}
-        )
+        AND ${sameReplySql('$4', '$5')}
       LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, stats, fullNorm]
+    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, fullNorm]
   );
   return rows.length > 0;
 }
@@ -479,7 +483,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         ? lastOutboundBodyFromSmartleadHistory(threadContext)
         : '');
 
-    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective, emailStatsId: smartleadEmailStatsId })) {
+    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective })) {
       console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
