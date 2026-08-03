@@ -1,7 +1,10 @@
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
-const { enrichPendingReplyPhone } = require('./reply-phone-enrichment');
+const {
+  enrichPendingReplyPhone,
+  shouldSkipEnrichment,
+} = require('./reply-phone-enrichment');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -147,7 +150,9 @@ async function postProspectSlackCard({
   replyId,
 }) {
   let enrichedCard = card;
-  if (replyId) {
+  // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
+  // burn enrichment credits — those are not bookable follow-ups.
+  if (replyId && !shouldSkipEnrichment(card?.classification)) {
     const phone = await enrichPendingReplyPhone(replyId);
     enrichedCard = {
       ...card,
