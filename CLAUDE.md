@@ -102,13 +102,17 @@ events otherwise burn a Gemini call and post a duplicate card.
 Lookback defaults to 168h. Anything dropped longer ago than that will not
 self-recover and needs a manual sweep.
 
-## Follow-ups: 3h, gated on four booking signals
+## Follow-ups: 2h → 24h → 48h → 1w after we propose a meeting
 
-`follow-up-runner.js` posts a re-attempt card once a send goes unanswered for
-`FOLLOW_UP_HOURS` (3). Before posting it asks `booking-check.js` whether the
-prospect already booked — a `meetings` row, a later reply proposing a time or
-confirming, a calendar event with them as attendee, or a call transcript.
-Any one suppresses the card silently and records `skip_reason`.
+`scheduleAfterOutboundSend` only queues when the approved outbound proposes a
+meeting (times / Calendly / book-for-you). Default cadence is `2,24,48,168`
+hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
+
+`follow-up-runner.js` posts the next due step. Before posting it asks
+`booking-check.js` whether the prospect already booked — a `meetings` row, a
+later reply proposing a time or confirming, a calendar event with them as
+attendee, or a call transcript (Allo / Cube ACR). Any one suppresses the card
+silently, records `skip_reason`, and cancels later steps for that thread.
 
 Rows more than `FOLLOW_UP_MAX_AGE_HOURS` (24) past due are retired as `stale`
 rather than posted. That guard matters: the table accumulated for months while

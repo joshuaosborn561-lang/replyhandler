@@ -292,7 +292,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
      WHERE f.client_id = $1
        AND f.status = 'pending'
        AND f.due_at <= now()
-     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at DESC`,
+     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at ASC`,
     [client.id]
   );
 
