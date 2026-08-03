@@ -183,7 +183,7 @@ test('Cube ACR recordings match on the last 10 digits', () => {
 // lead-level window; that could swallow a genuinely new reply, which is
 // worse than a double. Dedupe is on the text only, and unbounded in time.
 test('the same reply never repeats, a new reply always shows', () => {
-  const { inboundPrefix, normalizeInboundText, MIN_CONTAINMENT_LEN } = require('../src/services/reply-dedupe');
+  const { inboundPrefix, normalizeInboundText, MIN_CONTAINMENT_LEN, STORED_NORM_SQL } = require('../src/services/reply-dedupe');
 
   const sameReply = (x, y) => {
     if (inboundPrefix(x) && inboundPrefix(x) === inboundPrefix(y)) return true;
@@ -192,6 +192,16 @@ test('the same reply never repeats, a new reply always shows', () => {
     return a.length >= MIN_CONTAINMENT_LEN && b.length >= MIN_CONTAINMENT_LEN
       && (a.startsWith(b) || b.startsWith(a));
   };
+
+  // LinkedIn/HeyReach often inserts NBSP before URLs. JS `\s` collapses it;
+  // Postgres `\s` does not — SQL must replace chr(160) first or the poller
+  // re-posts the same card every cycle (Braden Ricchini incident).
+  const withNbsp = 'Joshua here ya go man:\u00a0https://files.gpsocials.com/notion-giveaway';
+  const withSpace = 'Joshua here ya go man: https://files.gpsocials.com/notion-giveaway';
+  assert.strictEqual(normalizeInboundText(withNbsp), normalizeInboundText(withSpace),
+    reversal('same text must not come through twice', 'NBSP vs space is being treated as a different reply'));
+  assert.match(STORED_NORM_SQL, /chr\(160\)/,
+    reversal('same text must not come through twice', 'SQL dedupe no longer collapses NBSP'));
 
   // One reply, rendered two ways by the webhook and the poller.
   const withQuote = 'Joshua: Got my attention! What are the next steps? Best, Chris Chris Arnold Managing Partner CA Partners P (727)828-9021 Book time with Chris From: Joshua Osborn';

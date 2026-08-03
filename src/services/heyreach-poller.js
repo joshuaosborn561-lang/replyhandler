@@ -10,6 +10,8 @@ const {
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  normalizeInboundText,
+  STORED_NORM_SQL,
 } = require('./reply-dedupe');
 const {
   slackSuppressionReason,
@@ -18,7 +20,7 @@ const {
 const HR_BASE = 'https://api.heyreach.io/api/public';
 
 function normWs(s) {
-  return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return normalizeInboundText(s);
 }
 
 function envFlag(name, defaultValue = true) {
@@ -230,7 +232,7 @@ async function maybeUpdateExistingThinReply({ clientId, campaignId: cid, leadKey
         AND platform = 'heyreach'
         AND COALESCE(campaign_id, '') = COALESCE($2, '')
         AND COALESCE(lead_id, '') = COALESCE($3, '')
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $4
+        AND ${STORED_NORM_SQL} = $4
       ORDER BY created_at DESC
       LIMIT 1`,
     [clientId, cid == null ? null : String(cid), leadKey == null ? null : String(leadKey), normalized]
