@@ -21,8 +21,11 @@ const { draftOnly } = require('../src/services/classifier');
 const TARGET_CLIENT_NAMES = ['Culture Fits', 'MSRS'];
 const BASE = 'https://server.smartlead.ai/api/v1';
 const DRY_RUN = process.argv.includes('--dry-run');
+const ALL_CLIENTS = process.argv.includes('--all-clients');
 const daysArg = (process.argv.find(a => a.startsWith('--days=')) || '').split('=')[1];
+const maxArg = (process.argv.find(a => a.startsWith('--max-per-client=')) || '').split('=')[1];
 const DAYS_BACK = parseInt(daysArg || '14', 10);
+const MAX_PER_CLIENT = Math.max(0, parseInt(maxArg || '5', 10) || 5);
 const CUTOFF = new Date(Date.now() - DAYS_BACK * 24 * 3600 * 1000);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -313,6 +316,7 @@ async function upsertAndPost(db, client, lead) {
 
 async function main() {
   console.log(`Scanning last ${DAYS_BACK} days. Cutoff: ${CUTOFF.toISOString()}`);
+  console.log(`Max ${MAX_PER_CLIENT} prospects per client`);
   if (DRY_RUN) console.log('DRY RUN — will not write to DB or post to Slack\n');
   if (!process.env.GEMINI_API_KEY) console.log('GEMINI_API_KEY not set — will use fallback drafts\n');
 
@@ -322,11 +326,20 @@ async function main() {
   const db = new Client({ connectionString: conn, ssl: pgSslOption(conn) });
   await db.connect();
 
-  const { rows: clients } = await db.query(
-    `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt
-       FROM clients WHERE name = ANY($1) AND active = true ORDER BY name`,
-    [TARGET_CLIENT_NAMES],
-  );
+  const { rows: clients } = ALL_CLIENTS
+    ? await db.query(
+      `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt
+         FROM clients
+        WHERE active IS DISTINCT FROM false
+          AND smartlead_api_key IS NOT NULL
+          AND trim(smartlead_api_key) <> ''
+        ORDER BY name`
+    )
+    : await db.query(
+      `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt
+         FROM clients WHERE name = ANY($1) AND active = true ORDER BY name`,
+      [TARGET_CLIENT_NAMES],
+    );
 
   let totalPosted = 0;
   for (const client of clients) {
@@ -334,18 +347,39 @@ async function main() {
     console.log(`\n=== ${client.name} ===`);
 
     const positives = await fetchPositives(client);
-    console.log(`Found ${positives.length} positive replies:`);
+    console.log(`Found ${positives.length} positive replies; posting up to ${MAX_PER_CLIENT} new:`);
 
+    let postedForClient = 0;
     for (const [i, lead] of positives.entries()) {
+      if (postedForClient >= MAX_PER_CLIENT) break;
+
       console.log(`  ${i + 1}. ${lead.leadName} <${lead.leadEmail}> [${lead.replyTime?.slice(0, 10)}]`);
       console.log(`     ${lead.inbound.slice(0, 120)}`);
 
-      if (DRY_RUN) continue;
+      if (DRY_RUN) { postedForClient++; continue; }
 
       try {
+        // Skip if we already have a card for this exact inbound text
+        const { inboundPrefix, normalizeInboundText, sameReplySql } = require('../src/services/reply-dedupe');
+        const prefix = inboundPrefix(lead.inbound);
+        const full = normalizeInboundText(lead.inbound);
+        const { rows: dupes } = await db.query(
+          `SELECT id, status FROM pending_replies
+            WHERE client_id = $1 AND platform = 'smartlead'
+              AND COALESCE(lead_id, '') = $2
+              AND ${sameReplySql('$3', '$4')}
+            LIMIT 1`,
+          [client.id, String(lead.leadId || ''), prefix, full],
+        );
+        if (dupes[0]) {
+          console.log(`     · skipped — already have ${dupes[0].status} row ${dupes[0].id}`);
+          continue;
+        }
+
         const replyId = await upsertAndPost(db, client, lead);
         console.log(`     ✓ Posted card (reply_id: ${replyId})`);
         totalPosted++;
+        postedForClient++;
         await sleep(500); // small pause between Slack posts
       } catch (err) {
         console.error(`     ✗ Failed: ${err.message}`);
