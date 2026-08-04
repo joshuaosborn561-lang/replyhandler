@@ -142,6 +142,23 @@ and LinkedIn. No backlog replay (`FOLLOW_UP_MAX_AGE_HOURS`).
 
 Guard: `follow-ups after meeting propose at 2h/24h/48h/1w`
 
+### Follow-up drafts must tolerate a null timezone
+
+Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw
+`RangeError: Invalid time zone`, so the follow-up runner failed on every tick
+(200+ attempts, zero Slack cards). Fall back to America/Chicago.
+
+Guard: `follow-up draft tolerates null digest_timezone`
+
+### Allo call match is by phone digits, not API filter alone
+
+Allo's `/calls?contact_number=` has returned the account's recent call list
+unrelated to the prospect. Judging those transcripts marked innocent leads
+`call_transcript_booked` (Parlay VM follow-ups). Always filter to calls whose
+to/from matches the prospect's last 10 digits.
+
+Guard: `Allo booking check matches the prospect phone`
+
 ### A call that booked skips silently
 
 Offered a Slack note with the transcript excerpt on skip; he chose silent. The

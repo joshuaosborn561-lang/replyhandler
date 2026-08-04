@@ -112,6 +112,24 @@ async function alloFetch(path, params = {}) {
  * Calls between our Allo number and one contact number.
  * @returns {Promise<Array>} Call objects: { id, type, start_date, summary, transcript[], recording_url }
  */
+/** Last 10 digits — enough to match +1 / bare / formatted variants. */
+function phoneKey(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length < 10) return '';
+  return digits.slice(-10);
+}
+
+/** True when this call involves the prospect number (to or from). */
+function callInvolvesContact(call, contactE164) {
+  const want = phoneKey(contactE164);
+  if (!want) return false;
+  const candidates = [
+    call?.to_number, call?.to, call?.from_number, call?.from,
+    call?.contact_number, call?.contact, call?.external_number,
+  ];
+  return candidates.some((n) => phoneKey(n) === want);
+}
+
 async function searchCalls(contactNumber, { page, size = 20 } = {}) {
   const numbers = await alloNumbers();
   if (!numbers.length) throw new Error('No Allo numbers available (discovery failed and ALLO_PHONE_NUMBERS unset)');
@@ -131,8 +149,10 @@ async function searchCalls(contactNumber, { page, size = 20 } = {}) {
       });
       const results = data?.data?.results;
       for (const call of Array.isArray(results) ? results : []) {
-        // Same call can surface under either line; key on id, fall back to a
-        // composite so an id-less row is not silently dropped.
+        // Allo has been observed returning the account's recent call list while
+        // ignoring contact_number — filter client-side so we never judge a
+        // different prospect's transcript as "booked" for this lead.
+        if (!callInvolvesContact(call, contact)) continue;
         const key = call?.id || `${from}|${call?.start_date}|${call?.to_number}`;
         if (!byId.has(key)) byId.set(key, { ...call, allo_number: from });
       }
@@ -174,6 +194,8 @@ module.exports = {
   searchCalls,
   transcriptText,
   normalizeE164,
+  phoneKey,
+  callInvolvesContact,
   alloNumbers,
   configuredNumbers,
 };

@@ -2,6 +2,7 @@ const { firstNameFromLead, nextBusinessDayLabel } = require('./classifier');
 
 function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone }) {
   const name = firstNameFromLead(leadName);
+  // nextBusinessDayLabel already falls back when TZ is null/invalid
   const day = nextBusinessDayLabel(digestTimezone);
   // Times-first: suggest a day, offer to send booking link later — do not dump Calendly.
   void bookingLink;

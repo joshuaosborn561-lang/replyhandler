@@ -177,6 +177,38 @@ test('a call-transcript booking suppresses without posting', () => {
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
+// ── Decision: follow-up draft tolerates null digest_timezone ──────────
+test('follow-up draft tolerates null digest_timezone', () => {
+  const { nextBusinessDayLabel } = require('../src/services/classifier');
+  const { draftReattemptToBook } = require('../src/services/follow-up-drafts');
+  assert.doesNotThrow(() => nextBusinessDayLabel(null));
+  assert.doesNotThrow(() => nextBusinessDayLabel(undefined));
+  assert.doesNotThrow(() => nextBusinessDayLabel(''));
+  assert.match(nextBusinessDayLabel(null), /day$/i);
+  return draftReattemptToBook({ leadName: 'Jim Sprague', digestTimezone: null })
+    .then((draft) => {
+      assert.ok(draft && draft.includes('Jim'), 'draft must still render with null TZ');
+    });
+});
+
+// ── Decision: Allo booking check matches the prospect phone ───────────
+test('Allo booking check matches the prospect phone', () => {
+  const { callInvolvesContact, phoneKey } = require('../src/services/allo');
+  assert.strictEqual(phoneKey('+1 (952) 567-3901'), '9525673901');
+  assert.ok(callInvolvesContact({ to_number: '+19525673901', from_number: '+12149107558' }, '+19525673901'));
+  assert.ok(!callInvolvesContact({ to_number: '+19044089681', from_number: '+18633049904' }, '+19525673901'),
+    reversal('Allo booking check matches the prospect phone', 'unrelated calls can still suppress follow-ups'));
+});
+
+// ── Decision: poller dedupe is text-only (stats_id is not identity) ───
+test('poller dedupe never matches on stats_id alone', () => {
+  const dedupe = read('src/services/reply-dedupe.js');
+  assert.ok(!/COALESCE\(smartlead_email_stats_id/.test(dedupe),
+    reversal('dedupe on text only', 'reply-dedupe still has a stats_id SQL branch'));
+  assert.ok(!/smartlead_email_stats_id,\s*''\)\s*=\s*\$/.test(dedupe),
+    reversal('dedupe on text only', 'poller still matches on stats_id equality'));
+});
+
 // ── Decision: track both Allo lines ───────────────────────────────────
 // "there are 2 allo numbers track them both" — discovered, not configured.
 test('all Allo lines are searched, discovered from the API', () => {

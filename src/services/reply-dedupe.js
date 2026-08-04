@@ -91,20 +91,23 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
+  // Text only — never smartlead_email_stats_id. That id is the most recent
+  // outbound SENT stats id, identical across different replies to the same
+  // send. Matching on it silently drops a new reply (webhook fixed in #31;
+  // poller still had the OR-branch). emailStatsId kept in the signature for
+  // callers; unused for matching.
+  void emailStatsId;
+  void campaignId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return false;
+  if (!normalized) return false;
 
   const { rows } = await db.query(
     `SELECT slack_message_ts
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$3', '$6')}
-        )
+        AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -117,7 +120,6 @@ async function alreadyPostedToSlack({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
-      stats,
       fullNorm,
     ]
   );
@@ -132,10 +134,11 @@ async function findUnpostedReply({
   inboundMessage,
   emailStatsId,
 }) {
+  void emailStatsId;
+  void campaignId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return null;
+  if (!normalized) return null;
 
   const { rows } = await db.query(
     `SELECT *
@@ -144,10 +147,7 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$3', '$6')}
-        )
+        AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -159,7 +159,6 @@ async function findUnpostedReply({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
-      stats,
       fullNorm,
     ]
   );
