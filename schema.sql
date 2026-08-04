@@ -113,8 +113,13 @@ CREATE TABLE outbound_follow_ups (
   source_pending_reply_id UUID REFERENCES pending_replies(id) ON DELETE SET NULL,
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   due_at TIMESTAMPTZ NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'notified', 'cancelled')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'notified', 'cancelled', 'skipped')),
   slack_message_ts TEXT,
+  skip_reason TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_checked_at TIMESTAMPTZ,
+  step INTEGER NOT NULL DEFAULT 1,
+  sequence_hours NUMERIC,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

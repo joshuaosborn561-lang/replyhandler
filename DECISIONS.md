@@ -130,16 +130,34 @@ conversation, and adds lead name, email and cell phone from enrichment.
 
 Guard: `client notification stays on the enriched send path`
 
-### Follow-ups after 3 hours, from this deploy onward
+### Follow-ups after meeting propose: 2h → 24h → 48h → 1 week
 
-*"if a prospect doesnt reply to our reply after 3 hours and it looks like they
-havent booked, then draft a follow up and post in slack"* — and on the
-accumulated backlog, *"yea no backlog just from here on out."*
+Only schedule when the approved outbound proposes a meeting (times, Calendly,
+"book for you") — not after every send. Cadence from that send: 2h, 24h, 48h,
+then 1 week. Approving a FOLLOW_UP card does not restart the clock.
 
 Skipped when the prospect already booked, proposed a time, has a calendar event,
-or a call transcript shows the meeting was set. Both SmartLead and LinkedIn.
+or a call transcript (Allo / Cube ACR) shows the meeting was set. Both SmartLead
+and LinkedIn. No backlog replay (`FOLLOW_UP_MAX_AGE_HOURS`).
 
-Guard: `follow-ups wait 3h and never replay a backlog`
+Guard: `follow-ups after meeting propose at 2h/24h/48h/1w`
+
+### Follow-up drafts must tolerate a null timezone
+
+Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw
+`RangeError: Invalid time zone`, so the follow-up runner failed on every tick
+(200+ attempts, zero Slack cards). Fall back to America/Chicago.
+
+Guard: `follow-up draft tolerates null digest_timezone`
+
+### Allo call match is by phone digits, not API filter alone
+
+Allo's `/calls?contact_number=` has returned the account's recent call list
+unrelated to the prospect. Judging those transcripts marked innocent leads
+`call_transcript_booked` (Parlay VM follow-ups). Always filter to calls whose
+to/from matches the prospect's last 10 digits.
+
+Guard: `Allo booking check matches the prospect phone`
 
 ### A call that booked skips silently
 

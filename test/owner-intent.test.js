@@ -127,21 +127,45 @@ test('booking link is withheld until the prospect asks', () => {
   assert.ok(!looksLikeBookingLinkRequest('what does pricing look like?', ''), 'a question is not a link request');
 });
 
-// ── Decision: follow up after 3 hours, from now on only ───────────────
-// "if a prospect doesnt reply to our reply after 3 hours" and
-// "yea no backlog just from here on out."
-test('follow-ups wait 3h and never replay a backlog', () => {
+// ── Decision: follow-ups after meeting propose at 2h/24h/48h/1w ───────
+test('follow-ups after meeting propose at 2h/24h/48h/1w', () => {
   delete process.env.FOLLOW_UP_HOURS;
   delete process.env.FOLLOW_UP_REMINDER_HOURS;
   delete process.env.FOLLOW_UP_MAX_AGE_HOURS;
-  const { followUpHours } = require('../src/services/outbound-follow-up');
-  const { maxAgeHours, retireStaleFollowUps } = require('../src/services/follow-up-runner');
 
-  assert.strictEqual(followUpHours(), 3,
-    reversal('follow up after 3 hours', 'the wait has been changed'));
+  // Clear require cache so env deletes take effect
+  delete require.cache[require.resolve('../src/services/outbound-follow-up')];
+  delete require.cache[require.resolve('../src/services/follow-up-runner')];
+
+  const {
+    followUpCadenceHours,
+    DEFAULT_CADENCE,
+  } = require('../src/services/outbound-follow-up');
+  const { outboundProposesMeeting } = require('../src/utils/outbound-meeting-propose');
+  const { maxAgeHours, retireStaleFollowUps } = require('../src/services/follow-up-runner');
+  const scheduleSrc = read('src/services/outbound-follow-up.js');
+
+  assert.deepStrictEqual(followUpCadenceHours(), DEFAULT_CADENCE);
+  assert.deepStrictEqual(DEFAULT_CADENCE, [2, 24, 48, 168],
+    reversal('follow-ups after meeting propose at 2h/24h/48h/1w', 'the cadence has been changed'));
   assert.strictEqual(maxAgeHours(), 24,
     reversal('no backlog — follow-ups from deploy onward', 'the stale guard has been widened or removed'));
   assert.strictEqual(typeof retireStaleFollowUps, 'function', 'the backlog guard must remain');
+
+  assert.ok(scheduleSrc.includes('outboundProposesMeeting'),
+    'scheduling must gate on meeting-propose detection');
+  assert.ok(scheduleSrc.includes("FOLLOW_UP"),
+    'FOLLOW_UP sends must not restart the cadence');
+
+  assert.ok(outboundProposesMeeting(
+    'Wanted to see if you can do tomorrow or Wednesday. Can I send you a Calendly link or would you prefer me to book for you?'
+  ), 'Calendly / book-for-you must count as proposing');
+  assert.ok(outboundProposesMeeting(
+    'Would Thursday mid-morning or Friday early afternoon work for a quick call with our CEO?'
+  ), 'times-first call ask must count as proposing');
+  assert.ok(!outboundProposesMeeting(
+    'Thanks — tickets are yours either way, no strings attached.'
+  ), 'ticket-only send must not schedule follow-ups');
 });
 
 // ── Decision: a call that booked skips silently ───────────────────────
@@ -151,6 +175,38 @@ test('a call-transcript booking suppresses without posting', () => {
   const skipBlock = runner.slice(runner.indexOf('if (bookedReason)'), runner.indexOf('await postFollowUpCard'));
   assert.ok(!/postProspectSlackCard|postAlert|postError/.test(skipBlock),
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
+});
+
+// ── Decision: follow-up draft tolerates null digest_timezone ──────────
+test('follow-up draft tolerates null digest_timezone', () => {
+  const { nextBusinessDayLabel } = require('../src/services/classifier');
+  const { draftReattemptToBook } = require('../src/services/follow-up-drafts');
+  assert.doesNotThrow(() => nextBusinessDayLabel(null));
+  assert.doesNotThrow(() => nextBusinessDayLabel(undefined));
+  assert.doesNotThrow(() => nextBusinessDayLabel(''));
+  assert.match(nextBusinessDayLabel(null), /day$/i);
+  return draftReattemptToBook({ leadName: 'Jim Sprague', digestTimezone: null })
+    .then((draft) => {
+      assert.ok(draft && draft.includes('Jim'), 'draft must still render with null TZ');
+    });
+});
+
+// ── Decision: Allo booking check matches the prospect phone ───────────
+test('Allo booking check matches the prospect phone', () => {
+  const { callInvolvesContact, phoneKey } = require('../src/services/allo');
+  assert.strictEqual(phoneKey('+1 (952) 567-3901'), '9525673901');
+  assert.ok(callInvolvesContact({ to_number: '+19525673901', from_number: '+12149107558' }, '+19525673901'));
+  assert.ok(!callInvolvesContact({ to_number: '+19044089681', from_number: '+18633049904' }, '+19525673901'),
+    reversal('Allo booking check matches the prospect phone', 'unrelated calls can still suppress follow-ups'));
+});
+
+// ── Decision: poller dedupe is text-only (stats_id is not identity) ───
+test('poller dedupe never matches on stats_id alone', () => {
+  const dedupe = read('src/services/reply-dedupe.js');
+  assert.ok(!/COALESCE\(smartlead_email_stats_id/.test(dedupe),
+    reversal('dedupe on text only', 'reply-dedupe still has a stats_id SQL branch'));
+  assert.ok(!/smartlead_email_stats_id,\s*''\)\s*=\s*\$/.test(dedupe),
+    reversal('dedupe on text only', 'poller still matches on stats_id equality'));
 });
 
 // ── Decision: track both Allo lines ───────────────────────────────────

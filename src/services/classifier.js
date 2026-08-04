@@ -48,10 +48,24 @@ function firstNameFromLead(leadName) {
   return s.split(/\s+/)[0];
 }
 
+/** Resolve a usable IANA TZ; null/invalid → America/Chicago. */
+function resolveDraftTimeZone(timeZone) {
+  let tz = String(timeZone || '').trim() || DEFAULT_DRAFT_TZ;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
+    return tz;
+  } catch {
+    return DEFAULT_DRAFT_TZ;
+  }
+}
+
 /** Next weekday after today in the given IANA timezone (skips Sat/Sun). */
 function nextBusinessDayLabel(timeZone = DEFAULT_DRAFT_TZ) {
-  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  // Clients often have digest_timezone NULL — Intl throws on null/invalid TZ
+  // and that was silently killing every follow-up card (hundreds of retries).
+  const tz = resolveDraftTimeZone(timeZone);
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
   let cursor = Date.now();
   for (let i = 0; i < 8; i += 1) {
     cursor += 24 * 60 * 60 * 1000;
@@ -293,8 +307,9 @@ function summarizeThread(threadContext) {
 
 /** Next two weekday labels for time suggestions (skips weekends). */
 function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
-  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  const tz = resolveDraftTimeZone(timeZone);
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
   const labels = [];
   let cursor = Date.now();
   for (let i = 0; i < 14 && labels.length < 2; i += 1) {

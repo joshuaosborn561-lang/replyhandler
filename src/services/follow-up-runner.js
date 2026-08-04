@@ -2,6 +2,7 @@ const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { draftReattemptToBook } = require('./follow-up-drafts');
 const { looksAlreadyBooked } = require('./booking-check');
+const { cancelPendingForThread } = require('./outbound-follow-up');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
 /**
@@ -11,6 +12,16 @@ const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-web
  * looks and behaves identically either way — same FOLLOW_UP pending_replies
  * row, same Approve / Edit / Reject send path.
  */
+
+function stepLabel(fu) {
+  const step = Number(fu.step) || 1;
+  const hours = fu.sequence_hours != null ? Number(fu.sequence_hours) : null;
+  if (hours != null && Number.isFinite(hours)) {
+    const nice = hours >= 24 && hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
+    return `step ${step} (${nice})`;
+  }
+  return `step ${step}`;
+}
 
 function parseThreadContext(raw) {
   if (typeof raw !== 'string') return raw;
@@ -102,7 +113,8 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       platform: fu.platform,
       classification: 'FOLLOW_UP',
       draft,
-      reasoning: reasoningExtra || `No reply since our last message (${sentAt}). AI drafted a re-attempt to book.`,
+      reasoning: reasoningExtra ||
+        `No reply since we proposed a meeting (${sentAt}). Follow-up ${stepLabel(fu)} — AI drafted a re-attempt to book.`,
       inboundMessage: '(no new reply from prospect)',
       campaignDisplay,
       lastOutboundMessage: lastOutboundFor(fu.platform, threadContext) || undefined,
@@ -150,7 +162,11 @@ async function retireStaleFollowUps() {
   return rowCount || 0;
 }
 
-/** Due follow-ups across all active clients, newest-per-thread only. */
+/**
+ * Due follow-ups across all active clients.
+ * Oldest due step per thread first — so a backlog of steps advances in order
+ * (2h before 24h) instead of jumping to the latest.
+ */
 async function dueFollowUps(limit) {
   const { rows } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
@@ -162,7 +178,7 @@ async function dueFollowUps(limit) {
         AND f.due_at <= now()
         AND f.due_at > now() - ($2::float * interval '1 hour')
         AND c.active IS DISTINCT FROM false
-      ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at DESC
+      ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at ASC
       LIMIT $1`,
     [limit, maxAgeHours()]
   );
@@ -200,10 +216,17 @@ async function runDueFollowUps({ limit = 25 } = {}) {
 
       if (bookedReason) {
         await resolve(fu, 'skipped', bookedReason);
+        // Drop later cadence steps for this thread — already booked.
+        const cancelled = await cancelPendingForThread(fu.client_id, {
+          platform: fu.platform,
+          campaignId: fu.campaign_id,
+          leadId: fu.lead_id,
+          conversationId: fu.conversation_id,
+        });
         totals.skipped++;
         totals.skipReasons[bookedReason] = (totals.skipReasons[bookedReason] || 0) + 1;
         console.log('[FollowUp] Skipped — already handled', {
-          client: client.name, lead: fu.lead_name, reason: bookedReason,
+          client: client.name, lead: fu.lead_name, reason: bookedReason, cancelledLaterSteps: cancelled,
         });
         continue;
       }
@@ -211,7 +234,9 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       await postFollowUpCard(client, fu);
       await resolve(fu, 'notified', null);
       totals.posted++;
-      console.log('[FollowUp] Posted follow-up card', { client: client.name, lead: fu.lead_name });
+      console.log('[FollowUp] Posted follow-up card', {
+        client: client.name, lead: fu.lead_name, step: fu.step, sequenceHours: fu.sequence_hours,
+      });
     } catch (err) {
       totals.failed++;
       // Leave status pending so the next tick retries.
