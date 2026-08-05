@@ -344,6 +344,23 @@ test('Slack campaign field shows the campaign name', () => {
     reversal('Slack campaign field shows the campaign name', 'approve confirmation no longer resolves campaign name'));
 });
 
+// ── Decision: missing phone says "phone number not found" ─────────────
+// "and if you cant find one say phone number not found"
+test('missing phone says phone number not found on Slack', () => {
+  const slackService = read('src/services/slack.js');
+  const fnStart = slackService.indexOf('function phoneEnrichmentLine');
+  const fnEnd = slackService.indexOf('/** Slack block-quote', fnStart);
+  assert.ok(fnStart >= 0 && fnEnd > fnStart);
+  assert.match(
+    slackService.slice(fnStart, fnEnd),
+    /phone number not found/,
+    reversal(
+      'missing phone says phone number not found on Slack',
+      'the not-found label was changed or removed'
+    )
+  );
+});
+
 // ── Decision: phone stays on the Slack card after approve ─────────────
 // "also i dont want the persons number to disappear in slack after i approve"
 test('phone stays on Slack card after approve', () => {

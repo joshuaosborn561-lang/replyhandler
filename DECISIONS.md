@@ -296,6 +296,15 @@ follow-up, and approve-confirmation cards.
 
 Guard: `Slack campaign field shows the campaign name`
 
+### Missing phone says "phone number not found"
+
+*"and if you cant find one say phone number not found"*
+
+When enrichment finishes without a cellphone, Slack shows
+`phone number not found` — not provider waterfall jargon.
+
+Guard: `missing phone says phone number not found on Slack`
+
 ### Phone stays on the Slack card after approve
 
 *"also i dont want the persons number to disappear in slack after i approve"*
