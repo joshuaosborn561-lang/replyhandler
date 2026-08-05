@@ -161,24 +161,44 @@ test('client notification stays on the enriched send path', () => {
   );
 });
 
-// OOO / REMOVE_ME may still alert in Slack, but never burn enrichment credits.
-test('OOO and REMOVE_ME replies are not phone-enriched for client channels', () => {
+// Phone/waterfall enrichment is positive-only. Declines and alerts still post.
+test('phone enrichment runs only for positive classifications', () => {
   const {
     shouldSkipEnrichment,
-    SKIP_ENRICH_CLASSIFICATIONS,
+    shouldEnrichPhone,
+    PHONE_ENRICH_CLASSIFICATIONS,
   } = require('../src/services/reply-phone-enrichment');
   const post = read('src/services/slack-reply-post.js');
 
-  assert.ok(SKIP_ENRICH_CLASSIFICATIONS.has('OOO'));
-  assert.ok(SKIP_ENRICH_CLASSIFICATIONS.has('REMOVE_ME'));
-  assert.ok(shouldSkipEnrichment('OOO'));
-  assert.ok(shouldSkipEnrichment('OUT_OF_OFFICE'));
-  assert.ok(shouldSkipEnrichment('REMOVE_ME'));
+  assert.ok(PHONE_ENRICH_CLASSIFICATIONS.has('INTERESTED'));
+  assert.ok(PHONE_ENRICH_CLASSIFICATIONS.has('MEETING_PROPOSED'));
+  assert.ok(PHONE_ENRICH_CLASSIFICATIONS.has('QUESTION'));
+  assert.ok(shouldEnrichPhone('INTERESTED'));
+  assert.ok(shouldEnrichPhone('MEETING_PROPOSED'));
+  assert.ok(shouldEnrichPhone('QUESTION'));
   assert.ok(!shouldSkipEnrichment('INTERESTED'));
   assert.ok(!shouldSkipEnrichment('QUESTION'));
+
+  for (const c of [
+    'OOO', 'OUT_OF_OFFICE', 'REMOVE_ME', 'NOT_INTERESTED',
+    'OBJECTION', 'OTHER', 'WRONG_PERSON', 'COMPETITOR', 'FOLLOW_UP',
+  ]) {
+    assert.ok(shouldSkipEnrichment(c), `${c} must skip phone enrichment`);
+  }
+
   assert.match(
     post,
     /shouldSkipEnrichment\(card\?\.classification\)/,
-    'Slack card posts must skip enrichment for OOO/REMOVE_ME'
+    'Slack card posts must gate phone enrichment by classification'
+  );
+  assert.match(
+    post,
+    /describePendingReplyCompany/,
+    'Slack cards must attach a company description for ICP review'
+  );
+  assert.match(
+    read('src/services/slack.js'),
+    /prospectDescriptionBlock|What they do/,
+    'Slack cards must show the company description at the top'
   );
 });

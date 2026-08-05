@@ -325,3 +325,39 @@ test('no nudge system is reintroduced', () => {
     assert.ok(!/postPendingNudge|already_replied|snooze_nudge/.test(body), `${name} must stay free of nudge code`);
   }
 });
+
+// ── Decision: phone enrich positives only; company blurb on every card ─
+// "you are still enriching non postive replies… add a one sentence
+// description… from the website… add the description to the slack card
+// at the top"
+test('phone enrich is positive-only and Slack cards show company one-liner', () => {
+  const {
+    shouldEnrichPhone,
+    shouldSkipEnrichment,
+    PHONE_ENRICH_CLASSIFICATIONS,
+  } = require('../src/services/reply-phone-enrichment');
+
+  assert.deepStrictEqual(
+    [...PHONE_ENRICH_CLASSIFICATIONS].sort(),
+    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
+    reversal(
+      'phone enrichment is positive-only',
+      'the allowlist of enrichable classifications has changed'
+    )
+  );
+  assert.ok(shouldEnrichPhone('INTERESTED'));
+  assert.ok(shouldSkipEnrichment('NOT_INTERESTED'),
+    reversal('phone enrichment is positive-only', 'NOT_INTERESTED is being phone-enriched'));
+  assert.ok(shouldSkipEnrichment('OBJECTION'),
+    reversal('phone enrichment is positive-only', 'OBJECTION is being phone-enriched'));
+
+  const post = read('src/services/slack-reply-post.js');
+  const slackService = read('src/services/slack.js');
+  const desc = read('src/services/prospect-description.js');
+  assert.match(post, /describePendingReplyCompany/,
+    reversal('every Slack card gets a company one-liner', 'Slack post path no longer describes the company'));
+  assert.match(slackService, /What they do/,
+    reversal('company description is at the top of the Slack card', 'the What they do block is gone'));
+  assert.match(desc, /email_domain|resolveWebsite/,
+    reversal('company description comes from the reply website', 'website/email-domain resolution is gone'));
+});

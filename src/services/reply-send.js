@@ -5,6 +5,7 @@ const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
+const { shouldEnrichPhone } = require('./reply-phone-enrichment');
 const { buildClientNotifyEmail } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 
@@ -63,7 +64,9 @@ async function sendReplyToPlatform(client, reply, replyText) {
     if (forwardEmails) {
       try {
         if (reply.phone_enrichment_status === 'found' ||
-            reply.phone_enrichment_status === 'not_found') {
+            reply.phone_enrichment_status === 'not_found' ||
+            reply.phone_enrichment_status === 'skipped' ||
+            !shouldEnrichPhone(reply.classification)) {
           enrichment = {
             email: reply.lead_email || null,
             phone: reply.lead_phone || null,

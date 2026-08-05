@@ -5,6 +5,10 @@ const {
   enrichPendingReplyPhone,
   shouldSkipEnrichment,
 } = require('./reply-phone-enrichment');
+const {
+  describePendingReplyCompany,
+  formatProspectDescriptionLine,
+} = require('./prospect-description');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -149,16 +153,40 @@ async function postProspectSlackCard({
   card,
   replyId,
 }) {
-  let enrichedCard = card;
-  // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
-  // burn enrichment credits — those are not bookable follow-ups.
+  let enrichedCard = { ...card };
+
+  // Company one-liner for every Slack card — used to DQ non-ICP prospects.
+  // Website comes from the reply email domain (LinkedIn is only a weak hint).
+  if (replyId) {
+    try {
+      const company = await describePendingReplyCompany(replyId, {
+        email: card?.leadEmail,
+        website: card?.leadWebsite,
+        linkedinUrl: card?.linkedinUrl,
+        leadName: card?.leadName,
+      });
+      const line = formatProspectDescriptionLine(company);
+      if (line) {
+        enrichedCard.prospectDescription = line;
+        enrichedCard.prospectCategory = company.category || undefined;
+      }
+    } catch (err) {
+      console.warn('[SlackReplyPost] Company description failed', {
+        replyId, err: err.message,
+      });
+    }
+  }
+
+  // Phone/waterfall enrichment only for positive replies (interested /
+  // meeting proposed / question). Declines and alerts still post — no credits.
   if (replyId && !shouldSkipEnrichment(card?.classification)) {
     const phone = await enrichPendingReplyPhone(replyId);
     enrichedCard = {
-      ...card,
+      ...enrichedCard,
       leadPhone: phone.phone || undefined,
       phoneProvider: phone.provider || undefined,
       phoneEnrichmentStatus: phone.status || undefined,
+      leadWebsite: phone.website || enrichedCard.leadWebsite,
     };
   }
 

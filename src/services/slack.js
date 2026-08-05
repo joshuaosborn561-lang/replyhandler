@@ -334,10 +334,23 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   });
 }
 
+function prospectDescriptionBlock(prospectDescription) {
+  const line = String(prospectDescription || '').trim();
+  if (!line) return null;
+  return {
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*What they do*\n${escMrkdwn(line)}`,
+    },
+  };
+}
+
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  prospectDescription,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -348,11 +361,13 @@ async function postDraftApproval(token, channelId, {
     ? `↩️ ${platform.toUpperCase()} — ${classification}`
     : `📩 ${platform.toUpperCase()} — ${classification}`;
 
+  const descBlock = prospectDescriptionBlock(prospectDescription);
   const blocks = [
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },
     },
+    ...(descBlock ? [descBlock] : []),
     {
       type: 'section',
       fields: [
@@ -424,6 +439,7 @@ async function postAlert(token, channelId, {
   leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
+  prospectDescription,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -431,11 +447,13 @@ async function postAlert(token, channelId, {
     ? `↩️ ${classification} — ${platform.toUpperCase()}`
     : `🔔 ${classification} — ${platform.toUpperCase()}`;
 
+  const descBlock = prospectDescriptionBlock(prospectDescription);
   const blocks = [
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },
     },
+    ...(descBlock ? [descBlock] : []),
     {
       type: 'section',
       fields: [
