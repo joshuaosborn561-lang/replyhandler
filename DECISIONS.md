@@ -285,6 +285,17 @@ Other clients are unaffected — a `.io` lead for SalesGlider still drafts.
 
 Guard: `Parlay excludes .io and .ai from drafting`
 
+### Slack campaign field shows the campaign name
+
+*"also i need the campaign ID in slack to be the name of the cmapaign not just
+the numbers"*
+
+Slack cards were rendering `Campaign 3739758`. We now resolve and persist the
+human SmartLead/HeyReach campaign name and show `Name (id)` on draft, alert,
+follow-up, and approve-confirmation cards.
+
+Guard: `Slack campaign field shows the campaign name`
+
 ### Phone stays on the Slack card after approve
 
 *"also i dont want the persons number to disappear in slack after i approve"*

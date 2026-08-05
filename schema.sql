@@ -36,6 +36,7 @@ CREATE TABLE pending_replies (
   client_id UUID NOT NULL REFERENCES clients(id),
   platform TEXT NOT NULL CHECK (platform IN ('smartlead', 'heyreach')),
   campaign_id TEXT,
+  campaign_name TEXT,
   lead_id TEXT,
   lead_name TEXT,
   lead_email TEXT,

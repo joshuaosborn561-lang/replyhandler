@@ -7,6 +7,7 @@ const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
@@ -34,15 +35,6 @@ function envFlag(name, defaultValue = true) {
 function numberEnv(name, fallback) {
   const n = parseInt(process.env[name] || '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function formatCampaignDisplay(name, id) {
-  const cid = id != null ? String(id).trim() : '';
-  const cname = name != null ? String(name).trim() : '';
-  if (cname && cid) return `${cname} (${cid})`;
-  if (cname) return cname;
-  if (cid) return `Campaign ${cid}`;
-  return '';
 }
 
 function historyFromRow(row) {
@@ -145,7 +137,11 @@ async function processInboxRow(client, row, options) {
   const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
   const leadEmail = row.lead_email || null;
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
-  const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
+  let campaignName = row.email_campaign_name || row.emailCampaignName || null;
+  if (!campaignName && client.smartlead_api_key && campaignId) {
+    campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, campaignId);
+  }
+  const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
 
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   let result;
@@ -203,10 +199,10 @@ async function processInboxRow(client, row, options) {
 
   const { rows: [reply] } = await db.query(
     `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-     VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+     VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
     [
-      client.id, String(campaignId), String(leadId), leadName, leadEmail, inbound,
+      client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
       JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
     ]
   );
