@@ -37,12 +37,35 @@ function inboundPrefix(text) {
 }
 
 /**
- * SQL that mirrors normalizeInboundText on the stored column.
- * chr(160)=NBSP, chr(8239)=narrow NBSP — replace before `\s+` collapse.
+ * Every codepoint normalizeInboundText's regex strips, mirrored for SQL.
+ * Postgres POSIX `\s` matches none of these, so each needs its own `replace()`
+ * before the `\s+` collapse — chr(160) and chr(8239) alone (the old list)
+ * missed zero-width space (8203) and friends. A prospect's signature line with
+ * invisible characters like "Pete Langlois ​ ​ ​ ​" then
+ * normalized differently on the JS side vs the stored-column SQL side, so
+ * dedupe never matched and the poller re-posted the same reply every cycle
+ * (2026-08-05, Pete Langlois/TechEvolution — 170 duplicate cards over ~4h).
  */
+const UNICODE_SPACE_CODEPOINTS = [
+  160,   // NBSP
+  5760,  // OGHAM SPACE MARK
+  8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8203, // EN QUAD .. ZERO WIDTH SPACE
+  8239,  // NARROW NBSP
+  8287,  // MEDIUM MATHEMATICAL SPACE
+  12288, // IDEOGRAPHIC SPACE
+  65279, // ZERO WIDTH NO-BREAK SPACE / BOM
+];
+
+function stripUnicodeSpacesSql(column) {
+  return UNICODE_SPACE_CODEPOINTS.reduce(
+    (sql, code) => `replace(${sql}, chr(${code}), ' ')`,
+    column
+  );
+}
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `replace(replace(inbound_message, chr(160), ' '), chr(8239), ' '), ` +
+  `${stripUnicodeSpacesSql('inbound_message')}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -270,6 +293,7 @@ module.exports = {
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
   STORED_NORM_SQL,
+  UNICODE_SPACE_CODEPOINTS,
   alreadyPostedToSlack,
   findUnpostedReply,
   repostReplyRowToSlack,
