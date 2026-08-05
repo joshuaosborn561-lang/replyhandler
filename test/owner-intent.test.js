@@ -127,45 +127,48 @@ test('booking link is withheld until the prospect asks', () => {
   assert.ok(!looksLikeBookingLinkRequest('what does pricing look like?', ''), 'a question is not a link request');
 });
 
-// ── Decision: follow-ups after meeting propose at 2h/24h/48h/1w ───────
-test('follow-ups after meeting propose at 2h/24h/48h/1w', () => {
+// ── Decision: follow-ups after any positive reply at 2h/24h/48h/1w ─────
+// Supersedes "only after meeting propose". "no any positive reply should
+// be on that cadence"
+test('follow-ups after any positive reply at 2h/24h/48h/1w', () => {
   delete process.env.FOLLOW_UP_HOURS;
   delete process.env.FOLLOW_UP_REMINDER_HOURS;
   delete process.env.FOLLOW_UP_MAX_AGE_HOURS;
 
-  // Clear require cache so env deletes take effect
   delete require.cache[require.resolve('../src/services/outbound-follow-up')];
   delete require.cache[require.resolve('../src/services/follow-up-runner')];
 
   const {
     followUpCadenceHours,
     DEFAULT_CADENCE,
+    isPositiveFollowUpClassification,
+    POSITIVE_FOLLOW_UP_CLASSIFICATIONS,
   } = require('../src/services/outbound-follow-up');
-  const { outboundProposesMeeting } = require('../src/utils/outbound-meeting-propose');
   const { maxAgeHours, retireStaleFollowUps } = require('../src/services/follow-up-runner');
   const scheduleSrc = read('src/services/outbound-follow-up.js');
 
   assert.deepStrictEqual(followUpCadenceHours(), DEFAULT_CADENCE);
   assert.deepStrictEqual(DEFAULT_CADENCE, [2, 24, 48, 168],
-    reversal('follow-ups after meeting propose at 2h/24h/48h/1w', 'the cadence has been changed'));
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'the cadence has been changed'));
   assert.strictEqual(maxAgeHours(), 24,
     reversal('no backlog — follow-ups from deploy onward', 'the stale guard has been widened or removed'));
   assert.strictEqual(typeof retireStaleFollowUps, 'function', 'the backlog guard must remain');
 
-  assert.ok(scheduleSrc.includes('outboundProposesMeeting'),
-    'scheduling must gate on meeting-propose detection');
-  assert.ok(scheduleSrc.includes("FOLLOW_UP"),
+  assert.deepStrictEqual(
+    [...POSITIVE_FOLLOW_UP_CLASSIFICATIONS].sort(),
+    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'the positive allowlist changed')
+  );
+  assert.ok(isPositiveFollowUpClassification('INTERESTED'));
+  assert.ok(isPositiveFollowUpClassification('QUESTION'));
+  assert.ok(!isPositiveFollowUpClassification('NOT_INTERESTED'),
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'declines are being put on the cadence'));
+  assert.ok(!scheduleSrc.includes('outboundProposesMeeting'),
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'scheduling still gates on meeting-propose text'));
+  assert.ok(scheduleSrc.includes('isPositiveFollowUpClassification'),
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'scheduling no longer gates on positive classification'));
+  assert.ok(scheduleSrc.includes('FOLLOW_UP'),
     'FOLLOW_UP sends must not restart the cadence');
-
-  assert.ok(outboundProposesMeeting(
-    'Wanted to see if you can do tomorrow or Wednesday. Can I send you a Calendly link or would you prefer me to book for you?'
-  ), 'Calendly / book-for-you must count as proposing');
-  assert.ok(outboundProposesMeeting(
-    'Would Thursday mid-morning or Friday early afternoon work for a quick call with our CEO?'
-  ), 'times-first call ask must count as proposing');
-  assert.ok(!outboundProposesMeeting(
-    'Thanks — tickets are yours either way, no strings attached.'
-  ), 'ticket-only send must not schedule follow-ups');
 });
 
 // ── Decision: a call that booked skips silently ───────────────────────

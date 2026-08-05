@@ -102,10 +102,10 @@ events otherwise burn a Gemini call and post a duplicate card.
 Lookback defaults to 168h. Anything dropped longer ago than that will not
 self-recover and needs a manual sweep.
 
-## Follow-ups: 2h → 24h → 48h → 1w after we propose a meeting
+## Follow-ups: 2h → 24h → 48h → 1w after any positive reply
 
-`scheduleAfterOutboundSend` only queues when the approved outbound proposes a
-meeting (times / Calendly / book-for-you). Default cadence is `2,24,48,168`
+`scheduleAfterOutboundSend` queues when we send a reply to a positive inbound
+(`INTERESTED`, `MEETING_PROPOSED`, `QUESTION`). Default cadence is `2,24,48,168`
 hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
 
 `follow-up-runner.js` posts the next due step. Before posting it asks

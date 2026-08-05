@@ -142,6 +142,18 @@ and LinkedIn. No backlog replay (`FOLLOW_UP_MAX_AGE_HOURS`).
 
 Guard: `follow-ups after meeting propose at 2h/24h/48h/1w`
 
+### Correction: follow-ups after any positive reply
+
+*"no any positive reply should be on that cadence"*
+
+Supersedes the meeting-propose-only gate above. Soft positives (tickets,
+"sure", questions) were not getting 2h/24h/48h/1w nudges because our outbound
+didn't always propose times. Cadence now starts whenever we send a reply to
+`INTERESTED`, `MEETING_PROPOSED`, or `QUESTION`. Declines / OOO / other still
+do not. FOLLOW_UP sends still do not restart the clock. Booking skips unchanged.
+
+Guard: `follow-ups after any positive reply at 2h/24h/48h/1w`
+
 ### Follow-up drafts must tolerate a null timezone
 
 Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw

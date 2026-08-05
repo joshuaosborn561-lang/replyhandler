@@ -1,9 +1,22 @@
 const db = require('../db');
 const { isSlackTestFixtureReply } = require('./reply-send');
-const { outboundProposesMeeting } = require('../utils/outbound-meeting-propose');
 
-/** Default: 2h → 24h → 48h → 1 week after we propose a meeting. */
+/** Default: 2h → 24h → 48h → 1 week after we reply to a positive inbound. */
 const DEFAULT_CADENCE = [2, 24, 48, 168];
+
+/**
+ * Inbound classifications that start the follow-up cadence when we send our reply.
+ * Matches the "positive" set used for phone enrichment.
+ */
+const POSITIVE_FOLLOW_UP_CLASSIFICATIONS = new Set([
+  'INTERESTED',
+  'MEETING_PROPOSED',
+  'QUESTION',
+]);
+
+function isPositiveFollowUpClassification(classification) {
+  return POSITIVE_FOLLOW_UP_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
+}
 
 /**
  * Parse FOLLOW_UP_HOURS as a comma-separated cadence (hours).
@@ -72,9 +85,9 @@ async function cancelPendingForThread(clientId, { platform, campaignId, leadId, 
 /**
  * After we successfully send a prospect-facing message (Slack approve/edit).
  *
- * Only starts a cadence when the outbound proposes a meeting (times / Calendly /
- * "book for you"). FOLLOW_UP sends do not restart the clock — later steps from
- * the original propose keep their due times.
+ * Starts the 2h → 24h → 48h → 1w cadence for every positive inbound
+ * (INTERESTED / MEETING_PROPOSED / QUESTION). FOLLOW_UP sends do not restart
+ * the clock — later steps from the original send keep their due times.
  */
 async function scheduleAfterOutboundSend(clientId, reply) {
   if (!reply || isSlackTestFixtureReply(reply)) return;
@@ -99,11 +112,11 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
-  const sentText = reply.sent_reply || reply.draft_reply || '';
-  if (!outboundProposesMeeting(sentText)) {
-    console.log('[FollowUp] Skip schedule — outbound did not propose a meeting', {
+  if (!isPositiveFollowUpClassification(reply.classification)) {
+    console.log('[FollowUp] Skip schedule — inbound was not positive', {
       replyId: reply.id,
       lead: reply.lead_name,
+      classification: reply.classification,
     });
     return;
   }
@@ -156,6 +169,7 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     campaignId,
     leadId,
     conversationId,
+    classification: reply.classification,
     steps: cadence,
     sentAt: sentAt.toISOString(),
   });
@@ -206,5 +220,7 @@ module.exports = {
   followUpHours,
   followUpCadenceHours,
   heyreachConversationId,
+  isPositiveFollowUpClassification,
+  POSITIVE_FOLLOW_UP_CLASSIFICATIONS,
   DEFAULT_CADENCE,
 };
