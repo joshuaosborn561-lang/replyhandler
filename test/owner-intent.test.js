@@ -169,6 +169,8 @@ test('follow-ups after any positive reply at 2h/24h/48h/1w', () => {
     reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'scheduling no longer gates on positive classification'));
   assert.ok(scheduleSrc.includes('FOLLOW_UP'),
     'FOLLOW_UP sends must not restart the cadence');
+  assert.match(scheduleSrc, /MAX_SCHEDULE_AGE_DAYS\s*=\s*3/,
+    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', '3-day backfill cap was removed'));
 });
 
 // ── Decision: a call that booked skips silently ───────────────────────

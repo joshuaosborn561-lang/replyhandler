@@ -154,6 +154,18 @@ do not. FOLLOW_UP sends still do not restart the clock. Booking skips unchanged.
 
 Guard: `follow-ups after any positive reply at 2h/24h/48h/1w`
 
+### No follow-up backfill older than 3 days
+
+*"stop backfilling past 3 days ago"*
+
+Positive-reply cadence backfills and ops scripts must not look further than
+3 days. `scheduleAfterOutboundSend` also refuses to start a cadence from a
+send older than 3 days.
+
+Guard: covered by `MAX_SCHEDULE_AGE_DAYS` in `outbound-follow-up.js` and the
+3-day caps in `scripts/smartlead-positive-followups.js` /
+`scripts/post-followup-nudges.js`
+
 ### Follow-up drafts must tolerate a null timezone
 
 Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw

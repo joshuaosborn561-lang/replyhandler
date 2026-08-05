@@ -4,6 +4,9 @@ const { isSlackTestFixtureReply } = require('./reply-send');
 /** Default: 2h → 24h → 48h → 1 week after we reply to a positive inbound. */
 const DEFAULT_CADENCE = [2, 24, 48, 168];
 
+/** Never start a cadence from a send older than this (no deep backfill). */
+const MAX_SCHEDULE_AGE_DAYS = 3;
+
 /**
  * Inbound classifications that start the follow-up cadence when we send our reply.
  * Matches the "positive" set used for phone enrichment.
@@ -121,6 +124,23 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
+  // Refuse deep backfills — only schedule from recent sends.
+  const sentAtCandidate = reply.updated_at || reply.created_at || null;
+  if (sentAtCandidate) {
+    const sentMs = new Date(sentAtCandidate).getTime();
+    if (Number.isFinite(sentMs)) {
+      const ageDays = (Date.now() - sentMs) / (24 * 3600 * 1000);
+      if (ageDays > MAX_SCHEDULE_AGE_DAYS) {
+        console.log('[FollowUp] Skip schedule — send older than 3 days', {
+          replyId: reply.id,
+          lead: reply.lead_name,
+          ageDays: Math.round(ageDays * 10) / 10,
+        });
+        return;
+      }
+    }
+  }
+
   const { campaignId, leadId, conversationId } = threadMatchParams(reply);
 
   if (platform === 'smartlead' && (!campaignId || !leadId)) {
@@ -223,4 +243,5 @@ module.exports = {
   isPositiveFollowUpClassification,
   POSITIVE_FOLLOW_UP_CLASSIFICATIONS,
   DEFAULT_CADENCE,
+  MAX_SCHEDULE_AGE_DAYS,
 };
