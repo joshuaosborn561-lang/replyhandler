@@ -112,6 +112,34 @@ test('dedupe key survives tail divergence but separates real replies', () => {
   );
 });
 
+// The SQL-side stored-column normalization must strip exactly the same
+// codepoints as the JS-side one. A gap here (chr(160)/chr(8239) only, missing
+// zero-width space and friends) let a signature with invisible characters
+// dodge dedupe entirely: Pete Langlois/TechEvolution re-posted every 5-minute
+// poll for hours (2026-08-05, 170 duplicate cards) because JS stripped the
+// zero-width spaces in his signature and SQL did not, so the two renderings
+// of "the same" reply never matched.
+test('SQL and JS strip the exact same invisible-space codepoints', () => {
+  const { UNICODE_SPACE_CODEPOINTS, normalizeInboundText } = require('../src/services/reply-dedupe');
+
+  const jsStripsSpace = (code) => normalizeInboundText(`a${String.fromCodePoint(code)}b`) === 'a b';
+
+  for (const code of UNICODE_SPACE_CODEPOINTS) {
+    assert.ok(jsStripsSpace(code), `JS must also normalize codepoint ${code} that SQL strips`);
+  }
+
+  // Spot-check the JS side does not strip anything outside the SQL list —
+  // otherwise the two sides silently diverge again in the other direction.
+  const notInList = [0x2E, 0x41, 0x09]; // '.', 'A', tab (a real \s char, handled separately)
+  for (const code of notInList) {
+    if (UNICODE_SPACE_CODEPOINTS.includes(code)) continue;
+    assert.ok(
+      code === 0x09 || !jsStripsSpace(code),
+      `codepoint ${code} is stripped by JS but missing from the SQL list`
+    );
+  }
+});
+
 // ── Drafts ────────────────────────────────────────────────────────────
 // The mailbox appends the real signature; a draft sign-off stacks a second.
 test('drafts carry no sign-off', () => {
