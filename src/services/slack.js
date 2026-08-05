@@ -280,6 +280,7 @@ function buildSentConfirmationBlocks({
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
   const headers = {
     approved: '✅ SENT — Approved & sent',
@@ -315,6 +316,8 @@ function buildSentConfirmationBlocks({
       inboundMessage,
       draft: null,
       priorLabel: contextLabel || 'You sent',
+      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+      followUpContext: isFollowUp,
     }),
   ];
 
