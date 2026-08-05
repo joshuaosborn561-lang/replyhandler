@@ -325,3 +325,41 @@ test('no nudge system is reintroduced', () => {
     assert.ok(!/postPendingNudge|already_replied|snooze_nudge/.test(body), `${name} must stay free of nudge code`);
   }
 });
+
+// ── Decision: Parlay DQs .io / .ai from drafting ──────────────────────
+// "for parlay. please exclude all .io and .ai form drafting replies,
+// DQd at client request"
+test('Parlay excludes .io and .ai from drafting', () => {
+  const {
+    draftSkipReason,
+    applyClientDraftPolicy,
+    PARLAY_DQ_TLDS,
+  } = require('../src/utils/client-draft-policy');
+  const parlay = {
+    id: '9760132c-1dd3-4e97-8f29-c5d4d01f5054',
+    name: 'Parlay Tech',
+  };
+
+  assert.ok(PARLAY_DQ_TLDS.has('io'));
+  assert.ok(PARLAY_DQ_TLDS.has('ai'));
+  assert.ok(draftSkipReason(parlay, 'a@x.io'));
+  assert.ok(draftSkipReason(parlay, 'a@x.ai'));
+  assert.equal(draftSkipReason(parlay, 'a@x.com'), null,
+    reversal('Parlay excludes .io and .ai from drafting', 'non-.io/.ai Parlay emails are being blocked'));
+
+  const blocked = applyClientDraftPolicy(parlay, 'ceo@agent.ai', {
+    classification: 'INTERESTED',
+    draft: 'Want to hop on a call?',
+    reasoning: 'yes',
+  });
+  assert.equal(blocked.isDraft, false,
+    reversal('Parlay excludes .io and .ai from drafting', 'a .ai Parlay reply still got a draft'));
+  assert.equal(blocked.draft, null);
+
+  const webhook = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  assert.match(webhook, /applyClientDraftPolicy/,
+    reversal('Parlay excludes .io and .ai from drafting', 'SmartLead webhook no longer applies the policy'));
+  assert.match(poller, /applyClientDraftPolicy/,
+    reversal('Parlay excludes .io and .ai from drafting', 'SmartLead poller no longer applies the policy'));
+});

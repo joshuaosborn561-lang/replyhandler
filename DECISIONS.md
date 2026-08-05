@@ -269,3 +269,18 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-05
+
+### Parlay Tech: no drafts for .io / .ai reply domains
+
+*"for parlay. please exclude all .io and .ai form drafting replies, DQd at
+client request"*
+
+Parlay asked to DQ those TLDs. Replies still reach Slack as alert-only (with a
+DQ reason) so nothing is silently dropped, but they never get an Approve/Edit
+draft, meetings are not opened, and phone enrichment is skipped.
+
+Other clients are unaffected — a `.io` lead for SalesGlider still drafts.
+
+Guard: `Parlay excludes .io and .ai from drafting`

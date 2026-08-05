@@ -2,7 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
+const { classifyAndDraft } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
@@ -11,6 +11,7 @@ const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -541,8 +542,16 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
     }
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-    const status = isDraft ? 'pending' : 'alert_only';
+    const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+    draft = policy.draft;
+    reasoning = policy.reasoning;
+    const isDraft = policy.isDraft;
+    const status = policy.status;
+    if (policy.skippedDraft) {
+      console.log('[Webhook] SmartLead draft skipped by client policy', {
+        leadName, leadEmail, classification, reason: policy.skipReason,
+      });
+    }
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
@@ -769,7 +778,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           return;
         }
 
-        const { classification, draft, proposed_time, reasoning } = result;
+        let { classification, draft, proposed_time, reasoning } = result;
         const hrSuppressed = slackSuppressionReason(inboundMessage);
         if (hrSuppressed) {
           console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });
@@ -781,8 +790,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           return;
         }
 
-        const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-        const status = isDraft ? 'pending' : 'alert_only';
+        // HeyReach often has no email at ingest; policy applies when email is known.
+        const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+        draft = policy.draft;
+        reasoning = policy.reasoning;
+        const isDraft = policy.isDraft;
+        const status = policy.status;
 
         const contextWithMeta = {
           messages: threadContext,
@@ -837,6 +850,22 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             leadEmail = await profileToEmail(resolvedLinkedinUrl);
             console.log('[LeadMagic] Email lookup result', { linkedinUrl: resolvedLinkedinUrl, email: leadEmail });
             if (leadEmail) {
+              const latePolicy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+              if (latePolicy.skippedDraft) {
+                await db.query(
+                  `UPDATE pending_replies
+                      SET lead_email = $1,
+                          draft_reply = NULL,
+                          status = 'alert_only',
+                          updated_at = now()
+                    WHERE id = $2`,
+                  [leadEmail, reply.id]
+                );
+                console.log('[Webhook] HeyReach draft revoked by client policy after email lookup', {
+                  leadName: resolvedLeadName, leadEmail, reason: latePolicy.skipReason,
+                });
+                return;
+              }
               await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
             }
           } catch (err) {

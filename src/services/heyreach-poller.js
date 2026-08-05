@@ -2,9 +2,10 @@ const db = require('../db');
 const heyreach = require('./heyreach');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
@@ -393,7 +394,7 @@ async function processConversation(client, conv, options) {
       reasoning: `Classifier failed: ${err.message}`,
     };
   }
-  const { classification, draft, proposed_time, reasoning } = result;
+  let { classification, draft, proposed_time, reasoning } = result;
 
   const suppressed = slackSuppressionReason(inbound.text);
   if (suppressed) {
@@ -405,8 +406,11 @@ async function processConversation(client, conv, options) {
     return { skipped: suppressed };
   }
 
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-  const status = isDraft ? 'pending' : 'alert_only';
+  const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+  draft = policy.draft;
+  reasoning = policy.reasoning;
+  const isDraft = policy.isDraft;
+  const status = policy.status;
   const meta = {
     messages: threadContext,
     heyreach: {
@@ -475,7 +479,7 @@ async function processConversation(client, conv, options) {
     return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName: reply.lead_name };
   }
 
-  if (classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
+  if (isDraft && classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
     await db.query(
       `INSERT INTO meetings (client_id, pending_reply_id, lead_name, linkedin_url, proposed_time, status)
        VALUES ($1, $2, $3, $4, $5, 'proposed')`,

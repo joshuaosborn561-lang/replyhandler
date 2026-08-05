@@ -3,9 +3,10 @@ const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
 const { classifyFromSmartlead } = require('./smartlead-category');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
@@ -189,8 +190,16 @@ async function processInboxRow(client, row, options) {
     return { skipped: suppressed };
   }
 
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-  const status = isDraft ? 'pending' : 'alert_only';
+  const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+  draft = policy.draft;
+  reasoning = policy.reasoning;
+  const isDraft = policy.isDraft;
+  const status = policy.status;
+  if (policy.skippedDraft) {
+    console.log('[SmartLeadPoll] Draft skipped by client policy', {
+      client: client.name, leadName, leadEmail, reason: policy.skipReason,
+    });
+  }
 
   const { rows: [reply] } = await db.query(
     `INSERT INTO pending_replies
@@ -239,7 +248,7 @@ async function processInboxRow(client, row, options) {
     return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName };
   }
 
-  if (classification === 'MEETING_PROPOSED' && leadEmail) {
+  if (isDraft && classification === 'MEETING_PROPOSED' && leadEmail) {
     await db.query(
       `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
        VALUES ($1, $2, $3, $4, $5, 'proposed')`,
