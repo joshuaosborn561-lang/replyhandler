@@ -251,12 +251,14 @@ function buildSentConfirmationBlocks({
     approved: '✅ SENT — Approved & sent',
     edited: '✏️ SENT — Edited & sent',
     rejected: '❌ Rejected',
+    disqualified: '🚫 DQ — no follow-ups',
     failed: '⚠️ Send failed',
   };
   const footers = {
     approved: 'Approved & sent',
     edited: 'Edited & sent',
     rejected: 'Rejected',
+    disqualified: 'Disqualified · excluded from follow-up nudges',
     failed: 'Send failed',
   };
   const kind = headers[actionKind] ? actionKind : 'approved';
@@ -282,7 +284,7 @@ function buildSentConfirmationBlocks({
     }),
   ];
 
-  if (sentReply && String(sentReply).trim() && kind !== 'rejected') {
+  if (sentReply && String(sentReply).trim() && kind !== 'rejected' && kind !== 'disqualified') {
     blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
@@ -324,7 +326,12 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   const blocks = buildSentConfirmationBlocks(opts);
   const preview = plainTextForSlack(opts.sentReply || opts.inboundMessage).slice(0, 120);
   const lead = opts.leadName || 'prospect';
-  const text = `${opts.actionKind === 'rejected' ? 'Rejected' : 'Sent'} — ${lead}${preview ? `: ${preview}` : ''}`;
+  const textPrefix = opts.actionKind === 'rejected'
+    ? 'Rejected'
+    : opts.actionKind === 'disqualified'
+      ? 'DQ'
+      : 'Sent';
+  const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
   return slack.chat.update({
     channel: channelId,
@@ -407,6 +414,12 @@ async function postDraftApproval(token, channelId, {
           action_id: 'reject_reply',
           value: replyId,
         },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🚫 DQ' },
+          action_id: 'dq_prospect',
+          value: replyId,
+        },
       ],
     });
 
@@ -421,7 +434,7 @@ async function postDraftApproval(token, channelId, {
 }
 
 async function postAlert(token, channelId, {
-  leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
@@ -464,6 +477,20 @@ async function postAlert(token, channelId, {
       ],
     },
   ];
+
+  if (replyId) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🚫 DQ' },
+          action_id: 'dq_prospect',
+          value: replyId,
+        },
+      ],
+    });
+  }
 
   return slack.chat.postMessage({
     channel: channelId,

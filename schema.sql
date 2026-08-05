@@ -54,7 +54,11 @@ CREATE TABLE pending_replies (
   classification TEXT NOT NULL,
   draft_reply TEXT,
   sent_reply TEXT,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'sent', 'flagged', 'alert_only')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+    'pending', 'approved', 'rejected', 'sent', 'flagged',
+    'alert_only', 'suppressed', 'disqualified'
+  )),
+  suppression_reason TEXT,
   slack_message_ts TEXT,
   smartlead_email_stats_id TEXT,
   cc_on_send BOOLEAN NOT NULL DEFAULT false,
@@ -126,6 +130,25 @@ CREATE TABLE outbound_follow_ups (
 
 CREATE INDEX idx_outbound_follow_ups_due_pending ON outbound_follow_ups (due_at) WHERE status = 'pending';
 CREATE INDEX idx_outbound_follow_ups_match ON outbound_follow_ups (client_id, platform, campaign_id, lead_id);
+
+CREATE TABLE disqualified_prospects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id UUID NOT NULL REFERENCES clients(id),
+  platform TEXT NOT NULL CHECK (platform IN ('smartlead', 'heyreach')),
+  campaign_id TEXT,
+  lead_id TEXT,
+  conversation_id TEXT,
+  lead_email TEXT,
+  linkedin_url TEXT,
+  lead_name TEXT,
+  source_pending_reply_id UUID REFERENCES pending_replies(id) ON DELETE SET NULL,
+  reason TEXT,
+  created_by_slack_user TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_disqualified_prospects_client
+  ON disqualified_prospects(client_id, created_at DESC);
 
 CREATE TABLE attention_digests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

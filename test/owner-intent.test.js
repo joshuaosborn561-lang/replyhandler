@@ -326,6 +326,26 @@ test('no nudge system is reintroduced', () => {
   }
 });
 
+// ── Decision: Slack DQ button excludes follow-up nudges ───────────────
+// "also add in a DQ button in slack that excludes form followup nudges"
+test('Slack DQ button excludes follow-up nudges', () => {
+  const slackService = read('src/services/slack.js');
+  const slackRoute = read('src/routes/slack.js');
+  const followUp = read('src/services/outbound-follow-up.js');
+  const runner = read('src/services/follow-up-runner.js');
+
+  assert.match(slackService, /action_id:\s*'dq_prospect'/,
+    reversal('Slack DQ button excludes follow-up nudges', 'draft/alert cards no longer expose a DQ button'));
+  assert.match(slackRoute, /dq_prospect/,
+    reversal('Slack DQ button excludes follow-up nudges', 'Slack actions no longer handle DQ'));
+  assert.match(slackRoute, /markDisqualified/,
+    reversal('Slack DQ button excludes follow-up nudges', 'DQ handler no longer marks the prospect'));
+  assert.match(followUp, /isReplyDisqualified|isDisqualified/,
+    reversal('Slack DQ button excludes follow-up nudges', 'follow-up scheduling no longer checks DQ'));
+  assert.match(runner, /disqualified/,
+    reversal('Slack DQ button excludes follow-up nudges', 'follow-up runner no longer skips DQ\'d prospects'));
+});
+
 // ── Decision: Parlay DQs .io / .ai from drafting ──────────────────────
 // "for parlay. please exclude all .io and .ai form drafting replies,
 // DQd at client request"

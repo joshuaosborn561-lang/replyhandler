@@ -5,6 +5,7 @@ const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
+const { markDisqualified } = require('../services/disqualified-prospects');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { learnFromApprovedReply } = require('../services/approved-reply-learning');
 
@@ -126,6 +127,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleApprove(action.value, interaction);
     } else if (action.action_id === 'reject_reply') {
       await handleReject(action.value, interaction);
+    } else if (action.action_id === 'dq_prospect') {
+      await handleDisqualify(action.value, interaction);
     } else if (action.action_id === 'open_edit_modal') {
       await handleOpenEditModal(action.value, interaction);
     } else if (action.action_id === 'toggle_cc_client') {
@@ -343,6 +346,49 @@ async function handleReject(replyId, interaction) {
   );
 
   console.log('[Slack] Reply rejected', { replyId, lead: reply.lead_name });
+}
+
+/**
+ * DQ = out of ICP. Cancels pending follow-up nudges and blocks future ones
+ * for this prospect. Works on draft cards and alert-only cards.
+ */
+async function handleDisqualify(replyId, interaction) {
+  const { rows: [reply] } = await db.query(
+    `SELECT * FROM pending_replies
+      WHERE id = $1
+        AND status IN ('pending', 'alert_only', 'flagged')`,
+    [replyId]
+  );
+  if (!reply) {
+    console.warn('[Slack] DQ: reply not found or already actioned', { replyId });
+    return;
+  }
+
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const result = await markDisqualified({
+    clientId: client.id,
+    reply,
+    reason: 'slack_dq',
+    slackUserId: interaction.user?.id || null,
+  });
+  const ctx = slackCardContextFromReply(reply);
+  const cancelled = result.cancelledFollowUps || 0;
+
+  await slackService.updateSentConfirmationCard(
+    client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+    sentCardPayload(reply, ctx, {
+      sentReply: null,
+      actionKind: 'disqualified',
+      userId: interaction.user.id,
+      extraFooter: cancelled > 0
+        ? `Cancelled ${cancelled} pending follow-up nudge${cancelled === 1 ? '' : 's'}.`
+        : 'No pending follow-up nudges. Future nudges blocked.',
+    })
+  );
+
+  console.log('[Slack] Prospect disqualified', {
+    replyId, lead: reply.lead_name, cancelledFollowUps: cancelled,
+  });
 }
 
 module.exports = router;
