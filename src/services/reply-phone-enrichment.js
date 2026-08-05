@@ -4,22 +4,44 @@
  * Provider order is implemented by enrichProspect:
  *   GetLeads -> AI Ark -> LeadMagic
  *
- * OOO / REMOVE_ME never get enriched for client Slack channels — those cards
- * are informational only and burning waterfall credits on them is waste.
+ * Phone/waterfall enrichment runs only for positive classifications.
+ * Declines, OOO, remove-me, wrong-person, competitor, and other alerts
+ * still reach Slack — they just do not burn enrichment credits.
  */
 
 const db = require('../db');
 const { enrichProspect } = require('./prospect-enrich');
 
-/** Classifications that must never trigger phone/waterfall enrichment. */
+/**
+ * Positive replies worth a cellphone lookup for booking / client notify.
+ * Everything else skips the paid waterfall.
+ */
+const PHONE_ENRICH_CLASSIFICATIONS = new Set([
+  'INTERESTED',
+  'MEETING_PROPOSED',
+  'QUESTION',
+]);
+
+/** @deprecated kept for tests that imported the old skip-set name */
 const SKIP_ENRICH_CLASSIFICATIONS = new Set([
   'OOO',
   'OUT_OF_OFFICE',
   'REMOVE_ME',
+  'NOT_INTERESTED',
+  'OBJECTION',
+  'OTHER',
+  'WRONG_PERSON',
+  'COMPETITOR',
+  'FOLLOW_UP',
 ]);
 
+function shouldEnrichPhone(classification) {
+  return PHONE_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
+}
+
+/** True when phone/waterfall enrichment must not run. */
 function shouldSkipEnrichment(classification) {
-  return SKIP_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
+  return !shouldEnrichPhone(classification);
 }
 
 function storedResult(reply) {
@@ -61,23 +83,30 @@ async function enrichPendingReplyPhone(replyId) {
   }
   if (shouldSkipEnrichment(existing.classification) || existing.status === 'suppressed') {
     if (existing.phone_enrichment_status !== 'skipped') {
-      await db.query(
-        `UPDATE pending_replies
-            SET phone_enrichment_status = 'skipped',
-                phone_enrichment_error = $2,
-                phone_enriched_at = now(),
-                updated_at = now()
-          WHERE id = $1
-            AND (phone_enrichment_status IS NULL
-                 OR phone_enrichment_status = 'failed'
-                 OR phone_enrichment_status = 'processing')`,
-        [
-          replyId,
-          shouldSkipEnrichment(existing.classification)
-            ? `skipped_${String(existing.classification || '').toLowerCase()}`
-            : 'skipped_suppressed',
-        ]
-      );
+      try {
+        await db.query(
+          `UPDATE pending_replies
+              SET phone_enrichment_status = 'skipped',
+                  phone_enrichment_error = $2,
+                  phone_enriched_at = now(),
+                  updated_at = now()
+            WHERE id = $1
+              AND (phone_enrichment_status IS NULL
+                   OR phone_enrichment_status = 'failed'
+                   OR phone_enrichment_status = 'processing')`,
+          [
+            replyId,
+            shouldSkipEnrichment(existing.classification)
+              ? `skipped_non_positive_${String(existing.classification || 'unknown').toLowerCase()}`
+              : 'skipped_suppressed',
+          ]
+        );
+      } catch (err) {
+        // Pre-migration DBs reject 'skipped' on the CHECK — still return skipped.
+        console.warn('[ReplyPhone] Could not persist skipped status', {
+          replyId, err: err.message,
+        });
+      }
     }
     return { ...storedResult(existing), status: 'skipped' };
   }
@@ -168,5 +197,7 @@ module.exports = {
   enrichPendingReplyPhone,
   storedResult,
   shouldSkipEnrichment,
+  shouldEnrichPhone,
+  PHONE_ENRICH_CLASSIFICATIONS,
   SKIP_ENRICH_CLASSIFICATIONS,
 };

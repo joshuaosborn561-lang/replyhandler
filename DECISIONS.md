@@ -269,3 +269,23 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-05
+
+### Phone enrichment is positive-only; every Slack card gets a company one-liner
+
+*"you are still enriching non postive replies. also, for all replies, add a one
+sentence description fo what they do and their category in plain english. we
+need to dq prospects that are not in the icp. i usually do this form the website
+the prospect replies from… add the description to the slack card at the top"*
+
+Earlier we only skipped OOO / REMOVE_ME. That still burned GetLeads → AI Ark →
+LeadMagic on declines, objections, and other alerts. Phone/waterfall enrichment
+now runs only for `INTERESTED`, `MEETING_PROPOSED`, and `QUESTION`.
+
+Separately, every Slack card (draft or alert) gets a plain-English one-liner at
+the top — category + what they do — built from the website on the reply email
+domain (LinkedIn is only a weak hint). Purpose is ICP DQ before approving.
+
+Guards: `phone enrichment runs only for positive classifications`,
+`prospect-description` unit tests
