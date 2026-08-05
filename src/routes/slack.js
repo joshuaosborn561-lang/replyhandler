@@ -66,6 +66,9 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
   return {
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
+    leadPhone: reply.lead_phone || undefined,
+    phoneProvider: reply.lead_phone_provider || undefined,
+    phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
     platform: reply.platform,
     classification: reply.classification,
     inboundMessage: reply.inbound_message,
