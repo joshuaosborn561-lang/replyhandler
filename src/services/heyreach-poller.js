@@ -6,6 +6,7 @@ const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
@@ -120,14 +121,19 @@ function campaignId(conv) {
   );
 }
 
-function campaignDisplay(conv, id) {
+function campaignNameOf(conv) {
   const fromTags = campaignIdFromAutoTags(conv);
-  const name = conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || fromTags.name || '';
-  const cid = id != null ? String(id).trim() : '';
-  if (name && cid) return `${name} (${cid})`;
-  if (name) return name;
-  if (cid) return `Campaign ${cid}`;
-  return undefined;
+  return (
+    conv?.campaignName ||
+    conv?.campaign_name ||
+    conv?.campaign?.name ||
+    fromTags.name ||
+    null
+  );
+}
+
+function campaignDisplay(conv, id) {
+  return formatCampaignDisplay(campaignNameOf(conv), id) || undefined;
 }
 
 function leadId(conv) {
@@ -411,6 +417,7 @@ async function processConversation(client, conv, options) {
   reasoning = policy.reasoning;
   const isDraft = policy.isDraft;
   const status = policy.status;
+  const hrCampaignName = campaignNameOf(conv);
   const meta = {
     messages: threadContext,
     heyreach: {
@@ -419,18 +426,19 @@ async function processConversation(client, conv, options) {
       linkedinUrl: linkedinUrl(conv),
       conversationId: convId,
       senderId: senderId(conv),
-      campaignName: conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || null,
+      campaignName: hrCampaignName,
     },
   };
 
   const { rows: [reply] } = await db.query(
     `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-     VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+     VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       client.id,
       cid == null ? null : String(cid),
+      hrCampaignName || null,
       String(leadKey),
       leadName(conv),
       linkedinUrl(conv),

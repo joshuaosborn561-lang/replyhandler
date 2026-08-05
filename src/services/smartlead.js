@@ -8,16 +8,76 @@ function toSmartleadId(value, name) {
   return n;
 }
 
+/** apiKey prefix + campaign id → { name, fetchedAt } */
+const campaignNameCache = new Map();
+const CAMPAIGN_NAME_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Fetch a SmartLead campaign (includes human-readable name).
+ * @see https://api.smartlead.ai/api-reference/campaigns/get-by-id
+ */
+async function getCampaign(apiKey, campaignId) {
+  if (!apiKey || campaignId == null || campaignId === '') return null;
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`SmartLead getCampaign failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  if (!body || !String(body).trim()) {
+    throw new Error(`SmartLead getCampaign empty body (${res.status})`);
+  }
+  try {
+    return JSON.parse(body);
+  } catch (err) {
+    throw new Error(`SmartLead getCampaign invalid JSON: ${String(body).slice(0, 200)}`);
+  }
+}
+
+/**
+ * Resolve the human campaign name, with a short in-memory cache.
+ * Returns null when the campaign is missing or the API fails.
+ */
+async function resolveCampaignName(apiKey, campaignId) {
+  if (!apiKey || campaignId == null || campaignId === '') return null;
+  let cid;
+  try {
+    cid = toSmartleadId(campaignId, 'campaign_id');
+  } catch {
+    return null;
+  }
+  const cacheKey = `${String(apiKey).slice(0, 12)}:${cid}`;
+  const hit = campaignNameCache.get(cacheKey);
+  if (hit && Date.now() - hit.fetchedAt < CAMPAIGN_NAME_TTL_MS) {
+    return hit.name;
+  }
+  try {
+    const data = await getCampaign(apiKey, cid);
+    const name = data?.name != null ? String(data.name).trim() : '';
+    const resolved = name || null;
+    campaignNameCache.set(cacheKey, { name: resolved, fetchedAt: Date.now() });
+    return resolved;
+  } catch (err) {
+    console.warn('[SmartLead] resolveCampaignName failed', {
+      campaignId: cid, err: err.message,
+    });
+    return null;
+  }
+}
+
 /**
  * Confirms this campaign belongs to the SmartLead account for this API key.
  * @see https://api.smartlead.ai/api-reference/campaigns/get-by-id — 404 if not accessible
  */
 async function verifyCampaignAccess(apiKey, campaignId) {
   if (!apiKey || campaignId == null || campaignId === '') return false;
-  const cid = toSmartleadId(campaignId, 'campaign_id');
-  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url);
-  return res.ok;
+  try {
+    const data = await getCampaign(apiKey, campaignId);
+    return Boolean(data && (data.id != null || data.name != null));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -378,6 +438,8 @@ module.exports = {
   getThreadHistory,
   sendReply,
   forwardThreadToClient,
+  getCampaign,
+  resolveCampaignName,
   verifyCampaignAccess,
   resolveEmailStatsId,
   resolveIdsFromMasterInbox,

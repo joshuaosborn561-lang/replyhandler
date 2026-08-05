@@ -420,10 +420,26 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
           }
         }
       }
-      const campFollow =
-        fu.campaign_id != null && String(fu.campaign_id).trim() !== ''
-          ? `Campaign ${String(fu.campaign_id).trim()}`
-          : '';
+      const { formatCampaignDisplay, campaignNameFromReply } = require('./utils/campaign-display');
+      const smartlead = require('./services/smartlead');
+      let campName = null;
+      if (fu.source_pending_reply_id) {
+        const { rows: [srcCamp] } = await db.query(
+          'SELECT campaign_name, campaign_id, thread_context FROM pending_replies WHERE id = $1',
+          [fu.source_pending_reply_id]
+        );
+        if (srcCamp) campName = campaignNameFromReply(srcCamp);
+      }
+      if (!campName && fu.platform === 'smartlead' && client.smartlead_api_key && fu.campaign_id) {
+        campName = await smartlead.resolveCampaignName(client.smartlead_api_key, fu.campaign_id);
+      }
+      if (campName && newReply?.id) {
+        await db.query(
+          'UPDATE pending_replies SET campaign_name = $1 WHERE id = $2 AND (campaign_name IS NULL OR campaign_name = \'\')',
+          [campName, newReply.id]
+        ).catch(() => {});
+      }
+      const campFollow = formatCampaignDisplay(campName, fu.campaign_id);
 
       await postProspectSlackCard({
         token: client.slack_bot_token,

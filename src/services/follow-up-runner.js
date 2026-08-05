@@ -3,7 +3,9 @@ const { postProspectSlackCard } = require('./slack-reply-post');
 const { draftReattemptToBook } = require('./follow-up-drafts');
 const { looksAlreadyBooked } = require('./booking-check');
 const { cancelPendingForThread } = require('./outbound-follow-up');
+const smartlead = require('./smartlead');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
+const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
 /**
  * Turns a due row in outbound_follow_ups into a Slack approval card.
@@ -59,27 +61,38 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   let threadContext = null;
   let smartleadStatsId = null;
+  let campaignName = null;
   if (fu.source_pending_reply_id) {
     const { rows: [src] } = await db.query(
-      'SELECT thread_context, smartlead_email_stats_id FROM pending_replies WHERE id = $1',
+      'SELECT thread_context, smartlead_email_stats_id, campaign_name, campaign_id FROM pending_replies WHERE id = $1',
       [fu.source_pending_reply_id]
     );
     if (src) {
       threadContext = parseThreadContext(src.thread_context);
       smartleadStatsId = src.smartlead_email_stats_id;
+      campaignName = campaignNameFromReply(src);
     }
+  }
+  if (
+    !campaignName &&
+    fu.platform === 'smartlead' &&
+    client.smartlead_api_key &&
+    fu.campaign_id
+  ) {
+    campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, fu.campaign_id);
   }
 
   const { rows: [newReply] } = await db.query(
     `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, lead_id, lead_name, lead_email, linkedin_url,
+      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
        inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'FOLLOW_UP', $10, 'pending', $11)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'FOLLOW_UP', $11, 'pending', $12)
      RETURNING *`,
     [
       client.id,
       fu.platform,
       fu.campaign_id,
+      campaignName || null,
       fu.lead_id,
       fu.lead_name,
       fu.lead_email,
@@ -92,9 +105,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   );
 
   const sentAt = fu.sent_at instanceof Date ? fu.sent_at.toISOString() : String(fu.sent_at || '');
-  const campaignDisplay = fu.campaign_id != null && String(fu.campaign_id).trim() !== ''
-    ? `Campaign ${String(fu.campaign_id).trim()}`
-    : undefined;
+  const campaignDisplay = formatCampaignDisplay(campaignName, fu.campaign_id) || undefined;
 
   await postProspectSlackCard({
     token: client.slack_bot_token,
@@ -171,7 +182,7 @@ async function dueFollowUps(limit) {
   const { rows } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*, c.name AS client_name, c.slack_bot_token, c.slack_channel_id,
-            c.voice_prompt, c.booking_link, c.digest_timezone
+            c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key
        FROM outbound_follow_ups f
        JOIN clients c ON c.id = f.client_id
       WHERE f.status = 'pending'
@@ -203,6 +214,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       voice_prompt: fu.voice_prompt,
       booking_link: fu.booking_link,
       digest_timezone: fu.digest_timezone,
+      smartlead_api_key: fu.smartlead_api_key,
     };
 
     try {

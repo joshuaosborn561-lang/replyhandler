@@ -6,19 +6,12 @@ const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
+const smartlead = require('../services/smartlead');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { learnFromApprovedReply } = require('../services/approved-reply-learning');
+const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
 const router = Router();
-
-function formatCampaignDisplay(campaignName, campaignId) {
-  const id = campaignId != null ? String(campaignId).trim() : '';
-  const name = campaignName != null ? String(campaignName).trim() : '';
-  if (name && id) return `${name} (${id})`;
-  if (name) return name;
-  if (id) return `Campaign ${id}`;
-  return '';
-}
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -38,23 +31,43 @@ function heyreachLastOutboundFromMessages(messages) {
   return last;
 }
 
-function slackCardContextFromReply(reply) {
+async function slackCardContextFromReply(reply, client) {
   let tc = reply.thread_context;
   if (typeof tc === 'string') {
     try { tc = JSON.parse(tc); } catch { tc = null; }
   }
   const campaignId = reply.campaign_id;
-  let campaignDisplay = formatCampaignDisplay(null, campaignId);
+  let campaignName = campaignNameFromReply(reply);
   let lastOutbound = '';
 
   if (reply.platform === 'heyreach' && tc && typeof tc === 'object' && !Array.isArray(tc)) {
     const meta = tc.heyreach && typeof tc.heyreach === 'object' ? tc.heyreach : {};
-    campaignDisplay = formatCampaignDisplay(meta.campaignName, campaignId) || campaignDisplay;
+    campaignName = campaignName || meta.campaignName || null;
     lastOutbound = heyreachLastOutboundFromMessages(tc.messages);
   } else if (reply.platform === 'smartlead' && tc && typeof tc === 'object') {
     lastOutbound = lastOutboundBodyFromSmartleadHistory(tc) || '';
   }
 
+  // Older rows only stored the numeric id — look up the human name once and persist it.
+  if (
+    !campaignName &&
+    reply.platform === 'smartlead' &&
+    client?.smartlead_api_key &&
+    campaignId
+  ) {
+    campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, campaignId);
+    if (campaignName && reply.id) {
+      await db.query(
+        `UPDATE pending_replies
+            SET campaign_name = $1, updated_at = now()
+          WHERE id = $2
+            AND (campaign_name IS NULL OR campaign_name = '')`,
+        [campaignName, reply.id]
+      ).catch(() => {});
+    }
+  }
+
+  const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
   return { campaignDisplay: campaignDisplay || undefined, lastOutboundMessage: lastOutbound || undefined };
 }
 
@@ -66,6 +79,9 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
   return {
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
+    leadPhone: reply.lead_phone || undefined,
+    phoneProvider: reply.lead_phone_provider || undefined,
+    phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
     platform: reply.platform,
     classification: reply.classification,
     inboundMessage: reply.inbound_message,
@@ -210,7 +226,7 @@ async function handleEditModalSubmit(interaction) {
 
   const originalDraft = reply.draft_reply;
   const wasEdited = normDraft(messageText) !== normDraft(originalDraft);
-  const ctx = slackCardContextFromReply(reply);
+  const ctx = await slackCardContextFromReply(reply, client);
 
   try {
     const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
@@ -275,7 +291,7 @@ async function handleApprove(replyId, interaction) {
   }
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
-  const ctx = slackCardContextFromReply(reply);
+  const ctx = await slackCardContextFromReply(reply, client);
 
   try {
     const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
@@ -334,7 +350,7 @@ async function handleReject(replyId, interaction) {
   if (!reply) return;
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
-  const ctx = slackCardContextFromReply(reply);
+  const ctx = await slackCardContextFromReply(reply, client);
 
   await slackService.updateSentConfirmationCard(
     client.slack_bot_token, interaction.channel.id, interaction.message.ts,
@@ -371,7 +387,7 @@ async function handleDisqualify(replyId, interaction) {
     reason: 'slack_dq',
     slackUserId: interaction.user?.id || null,
   });
-  const ctx = slackCardContextFromReply(reply);
+  const ctx = await slackCardContextFromReply(reply, client);
   const cancelled = result.cancelledFollowUps || 0;
 
   await slackService.updateSentConfirmationCard(

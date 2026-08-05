@@ -12,6 +12,7 @@ const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -68,15 +69,6 @@ function heyreachLastOutboundFromThread(threadContext) {
     if (txt && String(txt).trim()) last = String(txt).trim();
   }
   return last;
-}
-
-function formatCampaignDisplay(campaignName, campaignId) {
-  const id = campaignId != null ? String(campaignId).trim() : '';
-  const name = campaignName != null ? String(campaignName).trim() : '';
-  if (name && id) return `${name} (${id})`;
-  if (name) return name;
-  if (id) return `Campaign ${id}`;
-  return 'Campaign (unknown)';
 }
 
 function smartleadCampaignName(payload) {
@@ -477,7 +469,15 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
     }
 
-    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), resolvedCampaignId);
+    let resolvedCampaignName = smartleadCampaignName(payload);
+    if (!resolvedCampaignName && client.smartlead_api_key && resolvedCampaignId) {
+      resolvedCampaignName = await smartlead.resolveCampaignName(
+        client.smartlead_api_key,
+        resolvedCampaignId
+      );
+    }
+    const campaignDisplaySl =
+      formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
     const lastOutboundSl =
       smartleadLastOutboundFromPayload(payload) ||
       (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
@@ -555,9 +555,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [clientId, 'smartlead', resolvedCampaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft && classification === 'MEETING_PROPOSED') {
@@ -703,10 +703,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       payload.thread ||
       [{ role: 'prospect', message: inboundMessage || '(no message body)' }];
 
-    const campaignDisplayHr = formatCampaignDisplay(
-      hrCampaignName || (payload.campaign && payload.campaign.name),
-      campaignId
-    );
+    const resolvedHrCampaignName =
+      hrCampaignName || (payload.campaign && payload.campaign.name) || null;
+    const campaignDisplayHr = formatCampaignDisplay(resolvedHrCampaignName, campaignId);
     let lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
 
     await cancelForInboundReply({
@@ -805,7 +804,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             linkedinUrl: resolvedLinkedinUrl,
             conversationId: hrConversationId,
             senderId: hrSenderId,
-            campaignName: hrCampaignName || (payload.campaign && payload.campaign.name) || null,
+            campaignName: resolvedHrCampaignName,
           },
         };
 
@@ -813,9 +812,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
         const { rows: [reply] } = await db.query(
           `INSERT INTO pending_replies
-            (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-          [clientId, 'heyreach', campaignId, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+            (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          [clientId, 'heyreach', campaignId, resolvedHrCampaignName || null, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
 
         const slackCard = {

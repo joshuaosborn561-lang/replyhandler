@@ -326,6 +326,38 @@ test('no nudge system is reintroduced', () => {
   }
 });
 
+// ── Decision: Slack campaign field shows the campaign name ────────────
+// "also i need the campaign ID in slack to be the name of the cmapaign
+// not just the numbers"
+test('Slack campaign field shows the campaign name', () => {
+  const display = read('src/utils/campaign-display.js');
+  const webhooks = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const slackRoute = read('src/routes/slack.js');
+  assert.match(display, /formatCampaignDisplay/,
+    reversal('Slack campaign field shows the campaign name', 'shared campaign display helper is gone'));
+  assert.match(webhooks, /resolveCampaignName|campaign_name/,
+    reversal('Slack campaign field shows the campaign name', 'SmartLead webhook no longer resolves/stores campaign name'));
+  assert.match(poller, /resolveCampaignName|campaign_name/,
+    reversal('Slack campaign field shows the campaign name', 'SmartLead poller no longer resolves/stores campaign name'));
+  assert.match(slackRoute, /resolveCampaignName|campaignNameFromReply/,
+    reversal('Slack campaign field shows the campaign name', 'approve confirmation no longer resolves campaign name'));
+});
+
+// ── Decision: phone stays on the Slack card after approve ─────────────
+// "also i dont want the persons number to disappear in slack after i approve"
+test('phone stays on Slack card after approve', () => {
+  const slackRoute = read('src/routes/slack.js');
+  const slackService = read('src/services/slack.js');
+  assert.match(slackRoute, /leadPhone:\s*reply\.lead_phone/,
+    reversal('phone stays on Slack card after approve', 'sentCardPayload no longer passes lead_phone'));
+  const confStart = slackService.indexOf('function buildSentConfirmationBlocks');
+  const confEnd = slackService.indexOf('async function updateSentConfirmationCard');
+  assert.ok(confStart >= 0 && confEnd > confStart);
+  assert.match(slackService.slice(confStart, confEnd), /phoneEnrichmentLine/,
+    reversal('phone stays on Slack card after approve', 'confirmation card no longer renders the phone'));
+});
+
 // ── Decision: Slack DQ button excludes follow-up nudges ───────────────
 // "also add in a DQ button in slack that excludes form followup nudges"
 test('Slack DQ button excludes follow-up nudges', () => {

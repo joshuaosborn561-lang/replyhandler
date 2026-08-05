@@ -1,6 +1,7 @@
 const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
 /**
  * Collapse every Unicode space (including NBSP U+00A0) to a single ASCII space.
@@ -189,9 +190,7 @@ async function findUnpostedReply({
 }
 
 function formatCampaignDisplayFromReply(reply) {
-  const id = reply.campaign_id != null ? String(reply.campaign_id).trim() : '';
-  if (id) return `Campaign ${id}`;
-  return '';
+  return formatCampaignDisplay(campaignNameFromReply(reply), reply.campaign_id);
 }
 
 function lastOutboundFromThreadContext(reply) {

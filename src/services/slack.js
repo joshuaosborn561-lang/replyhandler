@@ -232,6 +232,9 @@ function buildConversationBlocks({
 function buildSentConfirmationBlocks({
   leadName,
   leadEmail,
+  leadPhone,
+  phoneProvider,
+  phoneEnrichmentStatus,
   platform,
   classification,
   inboundMessage,
@@ -245,7 +248,11 @@ function buildSentConfirmationBlocks({
   ccUsed,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
+  // Keep the enriched cellphone on the Lead line after Approve/Reject/DQ —
+  // it used to vanish when the card flipped to the confirmation layout.
+  const leadLine =
+    `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
+    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
 
   const headers = {
     approved: '✅ SENT — Approved & sent',
