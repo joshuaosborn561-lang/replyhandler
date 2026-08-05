@@ -134,7 +134,9 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId) {
 }
 
 /**
- * Post a prospect reply card to Slack, threaded under the first card for this lead when one exists.
+ * Post a prospect reply card to Slack.
+ * By default, threads under the first card for this lead when one exists.
+ * Pass postInThread: false to force a top-level channel message (FOLLOW_UP cards).
  * Always enriches context with your last outbound (or previous thread message).
  */
 async function postProspectSlackCard({
@@ -148,6 +150,7 @@ async function postProspectSlackCard({
   isDraft,
   card,
   replyId,
+  postInThread = true,
 }) {
   let enrichedCard = card;
   // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
@@ -162,7 +165,9 @@ async function postProspectSlackCard({
     };
   }
 
-  const threadTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId);
+  const threadTs = postInThread
+    ? await findSlackThreadRootTs(clientId, platform, campaignId, leadId)
+    : null;
   const contextMessage = resolveSlackContextMessage({
     platform,
     threadContext,

@@ -177,6 +177,23 @@ test('a call-transcript booking suppresses without posting', () => {
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
+// ── Decision: FOLLOW_UP cards post in the main channel with thread context
+test('FOLLOW_UP cards post in the main channel with thread context', () => {
+  const runner = read('src/services/follow-up-runner.js');
+  const poster = read('src/services/slack-reply-post.js');
+  const slackSrc = read('src/services/slack.js');
+  assert.ok(runner.includes('postInThread: false'),
+    reversal('FOLLOW_UP cards post in the main channel with thread context', 'FOLLOW_UP cards are threading again'));
+  assert.ok(/postInThread\s*=\s*true/.test(poster) || poster.includes('postInThread = true'),
+    reversal('FOLLOW_UP cards post in the main channel with thread context', 'postProspectSlackCard lost the postInThread option'));
+  assert.ok(runner.includes('inbound_message') && runner.includes('sent_reply'),
+    reversal('FOLLOW_UP cards post in the main channel with thread context', 'source reply context is no longer loaded'));
+  assert.ok(runner.includes('getPermalink') || slackSrc.includes('getPermalink'),
+    reversal('FOLLOW_UP cards post in the main channel with thread context', 'original-thread permalink helper was removed'));
+  assert.ok(slackSrc.includes('followUpContext'),
+    reversal('FOLLOW_UP cards post in the main channel with thread context', 'FOLLOW_UP conversation order was removed'));
+});
+
 // ── Decision: follow-up draft tolerates null digest_timezone ──────────
 test('follow-up draft tolerates null digest_timezone', () => {
   const { nextBusinessDayLabel } = require('../src/services/classifier');

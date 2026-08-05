@@ -150,6 +150,18 @@ Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw
 
 Guard: `follow-up draft tolerates null digest_timezone`
 
+### FOLLOW_UP cards post in the main channel with thread context
+
+*"dont post followups in the thread post them in the main channel....give me
+the context of our thread though"*
+
+Cadence FOLLOW_UP cards must be top-level channel messages (`postInThread:
+false`), not buried under the original Slack thread. The card still shows the
+original prospect reply, what we sent, the suggested follow-up, and a permalink
+back to the original Slack card when available.
+
+Guard: `FOLLOW_UP cards post in the main channel with thread context`
+
 ### Allo call match is by phone digits, not API filter alone
 
 Allo's `/calls?contact_number=` has returned the account's recent call list
