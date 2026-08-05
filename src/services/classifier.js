@@ -166,6 +166,7 @@ function fallbackDraftText({
   threadContext,
   digestTimezone,
   includeBookingLink,
+  voicePrompt,
 } = {}) {
   const name = firstNameFromLead(leadName);
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
@@ -194,9 +195,11 @@ function fallbackDraftText({
   const ack = clearInterest
     ? 'Would love to see if this is a fit.'
     : 'Happy to jump on a quick call and walk through it.';
+  const { callWithWhom } = require('../utils/principal-voice');
+  const whom = callWithWhom(voicePrompt);
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
-    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with our CEO? ` +
+    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with ${whom}? ` +
     `If neither works I can send a booking link.`
   );
 }
@@ -341,7 +344,9 @@ function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, inclu
   );
 }
 
-function buildSdrVoicePrompt({ name, booking, classification, channel, includeBookingLink }) {
+function buildSdrVoicePrompt({ name, booking, classification, channel, includeBookingLink, voicePrompt }) {
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
   const isDecline = DECLINE_CLASSIFICATIONS.has(classification);
   const link = booking || '{BOOKING_LINK}';
   const channelNote = channel === 'linkedin'
@@ -365,17 +370,40 @@ function buildSdrVoicePrompt({ name, booking, classification, channel, includeBo
       `- Close by offering to send a booking link if neither time works.\n` +
       `- Booking link exists for later follow-up only: ${link} — do not paste it now.`;
 
-  return `You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.
+  const roleLine = asPrincipal
+    ? 'You ghostwrite replies as Joshua Osborn, founder/CEO (first person). You ARE the CEO — never say "our CEO", never hand off to a CEO, never say "chat with our CEO". Suggest a quick call with you ("with me").'
+    : 'You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.';
 
+  const exampleA = asPrincipal
+    ? `Prospect: "Worth a reply. Tell me more."
+Reply: "Awesome, thanks! Easiest is a quick chat — I built the whole thing out. Can you do Thursday mid-morning or Friday early afternoon? If neither works I can send a booking link."`
+    : `Prospect: "Worth a reply. Tell me more."
+Reply: "Awesome, thanks! Easiest will be a quick chat with our CEO — he built the whole thing out. Can you do Thursday mid-morning or Friday early afternoon? If neither works I can send a booking link."`;
+
+  const exampleB = asPrincipal
+    ? `Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
+Reply: "Hey Tony thanks for getting back. Would love to see if this is a fit. Does Tuesday morning or Wednesday around 2 work for a quick call with me? If not, happy to send a booking link."`
+    : `Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
+Reply: "Hey Tony thanks for getting back. Would love to see if this is a fit. Does Tuesday morning or Wednesday around 2 work for a quick call with our CEO? If not, happy to send a booking link."`;
+
+  const logisticalRule = asPrincipal
+    ? '- If they ask a logistical question: answer briefly, then suggest a quick call with you and two times'
+    : '- If they ask a logistical question: answer briefly, then suggest a quick CEO call with two times';
+
+  const clientVoice = String(voicePrompt || '').trim()
+    ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
+    : '';
+
+  return `${roleLine}
+Output PLAIN TEXT only. No markdown. No quotes around the message.
+${clientVoice}
 Voice reference (match warmth/directness; do NOT copy booking-link habits from older examples):
 
 EXAMPLE A (times-first — no link):
-Prospect: "Worth a reply. Tell me more."
-Reply: "Awesome, thanks! Easiest will be a quick chat with our CEO — he built the whole thing out. Can you do Thursday mid-morning or Friday early afternoon? If neither works I can send a booking link."
+${exampleA}
 
 EXAMPLE B (times-first — interest):
-Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
-Reply: "Hey Tony thanks for getting back. Would love to see if this is a fit. Does Tuesday morning or Wednesday around 2 work for a quick call with our CEO? If not, happy to send a booking link."
+${exampleB}
 
 EXAMPLE C (they asked for the link):
 Prospect: "Sure, send the link."
@@ -395,7 +423,7 @@ RULES:
 - Greet with "Hey {first name}," — first name only
 - Warm, direct, a little playful when it fits — match their energy
 - If they decline: graceful, offer to check back — never push
-- If they ask a logistical question: answer briefly, then suggest a quick CEO call with two times
+${logisticalRule}
 ${bookingRules}
 - Prospect first name: ${name}
 - Classification: ${classification}
@@ -487,10 +515,8 @@ async function draftOnly({
     classification,
     channel,
     includeBookingLink,
+    voicePrompt,
   });
-
-  // voicePrompt kept in signature for callers; few-shot voice is primary.
-  void voicePrompt;
 
   const timeBlock = buildTimeSuggestionBlock({
     digestTimezone,
@@ -522,6 +548,7 @@ async function draftOnly({
         schedulingPromptBlock: timeBlock,
         includeBookingLink,
         platform,
+        voicePrompt,
       });
       const draft = sanitizeDraft(result.text, {
         bookingLink: booking,
@@ -547,6 +574,7 @@ async function draftOnly({
         threadContext,
         digestTimezone,
         includeBookingLink,
+        voicePrompt,
       });
     }
   }
@@ -588,6 +616,7 @@ async function draftOnly({
         threadContext,
         digestTimezone,
         includeBookingLink,
+        voicePrompt,
       });
     }
 
@@ -602,6 +631,7 @@ async function draftOnly({
       threadContext,
       digestTimezone,
       includeBookingLink,
+      voicePrompt,
     });
   }
 }
