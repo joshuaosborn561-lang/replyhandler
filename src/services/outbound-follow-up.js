@@ -90,6 +90,15 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
+  const { isReplyDisqualified } = require('./disqualified-prospects');
+  if (await isReplyDisqualified(clientId, reply)) {
+    console.log('[FollowUp] Skip schedule — prospect disqualified', {
+      replyId: reply.id,
+      lead: reply.lead_name,
+    });
+    return;
+  }
+
   const sentText = reply.sent_reply || reply.draft_reply || '';
   if (!outboundProposesMeeting(sentText)) {
     console.log('[FollowUp] Skip schedule — outbound did not propose a meeting', {

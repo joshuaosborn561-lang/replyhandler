@@ -1,6 +1,6 @@
 const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
-const { DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 
 /**
  * Collapse every Unicode space (including NBSP U+00A0) to a single ASCII space.
@@ -217,15 +217,28 @@ function lastOutboundFromThreadContext(reply) {
 }
 
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(reply.classification);
+  const policy = applyClientDraftPolicy(client, reply.lead_email, {
+    classification: reply.classification,
+    draft: reply.draft_reply,
+    reasoning: reasoningExtra || `Recovered unposted Slack card for ${reply.lead_name}.`,
+  });
+  if (policy.skippedDraft && reply.draft_reply) {
+    await db.query(
+      `UPDATE pending_replies
+          SET draft_reply = NULL, status = 'alert_only', updated_at = now()
+        WHERE id = $1`,
+      [reply.id]
+    );
+  }
+  const isDraft = policy.isDraft;
   const card = {
     replyId: reply.id,
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
     platform: reply.platform,
     classification: reply.classification,
-    draft: reply.draft_reply,
-    reasoning: reasoningExtra || `Recovered unposted Slack card for ${reply.lead_name}.`,
+    draft: policy.draft,
+    reasoning: policy.reasoning,
     inboundMessage: reply.inbound_message,
     campaignDisplay: formatCampaignDisplayFromReply(reply),
     lastOutboundMessage: lastOutboundFromThreadContext(reply) || undefined,

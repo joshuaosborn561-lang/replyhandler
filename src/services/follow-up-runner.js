@@ -206,6 +206,30 @@ async function runDueFollowUps({ limit = 25 } = {}) {
     };
 
     try {
+      const { isDisqualified } = require('./disqualified-prospects');
+      if (await isDisqualified(fu.client_id, {
+        platform: fu.platform,
+        campaignId: fu.campaign_id,
+        leadId: fu.lead_id,
+        conversationId: fu.conversation_id,
+        leadEmail: fu.lead_email,
+        linkedinUrl: fu.linkedin_url,
+      })) {
+        await resolve(fu, 'skipped', 'disqualified');
+        const cancelled = await cancelPendingForThread(fu.client_id, {
+          platform: fu.platform,
+          campaignId: fu.campaign_id,
+          leadId: fu.lead_id,
+          conversationId: fu.conversation_id,
+        });
+        totals.skipped++;
+        totals.skipReasons.disqualified = (totals.skipReasons.disqualified || 0) + 1;
+        console.log('[FollowUp] Skipped — prospect disqualified', {
+          client: client.name, lead: fu.lead_name, cancelledLaterSteps: cancelled,
+        });
+        continue;
+      }
+
       const bookedReason = await looksAlreadyBooked(fu.client_id, {
         platform: fu.platform,
         leadEmail: fu.lead_email,

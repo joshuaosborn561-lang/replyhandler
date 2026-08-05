@@ -333,8 +333,29 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   }
 
   let posted = 0;
+  const { isDisqualified } = require('./services/disqualified-prospects');
   for (const fu of pendingFollowUps) {
     try {
+      if (await isDisqualified(client.id, {
+        platform: fu.platform,
+        campaignId: fu.campaign_id,
+        leadId: fu.lead_id,
+        conversationId: fu.conversation_id,
+        leadEmail: fu.lead_email,
+        linkedinUrl: fu.linkedin_url,
+      })) {
+        await db.query(
+          `UPDATE outbound_follow_ups
+              SET status = 'skipped', skip_reason = 'disqualified', updated_at = now()
+            WHERE id = $1`,
+          [fu.id]
+        );
+        console.log('[Cron] Digest follow-up skipped — disqualified', {
+          clientId: client.id, lead: fu.lead_name,
+        });
+        continue;
+      }
+
       const draft = await draftReattemptToBook({
         leadName: fu.lead_name,
         platform: fu.platform,
