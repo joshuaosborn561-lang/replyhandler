@@ -142,8 +142,8 @@ async function buildNudgeBlocks(clientName, positives) {
 }
 
 async function main() {
-  const daysArg = process.argv.find(a => a.startsWith('--days='));
-  const days = daysArg ? parseInt(daysArg.split('=')[1], 10) : DAYS_BACK;
+  // Always use DAYS_BACK (already clamped to MAX_DAYS_BACK = 3).
+  const days = DAYS_BACK;
 
   const conn = resolveDatabaseUrl();
   const db = new Client({ connectionString: conn, ssl: pgSslOption(conn) });
