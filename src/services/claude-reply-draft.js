@@ -10,6 +10,18 @@ const JOSH_VOICE_STYLE_GUIDE = `JOSH'S VOICE — RULES:
 - No corporate filler: never "per my last email," "circle back," "touch base," "I hope this finds you well."
 - Sign-off is just a first name, no "Best," "Regards," or formal closings.`;
 
+/** Same voice, but Josh is the CEO — never hand off to "our CEO". */
+const JOSH_AS_CEO_STYLE_GUIDE = `JOSH'S VOICE (YOU ARE THE CEO) — RULES:
+- Near-universal opener: "Hey [Name], thanks for getting back to me" or a close variant.
+- Short, warm, conversational. Contractions throughout.
+- You are Joshua Osborn, founder/CEO. Speak in first person as yourself.
+- NEVER say "our CEO", "chat with our CEO", "call with our CEO", or hand off to a CEO — you ARE the CEO.
+- Suggest a quick call with you: "quick call with me", "jump on a call", "chat with me".
+- When you make a mistake, own it lightly with self-deprecating humor — don't over-apologize.
+- End with a direct next step: "Would Tuesday work?" "Can you chat Tuesday or Wednesday?"
+- Light humor is welcome. No corporate filler.
+- No sign-off / formal closing — mailbox adds the signature.`;
+
 function isConfigured() {
   return Boolean(process.env.ANTHROPIC_API_KEY && replyExamples.isConfigured());
 }
@@ -161,8 +173,12 @@ async function generateClaudeReply({
   schedulingPromptBlock,
   includeBookingLink,
   platform,
+  voicePrompt,
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
+
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
 
   const examples = await replyExamples.matchReplies(inboundMessage, 4);
   const link = String(bookingLink || '').trim();
@@ -170,21 +186,35 @@ async function generateClaudeReply({
     ? `The prospect asked for or accepted the booking link. Include this exact link once: ${link || '(no link configured)'}.`
     : `This is a times-first reply. Suggest concrete times from the scheduling guidance, and offer to send a booking link if neither works. Do not include any URL in this reply.`;
 
+  const teammateRule = asPrincipal
+    ? '- You are the CEO. Never say "our CEO" or hand off to a CEO. Suggest a quick call with you ("with me").'
+    : '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."';
+
+  const specificsRule = asPrincipal
+    ? '- If the prospect asks for specifics the thread does not answer, say you do not want to guess over email and offer a short call with you.'
+    : '- If the prospect asks for specifics the thread does not answer, say you do not want to guess over email and offer a short call with the right teammate.';
+
+  const clientVoice = String(voicePrompt || '').trim()
+    ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
+    : '';
+
   const system = [
-    'You ghostwrite a B2B sales reply in Josh’s voice.',
+    asPrincipal
+      ? 'You ghostwrite a B2B sales reply as Josh, founder/CEO, in first person.'
+      : 'You ghostwrite a B2B sales reply in Josh’s voice.',
     'Output only the finished plain-text reply. No markdown, analysis, labels, or surrounding quotes.',
     '',
-    JOSH_VOICE_STYLE_GUIDE,
-    '',
+    asPrincipal ? JOSH_AS_CEO_STYLE_GUIDE : JOSH_VOICE_STYLE_GUIDE,
+    clientVoice,
     'OPERATIONAL RULES:',
     `- ${bookingPolicy}`,
     '- The operational booking rule overrides any older retrieved example that pasted a link too early.',
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
     '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply. If it appears only in a retrieved example, remove it.',
-    '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."',
+    teammateRule,
     '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
     '- Before writing, silently check every factual claim against the current thread. If it is not explicitly supported there, leave it out.',
-    '- If the prospect asks for specifics the thread does not answer, say you do not want to guess over email and offer a short call with the right teammate.',
+    specificsRule,
     '- Never invent lead sources, qualification criteria, locations, pricing structure, service coverage, project types, capabilities, results, or availability.',
     '- Do not call pricing simple or imply a price/fee structure unless the exact relevant fact appears in the current thread.',
     '- For a possible fit mismatch, acknowledge it honestly. Do not expand the service to fit their business unless that capability is explicitly in the current thread.',
@@ -254,6 +284,7 @@ async function generateClaudeReply({
 
 module.exports = {
   JOSH_VOICE_STYLE_GUIDE,
+  JOSH_AS_CEO_STYLE_GUIDE,
   isConfigured,
   generateClaudeReply,
   summarizeThread,

@@ -1,15 +1,17 @@
 const { firstNameFromLead, nextBusinessDayLabel } = require('./classifier');
+const { callWithWhom } = require('../utils/principal-voice');
 
-function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone }) {
+function fallbackReattempt({ leadName, platform, bookingLink, digestTimezone, voicePrompt }) {
   const name = firstNameFromLead(leadName);
   // nextBusinessDayLabel already falls back when TZ is null/invalid
   const day = nextBusinessDayLabel(digestTimezone);
   // Times-first: suggest a day, offer to send booking link later — do not dump Calendly.
   void bookingLink;
   void platform;
+  const whom = callWithWhom(voicePrompt);
   return (
     `Hey ${name}, thanks for getting back to me. Would ${day} mid-morning or early afternoon work ` +
-    `for a quick call with our CEO? If neither works I can send a booking link.`
+    `for a quick call with ${whom}? If neither works I can send a booking link.`
   );
 }
 
@@ -28,7 +30,7 @@ async function draftReattemptToBook({
 }) {
   // Intentionally deterministic: users want a consistent, simple re-attempt.
   // (No LLM call; avoids delays/costs and keeps copy tight.)
-  return fallbackReattempt({ leadName, platform, bookingLink, digestTimezone });
+  return fallbackReattempt({ leadName, platform, bookingLink, digestTimezone, voicePrompt });
 }
 
 module.exports = { draftReattemptToBook, fallbackReattempt };
