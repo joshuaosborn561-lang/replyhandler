@@ -67,11 +67,12 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
     }[provider.toLowerCase()] || provider;
     return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
   }
-  if (phoneEnrichmentStatus === 'not_found') {
-    return '\n📱 _not found after GetLeads → AI Ark → LeadMagic_';
-  }
-  if (phoneEnrichmentStatus === 'failed') {
-    return '\n📱 _enrichment failed_';
+  // After enrichment finishes with no cell — plain English, not provider jargon.
+  if (
+    phoneEnrichmentStatus === 'not_found' ||
+    phoneEnrichmentStatus === 'failed'
+  ) {
+    return '\n📱 _phone number not found_';
   }
   return '';
 }
