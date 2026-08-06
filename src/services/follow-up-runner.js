@@ -4,8 +4,17 @@ const { draftReattemptToBook } = require('./follow-up-drafts');
 const { looksAlreadyBooked } = require('./booking-check');
 const { cancelPendingForThread } = require('./outbound-follow-up');
 const smartlead = require('./smartlead');
+const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
+
+/** Placeholder inbound text used on FOLLOW_UP rows — not real prospect context. */
+function isFollowUpPlaceholder(text) {
+  const s = String(text || '').trim().toLowerCase();
+  return !s
+    || s.startsWith('(no new reply')
+    || s.includes('follow-up re-attempt');
+}
 
 /**
  * Turns a due row in outbound_follow_ups into a Slack approval card.
@@ -62,15 +71,25 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   let threadContext = null;
   let smartleadStatsId = null;
   let campaignName = null;
+  let originalInbound = '';
+  let ourLastSend = '';
+  let sourceSlackTs = null;
   if (fu.source_pending_reply_id) {
     const { rows: [src] } = await db.query(
-      'SELECT thread_context, smartlead_email_stats_id, campaign_name, campaign_id FROM pending_replies WHERE id = $1',
+      `SELECT thread_context, smartlead_email_stats_id, campaign_name, campaign_id,
+              inbound_message, sent_reply, draft_reply, slack_message_ts
+         FROM pending_replies WHERE id = $1`,
       [fu.source_pending_reply_id]
     );
     if (src) {
       threadContext = parseThreadContext(src.thread_context);
       smartleadStatsId = src.smartlead_email_stats_id;
       campaignName = campaignNameFromReply(src);
+      if (!isFollowUpPlaceholder(src.inbound_message)) {
+        originalInbound = String(src.inbound_message || '').trim();
+      }
+      ourLastSend = String(src.sent_reply || src.draft_reply || '').trim();
+      sourceSlackTs = src.slack_message_ts || null;
     }
   }
   if (
@@ -81,6 +100,9 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   ) {
     campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, fu.campaign_id);
   }
+
+  const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
+  const inboundForCard = originalInbound || '(no new reply from prospect)';
 
   const { rows: [newReply] } = await db.query(
     `INSERT INTO pending_replies
@@ -97,7 +119,8 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       fu.lead_name,
       fu.lead_email,
       fu.linkedin_url,
-      '(no new reply — follow-up re-attempt)',
+      // Store the original prospect reply so Approve/confirm cards keep thread context.
+      inboundForCard,
       typeof threadContext === 'object' && threadContext !== null ? JSON.stringify(threadContext) : threadContext,
       draft,
       smartleadStatsId,
@@ -106,7 +129,14 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   const sentAt = fu.sent_at instanceof Date ? fu.sent_at.toISOString() : String(fu.sent_at || '');
   const campaignDisplay = formatCampaignDisplay(campaignName, fu.campaign_id) || undefined;
+  const threadPermalink = await slack.getPermalink(
+    client.slack_bot_token,
+    client.slack_channel_id,
+    sourceSlackTs,
+  );
 
+  // Always post FOLLOW_UP cards in the main channel (not buried in an old Slack thread),
+  // with the original prospect reply + what we sent as context.
   await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: client.slack_channel_id,
@@ -117,6 +147,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     threadContext,
     isDraft: true,
     replyId: newReply.id,
+    postInThread: false,
     card: {
       replyId: newReply.id,
       leadName: fu.lead_name,
@@ -125,10 +156,12 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       classification: 'FOLLOW_UP',
       draft,
       reasoning: reasoningExtra ||
-        `No reply since we proposed a meeting (${sentAt}). Follow-up ${stepLabel(fu)} — AI drafted a re-attempt to book.`,
-      inboundMessage: '(no new reply from prospect)',
+        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)} — AI drafted a re-attempt to book.`,
+      inboundMessage: inboundForCard,
       campaignDisplay,
-      lastOutboundMessage: lastOutboundFor(fu.platform, threadContext) || undefined,
+      lastOutboundMessage: lastOutbound || undefined,
+      contextLabel: 'You sent',
+      threadPermalink: threadPermalink || undefined,
     },
   });
 

@@ -192,35 +192,61 @@ function buildConversationBlocks({
   inboundMessage,
   draft,
   priorLabel,
+  inboundLabel,
+  /** FOLLOW_UP cards: show their original reply, then what we sent, then the nudge draft. */
+  followUpContext = false,
 }) {
   const blocks = [];
+  const theirLabel = inboundLabel || 'They replied';
+  const ourLabel = priorLabel || 'You sent';
 
-  blocks.push(
-    ...conversationStepBlocks({
-      emoji: '📤',
-      label: priorLabel || 'You sent',
-      body: lastOutboundMessage,
-      maxLen: OUTBOUND_DISPLAY_MAX,
-    }),
-  );
+  if (followUpContext) {
+    // Channel-visible follow-up: recreate the thread context top-to-bottom.
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📥',
+        label: theirLabel,
+        body: inboundMessage,
+        maxLen: INBOUND_DISPLAY_MAX,
+      }),
+    );
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📤',
+        label: ourLabel,
+        body: lastOutboundMessage,
+        maxLen: OUTBOUND_DISPLAY_MAX,
+      }),
+    );
+  } else {
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📤',
+        label: ourLabel,
+        body: lastOutboundMessage,
+        maxLen: OUTBOUND_DISPLAY_MAX,
+      }),
+    );
 
-  blocks.push(dividerBlock());
+    blocks.push(dividerBlock());
 
-  blocks.push(
-    ...conversationStepBlocks({
-      emoji: '📥',
-      label: 'They replied',
-      body: inboundMessage,
-      maxLen: INBOUND_DISPLAY_MAX,
-    }),
-  );
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📥',
+        label: theirLabel,
+        body: inboundMessage,
+        maxLen: INBOUND_DISPLAY_MAX,
+      }),
+    );
+  }
 
   if (draft != null && String(draft).trim() !== '') {
     blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
         emoji: '✍️',
-        label: 'Suggested reply',
+        label: followUpContext ? 'Suggested follow-up' : 'Suggested reply',
         body: draft,
         neverTruncate: true,
       }),
@@ -254,6 +280,7 @@ function buildSentConfirmationBlocks({
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
   const headers = {
     approved: '✅ SENT — Approved & sent',
@@ -289,6 +316,8 @@ function buildSentConfirmationBlocks({
       inboundMessage,
       draft: null,
       priorLabel: contextLabel || 'You sent',
+      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+      followUpContext: isFollowUp,
     }),
   ];
 
@@ -353,15 +382,22 @@ async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  threadPermalink,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
     ? `↩️ ${platform.toUpperCase()} — ${classification}`
     : `📩 ${platform.toUpperCase()} — ${classification}`;
+
+  let contextText = `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`;
+  if (threadPermalink) {
+    contextText += ` · <${threadPermalink}|Original thread>`;
+  }
 
   const blocks = [
     {
@@ -381,12 +417,14 @@ async function postDraftApproval(token, channelId, {
       inboundMessage,
       draft,
       priorLabel: contextLabel || 'You sent',
+      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+      followUpContext: isFollowUp,
     }),
     {
       type: 'context',
       elements: [{
         type: 'mrkdwn',
-        text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`,
+        text: contextText,
       }],
     },
   ];
@@ -662,6 +700,22 @@ async function postPendingApprovalDigest(token, channelId, { pending, dateLabel 
   });
 }
 
+/** Best-effort Slack permalink for an existing channel message. */
+async function getPermalink(token, channelId, messageTs) {
+  if (!token || !channelId || !messageTs) return null;
+  try {
+    const slack = getClient(token);
+    const res = await slack.chat.getPermalink({
+      channel: channelId,
+      message_ts: String(messageTs),
+    });
+    return res?.permalink || null;
+  } catch (err) {
+    console.warn('[Slack] getPermalink failed', { channelId, messageTs, err: err.message });
+    return null;
+  }
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
@@ -674,4 +728,5 @@ module.exports = {
   postMorningDigestHeader,
   postAttentionDigestHeader,
   postPendingApprovalDigest,
+  getPermalink,
 };

@@ -1,13 +1,10 @@
 const cron = require('node-cron');
 const db = require('./db');
 const slack = require('./services/slack');
-const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
-const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { runDueFollowUps } = require('./services/follow-up-runner');
 const { logIntegrationStatus } = require('./services/integration-check');
 const { logInterestedSweep } = require('./services/interested-sweep');
-const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
 
@@ -334,6 +331,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
 
   let posted = 0;
   const { isDisqualified } = require('./services/disqualified-prospects');
+  const { postFollowUpCard } = require('./services/follow-up-runner');
   for (const fu of pendingFollowUps) {
     try {
       if (await isDisqualified(client.id, {
@@ -356,114 +354,8 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
         continue;
       }
 
-      const draft = await draftReattemptToBook({
-        leadName: fu.lead_name,
-        platform: fu.platform,
-        voicePrompt: client.voice_prompt,
-        bookingLink: client.booking_link,
-        lastInboundMessage: null,
-        lastOutboundMessage: null,
-        digestTimezone: client.digest_timezone,
-      });
-
-      // Create a reusable pending_replies row; Slack Approve/Edit uses the existing send path.
-      let threadContext = null;
-      let smartleadStatsId = null;
-      if (fu.source_pending_reply_id) {
-        const { rows: [src] } = await db.query(
-          'SELECT thread_context, smartlead_email_stats_id FROM pending_replies WHERE id = $1',
-          [fu.source_pending_reply_id]
-        );
-        if (src) {
-          threadContext = src.thread_context;
-          smartleadStatsId = src.smartlead_email_stats_id;
-          if (typeof threadContext === 'string') {
-            try { threadContext = JSON.parse(threadContext); } catch { /* keep string */ }
-          }
-        }
-      }
-
-      const { rows: [newReply] } = await db.query(
-        `INSERT INTO pending_replies
-          (client_id, platform, campaign_id, lead_id, lead_name, lead_email, linkedin_url,
-           inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'FOLLOW_UP', $10, 'pending', $11)
-         RETURNING *`,
-        [
-          client.id,
-          fu.platform,
-          fu.campaign_id,
-          fu.lead_id,
-          fu.lead_name,
-          fu.lead_email,
-          fu.linkedin_url,
-          '(no new reply — follow-up re-attempt)',
-          typeof threadContext === 'object' && threadContext !== null ? JSON.stringify(threadContext) : threadContext,
-          draft,
-          smartleadStatsId,
-        ]
-      );
-
-      let lastOutFollow = '';
-      if (fu.platform === 'smartlead' && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
-        lastOutFollow = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
-      } else if (fu.platform === 'heyreach' && threadContext && typeof threadContext === 'object' && threadContext.messages) {
-        const msgs = threadContext.messages;
-        if (Array.isArray(msgs)) {
-          for (const m of msgs) {
-            if (!m || typeof m !== 'object') continue;
-            const role = String(m.role || '').toLowerCase();
-            if (role === 'us' || role === 'me') {
-              const t = (typeof m.message === 'string' && m.message) || (typeof m.text === 'string' && m.text) || '';
-              if (t.trim()) lastOutFollow = t.trim();
-            }
-          }
-        }
-      }
-      const { formatCampaignDisplay, campaignNameFromReply } = require('./utils/campaign-display');
-      const smartlead = require('./services/smartlead');
-      let campName = null;
-      if (fu.source_pending_reply_id) {
-        const { rows: [srcCamp] } = await db.query(
-          'SELECT campaign_name, campaign_id, thread_context FROM pending_replies WHERE id = $1',
-          [fu.source_pending_reply_id]
-        );
-        if (srcCamp) campName = campaignNameFromReply(srcCamp);
-      }
-      if (!campName && fu.platform === 'smartlead' && client.smartlead_api_key && fu.campaign_id) {
-        campName = await smartlead.resolveCampaignName(client.smartlead_api_key, fu.campaign_id);
-      }
-      if (campName && newReply?.id) {
-        await db.query(
-          'UPDATE pending_replies SET campaign_name = $1 WHERE id = $2 AND (campaign_name IS NULL OR campaign_name = \'\')',
-          [campName, newReply.id]
-        ).catch(() => {});
-      }
-      const campFollow = formatCampaignDisplay(campName, fu.campaign_id);
-
-      await postProspectSlackCard({
-        token: client.slack_bot_token,
-        channelId: client.slack_channel_id,
-        clientId: client.id,
-        platform: fu.platform,
-        campaignId: fu.campaign_id,
-        leadId: fu.lead_id,
-        threadContext,
-        isDraft: true,
-        replyId: newReply.id,
-        card: {
-          replyId: newReply.id,
-          leadName: fu.lead_name,
-          leadEmail: fu.lead_email,
-          platform: fu.platform,
-          classification: 'FOLLOW_UP',
-          draft,
-          reasoning: `No reply since our last message (${fu.sent_at.toISOString ? fu.sent_at.toISOString() : fu.sent_at}). AI drafted a re-attempt to book.`,
-          inboundMessage: '(no new reply from prospect)',
-          campaignDisplay: campFollow || undefined,
-          lastOutboundMessage: lastOutFollow || undefined,
-        },
-      });
+      // Same top-level FOLLOW_UP card as the timed runner (main channel + thread context).
+      await postFollowUpCard(client, fu);
       await db.query('UPDATE outbound_follow_ups SET status = $1, updated_at = now() WHERE id = $2', ['notified', fu.id]);
       posted++;
     } catch (err) {

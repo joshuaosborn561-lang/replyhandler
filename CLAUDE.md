@@ -108,11 +108,14 @@ self-recover and needs a manual sweep.
 (`INTERESTED`, `MEETING_PROPOSED`, `QUESTION`). Default cadence is `2,24,48,168`
 hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
 
-`follow-up-runner.js` posts the next due step. Before posting it asks
-`booking-check.js` whether the prospect already booked — a `meetings` row, a
-later reply proposing a time or confirming, a calendar event with them as
-attendee, or a call transcript (Allo / Cube ACR). Any one suppresses the card
-silently, records `skip_reason`, and cancels later steps for that thread.
+`follow-up-runner.js` posts the next due step as a **top-level** Slack channel
+card (not threaded under the original reply), with the prospect's original
+message + our last send as context and a permalink to the original card.
+Before posting it asks `booking-check.js` whether the prospect already booked —
+a `meetings` row, a later reply proposing a time or confirming, a calendar
+event with them as attendee, or a call transcript (Allo / Cube ACR). Any one
+suppresses the card silently, records `skip_reason`, and cancels later steps
+for that thread.
 
 Rows more than `FOLLOW_UP_MAX_AGE_HOURS` (24) past due are retired as `stale`
 rather than posted. That guard matters: the table accumulated for months while
