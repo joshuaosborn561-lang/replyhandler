@@ -9,7 +9,9 @@
  *
  * Usage:
  *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js
- *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js --days=14 --dry-run
+ *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js --days=3 --dry-run
+ *
+ * Hard cap: never look back more than 3 days (Josh: no backfill past 3 days ago).
  */
 
 const { Client } = require('pg');
@@ -21,8 +23,9 @@ const { draftOnly } = require('../src/services/classifier');
 const TARGET_CLIENT_NAMES = ['Culture Fits', 'MSRS'];
 const BASE = 'https://server.smartlead.ai/api/v1';
 const DRY_RUN = process.argv.includes('--dry-run');
+const MAX_DAYS_BACK = 3;
 const daysArg = (process.argv.find(a => a.startsWith('--days=')) || '').split('=')[1];
-const DAYS_BACK = parseInt(daysArg || '14', 10);
+const DAYS_BACK = Math.min(Math.max(parseInt(daysArg || String(MAX_DAYS_BACK), 10) || MAX_DAYS_BACK, 1), MAX_DAYS_BACK);
 const CUTOFF = new Date(Date.now() - DAYS_BACK * 24 * 3600 * 1000);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
