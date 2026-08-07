@@ -186,6 +186,23 @@ back to the original Slack card when available.
 
 Guard: `FOLLOW_UP cards post in the main channel with thread context`
 
+### FOLLOW_UP bumps are offer-first; show full thread; Meeting booked button
+
+*"Followup drafts need to be different than form the first reply look aty
+recent bumps, they should mirror those. Mostly reference the offer. I also
+need you to show me all messages between us not just the first 2. Lastly add
+a button meeting booked that stops follow ups and the sequence."*
+
+FOLLOW_UP drafts must NOT reuse the first-reply times-first template
+("thanks for getting back… mid-morning or early afternoon… booking link").
+They mirror the human-edited bumps: short, soft, offer-first (tickets / free
+campaign / video / case study). Slack cards render the full back-and-forth
+(not just one inbound + one outbound). A **Meeting booked** button records a
+booked meeting, cancels pending cadence steps, and stops future nudges
+without DQ'ing the lead.
+
+Guard: `FOLLOW_UP bumps are offer-first with full thread and Meeting booked button`
+
 ### Allo call match is by phone digits, not API filter alone
 
 Allo's `/calls?contact_number=` has returned the account's recent call list

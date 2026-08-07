@@ -195,13 +195,39 @@ function buildConversationBlocks({
   inboundLabel,
   /** FOLLOW_UP cards: show their original reply, then what we sent, then the nudge draft. */
   followUpContext = false,
+  /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
+  threadMessages = null,
 }) {
   const blocks = [];
   const theirLabel = inboundLabel || 'They replied';
   const ourLabel = priorLabel || 'You sent';
+  const history = Array.isArray(threadMessages)
+    ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
+    : [];
 
-  if (followUpContext) {
-    // Channel-visible follow-up: recreate the thread context top-to-bottom.
+  if (followUpContext && history.length > 0) {
+    // Show every message between us (capped upstream), not just the first two.
+    let usN = 0;
+    let themN = 0;
+    for (let i = 0; i < history.length; i++) {
+      const m = history[i];
+      const isUs = m.role === 'us';
+      if (isUs) usN += 1;
+      else themN += 1;
+      if (i > 0) blocks.push(dividerBlock());
+      blocks.push(
+        ...conversationStepBlocks({
+          emoji: isUs ? '📤' : '📥',
+          label: isUs
+            ? (usN === 1 ? ourLabel : `You sent (${usN})`)
+            : (themN === 1 ? theirLabel : `They replied (${themN})`),
+          body: m.body,
+          maxLen: isUs ? OUTBOUND_DISPLAY_MAX : INBOUND_DISPLAY_MAX,
+        }),
+      );
+    }
+  } else if (followUpContext) {
+    // Fallback when we only have the source pair.
     blocks.push(
       ...conversationStepBlocks({
         emoji: '📥',
@@ -273,6 +299,7 @@ function buildSentConfirmationBlocks({
   userId,
   extraFooter,
   ccUsed,
+  threadMessages,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   // Keep the enriched cellphone on the Lead line after Approve/Reject/DQ —
@@ -287,6 +314,7 @@ function buildSentConfirmationBlocks({
     edited: '✏️ SENT — Edited & sent',
     rejected: '❌ Rejected',
     disqualified: '🚫 DQ — no follow-ups',
+    meeting_booked: '📅 Meeting booked — follow-ups stopped',
     failed: '⚠️ Send failed',
   };
   const footers = {
@@ -294,6 +322,7 @@ function buildSentConfirmationBlocks({
     edited: 'Edited & sent',
     rejected: 'Rejected',
     disqualified: 'Disqualified · excluded from follow-up nudges',
+    meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     failed: 'Send failed',
   };
   const kind = headers[actionKind] ? actionKind : 'approved';
@@ -318,10 +347,12 @@ function buildSentConfirmationBlocks({
       priorLabel: contextLabel || 'You sent',
       inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
       followUpContext: isFollowUp,
+      threadMessages: isFollowUp ? threadMessages : null,
     }),
   ];
 
-  if (sentReply && String(sentReply).trim() && kind !== 'rejected' && kind !== 'disqualified') {
+  if (sentReply && String(sentReply).trim()
+      && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked') {
     blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
@@ -367,7 +398,9 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
     ? 'Rejected'
     : opts.actionKind === 'disqualified'
       ? 'DQ'
-      : 'Sent';
+      : opts.actionKind === 'meeting_booked'
+        ? 'Meeting booked'
+        : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
   return slack.chat.update({
@@ -382,7 +415,7 @@ async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  threadPermalink,
+  threadPermalink, threadMessages,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
@@ -419,6 +452,7 @@ async function postDraftApproval(token, channelId, {
       priorLabel: contextLabel || 'You sent',
       inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
       followUpContext: isFollowUp,
+      threadMessages: isFollowUp ? threadMessages : null,
     }),
     {
       type: 'context',
@@ -437,6 +471,7 @@ async function postDraftApproval(token, channelId, {
     if (notice) blocks.push(notice);
   }
 
+  // Slack allows max 5 buttons per actions block — split if needed.
   blocks.push({
       type: 'actions',
       elements: [
@@ -464,6 +499,12 @@ async function postDraftApproval(token, channelId, {
           type: 'button',
           text: { type: 'plain_text', text: '🚫 DQ' },
           action_id: 'dq_prospect',
+          value: replyId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📅 Meeting booked' },
+          action_id: 'meeting_booked',
           value: replyId,
         },
       ],
@@ -532,6 +573,12 @@ async function postAlert(token, channelId, {
           type: 'button',
           text: { type: 'plain_text', text: '🚫 DQ' },
           action_id: 'dq_prospect',
+          value: replyId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📅 Meeting booked' },
+          action_id: 'meeting_booked',
           value: replyId,
         },
       ],

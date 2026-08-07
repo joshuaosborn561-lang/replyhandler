@@ -57,7 +57,7 @@ CREATE TABLE pending_replies (
   sent_reply TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
     'pending', 'approved', 'rejected', 'sent', 'flagged',
-    'alert_only', 'suppressed', 'disqualified'
+    'alert_only', 'suppressed', 'disqualified', 'meeting_booked'
   )),
   suppression_reason TEXT,
   slack_message_ts TEXT,

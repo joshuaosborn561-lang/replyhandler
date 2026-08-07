@@ -16,14 +16,18 @@ describe('principal voice', () => {
     assert.equal(callWithWhom(''), 'our CEO');
   });
 
-  it('follow-up and fallback drafts say "with me" for CEO voice', () => {
+  it('first-reply fallback says "with me" for CEO voice; FOLLOW_UP bumps stay offer-first', () => {
     const fu = fallbackReattempt({
       leadName: 'Brian Donigan',
       digestTimezone: 'America/Chicago',
       voicePrompt: SALESGLIDER_VOICE,
+      lastOutboundMessage: 'Happy to jump on a quick call with me and walk through it.',
+      step: 1,
     });
-    assert.match(fu, /quick call with me/);
+    // FOLLOW_UP bumps mirror human nudges — soft + offer-first, not times-first.
+    assert.doesNotMatch(fu, /thanks for getting back to me/i);
     assert.doesNotMatch(fu, /our CEO/);
+    assert.match(fu, /still interested|bumping|video/i);
 
     const draft = fallbackDraftText({
       leadName: 'Brian Donigan',

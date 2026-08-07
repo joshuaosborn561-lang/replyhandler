@@ -46,6 +46,7 @@ async function laterReplySaysBooked(clientId, { leadEmail, leadId, platform, sin
       WHERE client_id = $1
         AND platform = $2
         AND created_at > $3
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
         AND (
           ($4::text <> '' AND lower(COALESCE(lead_email, '')) = $4)
           OR ($5::text <> '' AND COALESCE(lead_id, '') = $5)

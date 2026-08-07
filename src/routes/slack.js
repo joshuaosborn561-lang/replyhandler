@@ -6,10 +6,12 @@ const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
+const { markMeetingBooked } = require('../services/meeting-booked');
 const smartlead = require('../services/smartlead');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { learnFromApprovedReply } = require('../services/approved-reply-learning');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
+const { extractThreadMessages } = require('../utils/thread-transcript');
 
 const router = Router();
 
@@ -68,7 +70,22 @@ async function slackCardContextFromReply(reply, client) {
   }
 
   const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
-  return { campaignDisplay: campaignDisplay || undefined, lastOutboundMessage: lastOutbound || undefined };
+  const threadMessages = String(reply.classification || '').toUpperCase() === 'FOLLOW_UP'
+    ? extractThreadMessages(reply.platform, tc, {
+      maxMessages: 12,
+      extraMessages: [
+        ...(reply.inbound_message ? [{ role: 'them', body: reply.inbound_message }] : []),
+        ...((reply.sent_reply || lastOutbound)
+          ? [{ role: 'us', body: reply.sent_reply || lastOutbound }]
+          : []),
+      ],
+    })
+    : undefined;
+  return {
+    campaignDisplay: campaignDisplay || undefined,
+    lastOutboundMessage: lastOutbound || undefined,
+    threadMessages,
+  };
 }
 
 function normDraft(s) {
@@ -88,6 +105,7 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     lastOutboundMessage: ctx.lastOutboundMessage,
     contextLabel: 'You sent',
     campaignDisplay: ctx.campaignDisplay,
+    threadMessages: ctx.threadMessages,
     sentReply,
     actionKind,
     userId,
@@ -145,6 +163,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleReject(action.value, interaction);
     } else if (action.action_id === 'dq_prospect') {
       await handleDisqualify(action.value, interaction);
+    } else if (action.action_id === 'meeting_booked') {
+      await handleMeetingBooked(action.value, interaction);
     } else if (action.action_id === 'open_edit_modal') {
       await handleOpenEditModal(action.value, interaction);
     } else if (action.action_id === 'toggle_cc_client') {
@@ -403,6 +423,48 @@ async function handleDisqualify(replyId, interaction) {
   );
 
   console.log('[Slack] Prospect disqualified', {
+    replyId, lead: reply.lead_name, cancelledFollowUps: cancelled,
+  });
+}
+
+/**
+ * Meeting booked = stop the follow-up cadence and record a booked meeting.
+ * Does not DQ the prospect.
+ */
+async function handleMeetingBooked(replyId, interaction) {
+  const { rows: [reply] } = await db.query(
+    `SELECT * FROM pending_replies
+      WHERE id = $1
+        AND status IN ('pending', 'alert_only', 'flagged')`,
+    [replyId]
+  );
+  if (!reply) {
+    console.warn('[Slack] Meeting booked: reply not found or already actioned', { replyId });
+    return;
+  }
+
+  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const result = await markMeetingBooked({
+    clientId: client.id,
+    reply,
+    slackUserId: interaction.user?.id || null,
+  });
+  const ctx = await slackCardContextFromReply(reply, client);
+  const cancelled = result.cancelledFollowUps || 0;
+
+  await slackService.updateSentConfirmationCard(
+    client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+    sentCardPayload(reply, ctx, {
+      sentReply: null,
+      actionKind: 'meeting_booked',
+      userId: interaction.user.id,
+      extraFooter: cancelled > 0
+        ? `Cancelled ${cancelled} pending follow-up nudge${cancelled === 1 ? '' : 's'}.`
+        : 'Follow-up sequence stopped.',
+    })
+  );
+
+  console.log('[Slack] Meeting booked', {
     replyId, lead: reply.lead_name, cancelledFollowUps: cancelled,
   });
 }
