@@ -7,6 +7,7 @@ const smartlead = require('./smartlead');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
+const { extractThreadMessages } = require('../utils/thread-transcript');
 
 /** Placeholder inbound text used on FOLLOW_UP rows — not real prospect context. */
 function isFollowUpPlaceholder(text) {
@@ -56,18 +57,42 @@ function lastOutboundFor(platform, threadContext) {
   return last;
 }
 
+/** Prior sent messages on this thread (first reply + earlier FOLLOW_UP sends). */
+async function priorSentMessages(clientId, fu) {
+  const { rows } = await db.query(
+    `SELECT sent_reply, inbound_message, classification, updated_at
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND status = 'sent'
+        AND sent_reply IS NOT NULL
+        AND trim(sent_reply) <> ''
+        AND (
+          ($3::text <> '' AND COALESCE(lead_id, '') = $3)
+          OR ($4::text <> '' AND lower(COALESCE(lead_email, '')) = $4)
+        )
+      ORDER BY updated_at ASC
+      LIMIT 20`,
+    [
+      clientId,
+      fu.platform,
+      fu.lead_id != null ? String(fu.lead_id) : '',
+      fu.lead_email ? String(fu.lead_email).trim().toLowerCase() : '',
+    ]
+  );
+  const extras = [];
+  for (const r of rows) {
+    if (r.inbound_message && !isFollowUpPlaceholder(r.inbound_message)
+        && String(r.classification || '').toUpperCase() !== 'FOLLOW_UP') {
+      extras.push({ role: 'them', body: r.inbound_message, time: r.updated_at });
+    }
+    extras.push({ role: 'us', body: r.sent_reply, time: r.updated_at });
+  }
+  return extras;
+}
+
 /** Post one follow-up card. Returns the created pending_replies row. */
 async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
-  const draft = await draftReattemptToBook({
-    leadName: fu.lead_name,
-    platform: fu.platform,
-    voicePrompt: client.voice_prompt,
-    bookingLink: client.booking_link,
-    lastInboundMessage: null,
-    lastOutboundMessage: null,
-    digestTimezone: client.digest_timezone,
-  });
-
   let threadContext = null;
   let smartleadStatsId = null;
   let campaignName = null;
@@ -104,6 +129,27 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
   const inboundForCard = originalInbound || '(no new reply from prospect)';
 
+  const draft = await draftReattemptToBook({
+    leadName: fu.lead_name,
+    platform: fu.platform,
+    voicePrompt: client.voice_prompt,
+    bookingLink: client.booking_link,
+    lastInboundMessage: originalInbound || null,
+    lastOutboundMessage: lastOutbound || null,
+    digestTimezone: client.digest_timezone,
+    step: fu.step,
+  });
+
+  const sentExtras = await priorSentMessages(client.id, fu);
+  const threadMessages = extractThreadMessages(fu.platform, threadContext, {
+    maxMessages: 12,
+    extraMessages: [
+      ...sentExtras,
+      ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
+      ...(lastOutbound ? [{ role: 'us', body: lastOutbound }] : []),
+    ],
+  });
+
   const { rows: [newReply] } = await db.query(
     `INSERT INTO pending_replies
       (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
@@ -136,7 +182,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   );
 
   // Always post FOLLOW_UP cards in the main channel (not buried in an old Slack thread),
-  // with the original prospect reply + what we sent as context.
+  // with the full back-and-forth + an offer-first bump draft.
   await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: client.slack_channel_id,
@@ -156,12 +202,13 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       classification: 'FOLLOW_UP',
       draft,
       reasoning: reasoningExtra ||
-        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)} — AI drafted a re-attempt to book.`,
+        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)} — offer-first bump.`,
       inboundMessage: inboundForCard,
       campaignDisplay,
       lastOutboundMessage: lastOutbound || undefined,
       contextLabel: 'You sent',
       threadPermalink: threadPermalink || undefined,
+      threadMessages,
     },
   });
 

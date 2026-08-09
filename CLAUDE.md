@@ -109,8 +109,10 @@ self-recover and needs a manual sweep.
 hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
 
 `follow-up-runner.js` posts the next due step as a **top-level** Slack channel
-card (not threaded under the original reply), with the prospect's original
-message + our last send as context and a permalink to the original card.
+card (not threaded under the original reply). Drafts are **offer-first bumps**
+(different from the first times-first reply). The card shows the **full**
+back-and-forth, a permalink to the original card, and a **Meeting booked**
+button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —
 a `meetings` row, a later reply proposing a time or confirming, a calendar
 event with them as attendee, or a call transcript (Allo / Cube ACR). Any one

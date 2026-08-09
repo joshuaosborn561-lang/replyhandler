@@ -199,6 +199,27 @@ test('FOLLOW_UP cards post in the main channel with thread context', () => {
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'FOLLOW_UP conversation order was removed'));
 });
 
+// ── Decision: FOLLOW_UP bumps are offer-first, full thread, Meeting booked ──
+test('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', () => {
+  const drafts = read('src/services/follow-up-drafts.js');
+  const runner = read('src/services/follow-up-runner.js');
+  const slackSrc = read('src/services/slack.js');
+  const routes = read('src/routes/slack.js');
+  const booked = read('src/services/meeting-booked.js');
+  assert.ok(drafts.includes('detectOffer') && drafts.includes('bumpForOffer'),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'offer-first bump helpers were removed'));
+  assert.ok(!/return\s*\(?\s*`Hey \$\{name\}, thanks for getting back to me/.test(drafts),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'FOLLOW_UP drafts reused the first-reply opener'));
+  assert.ok(runner.includes('threadMessages') && runner.includes('extractThreadMessages'),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'full thread history is no longer passed to Slack'));
+  assert.ok(slackSrc.includes("action_id: 'meeting_booked'") || slackSrc.includes('action_id: "meeting_booked"'),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked button missing from Slack cards'));
+  assert.ok(routes.includes('handleMeetingBooked') && routes.includes('meeting_booked'),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked Slack handler missing'));
+  assert.ok(booked.includes("status = 'booked'") && booked.includes('cancelPendingForThread'),
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked no longer records meeting + cancels cadence'));
+});
+
 // ── Decision: follow-up draft tolerates null digest_timezone ──────────
 test('follow-up draft tolerates null digest_timezone', () => {
   const { nextBusinessDayLabel } = require('../src/services/classifier');
