@@ -47,23 +47,34 @@ quoted thread history plus signatures — are rejected with 413 **before the
 webhook route runs**. There is no log line, no error, no Slack card. Replies
 just vanish. This cost us a day of missed replies across every client.
 
-## Suppression policy — only three things are silent
+## Suppression policy — AI reply channels are interested-only
 
-`slackSuppressionReason()` in `src/utils/smartlead-webhook-helpers.js` is the
-single source of truth. Silent: **out-of-office, explicit unsubscribe/opt-out,
-wrong-person**. Everything else reaches Slack.
+Final Slack gate: `slackChannelSuppressionReason()` in
+`src/utils/slack-channel-policy.js`. Only **`INTERESTED`**,
+**`MEETING_PROPOSED`**, and **`QUESTION`** post to the AI reply channels.
+`NOT_INTERESTED`, `OOO`, `OTHER`, `OBJECTION`, and similar stay out.
 
-In particular, **`NOT_INTERESTED` must post to Slack and must get a draft.** It
-is an objection worth working, not a dead lead. It drafts in decline mode —
-acknowledge, no pitch, no times, no link, then ask about checking back later.
+Text heuristics in `slackSuppressionReason()`
+(`src/utils/smartlead-webhook-helpers.js`) still catch OOO / unsubscribe /
+wrong-person that mis-classify as a positive. Prefer returning a distinct
+reason string from the shared helpers so poller `skipCounts` stay accurate.
 
-If you add a suppression rule, add it to `slackSuppressionReason()` and return a
-distinct reason string. Do not hardcode a reason at the call site — the pollers
-report these in `skipCounts`, and a log that misreports *why* a reply went
-silent is how a real reply gets lost.
+Drafts follow the same set: `DRAFT_CLASSIFICATIONS` is only those three
+positives. Decline-mode helpers remain for fallbacks, but declines are not
+Slack-carded.
 
 Note: wrong-person also catches "please contact Jane instead", so genuine
 referrals are currently silenced. Known tradeoff, deliberate.
+
+## Josh / SalesGlider draft voice
+
+Ack what they said before any CTA. First outbound on a thread is
+`FIRST_TOUCH`; after any prior sent reply it is `CONTINUATION` (do not reset
+to cold first-touch voice). For Josh-as-CEO clients, scrub "our CEO" /
+"our founder" handoffs to first person (`principal-draft-guard.js`). RAG
+prefers client-scoped examples (`match_replies_v2`), skips FOLLOW_UP /
+placeholder inbounds for learning, and can be seeded via
+`scripts/seed-josh-gold-reply-examples.js`.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 

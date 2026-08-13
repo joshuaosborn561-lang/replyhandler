@@ -15,9 +15,7 @@ const {
   normalizeInboundText,
   STORED_NORM_SQL,
 } = require('./reply-dedupe');
-const {
-  slackSuppressionReason,
-} = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const HR_BASE = 'https://api.heyreach.io/api/public';
 
@@ -386,7 +384,14 @@ async function processConversation(client, conv, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
+      {
+        leadName: leadName(conv),
+        digestTimezone: client.digest_timezone,
+        platform: 'heyreach',
+        clientId: client.id,
+        leadId,
+        clientName: client.name,
+      },
     );
   } catch (err) {
     // classifyAndDraft is supposed to never throw; keep poll moving if it does.
@@ -402,7 +407,9 @@ async function processConversation(client, conv, options) {
   }
   let { classification, draft, proposed_time, reasoning } = result;
 
-  const suppressed = slackSuppressionReason(inbound.text);
+  const suppressed = slackChannelSuppressionReason({
+    classification, inboundMessage: inbound.text,
+  });
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'heyreach', campaignId, leadId,

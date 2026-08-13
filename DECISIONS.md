@@ -378,3 +378,31 @@ future follow-up scheduling / digest nudges for that lead. Separate from
 Reject (which only declines the current draft).
 
 Guard: `Slack DQ button excludes follow-up nudges`
+
+---
+
+## 2026-08-13
+
+### AI reply Slack channels are interested-only
+
+*"i only want interested replies to come through there. no OOO and no
+not interested"*
+
+Supersedes "Only three kinds of reply are silent" / "NOT_INTERESTED reaches
+Slack and drafts" for the AI reply channels. Cards post only for
+`INTERESTED`, `MEETING_PROPOSED`, and `QUESTION`. OOO, not-interested,
+other/objection noise stay out of those channels. Text heuristics still
+silence OOO / unsubscribe / wrong-person that mis-classify as positive.
+`DRAFT_CLASSIFICATIONS` matches that set (no decline drafts on Slack).
+
+Guard: `Slack channels are interested-only — OOO and NOT_INTERESTED suppressed`
+
+### Josh drafts ack-first; first vs continuation; scrub CEO handoff
+
+SalesGlider voice audit: drafts must acknowledge the prospect's point before
+any CTA; second+ replies on a thread must not reset to cold first-touch;
+Josh-as-CEO clients must never ship "our CEO" / "our founder" handoff voice
+(Chase Dawson leak). RAG prefers client-scoped SalesGlider examples, does
+not learn FOLLOW_UP / placeholder inbounds, and seeds gold ack-first pairs.
+
+Guard: `Josh drafts ack-first with first vs continuation and CEO handoff scrub`

@@ -1,26 +1,38 @@
 const replyExamples = require('./reply-examples');
+const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
 
 const JOSH_VOICE_STYLE_GUIDE = `JOSH'S VOICE — RULES:
-- Near-universal opener when replying to any response: "Hey [Name], thanks for getting back to me" or a close variant. Use it as a default opener.
+- ACK FIRST: React to what they actually said before any CTA. If they asked a question, answer it. If they mentioned tickets/offer/catch/location/skepticism, acknowledge that point in the first line.
+- Soft yes ("sure", "interested") can use "Hey [Name], thanks for getting back to me" — but never use that opener when they asked something concrete.
 - Short, warm, conversational. Contractions throughout.
-- When you make a mistake or mixed something up, own it lightly with self-deprecating humor: "Oh no, put my foot in my mouth already! Haha" — don't over-apologize, just acknowledge and move on immediately.
-- When handing off to a teammate (sales director, CEO), name them directly and give their Calendly link in the same message, framed as "he'd be the right person to talk through what makes sense for you."
-- End replies with a direct, low-friction next step or question, not a pitch: "Would Tuesday work?" "Still a good time to meet?" "Can you chat Tuesday or Wednesday if it looks relevant?"
-- Light, genuine humor is welcome (self-deprecating, playful) but never forced or gimmicky.
-- No corporate filler: never "per my last email," "circle back," "touch base," "I hope this finds you well."
+- When you make a mistake or mixed something up, own it lightly with self-deprecating humor — don't over-apologize, just acknowledge and move on immediately.
+- When handing off to a teammate (sales director, CEO), name them directly and give their Calendly link in the same message.
+- End replies with a direct, low-friction next step or question, not a pitch.
+- Light, genuine humor is welcome. No corporate filler.
 - Sign-off is just a first name, no "Best," "Regards," or formal closings.`;
 
 /** Same voice, but Josh is the CEO — never hand off to "our CEO". */
 const JOSH_AS_CEO_STYLE_GUIDE = `JOSH'S VOICE (YOU ARE THE CEO) — RULES:
-- Near-universal opener: "Hey [Name], thanks for getting back to me" or a close variant.
+- ACK FIRST: React to what they actually said before any CTA. Mirror their point (tickets, catch, question, payment-on-you, skepticism, location mixup) in the opening beat.
+- Soft yes ("sure", "interested") may open with "Hey [Name], thanks for getting back to me" — never when they asked a concrete question.
 - Short, warm, conversational. Contractions throughout.
 - You are Joshua Osborn, founder/CEO. Speak in first person as yourself.
-- NEVER say "our CEO", "chat with our CEO", "call with our CEO", or hand off to a CEO — you ARE the CEO.
+- NEVER say "our CEO", "our founder", "chat with our CEO", "call with our founder", or hand off to a CEO — you ARE the CEO.
 - Suggest a quick call with you: "quick call with me", "jump on a call", "chat with me".
 - When you make a mistake, own it lightly with self-deprecating humor — don't over-apologize.
 - End with a direct next step: "Would Tuesday work?" "Can you chat Tuesday or Wednesday?"
 - Light humor is welcome. No corporate filler.
 - No sign-off / formal closing — mailbox adds the signature.`;
+
+const FIRST_TOUCH_RULES = `DRAFT MODE = FIRST_TOUCH (first inbound reply we are answering):
+- Acknowledge their message, then offer + soft CTA (times or video when relevant).
+- "Hey [Name], thanks for getting back to me" is OK for bare interest ("sure", "I'm interested").
+- If they asked a question or raised an objection, answer that first — do not skip to times.`;
+
+const CONTINUATION_RULES = `DRAFT MODE = CONTINUATION (second+ inbound — we already sent them something):
+- Do NOT reset to a first-touch opener. No "thanks for getting back to me" unless it still fits naturally.
+- Continue the thread: answer their latest point ("Ok great…", "Fair enough…", "Sorry for the mixup…").
+- Then propose a next step. Keep it shorter than a first-touch reply.`;
 
 function isConfigured() {
   return Boolean(process.env.ANTHROPIC_API_KEY && replyExamples.isConfigured());
@@ -174,20 +186,31 @@ async function generateClaudeReply({
   includeBookingLink,
   platform,
   voicePrompt,
+  replyMode = 'FIRST_TOUCH',
+  replyOrdinal = 1,
+  clientName = null,
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
 
   const { speaksAsPrincipal } = require('../utils/principal-voice');
   const asPrincipal = speaksAsPrincipal(voicePrompt);
+  const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
+    ? 'CONTINUATION'
+    : 'FIRST_TOUCH';
 
-  const examples = await replyExamples.matchReplies(inboundMessage, 4);
+  const examples = await replyExamples.matchReplies(inboundMessage, 4, {
+    clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
+    preferAckExamples: true,
+  });
   const link = String(bookingLink || '').trim();
   const bookingPolicy = includeBookingLink
     ? `The prospect asked for or accepted the booking link. Include this exact link once: ${link || '(no link configured)'}.`
-    : `This is a times-first reply. Suggest concrete times from the scheduling guidance, and offer to send a booking link if neither works. Do not include any URL in this reply.`;
+    : mode === 'CONTINUATION'
+      ? `Continue the thread. Suggest a next step or times only after acknowledging their latest point. Offer to send a booking link if needed. Do not include any URL unless they asked for the link.`
+      : `This is a times-first reply after acknowledging their point. Suggest concrete times from the scheduling guidance, and offer to send a booking link if neither works. Do not include any URL in this reply.`;
 
   const teammateRule = asPrincipal
-    ? '- You are the CEO. Never say "our CEO" or hand off to a CEO. Suggest a quick call with you ("with me").'
+    ? '- You are the CEO. Never say "our CEO", "our founder", or hand off to a CEO/founder. Suggest a quick call with you ("with me").'
     : '- Mention a teammate by name only if that name appears in the current thread or scheduling guidance. Otherwise say "our CEO" or "our team."';
 
   const specificsRule = asPrincipal
@@ -205,6 +228,8 @@ async function generateClaudeReply({
     'Output only the finished plain-text reply. No markdown, analysis, labels, or surrounding quotes.',
     '',
     asPrincipal ? JOSH_AS_CEO_STYLE_GUIDE : JOSH_VOICE_STYLE_GUIDE,
+    '',
+    mode === 'CONTINUATION' ? CONTINUATION_RULES : FIRST_TOUCH_RULES,
     clientVoice,
     'OPERATIONAL RULES:',
     `- ${bookingPolicy}`,
@@ -228,6 +253,7 @@ async function generateClaudeReply({
   const user = [
     `Prospect name: ${leadName || 'Unknown'}`,
     `Classification: ${classification || 'OTHER'}`,
+    `Draft mode: ${mode} (inbound reply #${replyOrdinal || 1} we are answering)`,
     '',
     '<current_thread>',
     summarizeThread(threadContext),
@@ -245,7 +271,7 @@ async function generateClaudeReply({
     formatExamples(examples),
     '</similar_manual_replies>',
     '',
-    'Write the reply now.',
+    'Write the reply now. Acknowledge their latest point before any CTA.',
   ].join('\n');
 
   let data = await callAnthropic(system, user);
@@ -275,16 +301,25 @@ async function generateClaudeReply({
     }
   }
 
+  const guarded = enforcePrincipalVoice(text, { asPrincipal });
+  if (guarded.scrubbed) {
+    console.warn('[ClaudeDraft] Scrubbed principal handoff leak', { leadName, mode });
+    text = guarded.text;
+  }
+
   return {
     text,
     model: data.model || process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
     examples,
+    replyMode: mode,
   };
 }
 
 module.exports = {
   JOSH_VOICE_STYLE_GUIDE,
   JOSH_AS_CEO_STYLE_GUIDE,
+  FIRST_TOUCH_RULES,
+  CONTINUATION_RULES,
   isConfigured,
   generateClaudeReply,
   summarizeThread,

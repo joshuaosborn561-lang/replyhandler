@@ -90,17 +90,80 @@ async function embedText(text, taskType = 'RETRIEVAL_QUERY') {
   throw lastError;
 }
 
-async function matchReplies(inboundMessage, matchCount = 4) {
+/**
+ * Prefer ack-first / question-answer examples over pure times-first fillers.
+ */
+function scoreExampleQuality(example) {
+  const reply = String(example?.my_reply || '');
+  const inbound = String(example?.lead_message || '');
+  let score = Number(example?.similarity || 0);
+  if (/\b(fair enough|no catch|sorry for the|so for the|ok great|exact problem|jupiter|put my foot)\b/i.test(reply)) {
+    score += 0.08;
+  }
+  if (/\b(what'?s the catch|how are you different|case study|cost|ticket|tix)\b/i.test(inbound)
+      && !/\bmid-morning or early afternoon\b/i.test(reply)) {
+    score += 0.05;
+  }
+  if (/^\s*hey\b.+\bthanks for getting back to me\b.+\bmid-morning or\b/i.test(reply)
+      && inbound.length > 40) {
+    score -= 0.06;
+  }
+  const cat = String(example?.category || '').toUpperCase();
+  if (cat === 'FOLLOW_UP') score -= 0.5;
+  return score;
+}
+
+async function matchReplies(inboundMessage, matchCount = 4, {
+  clientName = null,
+  preferAckExamples = false,
+} = {}) {
   if (!isConfigured()) return [];
   const embedding = await embedText(inboundMessage, 'RETRIEVAL_QUERY');
-  const data = await supabaseRequest('/rest/v1/rpc/match_replies', {
-    method: 'POST',
-    body: {
-      query_embedding: embedding,
-      match_count: matchCount,
-    },
+  const fetchCount = Math.max(matchCount * 4, 12);
+
+  // Prefer client-scoped RPC when available; fall back to global match.
+  let data;
+  try {
+    data = await supabaseRequest('/rest/v1/rpc/match_replies_v2', {
+      method: 'POST',
+      body: {
+        query_embedding: embedding,
+        match_count: fetchCount,
+        filter_client_name: clientName || null,
+      },
+    });
+  } catch {
+    data = await supabaseRequest('/rest/v1/rpc/match_replies', {
+      method: 'POST',
+      body: {
+        query_embedding: embedding,
+        match_count: fetchCount,
+      },
+    });
+  }
+
+  let rows = Array.isArray(data) ? data : [];
+  // Drop FOLLOW_UP / placeholder training rows even if the RPC did not.
+  rows = rows.filter((row) => {
+    const cat = String(row.category || '').toUpperCase();
+    if (cat === 'FOLLOW_UP') return false;
+    const inbound = String(row.lead_message || '').trim().toLowerCase();
+    if (inbound.startsWith('(no new reply')) return false;
+    if (clientName && row.client_name
+        && String(row.client_name).toLowerCase() !== String(clientName).toLowerCase()) {
+      return false;
+    }
+    return true;
   });
-  return Array.isArray(data) ? data : [];
+
+  if (preferAckExamples) {
+    rows = rows
+      .map((row) => ({ ...row, _q: scoreExampleQuality(row) }))
+      .sort((a, b) => b._q - a._q)
+      .map(({ _q, ...row }) => row);
+  }
+
+  return rows.slice(0, matchCount);
 }
 
 async function insertReplyExample({

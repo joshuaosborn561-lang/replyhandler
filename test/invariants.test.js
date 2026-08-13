@@ -40,10 +40,15 @@ test('express.json keeps a raised body limit', () => {
 });
 
 // ── Suppression policy ────────────────────────────────────────────────
-// Exactly three things are silent. Everything else reaches Slack.
-test('only OOO, unsubscribe and wrong-person are suppressed', () => {
+// AI reply channels: interested positives only (plus classic text silence).
+test('Slack channel policy posts only interested classifications', () => {
   const { slackSuppressionReason } = require('../src/utils/smartlead-webhook-helpers');
+  const {
+    slackChannelSuppressionReason,
+    SLACK_CHANNEL_CLASSIFICATIONS,
+  } = require('../src/utils/slack-channel-policy');
 
+  // Text heuristics still catch OOO / unsubscribe / wrong-person.
   const silent = {
     'I am out of the office until Monday': 'ooo',
     'Automatic reply: on vacation': 'ooo',
@@ -57,25 +62,34 @@ test('only OOO, unsubscribe and wrong-person are suppressed', () => {
     assert.strictEqual(slackSuppressionReason(text), reason, `"${text}" should be silenced as ${reason}`);
   }
 
-  // NOT_INTERESTED is an objection worth working, not a dead lead.
-  const mustReachSlack = [
-    'Not interested at this time',
-    'We are not interested in this service',
-    'No thanks, we are all set',
-    'This is too expensive',
-    'Who else do you work with?',
-    'Sounds good, lets book a time',
-  ];
-  for (const text of mustReachSlack) {
-    assert.strictEqual(slackSuppressionReason(text), null, `"${text}" must reach Slack`);
-  }
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('INTERESTED'));
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'NOT_INTERESTED', inboundMessage: 'Not interested' }),
+    'not_interested',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OOO', inboundMessage: 'ooo' }),
+    'ooo',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OTHER', inboundMessage: 'hmm' }),
+    'not_interested_channel',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'QUESTION', inboundMessage: 'What is the catch?' }),
+    null,
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'INTERESTED', inboundMessage: 'Sounds good, lets book a time' }),
+    null,
+  );
 });
 
-test('NOT_INTERESTED still gets a draft', () => {
+test('only INTERESTED / MEETING_PROPOSED / QUESTION get drafts', () => {
   const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
-  assert.ok(
-    DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
-    'NOT_INTERESTED must draft — in decline mode, but it must draft'
+  assert.deepEqual(
+    [...DRAFT_CLASSIFICATIONS].sort(),
+    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
   );
 });
 

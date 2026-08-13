@@ -19,10 +19,10 @@ const {
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
-  slackSuppressionReason,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -152,7 +152,15 @@ async function processInboxRow(client, row, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+      {
+        leadName,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientId: client.id,
+        leadId,
+        leadEmail,
+        clientName: client.name,
+      },
     );
   } catch (err) {
     console.error('[SmartLeadPoll] classifyAndDraft threw — using OTHER/empty draft', {
@@ -176,7 +184,7 @@ async function processInboxRow(client, row, options) {
     reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
   }
 
-  const suppressed = slackSuppressionReason(inbound);
+  const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'smartlead', campaignId, leadId,
