@@ -1,4 +1,5 @@
 const replyExamples = require('./reply-examples');
+const { isFollowUpPlaceholder } = require('../utils/reply-ordinal');
 
 function serializeThread(threadContext) {
   if (!threadContext) return null;
@@ -16,12 +17,21 @@ function serializeThread(threadContext) {
  * A Slack-approved SmartLead send uses the inbox reply endpoint and therefore
  * has sequence_number = NULL by construction. Scheduled sequence sends never
  * pass through this handler and are never learned.
+ *
+ * Never learn FOLLOW_UP bumps or placeholder inbounds — they contaminate
+ * first-reply voice retrieval.
  */
 async function learnFromApprovedReply({ reply, client, finalText }) {
   if (!replyExamples.isConfigured()) return { skipped: 'not_configured' };
   if (!reply || reply.platform !== 'smartlead') return { skipped: 'not_smartlead' };
   if (!finalText || !reply.inbound_message) return { skipped: 'missing_pair' };
   if (reply.campaign_id === 'test-campaign') return { skipped: 'test_fixture' };
+  if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    return { skipped: 'follow_up' };
+  }
+  if (isFollowUpPlaceholder(reply.inbound_message)) {
+    return { skipped: 'placeholder_inbound' };
+  }
 
   try {
     const result = await replyExamples.insertReplyExample({

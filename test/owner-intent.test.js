@@ -42,20 +42,56 @@ function reversal(decision, detail) {
   ].join('\n');
 }
 
-// ── Decision: silence exactly three things ────────────────────────────
-// Asked for OOO + unsubscribe silent, then added wrong-person, then
-// explicitly pulled NOT_INTERESTED back out: "not interested should be on
-// there but everything else is right."
-test('NOT_INTERESTED reaches Slack and drafts — reversed once, settled', () => {
-  const { slackSuppressionReason } = require('../src/utils/smartlead-webhook-helpers');
+// ── Decision: AI reply channels are interested-only ───────────────────
+// "i only want interested replies to come through there. no OOO and no
+// not interested" — supersedes the older "NOT_INTERESTED reaches Slack".
+test('Slack channels are interested-only — OOO and NOT_INTERESTED suppressed', () => {
+  const {
+    slackChannelSuppressionReason,
+    SLACK_CHANNEL_CLASSIFICATIONS,
+  } = require('../src/utils/slack-channel-policy');
   const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
 
-  assert.strictEqual(slackSuppressionReason('Not interested at this time'), null,
-    reversal('NOT_INTERESTED must reach Slack', 'a not-interested reply is being silenced'));
-  assert.strictEqual(slackSuppressionReason('We are not interested'), null,
-    reversal('NOT_INTERESTED must reach Slack', 'a not-interested reply is being silenced'));
-  assert.ok(DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
-    reversal('NOT_INTERESTED must get a draft', 'it has been moved back to alert-only'));
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('INTERESTED'));
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('MEETING_PROPOSED'));
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('QUESTION'));
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OOO', inboundMessage: 'out of office' }),
+    'ooo',
+    reversal('Slack channels are interested-only', 'OOO is posting again'),
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'NOT_INTERESTED', inboundMessage: 'not interested' }),
+    'not_interested',
+    reversal('Slack channels are interested-only', 'NOT_INTERESTED is posting again'),
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'INTERESTED', inboundMessage: 'Sure' }),
+    null,
+  );
+  assert.ok(!DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
+    reversal('Slack channels are interested-only', 'NOT_INTERESTED is drafting again'));
+  assert.ok(!DRAFT_CLASSIFICATIONS.includes('OOO'));
+  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort());
+});
+
+// ── Decision: Josh drafts ack-first + first vs continuation ───────────
+test('Josh drafts ack-first with first vs continuation and CEO handoff scrub', () => {
+  const claude = read('src/services/claude-reply-draft.js');
+  const classifier = read('src/services/classifier.js');
+  const learning = read('src/services/approved-reply-learning.js');
+  const guard = read('src/utils/principal-draft-guard.js');
+  const ordinal = read('src/utils/reply-ordinal.js');
+  assert.ok(claude.includes('ACK FIRST') || claude.includes('Acknowledge their latest point'),
+    reversal('Josh drafts ack-first', 'ack-first rules were removed from Claude drafts'));
+  assert.ok(claude.includes('CONTINUATION') && claude.includes('FIRST_TOUCH'),
+    reversal('Josh drafts ack-first', 'first/continuation modes were removed'));
+  assert.ok(classifier.includes('replyMode') && ordinal.includes('resolveReplyOrdinal'),
+    reversal('Josh drafts ack-first', 'reply ordinal wiring was removed'));
+  assert.ok(guard.includes('our\\s+ceo') || guard.includes('our CEO') || guard.includes('HANDOFF_RE'),
+    reversal('Josh drafts ack-first', 'CEO/founder handoff scrub was removed'));
+  assert.ok(learning.includes('follow_up') || learning.includes('FOLLOW_UP'),
+    reversal('Josh drafts ack-first', 'FOLLOW_UP learning skip was removed'));
 });
 
 // ── Decision: declines get a graceful draft, never a pitch ────────────

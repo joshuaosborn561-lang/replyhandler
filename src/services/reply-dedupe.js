@@ -216,6 +216,18 @@ function lastOutboundFromThreadContext(reply) {
 }
 
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
+  const { shouldPostToSlackChannel } = require('../utils/slack-channel-policy');
+  if (!shouldPostToSlackChannel({
+    classification: reply.classification,
+    inboundMessage: reply.inbound_message,
+  })) {
+    console.log('[Dedupe] Skip Slack recovery — not an interested-channel classification', {
+      replyId: reply.id,
+      classification: reply.classification,
+    });
+    return false;
+  }
+
   const policy = applyClientDraftPolicy(client, reply.lead_email, {
     classification: reply.classification,
     draft: reply.draft_reply,
@@ -266,6 +278,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
        JOIN clients c ON c.id = pr.client_id
       WHERE pr.slack_message_ts IS NULL
         AND pr.status IN ('pending', 'alert_only')
+        AND pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
         AND c.active IS DISTINCT FROM false
         AND pr.created_at > now() - interval '7 days'
       ORDER BY pr.created_at ASC

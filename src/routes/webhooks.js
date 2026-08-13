@@ -24,10 +24,10 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
-  slackSuppressionReason,
   looksLikeUnsubscribe,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const router = Router();
 
@@ -499,7 +499,15 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock,
-        { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+        {
+          leadName,
+          digestTimezone: client.digest_timezone,
+          platform: 'smartlead',
+          clientId,
+          leadId,
+          leadEmail,
+          clientName: client.name,
+        },
       );
     } catch (err) {
       console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
@@ -532,7 +540,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
     }
-    const suppressedReason = slackSuppressionReason(inboundEffective);
+    const suppressedReason = slackChannelSuppressionReason({
+      classification, inboundMessage: inboundEffective,
+    });
     if (suppressedReason) {
       console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
       await recordSuppressedReply({
@@ -767,7 +777,14 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             client.voice_prompt,
             client.booking_link,
             schedulingPromptBlock,
-            { leadName: resolvedLeadName, digestTimezone: client.digest_timezone, platform: 'heyreach' },
+            {
+              leadName: resolvedLeadName,
+              digestTimezone: client.digest_timezone,
+              platform: 'heyreach',
+              clientId,
+              leadId: leadId || hrConversationId,
+              clientName: client.name,
+            },
           );
         } catch (err) {
           console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
@@ -778,7 +795,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         let { classification, draft, proposed_time, reasoning } = result;
-        const hrSuppressed = slackSuppressionReason(inboundMessage);
+        const hrSuppressed = slackChannelSuppressionReason({
+          classification, inboundMessage,
+        });
         if (hrSuppressed) {
           console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });
           await recordSuppressedReply({
