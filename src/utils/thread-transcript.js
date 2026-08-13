@@ -53,8 +53,33 @@ function bodyFrom(m) {
   );
 }
 
+/**
+ * Times reach this module in three shapes and must come out as one.
+ *
+ * SmartLead/HeyReach payloads carry ISO strings, but rows read back from
+ * Postgres carry real Date objects (node-pg hydrates timestamptz), and some
+ * payloads use epoch millis. The sort below compares with localeCompare, so a
+ * Date reaching it throws `a.time.localeCompare is not a function` — which is
+ * exactly what killed every FOLLOW_UP card between 2026-08-09 and 2026-08-13
+ * (follow-up-runner's priorSentMessages passes `time: r.updated_at`).
+ *
+ * ISO is the normal form on purpose: it sorts lexicographically, so normalised
+ * Dates order correctly against the ISO strings already in thread history.
+ */
+function normalizeTime(value) {
+  if (!value) return '';
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '' : value.toISOString();
+  }
+  if (typeof value === 'number') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  return String(value);
+}
+
 function timeFrom(m) {
-  return String(m.time || m.sent_at || m.received_at || m.created_at || m.timestamp || '') || '';
+  return normalizeTime(m.time || m.sent_at || m.received_at || m.created_at || m.timestamp);
 }
 
 /**
@@ -89,12 +114,17 @@ function extractThreadMessages(platform, threadContext, {
     if (last && last.role === role && last.body.toLowerCase() === body.toLowerCase()) continue;
     // Also skip if identical body already present
     if (out.some((x) => x.role === role && x.body.toLowerCase() === body.toLowerCase())) continue;
-    out.push({ role, body, time: extra.time || '' });
+    out.push({ role, body, time: normalizeTime(extra.time) });
   }
 
-  // Keep chronological when times exist; otherwise keep insertion order
+  // Keep chronological when times exist; otherwise keep insertion order.
+  // String() belt-and-braces: normalizeTime already guarantees strings, but the
+  // comparator must never be the thing that throws — a sort error here takes
+  // down the whole card, and the card is the only way a reply reaches a human.
   out.sort((a, b) => {
-    if (a.time && b.time && a.time !== b.time) return a.time.localeCompare(b.time);
+    if (a.time && b.time && a.time !== b.time) {
+      return String(a.time).localeCompare(String(b.time));
+    }
     return 0;
   });
 
