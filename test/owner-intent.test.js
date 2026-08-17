@@ -94,6 +94,17 @@ test('Josh drafts ack-first with first vs continuation and CEO handoff scrub', (
     reversal('Josh drafts ack-first', 'FOLLOW_UP learning skip was removed'));
 });
 
+// ── Decision: Claude fail → Gemini, not robotic template ──────────────
+test('Claude draft failures fall through to Gemini not the robotic template', () => {
+  const classifier = read('src/services/classifier.js');
+  assert.ok(classifier.includes('falling through to Gemini'),
+    reversal('Claude fail → Gemini', 'Claude failures skip Gemini again'));
+  assert.ok(!classifier.includes('Claude retrieval draft failed — using deterministic fallback'),
+    reversal('Claude fail → Gemini', 'Claude failures dump straight to template again'));
+  assert.ok(classifier.includes('draftWithGemini'),
+    reversal('Claude fail → Gemini', 'Gemini draft path was removed'));
+});
+
 // ── Decision: declines get a graceful draft, never a pitch ────────────
 // "still draft for not interested replies" — but the default times-first
 // prompt would have pushed meeting slots at someone who just said no.

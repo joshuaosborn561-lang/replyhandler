@@ -195,17 +195,71 @@ function fallbackDraftText({
     );
   }
 
+  const { callWithWhom } = require('../utils/principal-voice');
+  const whom = callWithWhom(voicePrompt);
+
+  // They already threw times — confirm those instead of inventing mid-morning defaults.
+  if (classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(msg)) {
+    const theirTimes = summarizeProposedTimes(msg);
+    if (theirTimes) {
+      return (
+        `Hey ${name}, appreciate you throwing times over — ${theirTimes} works on my end. ` +
+        `I'll send something over shortly. If that window shifted, just say the word.`
+      );
+    }
+    return (
+      `Hey ${name}, appreciate you throwing times over. ` +
+      `That window works on my end — I'll send something over shortly. ` +
+      `If you need to shift it, just say the word.`
+    );
+  }
+
   const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
   const ack = clearInterest
     ? 'Would love to see if this is a fit.'
     : 'Happy to jump on a quick call and walk through it.';
-  const { callWithWhom } = require('../utils/principal-voice');
-  const whom = callWithWhom(voicePrompt);
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
     `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with ${whom}? ` +
     `If neither works I can send a booking link.`
   );
+}
+
+/** Loose detect: prospect named a day/time window in their reply. */
+function looksLikeTheyProposedTimes(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  if (/\b(monday|tuesday|wednesday|thursday|friday|tomorrow|today|next week)\b/i.test(s)
+      && /\b(\d{1,2}\s*(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)|\d{1,2}\s*-\s*\d{1,2}|noon|morning|afternoon|evening)\b/i.test(s)) {
+    return true;
+  }
+  if (/\b\d{1,2}\s*(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)\s*(est|edt|cst|cdt|mst|mdt|pst|pdt)?\b/i.test(s)) {
+    return true;
+  }
+  return false;
+}
+
+/** Short plain fragment of the times they offered (best-effort). */
+function summarizeProposedTimes(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+
+  const day = (s.match(
+    /\b((?:this |next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today))\b/i
+  ) || [])[1];
+
+  const window = (s.match(
+    /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?(?:\s*(?:est|edt|cst|cdt|mst|mdt|pst|pdt))?)/i
+  ) || [])[1];
+
+  const single = (s.match(
+    /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)(?:\s*(?:est|edt|cst|cdt|mst|mdt|pst|pdt))?)/i
+  ) || [])[1];
+
+  const time = (window || single || '').replace(/\s+/g, ' ').trim();
+  if (day && time) return `${day} ${time}`;
+  if (day) return day;
+  return time;
 }
 
 function buildClassifyModel() {
@@ -564,6 +618,12 @@ async function draftOnly({
     includeBookingLink,
   });
 
+  const proposedTimesNote = (
+    classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(inboundMessage)
+  )
+    ? 'They already proposed times — confirm or lightly counter those times. Do NOT invent unrelated mid-morning / early afternoon slots.'
+    : null;
+
   const modeNote = includeBookingLink
     ? 'BOOKING LINK MODE: Include the booking URL once. Keep it short.'
     : `${mode} MODE: Acknowledge their latest point first, then suggest next step/times. Do NOT include any booking URL.`;
@@ -571,59 +631,23 @@ async function draftOnly({
   const prompt =
     `Thread:\n${summarizeThread(threadContext)}\n\n` +
     `Latest prospect reply:\n${inboundMessage}\n\n` +
+    `${proposedTimesNote ? `${proposedTimesNote}\n\n` : ''}` +
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
     `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.`;
 
-  // When the Supabase + Anthropic pipeline is configured, Gemini is used only
-  // for embedding/retrieval and Claude Sonnet 5 writes the actual draft.
-  if (claudeReplyDraft.isConfigured()) {
-    try {
-      const result = await claudeReplyDraft.generateClaudeReply({
-        inboundMessage,
-        threadContext,
-        classification,
-        leadName,
-        bookingLink: booking,
-        schedulingPromptBlock: timeBlock,
-        includeBookingLink,
-        platform,
-        voicePrompt,
-        replyMode: mode,
-        replyOrdinal,
-        clientName,
-      });
-      const draft = finalizeDraft(result.text, {
-        booking, includeBookingLink, voicePrompt, leadName,
-      });
-      if (!draft) throw new Error('Claude draft was empty after sanitization');
-      console.log('[Classifier] Claude retrieval draft generated', {
-        model: result.model,
-        examples: result.examples.length,
-        leadName,
-        replyMode: mode,
-        replyOrdinal,
-      });
-      return draft;
-    } catch (err) {
-      console.error('[Classifier] Claude retrieval draft failed — using deterministic fallback', {
-        err: err.message,
-        leadName,
-      });
-      return finalizeDraft(fallbackDraftText({
-        leadName,
-        inboundMessage,
-        bookingLink: booking,
-        classification,
-        threadContext,
-        digestTimezone,
-        includeBookingLink,
-        voicePrompt,
-      }), { booking, includeBookingLink, voicePrompt, leadName });
-    }
-  }
+  const deterministicFallback = () => finalizeDraft(fallbackDraftText({
+    leadName,
+    inboundMessage,
+    bookingLink: booking,
+    classification,
+    threadContext,
+    digestTimezone,
+    includeBookingLink,
+    voicePrompt,
+  }), { booking, includeBookingLink, voicePrompt, leadName });
 
-  try {
+  async function draftWithGemini() {
     const model = buildDraftModel(systemInstruction);
     let res = await withGeminiRetry(() => model.generateContent(prompt));
     let draft = finalizeDraft(res.response.text(), {
@@ -656,31 +680,55 @@ async function draftOnly({
 
     if (!draft) {
       console.warn('[Classifier] Empty Gemini draft — using times-first fallback', { leadName, classification });
-      return finalizeDraft(fallbackDraftText({
-        leadName,
-        inboundMessage,
-        bookingLink: booking,
-        classification,
-        threadContext,
-        digestTimezone,
-        includeBookingLink,
-        voicePrompt,
-      }), { booking, includeBookingLink, voicePrompt, leadName });
+      return deterministicFallback();
     }
-
     return draft;
+  }
+
+  // Prefer Claude + RAG when configured. On failure (e.g. Anthropic usage
+  // limits), fall through to Gemini with the same voice prompt — never dump
+  // straight to the robotic "happy to jump on a quick call" template.
+  if (claudeReplyDraft.isConfigured()) {
+    try {
+      const result = await claudeReplyDraft.generateClaudeReply({
+        inboundMessage,
+        threadContext,
+        classification,
+        leadName,
+        bookingLink: booking,
+        schedulingPromptBlock: timeBlock,
+        includeBookingLink,
+        platform,
+        voicePrompt,
+        replyMode: mode,
+        replyOrdinal,
+        clientName,
+      });
+      const draft = finalizeDraft(result.text, {
+        booking, includeBookingLink, voicePrompt, leadName,
+      });
+      if (!draft) throw new Error('Claude draft was empty after sanitization');
+      console.log('[Classifier] Claude retrieval draft generated', {
+        model: result.model,
+        examples: result.examples.length,
+        leadName,
+        replyMode: mode,
+        replyOrdinal,
+      });
+      return draft;
+    } catch (err) {
+      console.error('[Classifier] Claude retrieval draft failed — falling through to Gemini', {
+        err: err.message,
+        leadName,
+      });
+    }
+  }
+
+  try {
+    return await draftWithGemini();
   } catch (err) {
     console.error('[Classifier] draft call failed — using times-first fallback', { err: err.message });
-    return finalizeDraft(fallbackDraftText({
-      leadName,
-      inboundMessage,
-      bookingLink: booking,
-      classification,
-      threadContext,
-      digestTimezone,
-      includeBookingLink,
-      voicePrompt,
-    }), { booking, includeBookingLink, voicePrompt, leadName });
+    return deterministicFallback();
   }
 }
 
