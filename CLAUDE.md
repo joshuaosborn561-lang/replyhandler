@@ -76,6 +76,16 @@ prefers client-scoped examples (`match_replies_v2`), skips FOLLOW_UP /
 placeholder inbounds for learning, and can be seeded via
 `scripts/seed-josh-gold-reply-examples.js`.
 
+## Draft provider order
+
+1. Claude + RAG when `ANTHROPIC_API_KEY` + Supabase embeddings are configured
+2. On Claude failure (including Anthropic usage limits), **Gemini** with the
+   same voice prompt — do not skip to the template
+3. Deterministic `fallbackDraftText` only if Gemini also fails / returns empty
+
+If drafts suddenly all look like "Happy to jump on a quick call…", check
+Anthropic quota first, then confirm this fallthrough is still wired.
+
 ## No pending-nudge / "you haven't actioned this" alerts
 
 Deleted on purpose, at the owner's explicit request. `postPendingNudge`,

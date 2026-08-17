@@ -406,3 +406,21 @@ Josh-as-CEO clients must never ship "our CEO" / "our founder" handoff voice
 not learn FOLLOW_UP / placeholder inbounds, and seeds gold ack-first pairs.
 
 Guard: `Josh drafts ack-first with first vs continuation and CEO handoff scrub`
+
+---
+
+## 2026-08-17
+
+### Claude draft failures fall through to Gemini, not the robotic template
+
+Anthropic hit usage limits (blocked until 2026-09-01). Claude + RAG was
+still "configured", so every draft attempt failed and dumped into
+`fallbackDraftText` — the "Happy to jump on a quick call… mid-morning or
+early afternoon" template. That is why replies looked like the old default
+even though ack-first / CEO-voice / RAG code was on the deploy branch.
+
+Fix: Claude failure → Gemini with the same voice prompt. Deterministic
+template only when Gemini also fails. MEETING_PROPOSED last-resort confirms
+their times instead of inventing new ones.
+
+Guard: `classifier no longer dumps Claude failures into deterministic fallback only`
