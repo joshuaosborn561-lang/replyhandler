@@ -25,9 +25,30 @@ const NO_REPLY_NEEDED = new Set([
 ]);
 /** Kept for fallback copy / tests — declines are no longer drafted for Slack. */
 const DECLINE_CLASSIFICATIONS = new Set(['NOT_INTERESTED']);
-const DRAFT_CLASSIFICATIONS = ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'];
+/** Only these get an AI draft. Never expand without Josh. */
+const DRAFT_CLASSIFICATIONS = Object.freeze(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
+let loggedAnthropicBulkSkip = false;
+
+/**
+ * Claude+RAG is realtime webhooks only.
+ * Pollers / backfill scripts MUST pass draftMode: 'bulk' — Claude is never used there.
+ * There is intentionally no env opt-in to re-enable Claude on bulk (Aug 2026 burn).
+ */
+function isBulkDraftMode(draftMode) {
+  return String(draftMode || 'realtime').toLowerCase() === 'bulk';
+}
+
+function shouldUseAnthropicDrafts({ draftMode } = {}) {
+  if (!claudeReplyDraft.isConfigured()) return false;
+  if (isBulkDraftMode(draftMode)) return false;
+  return true;
+}
+
+function assertDraftableClassification(classification) {
+  return DRAFT_CLASSIFICATIONS.includes(String(classification || '').toUpperCase());
+}
 
 async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
   let lastErr;
@@ -628,7 +649,15 @@ async function draftOnly({
   replyMode = 'FIRST_TOUCH',
   replyOrdinal = 1,
   clientName = null,
+  draftMode = 'realtime',
 }) {
+  if (!assertDraftableClassification(classification)) {
+    console.warn('[Classifier] Refusing draft for non-positive classification', {
+      classification, leadName, draftMode,
+    });
+    return null;
+  }
+
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
@@ -733,10 +762,8 @@ async function draftOnly({
     return draft;
   }
 
-  // Prefer Claude + RAG when configured. On failure (e.g. Anthropic usage
-  // limits), fall through to Gemini with the same voice prompt — never dump
-  // straight to the robotic "happy to jump on a quick call" template.
-  if (claudeReplyDraft.isConfigured()) {
+  // Claude+RAG: realtime webhooks only. Bulk/poller/backfill never touch Anthropic.
+  if (shouldUseAnthropicDrafts({ draftMode })) {
     try {
       const result = await claudeReplyDraft.generateClaudeReply({
         inboundMessage,
@@ -751,6 +778,7 @@ async function draftOnly({
         replyMode: mode,
         replyOrdinal,
         clientName,
+        draftMode,
       });
       const draft = finalizeDraft(result.text, {
         booking, includeBookingLink, voicePrompt, leadName,
@@ -762,6 +790,7 @@ async function draftOnly({
         leadName,
         replyMode: mode,
         replyOrdinal,
+        draftMode,
       });
       return draft;
     } catch (err) {
@@ -770,6 +799,9 @@ async function draftOnly({
         leadName,
       });
     }
+  } else if (isBulkDraftMode(draftMode) && claudeReplyDraft.isConfigured() && !loggedAnthropicBulkSkip) {
+    console.log('[Classifier] Claude drafts hard-disabled for bulk/poller/backfill (Gemini only).');
+    loggedAnthropicBulkSkip = true;
   }
 
   try {
@@ -793,6 +825,7 @@ async function classifyAndDraft(
   {
     leadName, digestTimezone, platform,
     clientId = null, leadId = null, leadEmail = null, clientName = null,
+    draftMode = 'realtime',
   } = {},
 ) {
   // Deterministic pre-classification gates — kill drafts that should not exist.
@@ -819,7 +852,7 @@ async function classifyAndDraft(
     clientId, platform, leadId, leadEmail,
   });
 
-  const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+  const needsDraft = assertDraftableClassification(classification);
   const includeBookingLink = needsDraft
     ? looksLikeBookingLinkRequest(inboundMessage, threadContext)
     : false;
@@ -839,6 +872,7 @@ async function classifyAndDraft(
       replyMode: ordinal.mode,
       replyOrdinal: ordinal.replyOrdinal,
       clientName,
+      draftMode,
     })
     : null;
 
@@ -872,6 +906,9 @@ module.exports = {
   buildTimeSuggestionBlock,
   sanitizeDraft,
   stripSignOff,
+  shouldUseAnthropicDrafts,
+  isBulkDraftMode,
+  assertDraftableClassification,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
   DECLINE_CLASSIFICATIONS,

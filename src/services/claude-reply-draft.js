@@ -189,8 +189,12 @@ async function generateClaudeReply({
   replyMode = 'FIRST_TOUCH',
   replyOrdinal = 1,
   clientName = null,
+  draftMode = 'realtime',
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
+  if (String(draftMode || '').toLowerCase() === 'bulk') {
+    throw new Error('Claude drafting is hard-disabled for bulk/poller/backfill');
+  }
 
   const { speaksAsPrincipal } = require('../utils/principal-voice');
   const asPrincipal = speaksAsPrincipal(voicePrompt);

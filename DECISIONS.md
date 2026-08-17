@@ -439,3 +439,16 @@ template only when Gemini also fails. MEETING_PROPOSED last-resort confirms
 their times instead of inventing new ones.
 
 Guard: `classifier no longer dumps Claude failures into deterministic fallback only`
+
+### Claude never runs on poller/backfill; draft positives only
+
+*"so do what you need to to gate it and make sure that never happens oand only
+draft for interested question meeting proposed. neevr let claude do a
+backfill"*
+
+After the Aug 2026 Anthropic burn (poller drafted thousands of
+NOT_INTERESTED/OTHER with Sonnet), Claude is hard-disabled whenever
+`draftMode: 'bulk'` (SmartLead/HeyReach pollers + ops backfill scripts). No
+env opt-in. Drafts only for `INTERESTED` / `MEETING_PROPOSED` / `QUESTION`.
+
+Guard: `Claude never runs on bulk backfill; only positives get drafts`

@@ -391,6 +391,8 @@ async function processConversation(client, conv, options) {
         clientId: client.id,
         leadId,
         clientName: client.name,
+        // Poller = backfill/sweep. Never burn Anthropic here.
+        draftMode: 'bulk',
       },
     );
   } catch (err) {

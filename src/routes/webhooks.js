@@ -507,6 +507,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
           leadId,
           leadEmail,
           clientName: client.name,
+          draftMode: 'realtime',
         },
       );
     } catch (err) {
@@ -784,6 +785,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
               clientId,
               leadId: leadId || hrConversationId,
               clientName: client.name,
+              draftMode: 'realtime',
             },
           );
         } catch (err) {
