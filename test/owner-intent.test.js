@@ -105,6 +105,19 @@ test('Claude draft failures fall through to Gemini not the robotic template', ()
     reversal('Claude fail → Gemini', 'Gemini draft path was removed'));
 });
 
+// ── Decision: Vasco / Carlos offers in-person meetings only ───────────
+test('Vasco / Carlos drafts offer in-person meetings only', () => {
+  const modality = read('src/utils/meeting-modality.js');
+  const classifier = read('src/services/classifier.js');
+  const bumps = read('src/services/follow-up-drafts.js');
+  assert.ok(modality.includes('prefersInPersonMeeting'),
+    reversal('Vasco in-person meetings', 'meeting-modality helper was removed'));
+  assert.ok(classifier.includes('meeting-modality') && classifier.includes('IN-PERSON'),
+    reversal('Vasco in-person meetings', 'classifier no longer honors in-person voice'));
+  assert.ok(bumps.includes('prefersInPersonMeeting') && bumps.includes('stopping by in person'),
+    reversal('Vasco in-person meetings', 'FOLLOW_UP bumps ignore in-person voice'));
+});
+
 // ── Decision: declines get a graceful draft, never a pitch ────────────
 // "still draft for not interested replies" — but the default times-first
 // prompt would have pushed meeting slots at someone who just said no.
