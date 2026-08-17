@@ -381,6 +381,21 @@ Guard: `Slack DQ button excludes follow-up nudges`
 
 ---
 
+## 2026-08-17
+
+### Vasco / Carlos drafts offer in-person meetings only
+
+*"carlos is offering to meet in person, change his replies only to reflrect"*
+
+Vasco Warranty drafts must offer stopping by / meeting in person — not Zoom,
+phone, "quick call with our CEO", or booking links. Other clients keep the
+global times-first + booking-link default. Driven by Vasco's `voice_prompt`
+via `meeting-modality.js` (first-touch fallback, Gemini prompt, FOLLOW_UP bumps).
+
+Guard: `Vasco fallback drafts stop-by in person, never CEO call or booking link`
+
+---
+
 ## 2026-08-13
 
 ### AI reply Slack channels are interested-only

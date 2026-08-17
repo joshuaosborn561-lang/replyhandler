@@ -182,7 +182,10 @@ function fallbackDraftText({
     ? includeBookingLink
     : looksLikeBookingLinkRequest(msg, threadContext || '');
 
-  if (wantLink) {
+  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
+
+  if (wantLink && !inPerson) {
     return link
       ? `Hey ${name}, sounds good — here's the booking link: ${link}`
       : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
@@ -192,6 +195,18 @@ function fallbackDraftText({
     return (
       `Hey ${name}, thanks for getting back to me. Understood, no problem at all. ` +
       `Can I check back in a few months, or would you rather I take you off the list?`
+    );
+  }
+
+  if (inPerson) {
+    const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
+    const ack = clearInterest
+      ? 'Would love to see if this is a fit.'
+      : 'Happy to stop by and walk through it in person.';
+    const cta = meetingCta({ voicePrompt, day1: d1, day2: d2 });
+    return (
+      `Hey ${name}, thanks for getting back to me. ${ack} ` +
+      `${cta.suggestLine} ${cta.neitherLine}`
     );
   }
 
@@ -383,7 +398,14 @@ function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
   return labels;
 }
 
-function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, includeBookingLink }) {
+function buildTimeSuggestionBlock({
+  digestTimezone, schedulingPromptBlock, includeBookingLink, voicePrompt,
+}) {
+  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
+  if (prefersInPersonMeeting(voicePrompt)) {
+    const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
+    return meetingCta({ voicePrompt, day1: d1, day2: d2 }).timeRule;
+  }
   if (includeBookingLink) {
     return 'The prospect wants the booking link — include it once. Keep the reply short.';
   }
@@ -407,7 +429,9 @@ function buildSdrVoicePrompt({
   replyMode = 'FIRST_TOUCH',
 }) {
   const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
   const asPrincipal = speaksAsPrincipal(voicePrompt);
+  const inPerson = prefersInPersonMeeting(voicePrompt);
   const isDecline = DECLINE_CLASSIFICATIONS.has(classification);
   const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
     ? 'CONTINUATION'
@@ -425,6 +449,10 @@ function buildSdrVoicePrompt({
 
   const bookingRules = isDecline
     ? declineRules
+    : inPerson
+    ? `- IN-PERSON MODE: Offer to stop by / meet in person. Never Zoom, phone, "quick call", "our CEO", Calendly, or any booking URL.\n` +
+      `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
+      `- Close by offering to work around their schedule if neither time works.`
     : includeBookingLink
     ? `- BOOKING LINK MODE: The prospect asked for the booking link or accepted our offer to send it.\n` +
       `- Include this exact URL once near the end: ${link}\n` +
@@ -436,8 +464,9 @@ function buildSdrVoicePrompt({
 
   const roleLine = asPrincipal
     ? 'You ghostwrite replies as Joshua Osborn, founder/CEO (first person). You ARE the CEO — never say "our CEO" or "our founder", never hand off. Suggest a quick call with you ("with me").'
+    : inPerson
+    ? 'You ghostwrite replies for a B2B seller who meets prospects in person. Output PLAIN TEXT only. No markdown. No quotes around the message.'
     : 'You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.';
-
   const modeRules = mode === 'CONTINUATION'
     ? `- CONTINUATION MODE: This is NOT their first reply. Do not use a first-touch "thanks for getting back to me" opener.\n` +
       `- Continue the thread — answer their latest point first ("Ok great…", "Fair enough…", "Sorry for the mixup…").`
@@ -446,17 +475,31 @@ function buildSdrVoicePrompt({
   const exampleA = asPrincipal
     ? `Prospect: "What's the catch?"
 Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value on the front end for you. I know your inbox is full of this kind of stuff...time Monday morning or Tuesday to connect?"`
+    : inPerson
+    ? `Prospect: "What's the catch?"
+Reply: "Hey Scott, no catch — happy to show you in person. Are you free mid-morning Tuesday or early afternoon Wednesday for me to stop by?"`
     : `Prospect: "What's the catch?"
 Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value on the front end for you. Time Monday morning or Tuesday to connect?"`;
 
   const exampleB = asPrincipal
     ? `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! I have some time to connect before 11 CST to see if this makes sense? Or I can send my calendar link if that is better."`
+    : inPerson
+    ? `Prospect: "Sure."
+Reply: "Hey Dean, thanks for getting back to me, sounds good! Are you free Thursday mid-morning or Friday early afternoon for me to stop by in person? Happy to work around your schedule if neither works."`
     : `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! Happy to jump on a quick call — Thursday mid-morning or Friday early afternoon?"`;
 
+  const exampleC = inPerson
+    ? `Prospect: "Can we do next week?"
+Reply: "Absolutely — want me to stop by Monday or Tuesday afternoon? Whatever is easiest on your end."`
+    : `Prospect: "Sure, send the link."
+Reply: "Sounds good — here's the booking link: ${link}"`;
+
   const logisticalRule = asPrincipal
     ? '- If they ask a logistical question: answer briefly FIRST, then suggest a quick call with you'
+    : inPerson
+    ? '- If they ask a logistical question: answer briefly FIRST, then offer to stop by in person'
     : '- If they ask a logistical question: answer briefly FIRST, then suggest times';
 
   const clientVoice = String(voicePrompt || '').trim()
@@ -474,9 +517,8 @@ ${exampleA}
 EXAMPLE B (soft yes — first touch):
 ${exampleB}
 
-EXAMPLE C (they asked for the link):
-Prospect: "Sure, send the link."
-Reply: "Sounds good — here's the booking link: ${link}"
+EXAMPLE C (${inPerson ? 'they floated timing' : 'they asked for the link'}):
+${exampleC}
 
 EXAMPLE D (continuation / second inbound on cost):
 Prospect: "What's the cost per lead?"
@@ -612,10 +654,14 @@ async function draftOnly({
     replyMode: mode,
   });
 
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
+
   const timeBlock = buildTimeSuggestionBlock({
     digestTimezone,
     schedulingPromptBlock,
     includeBookingLink,
+    voicePrompt,
   });
 
   const proposedTimesNote = (
@@ -624,7 +670,9 @@ async function draftOnly({
     ? 'They already proposed times — confirm or lightly counter those times. Do NOT invent unrelated mid-morning / early afternoon slots.'
     : null;
 
-  const modeNote = includeBookingLink
+  const modeNote = inPerson
+    ? `${mode} MODE: Acknowledge their latest point first, then offer to stop by in person. No Zoom/phone/CEO call/booking URL.`
+    : includeBookingLink
     ? 'BOOKING LINK MODE: Include the booking URL once. Keep it short.'
     : `${mode} MODE: Acknowledge their latest point first, then suggest next step/times. Do NOT include any booking URL.`;
 

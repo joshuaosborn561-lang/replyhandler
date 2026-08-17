@@ -40,9 +40,19 @@ function ticketPhrase(offer) {
  * Short bump copy keyed by offer + cadence step.
  * Step 1 ≈ 2h, later steps rotate phrasing so we don't spam the same line.
  */
-function bumpForOffer({ name, offer, step }) {
+function bumpForOffer({ name, offer, step, inPerson = false }) {
   const n = Number(step) || 1;
   const kind = offer.kind || 'generic';
+
+  if (inPerson) {
+    if (n <= 1) {
+      return `Hey ${name}, still interested in me stopping by in person to see if this is relevant?`;
+    }
+    if (n === 2) {
+      return `Hey ${name}, bumping this — happy to stop by whenever works on your end. Any time next week free?`;
+    }
+    return `Hey ${name}, last nudge from me — still glad to meet in person if useful. Want me to swing by?`;
+  }
 
   if (kind === 'tickets') {
     const tix = ticketPhrase(offer);
@@ -104,10 +114,15 @@ function fallbackReattempt({
   void platform;
   void bookingLink;
   void digestTimezone;
-  void voicePrompt;
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
   const name = firstNameFromLead(leadName);
   const offer = detectOffer(lastOutboundMessage);
-  return bumpForOffer({ name, offer, step });
+  return bumpForOffer({
+    name,
+    offer,
+    step,
+    inPerson: prefersInPersonMeeting(voicePrompt),
+  });
 }
 
 /**

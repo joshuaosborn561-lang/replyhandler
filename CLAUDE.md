@@ -86,6 +86,14 @@ placeholder inbounds for learning, and can be seeded via
 If drafts suddenly all look like "Happy to jump on a quick call…", check
 Anthropic quota first, then confirm this fallthrough is still wired.
 
+## Client meeting modality (Vasco / Carlos)
+
+Some clients meet in person. That is driven by `clients.voice_prompt` via
+`src/utils/meeting-modality.js` — not a global default. Vasco's prompt says
+Carlos stops by the dealership in person; drafts and FOLLOW_UP bumps then
+omit Zoom / phone / "our CEO" / booking links. Leave other clients on
+times-first + booking-link.
+
 ## No pending-nudge / "you haven't actioned this" alerts
 
 Deleted on purpose, at the owner's explicit request. `postPendingNudge`,
