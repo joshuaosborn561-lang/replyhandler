@@ -105,6 +105,22 @@ test('Claude draft failures fall through to Gemini not the robotic template', ()
     reversal('Claude fail → Gemini', 'Gemini draft path was removed'));
 });
 
+// ── Decision: Claude never runs on poller/backfill; drafts positives only ─
+test('Claude never runs on bulk backfill; only positives get drafts', () => {
+  const classifier = read('src/services/classifier.js');
+  const sl = read('src/services/smartlead-poller.js');
+  const hr = read('src/services/heyreach-poller.js');
+  const { DRAFT_CLASSIFICATIONS, shouldUseAnthropicDrafts } = require('../src/services/classifier');
+  assert.ok(classifier.includes('shouldUseAnthropicDrafts') && classifier.includes("=== 'bulk'"),
+    reversal('Claude bulk gate', 'bulk Anthropic gate was removed'));
+  assert.ok(sl.includes("draftMode: 'bulk'") && hr.includes("draftMode: 'bulk'"),
+    reversal('Claude bulk gate', 'pollers no longer mark drafts as bulk'));
+  assert.equal(shouldUseAnthropicDrafts({ draftMode: 'bulk' }), false,
+    reversal('Claude bulk gate', 'bulk mode can call Claude again'));
+  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
+    reversal('Claude bulk gate', 'draft classifications expanded past positives'));
+});
+
 // ── Decision: Vasco / Carlos offers in-person meetings only ───────────
 test('Vasco / Carlos drafts offer in-person meetings only', () => {
   const modality = read('src/utils/meeting-modality.js');

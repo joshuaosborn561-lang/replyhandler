@@ -79,9 +79,14 @@ placeholder inbounds for learning, and can be seeded via
 ## Draft provider order
 
 1. Claude + RAG when `ANTHROPIC_API_KEY` + Supabase embeddings are configured
+   **and** `draftMode` is realtime (webhooks only)
 2. On Claude failure (including Anthropic usage limits), **Gemini** with the
    same voice prompt — do not skip to the template
 3. Deterministic `fallbackDraftText` only if Gemini also fails / returns empty
+
+**Hard rule:** pollers and backfill scripts pass `draftMode: 'bulk'`. Claude is
+never used there — no env opt-in. Only `INTERESTED` / `MEETING_PROPOSED` /
+`QUESTION` get drafts at all.
 
 If drafts suddenly all look like "Happy to jump on a quick call…", check
 Anthropic quota first, then confirm this fallthrough is still wired.

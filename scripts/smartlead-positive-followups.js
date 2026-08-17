@@ -217,6 +217,8 @@ async function generateDraft(client, lead) {
         bookingLink: client.booking_link || '',
         schedulingPromptBlock: '',
         platform: 'smartlead',
+        // Ops backfill script — Gemini only, never Claude.
+        draftMode: 'bulk',
       });
       if (draft && draft.length > 10) return draft;
     } catch (e) {

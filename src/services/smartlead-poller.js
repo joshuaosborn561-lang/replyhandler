@@ -256,6 +256,8 @@ async function processInboxRow(client, row, options) {
         leadId,
         leadEmail,
         clientName: client.name,
+        // Poller = backfill/sweep. Never burn Anthropic here.
+        draftMode: 'bulk',
       },
     );
   } catch (err) {
