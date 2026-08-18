@@ -18,6 +18,7 @@ const path = require('node:path');
 const {
   newestReplyTimeFromHistory,
   historyLagsLastReply,
+  shouldRefetchStaleHistory,
 } = require('../src/services/smartlead-poller');
 
 const ROOT = path.join(__dirname, '..');
@@ -75,6 +76,46 @@ test('no last_reply_time means no judgement, no refetch', () => {
   assert.ok(!historyLagsLastReply({ last_reply_time: 'not-a-date' }, hist));
 });
 
+// ── Which stale rows are actually worth an API call ───────────────────
+// Refetching every stale row exhausted the per-cycle budget on 2026-08-18 and
+// left real replies behind it — Melissa Page (Goliath) confirmed a 9:30am
+// meeting and no card was created, because her thread came after the cap.
+test('only stale rows whose visible reply was already carded are refetched', () => {
+  // The costly case: we can see an old reply, we already carded it, so dedupe
+  // is about to drop this thread — a newer reply could be hiding behind it.
+  assert.strictEqual(
+    shouldRefetchStaleHistory({ hasVisibleInbound: true, visibleAlreadyCarded: true }),
+    true,
+    'a carded visible reply on a stale row is exactly the hidden-reply signature'
+  );
+
+  // The cheap case: the visible reply is new. Card it now; if something is
+  // hidden behind it, next cycle sees it as carded and probes then.
+  assert.strictEqual(
+    shouldRefetchStaleHistory({ hasVisibleInbound: true, visibleAlreadyCarded: false }),
+    false,
+    'a new visible reply needs no API call — it self-heals on the next cycle'
+  );
+
+  // Row claims a reply but shipped none: nothing to card either way.
+  assert.strictEqual(
+    shouldRefetchStaleHistory({ hasVisibleInbound: false, visibleAlreadyCarded: false }),
+    true,
+    'a reply we cannot see at all is always worth fetching'
+  );
+});
+
+test('the refetch budget is a safety valve, not the normal limit', () => {
+  const poller = read('src/services/smartlead-poller.js');
+  const match = poller.match(/SMARTLEAD_POLL_MAX_HISTORY_REFETCH',\s*(\d+)\)/);
+  assert.ok(match, 'the refetch budget must stay configurable');
+  assert.ok(
+    parseInt(match[1], 10) >= 40,
+    'the default budget must exceed the number of rows a cycle scans per client, '
+    + 'or the cap silently becomes the thing dropping replies'
+  );
+});
+
 // The detection is only useful if the poller actually acts on it.
 test('the poller falls back to per-thread message history', () => {
   const poller = read('src/services/smartlead-poller.js');
@@ -92,5 +133,21 @@ test('the poller falls back to per-thread message history', () => {
     poller,
     /latestInboundFromHistory\(threadContext/,
     'the inbound text must come from the (possibly refetched) history, not the raw row'
+  );
+  assert.match(
+    poller,
+    /shouldRefetchStaleHistory\(/,
+    'the refetch must be targeted — refetching every stale row exhausts the budget '
+    + 'and lets real replies through unseen'
+  );
+  // The targeting decision needs the dedupe answer, so it must be consulted first.
+  const refetchBlock = poller.slice(
+    poller.indexOf('const staleHistory ='),
+    poller.indexOf('if (!inbound) return')
+  );
+  assert.match(
+    refetchBlock,
+    /alreadyPostedToSlack\(/,
+    'the probe must ask whether the visible reply was already carded'
   );
 });
