@@ -203,6 +203,19 @@ without DQ'ing the lead.
 
 Guard: `FOLLOW_UP bumps are offer-first with full thread and Meeting booked button`
 
+### FOLLOW_UP bumps reframe the value prop; 3rd bump never uses dashes
+
+*"for the 3rd bump....no dashes ever, you can use ... and for any follow up
+you need to reframe the value prop somehow. ie still interested in meeting
+for x (whatever was in the original email)"*
+
+Every cadence bump must reframe what the original outbound offered
+(tickets / free campaign / video / case study / scraped value prop) —
+e.g. "still interested in meeting for the Rangers tickets". Step 3+ copy
+never uses em/en dashes or spaced hyphen dashes; use "..." instead.
+
+Guard: `FOLLOW_UP bumps reframe value prop and 3rd bump has no dashes`
+
 ### Allo call match is by phone digits, not API filter alone
 
 Allo's `/calls?contact_number=` has returned the account's recent call list
