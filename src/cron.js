@@ -260,25 +260,75 @@ async function recordAttentionDigest({ clientId, digestDate, digestType, pending
   );
 }
 
+/**
+ * How far back the digest looks. Bounded on purpose.
+ *
+ * The list is ordered oldest-first (within a sane window, oldest is the most
+ * urgent), but with no lower bound a large backlog fills all 25 slots with
+ * ancient rows and current work becomes structurally invisible. Measured
+ * 2026-08-18 against a 2,075-row backlog: the newest item SalesGlider's digest
+ * could show was 38 days old, and Culture Fits' was 22 days old.
+ */
+function attentionDigestWindowDays() {
+  const n = parseInt(process.env.ATTENTION_DIGEST_WINDOW_DAYS || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 7;
+}
+
+const PENDING_DIGEST_LIMIT = 25;
+
+/**
+ * @returns {{ rows: object[], totalInWindow: number, backlogOlder: number }}
+ *   `rows` is capped for display; `totalInWindow` is the real count so the
+ *   header cannot report the cap as if it were the total.
+ */
 async function pendingApprovalRows(clientId) {
+  const windowDays = attentionDigestWindowDays();
+
   const { rows } = await db.query(
     `SELECT id, platform, campaign_id, lead_name, classification, created_at, slack_message_ts
        FROM pending_replies
       WHERE client_id = $1
         AND status = 'pending'
         AND classification <> 'FOLLOW_UP'
+        AND created_at > now() - ($2::int * interval '1 day')
       ORDER BY created_at ASC
-      LIMIT 25`,
-    [clientId]
+      LIMIT ${PENDING_DIGEST_LIMIT}`,
+    [clientId, windowDays]
   );
-  return rows;
+
+  const { rows: [counts] } = await db.query(
+    `SELECT count(*) FILTER (WHERE created_at > now() - ($2::int * interval '1 day'))::int AS in_window,
+            count(*) FILTER (WHERE created_at <= now() - ($2::int * interval '1 day'))::int AS older
+       FROM pending_replies
+      WHERE client_id = $1
+        AND status = 'pending'
+        AND classification <> 'FOLLOW_UP'`,
+    [clientId, windowDays]
+  );
+
+  return {
+    rows,
+    totalInWindow: counts ? counts.in_window : rows.length,
+    backlogOlder: counts ? counts.older : 0,
+  };
 }
 
 /** Collect pending approvals + silent prospects, draft follow-ups, post digest/update in Slack. */
 async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType, dateLabel }) {
   if (await alreadyPostedAttentionDigest(client.id, digestDate, digestType)) return;
 
-  const pendingApprovals = await pendingApprovalRows(client.id);
+  const {
+    rows: pendingApprovals,
+    totalInWindow: pendingTotal,
+    backlogOlder,
+  } = await pendingApprovalRows(client.id);
+
+  if (backlogOlder > 0) {
+    console.log('[Cron] Attention digest: backlog outside window not shown', {
+      clientId: client.id, client: client.name, backlogOlder,
+      windowDays: attentionDigestWindowDays(),
+    });
+  }
 
   // Candidate follow-ups: scheduled outbound where the due time has arrived and the prospect
   // still has not replied. Morning and 3pm digests are the only Slack notifications for these.
@@ -317,7 +367,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     {
       digestType,
       dateLabel,
-      pendingCount: pendingApprovals.length,
+      pendingCount: pendingTotal,
       followUpCount: pendingFollowUps.length,
     }
   );
@@ -367,7 +417,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     clientId: client.id,
     digestDate,
     digestType,
-    pendingCount: pendingApprovals.length,
+    pendingCount: pendingTotal,
     followUpCount: posted,
     slackMessageTs: header?.ts || null,
   });
@@ -380,4 +430,4 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   });
 }
 
-module.exports = { startCron };
+module.exports = { startCron, attentionDigestWindowDays, PENDING_DIGEST_LIMIT };
