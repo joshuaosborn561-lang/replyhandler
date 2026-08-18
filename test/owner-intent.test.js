@@ -296,6 +296,25 @@ test('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button
     reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked no longer records meeting + cancels cadence'));
 });
 
+// ── Decision: FOLLOW_UP bumps reframe value prop; 3rd bump no dashes ──
+test('FOLLOW_UP bumps reframe value prop and 3rd bump has no dashes', () => {
+  const drafts = read('src/services/follow-up-drafts.js');
+  const { fallbackReattempt } = require('../src/services/follow-up-drafts');
+  assert.ok(drafts.includes('valuePropPhrase') && drafts.includes('scrubDashes'),
+    reversal('FOLLOW_UP value-prop bumps', 'value-prop / dash scrub helpers were removed'));
+  const step3 = fallbackReattempt({
+    leadName: 'Scott',
+    lastOutboundMessage: 'Free campaign to 10k leads on me for more business clients.',
+    step: 3,
+  });
+  assert.match(step3, /still interested in meeting for/i,
+    reversal('FOLLOW_UP value-prop bumps', '3rd bump dropped the value-prop reframe'));
+  assert.doesNotMatch(step3, /[—–]/,
+    reversal('FOLLOW_UP value-prop bumps', '3rd bump has dashes again'));
+  assert.match(step3, /\.\.\./,
+    reversal('FOLLOW_UP value-prop bumps', '3rd bump should use ellipsis instead of dashes'));
+});
+
 // ── Decision: follow-up draft tolerates null digest_timezone ──────────
 test('follow-up draft tolerates null digest_timezone', () => {
   const { nextBusinessDayLabel } = require('../src/services/classifier');
