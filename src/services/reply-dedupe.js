@@ -127,7 +127,7 @@ async function alreadyPostedToSlack({
   if (!normalized) return false;
 
   const { rows } = await db.query(
-    `SELECT slack_message_ts
+    `SELECT id
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
@@ -136,7 +136,17 @@ async function alreadyPostedToSlack({
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
         )
-        AND slack_message_ts IS NOT NULL
+        AND (
+          slack_message_ts IS NOT NULL
+          -- A suppressed reply is a decided reply: it reached a terminal state
+          -- on purpose and must never be reprocessed. It has no
+          -- slack_message_ts by definition, so requiring one here meant every
+          -- poll cycle re-classified and re-inserted the same suppressed reply
+          -- forever. Measured 2026-08-19: 88,769 suppressed rows over 3 days
+          -- for 193 distinct replies (~460x), worst offenders at 863 copies of
+          -- a single reply, each copy having burned a classifier call.
+          OR status = 'suppressed'
+        )
       ORDER BY created_at DESC
       LIMIT 1`,
     [
