@@ -111,6 +111,25 @@ function historyLagsLastReply(row, hist) {
 }
 
 /**
+ * Should a stale-looking thread actually be refetched?
+ *
+ * Callers pass this only when the row is already known stale. Staleness by
+ * itself is common and cheap to tolerate — what is expensive is a stale row
+ * whose visible reply we have *already carded*, because dedupe then drops the
+ * thread as a duplicate and the newer reply behind it is never seen. Those are
+ * the only cases worth spending an API call on.
+ *
+ * A stale row whose visible reply is new needs no refetch: it gets carded now,
+ * and on the next cycle that same reply reads as already-carded, so the probe
+ * fires then and recovers anything hidden behind it. Costs at most one cycle.
+ */
+function shouldRefetchStaleHistory({ hasVisibleInbound, visibleAlreadyCarded }) {
+  // Row claims a reply but shipped none — nothing to card, always worth a look.
+  if (!hasVisibleInbound) return true;
+  return !!visibleAlreadyCarded;
+}
+
+/**
  * Authoritative per-thread history. Fail-open: on any error the caller keeps the
  * master-inbox copy, so a refetch problem can never cost us a poll cycle.
  */
@@ -160,38 +179,62 @@ async function processInboxRow(client, row, options) {
   // text differently (payload body vs rebuilt history), so an exact text match is not
   // a reliable identity. stats_id comes from the same thread history in both paths.
   let threadContext = historyFromRow(row);
+  let inbound = latestInboundFromHistory(threadContext, row?.lead_email);
 
-  // Master-inbox can ship a stale email_history. Trust the per-thread endpoint
-  // instead whenever the row contradicts itself, or the newest reply stays
-  // invisible and dedupe silently drops it as a duplicate of the older one.
-  if (historyLagsLastReply(row, threadContext) && client.smartlead_api_key) {
-    const counter = options.refetchCounter;
-    const cap = options.maxHistoryRefetch;
-    if (!counter || counter.count < cap) {
-      if (counter) counter.count++;
-      const fresh = await refetchThreadHistory(client, campaignId, leadId);
-      if (fresh) {
-        const before = newestReplyTimeFromHistory(threadContext);
-        const after = newestReplyTimeFromHistory(fresh);
-        threadContext = fresh;
-        console.log('[SmartLeadPoll] Master-inbox history was stale — refetched thread', {
-          client: client.name,
-          campaignId,
-          leadId,
-          leadEmail: row.lead_email || null,
-          lastReplyTime: at ? at.toISOString() : null,
-          newestReplyBefore: before ? before.toISOString() : null,
-          newestReplyAfter: after ? after.toISOString() : null,
+  // Master-inbox can ship a stale email_history while last_reply_time is already
+  // current, hiding the newest reply from this poller entirely.
+  //
+  // Staleness alone is far too common to refetch on — budgeting 10 per cycle was
+  // exhausted every run, and threads past the budget fell through exactly as if
+  // there were no fix at all (2026-08-18: Melissa Page / Goliath confirmed a
+  // 9:30am meeting and no card was ever created). So target the refetch instead:
+  // a hidden newer reply only *costs* us something when the reply we can see was
+  // already carded, because that is what makes dedupe drop the thread silently.
+  // When the visible reply is new we card it now and, once it is on the record,
+  // the next cycle's probe fires and recovers whatever was behind it.
+  const staleHistory = historyLagsLastReply(row, threadContext);
+  if (staleHistory && client.smartlead_api_key) {
+    const visibleAlreadyCarded = inbound
+      ? await alreadyPostedToSlack({
+        clientId: client.id,
+        platform: 'smartlead',
+        campaignId,
+        leadId,
+        inboundMessage: inbound,
+        emailStatsId: null,
+      })
+      : false;
+
+    if (shouldRefetchStaleHistory({ hasVisibleInbound: !!inbound, visibleAlreadyCarded })) {
+      const counter = options.refetchCounter;
+      const cap = options.maxHistoryRefetch;
+      if (!counter || counter.count < cap) {
+        if (counter) counter.count++;
+        const fresh = await refetchThreadHistory(client, campaignId, leadId);
+        if (fresh) {
+          const before = newestReplyTimeFromHistory(threadContext);
+          const after = newestReplyTimeFromHistory(fresh);
+          threadContext = fresh;
+          inbound = latestInboundFromHistory(threadContext, row?.lead_email);
+          console.log('[SmartLeadPoll] Master-inbox history was stale — refetched thread', {
+            client: client.name,
+            campaignId,
+            leadId,
+            leadEmail: row.lead_email || null,
+            lastReplyTime: at ? at.toISOString() : null,
+            newestReplyBefore: before ? before.toISOString() : null,
+            newestReplyAfter: after ? after.toISOString() : null,
+            recoveredNewerReply: !!(before && after && after > before),
+          });
+        }
+      } else {
+        console.warn('[SmartLeadPoll] Stale master-inbox history but refetch cap reached', {
+          client: client.name, campaignId, leadId, cap, leadEmail: row.lead_email || null,
         });
       }
-    } else {
-      console.warn('[SmartLeadPoll] Stale master-inbox history but refetch cap reached', {
-        client: client.name, campaignId, leadId, cap,
-      });
     }
   }
 
-  const inbound = latestInboundFromHistory(threadContext, row?.lead_email);
   if (!inbound) return { skipped: 'no_inbound' };
 
   const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
@@ -398,7 +441,9 @@ async function pollSmartleadReplies() {
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
     // Per-cycle budget for stale-history refetches, so a broadly stale
     // master-inbox cannot turn one poll into hundreds of extra API calls.
-    const maxHistoryRefetch = numberEnv('SMARTLEAD_POLL_MAX_HISTORY_REFETCH', 10);
+    // Now that refetches are targeted rather than fired on every stale row, this
+    // is a safety valve against a pathological cycle — not the normal limit.
+    const maxHistoryRefetch = numberEnv('SMARTLEAD_POLL_MAX_HISTORY_REFETCH', 40);
 
     for (const client of clients) {
       let scanned = 0;
@@ -464,4 +509,5 @@ module.exports = {
   replyTime,
   newestReplyTimeFromHistory,
   historyLagsLastReply,
+  shouldRefetchStaleHistory,
 };
