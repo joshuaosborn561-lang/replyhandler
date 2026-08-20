@@ -911,4 +911,34 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
   }
 });
 
+/**
+ * Campaignintelligence booking page → stop ReplyHandler follow-ups.
+ *
+ * POST /webhook/booking-bridge
+ * Authorization: Bearer <BOOKING_BRIDGE_WEBHOOK_SECRET>
+ * Body: { event, treat_as_booked, email, name?, client_slug?, client_name?, campaign? }
+ */
+router.post('/webhook/booking-bridge', async (req, res) => {
+  const {
+    assertBookingBridgeSecret,
+    handleBookingBridgeEvent,
+  } = require('../services/booking-bridge');
+
+  const auth = assertBookingBridgeSecret(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ ok: false, error: auth.error });
+  }
+
+  try {
+    const result = await handleBookingBridgeEvent(req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json(result);
+    }
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('[BookingBridge] handler error', { err: err.message, stack: err.stack });
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 module.exports = router;
