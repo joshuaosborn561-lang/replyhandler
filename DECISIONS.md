@@ -465,3 +465,18 @@ NOT_INTERESTED/OTHER with Sonnet), Claude is hard-disabled whenever
 env opt-in. Drafts only for `INTERESTED` / `MEETING_PROPOSED` / `QUESTION`.
 
 Guard: `Claude never runs on bulk backfill; only positives get drafts`
+
+## 2026-08-20
+
+### Booking-page confirmations stop ReplyHandler follow-ups
+
+Campaignintelligence `log-booking` POSTs to
+`/webhook/booking-bridge` with `Authorization: Bearer` matching
+`BOOKING_BRIDGE_WEBHOOK_SECRET` (same value as campaignintelligence
+`REPLYHANDLER_WEBHOOK_SECRET`). On `booking_confirmed` — and on
+Culture Fits / MS Bookings first-click with `treat_as_booked: true` —
+skip pending `outbound_follow_ups` by email, close open Slack cards as
+`meeting_booked`, and record a booked meeting so the runner does not
+nudge someone who already booked.
+
+Guard: `test/booking-bridge.test.js`
