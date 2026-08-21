@@ -258,7 +258,7 @@ test('a call-transcript booking suppresses without posting', () => {
     reversal('a call-transcript booking skips silently', 'the skip path now posts to Slack'));
 });
 
-// ── Decision: FOLLOW_UP cards post in the main channel with thread context
+// ── Decision: FOLLOW_UP cards post top-level with thread context
 test('FOLLOW_UP cards post in the main channel with thread context', () => {
   const runner = read('src/services/follow-up-runner.js');
   const poster = read('src/services/slack-reply-post.js');
@@ -271,8 +271,30 @@ test('FOLLOW_UP cards post in the main channel with thread context', () => {
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'source reply context is no longer loaded'));
   assert.ok(runner.includes('getPermalink') || slackSrc.includes('getPermalink'),
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'original-thread permalink helper was removed'));
-  assert.ok(slackSrc.includes('followUpContext'),
+  assert.ok(slackSrc.includes('followUpContext') || slackSrc.includes('buildFollowUpConversationBlocks'),
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'FOLLOW_UP conversation order was removed'));
+});
+
+// ── Decision: FOLLOW_UP bumps go to dedicated Slack channel with buttons up top
+test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () => {
+  const runner = read('src/services/follow-up-runner.js');
+  const slackSrc = read('src/services/slack.js');
+  assert.ok(runner.includes('followUpSlackChannelId') && runner.includes('C0BRRS8DV19'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'follow-ups no longer target C0BRRS8DV19'));
+  assert.ok(!/channelId:\s*client\.slack_channel_id/.test(
+    runner.slice(runner.indexOf('await postProspectSlackCard'), runner.indexOf('return newReply'))
+  ), reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP cards still post to the client inbox channel'));
+  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Original message'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost original → our reply → rest'));
+  assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'shared approval actions helper missing'));
+  // Buttons must be assembled before the long conversation for FOLLOW_UP.
+  const postFn = slackSrc.slice(slackSrc.indexOf('async function postDraftApproval'));
+  const followUpBranch = postFn.slice(postFn.indexOf('const blocks = isFollowUp'), postFn.indexOf('if (!isFollowUp && platform'));
+  assert.ok(
+    followUpBranch.indexOf('draftApprovalActionsBlock') < followUpBranch.indexOf('...conversation'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP buttons are buried under the conversation again'),
+  );
 });
 
 // ── Decision: FOLLOW_UP bumps are offer-first, full thread, Meeting booked ──
