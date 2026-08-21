@@ -404,7 +404,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
         continue;
       }
 
-      // Same top-level FOLLOW_UP card as the timed runner (main channel + thread context).
+      // Same top-level FOLLOW_UP card as the timed runner (dedicated follow-ups channel).
       await postFollowUpCard(client, fu);
       await db.query('UPDATE outbound_follow_ups SET status = $1, updated_at = now() WHERE id = $2', ['notified', fu.id]);
       posted++;

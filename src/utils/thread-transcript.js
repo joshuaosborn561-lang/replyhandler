@@ -88,6 +88,8 @@ function timeFrom(m) {
 function extractThreadMessages(platform, threadContext, {
   maxMessages = 12,
   extraMessages = [],
+  /** Prefer keeping the start of the thread (original inbound + our reply). */
+  pinStart = false,
 } = {}) {
   const tc = parseContext(threadContext);
   const list = messageList(platform, tc);
@@ -129,6 +131,25 @@ function extractThreadMessages(platform, threadContext, {
   });
 
   if (out.length <= maxMessages) return out;
+
+  if (pinStart) {
+    // Keep the opening exchange + the most recent turns so the original inbound
+    // is never dropped when history is long.
+    const headCount = Math.min(2, out.length);
+    const tailCount = Math.max(0, maxMessages - headCount);
+    const head = out.slice(0, headCount);
+    const tail = out.slice(out.length - tailCount);
+    const seen = new Set();
+    const merged = [];
+    for (const m of [...head, ...tail]) {
+      const key = `${m.role}|${m.body.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(m);
+    }
+    return merged;
+  }
+
   return out.slice(out.length - maxMessages);
 }
 

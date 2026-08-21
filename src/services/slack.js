@@ -187,82 +187,85 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
   }));
 }
 
-function buildConversationBlocks({
+function normBodyKey(body) {
+  return plainTextForSlack(body).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * FOLLOW_UP layout: original inbound → our reply → rest of the thread in order
+ * (no re-showing those two), then the suggested bump. Full text (chunked) —
+ * never the `… _(truncated)_` / Slack "Show more" trap from capped mid-bodies.
+ */
+function buildFollowUpConversationBlocks({
   lastOutboundMessage,
   inboundMessage,
   draft,
-  priorLabel,
-  inboundLabel,
-  /** FOLLOW_UP cards: show their original reply, then what we sent, then the nudge draft. */
-  followUpContext = false,
-  /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
   threadMessages = null,
 }) {
   const blocks = [];
-  const theirLabel = inboundLabel || 'They replied';
-  const ourLabel = priorLabel || 'You sent';
   const history = Array.isArray(threadMessages)
     ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
     : [];
 
-  if (followUpContext && history.length > 0) {
-    // Show every message between us (capped upstream), not just the first two.
-    let usN = 0;
-    let themN = 0;
-    for (let i = 0; i < history.length; i++) {
-      const m = history[i];
-      const isUs = m.role === 'us';
-      if (isUs) usN += 1;
-      else themN += 1;
-      if (i > 0) blocks.push(dividerBlock());
-      blocks.push(
-        ...conversationStepBlocks({
-          emoji: isUs ? '📤' : '📥',
-          label: isUs
-            ? (usN === 1 ? ourLabel : `You sent (${usN})`)
-            : (themN === 1 ? theirLabel : `They replied (${themN})`),
-          body: m.body,
-          maxLen: isUs ? OUTBOUND_DISPLAY_MAX : INBOUND_DISPLAY_MAX,
-        }),
-      );
-    }
-  } else if (followUpContext) {
-    // Fallback when we only have the source pair.
+  const firstThem = history.find((m) => m.role === 'them') || null;
+  const firstUs = history.find((m) => m.role === 'us') || null;
+  const originalBody = String(
+    (inboundMessage && String(inboundMessage).trim())
+    || firstThem?.body
+    || ''
+  ).trim();
+  const ourReplyBody = String(
+    (lastOutboundMessage && String(lastOutboundMessage).trim())
+    || firstUs?.body
+    || ''
+  ).trim();
+
+  const shown = new Set();
+  if (originalBody) {
     blocks.push(
       ...conversationStepBlocks({
         emoji: '📥',
-        label: theirLabel,
-        body: inboundMessage,
-        maxLen: INBOUND_DISPLAY_MAX,
+        label: 'Original message',
+        body: originalBody,
+        neverTruncate: true,
       }),
     );
-    blocks.push(dividerBlock());
+    shown.add(normBodyKey(originalBody));
+  }
+
+  if (ourReplyBody) {
+    if (blocks.length) blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
         emoji: '📤',
-        label: ourLabel,
-        body: lastOutboundMessage,
-        maxLen: OUTBOUND_DISPLAY_MAX,
+        label: 'Our reply',
+        body: ourReplyBody,
+        neverTruncate: true,
       }),
     );
-  } else {
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: '📤',
-        label: ourLabel,
-        body: lastOutboundMessage,
-        maxLen: OUTBOUND_DISPLAY_MAX,
-      }),
-    );
+    shown.add(normBodyKey(ourReplyBody));
+  }
 
+  const rest = history.filter((m) => {
+    const key = normBodyKey(m.body);
+    if (!key || shown.has(key)) return false;
+    shown.add(key);
+    return true;
+  });
+
+  let usN = 1; // already counted "Our reply"
+  let themN = 1; // already counted "Original message"
+  for (const m of rest) {
+    const isUs = m.role === 'us';
+    if (isUs) usN += 1;
+    else themN += 1;
     blocks.push(dividerBlock());
-
     blocks.push(
       ...conversationStepBlocks({
-        emoji: '📥',
-        label: theirLabel,
-        body: inboundMessage,
-        maxLen: INBOUND_DISPLAY_MAX,
+        emoji: isUs ? '📤' : '📥',
+        label: isUs ? `You sent (${usN})` : `They replied (${themN})`,
+        body: m.body,
+        neverTruncate: true,
       }),
     );
   }
@@ -272,7 +275,7 @@ function buildConversationBlocks({
     blocks.push(
       ...conversationStepBlocks({
         emoji: '✍️',
-        label: followUpContext ? 'Suggested follow-up' : 'Suggested reply',
+        label: 'Suggested follow-up',
         body: draft,
         neverTruncate: true,
       }),
@@ -280,6 +283,106 @@ function buildConversationBlocks({
   }
 
   return blocks;
+}
+
+function buildConversationBlocks({
+  lastOutboundMessage,
+  inboundMessage,
+  draft,
+  priorLabel,
+  inboundLabel,
+  /** FOLLOW_UP cards: original → our reply → rest of thread → bump draft. */
+  followUpContext = false,
+  /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
+  threadMessages = null,
+}) {
+  if (followUpContext) {
+    return buildFollowUpConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft,
+      threadMessages,
+    });
+  }
+
+  const blocks = [];
+  const theirLabel = inboundLabel || 'They replied';
+  const ourLabel = priorLabel || 'You sent';
+
+  blocks.push(
+    ...conversationStepBlocks({
+      emoji: '📤',
+      label: ourLabel,
+      body: lastOutboundMessage,
+      maxLen: OUTBOUND_DISPLAY_MAX,
+    }),
+  );
+
+  blocks.push(dividerBlock());
+
+  blocks.push(
+    ...conversationStepBlocks({
+      emoji: '📥',
+      label: theirLabel,
+      body: inboundMessage,
+      maxLen: INBOUND_DISPLAY_MAX,
+    }),
+  );
+
+  if (draft != null && String(draft).trim() !== '') {
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '✍️',
+        label: 'Suggested reply',
+        body: draft,
+        neverTruncate: true,
+      }),
+    );
+  }
+
+  return blocks;
+}
+
+/** Approve / Edit / Reject / DQ / Meeting booked — shared so FOLLOW_UP can pin them up top. */
+function draftApprovalActionsBlock(replyId) {
+  return {
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '✅ Approve & Send' },
+        style: 'primary',
+        action_id: 'approve_reply',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '✏️ Edit & send' },
+        action_id: 'open_edit_modal',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '❌ Reject' },
+        style: 'danger',
+        action_id: 'reject_reply',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '🚫 DQ' },
+        action_id: 'dq_prospect',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '📅 Meeting booked' },
+        action_id: 'meeting_booked',
+        value: replyId,
+      },
+    ],
+  };
 }
 
 function buildSentConfirmationBlocks({
@@ -432,7 +535,7 @@ async function postDraftApproval(token, channelId, {
     contextText += ` · <${threadPermalink}|Original thread>`;
   }
 
-  const blocks = [
+  const metaBlocks = [
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },
@@ -444,26 +547,42 @@ async function postDraftApproval(token, channelId, {
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
     },
-    dividerBlock(),
-    ...buildConversationBlocks({
-      lastOutboundMessage,
-      inboundMessage,
-      draft,
-      priorLabel: contextLabel || 'You sent',
-      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
-      followUpContext: isFollowUp,
-      threadMessages: isFollowUp ? threadMessages : null,
-    }),
-    {
-      type: 'context',
-      elements: [{
-        type: 'mrkdwn',
-        text: contextText,
-      }],
-    },
   ];
 
-  if (platform === 'smartlead') {
+  const conversation = buildConversationBlocks({
+    lastOutboundMessage,
+    inboundMessage,
+    draft,
+    priorLabel: contextLabel || 'You sent',
+    inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+    followUpContext: isFollowUp,
+    threadMessages: isFollowUp ? threadMessages : null,
+  });
+
+  const blocks = isFollowUp
+    ? [
+        // Buttons immediately under campaign/lead/phone so they are never buried
+        // under a long thread (Slack "Show more" collapses tall messages).
+        ...metaBlocks,
+        draftApprovalActionsBlock(replyId),
+        dividerBlock(),
+        ...conversation,
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: contextText }],
+        },
+      ]
+    : [
+        ...metaBlocks,
+        dividerBlock(),
+        ...conversation,
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: contextText }],
+        },
+      ];
+
+  if (!isFollowUp && platform === 'smartlead') {
     const notice = ccAutoNoticeBlock({
       ccEmails: ccEmails || ccEmail,
       ccRoundRobinEmails,
@@ -471,44 +590,10 @@ async function postDraftApproval(token, channelId, {
     if (notice) blocks.push(notice);
   }
 
-  // Slack allows max 5 buttons per actions block — split if needed.
-  blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✅ Approve & Send' },
-          style: 'primary',
-          action_id: 'approve_reply',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✏️ Edit & send' },
-          action_id: 'open_edit_modal',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '❌ Reject' },
-          style: 'danger',
-          action_id: 'reject_reply',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '🚫 DQ' },
-          action_id: 'dq_prospect',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '📅 Meeting booked' },
-          action_id: 'meeting_booked',
-          value: replyId,
-        },
-      ],
-    });
+  // Non-follow-up cards keep actions at the bottom (short cards).
+  if (!isFollowUp) {
+    blocks.push(draftApprovalActionsBlock(replyId));
+  }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 
@@ -771,6 +856,9 @@ module.exports = {
   updateMessage,
   updateSentConfirmationCard,
   buildSentConfirmationBlocks,
+  buildConversationBlocks,
+  buildFollowUpConversationBlocks,
+  draftApprovalActionsBlock,
   openEditReplyModal,
   postMorningDigestHeader,
   postAttentionDigestHeader,

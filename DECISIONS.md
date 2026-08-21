@@ -480,3 +480,21 @@ skip pending `outbound_follow_ups` by email, close open Slack cards as
 nudge someone who already booked.
 
 Guard: `test/booking-bridge.test.js`
+
+## 2026-08-21
+
+### FOLLOW_UP bumps go to a dedicated Slack channel with buttons up top
+
+*"i want followups and bumps to go in a seperate slack channel, and also the
+actual buttons are buried deep in the thread....each post should be the
+cmapaign, lead, enriched number. then oroginal message, our reply, and then
+the conversation in order. no dupes, no show more"*
+
+All FOLLOW_UP cards post to `C0BRRS8DV19` (override with
+`FOLLOW_UP_SLACK_CHANNEL_ID`), still top-level (`postInThread: false`) — not
+under the original inbox card. Layout: campaign + lead + enriched phone →
+Approve/Edit/Reject/DQ/Meeting booked → original message → our reply → rest
+of the thread in order (deduped, full text chunked — no `_(truncated)_`) →
+suggested bump.
+
+Guard: `FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons`

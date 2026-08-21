@@ -9,6 +9,14 @@ const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-web
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 
+/** Shared Slack channel for all FOLLOW_UP bumps (not per-client inbox channels). */
+const DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID = 'C0BRRS8DV19';
+
+function followUpSlackChannelId() {
+  const fromEnv = String(process.env.FOLLOW_UP_SLACK_CHANNEL_ID || '').trim();
+  return fromEnv || DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID;
+}
+
 /** Placeholder inbound text used on FOLLOW_UP rows — not real prospect context. */
 function isFollowUpPlaceholder(text) {
   const s = String(text || '').trim().toLowerCase();
@@ -142,7 +150,8 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   const sentExtras = await priorSentMessages(client.id, fu);
   const threadMessages = extractThreadMessages(fu.platform, threadContext, {
-    maxMessages: 12,
+    maxMessages: 20,
+    pinStart: true,
     extraMessages: [
       ...sentExtras,
       ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
@@ -175,17 +184,19 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   const sentAt = fu.sent_at instanceof Date ? fu.sent_at.toISOString() : String(fu.sent_at || '');
   const campaignDisplay = formatCampaignDisplay(campaignName, fu.campaign_id) || undefined;
+  // Permalink still points at the original card in the client's main inbox channel.
   const threadPermalink = await slack.getPermalink(
     client.slack_bot_token,
     client.slack_channel_id,
     sourceSlackTs,
   );
 
-  // Always post FOLLOW_UP cards in the main channel (not buried in an old Slack thread),
-  // with the full back-and-forth + an offer-first bump draft.
+  // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
+  // under the original card). Layout: campaign/lead/phone → buttons → original →
+  // our reply → rest of thread → suggested bump.
   await postProspectSlackCard({
     token: client.slack_bot_token,
-    channelId: client.slack_channel_id,
+    channelId: followUpSlackChannelId(),
     clientId: client.id,
     platform: fu.platform,
     campaignId: fu.campaign_id,
@@ -367,4 +378,12 @@ async function runDueFollowUps({ limit = 25 } = {}) {
   return totals;
 }
 
-module.exports = { runDueFollowUps, postFollowUpCard, dueFollowUps, retireStaleFollowUps, maxAgeHours };
+module.exports = {
+  runDueFollowUps,
+  postFollowUpCard,
+  dueFollowUps,
+  retireStaleFollowUps,
+  maxAgeHours,
+  followUpSlackChannelId,
+  DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID,
+};
