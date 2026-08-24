@@ -28,6 +28,7 @@ const {
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { applyDeferredHireInterest } = require('../utils/deferred-hire-interest');
 
 const router = Router();
 
@@ -530,6 +531,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       classification = slCategory.classification;
       reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+    }
+    const afterSl = applyDeferredHireInterest(classification, inboundEffective);
+    if (afterSl !== classification) {
+      console.log('[Webhook] Deferred-hire interest override', { leadName, from: classification, to: afterSl });
+      reasoning = `Deferred-hire interest → ${afterSl}. ${reasoning}`;
+      classification = afterSl;
     }
 
     if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {

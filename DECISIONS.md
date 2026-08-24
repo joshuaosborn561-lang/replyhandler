@@ -498,3 +498,25 @@ of the thread in order (deduped, full text chunked — no `_(truncated)_`) →
 suggested bump.
 
 Guard: `FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons`
+
+---
+
+## 2026-08-24
+
+### Ticket-yes + wait-for-hire is INTERESTED
+
+*"write up a pr to classify these kinds of responses as interested"*
+
+Chris Catignani accepted Nationals tickets ("send them via this email") and
+asked to wait on a meeting until a CIO is hired. Gemini / SmartLead labeled
+that OTHER / OBJECTION, so the interested-only Slack gate never posted a
+card. That is still a live, bookable thread — not noise.
+
+If they take the offer (tickets) and only defer the meeting until a hire is
+onboard, force `INTERESTED` even when the model or SmartLead says OTHER,
+OBJECTION, NOT_INTERESTED, or WRONG_PERSON. Do not override OOO or
+unsubscribe. Interested-only Slack policy stays; these replies join the
+positive set instead of punching a hole in the gate.
+
+Guard: `Ticket-yes plus wait-for-hire classifies as INTERESTED`
+

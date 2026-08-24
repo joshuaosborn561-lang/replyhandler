@@ -23,6 +23,7 @@ const {
   normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { applyDeferredHireInterest } = require('../utils/deferred-hire-interest');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -323,6 +324,12 @@ async function processInboxRow(client, row, options) {
     });
     classification = slCategory.classification;
     reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+  }
+  const afterSl = applyDeferredHireInterest(classification, inbound);
+  if (afterSl !== classification) {
+    console.log('[SmartLeadPoll] Deferred-hire interest override', { leadName, from: classification, to: afterSl });
+    reasoning = `Deferred-hire interest → ${afterSl}. ${reasoning}`;
+    classification = afterSl;
   }
 
   const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
