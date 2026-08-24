@@ -33,23 +33,16 @@ function normWs(s) {
     .toLowerCase();
 }
 
-/** First positive integer SmartLead lead id from webhook payload (prefer email_lead_id / sl_email_lead_id). */
-function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
+/** Master-inbox URL id (`leadMap=`). Message-history 404s on this; never store it as lead_id. */
+function normalizeSmartleadLeadMapId(payload = {}, leadData = {}) {
   const candidates = [
-    payload.email_lead_id,
-    payload.emailLeadId,
-    payload.sl_email_lead_id,
-    payload.slEmailLeadId,
-    payload.lead_id,
-    payload.leadId,
-    payload.lead?.id,
-    leadData.email_lead_id,
-    leadData.emailLeadId,
-    leadData.lead_id,
-    leadData.leadId,
-    leadData.id,
     payload.sl_email_lead_map_id,
     payload.slEmailLeadMapId,
+    payload.lead_map_id,
+    payload.leadMapId,
+    payload.leadMap,
+    leadData.sl_email_lead_map_id,
+    leadData.slEmailLeadMapId,
   ];
   for (const c of candidates) {
     if (c == null || c === '') continue;
@@ -57,6 +50,43 @@ function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
     if (Number.isFinite(n) && Number.isInteger(n) && n > 0) return String(n);
   }
   return null;
+}
+
+function pickPositiveIntId(candidates, { skipId } = {}) {
+  const skip = skipId != null ? String(skipId) : null;
+  for (const c of candidates) {
+    if (c == null || c === '') continue;
+    const n = Number(String(c).trim());
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) continue;
+    if (skip && String(n) === skip) continue;
+    return String(n);
+  }
+  return null;
+}
+
+/** First positive integer SmartLead lead id from webhook payload (prefer email_lead_id / sl_email_lead_id). */
+function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
+  const mapId = normalizeSmartleadLeadMapId(payload, leadData);
+  const preferred = [
+    payload.email_lead_id,
+    payload.emailLeadId,
+    payload.sl_email_lead_id,
+    payload.slEmailLeadId,
+    leadData.email_lead_id,
+    leadData.emailLeadId,
+    leadData.sl_email_lead_id,
+    leadData.slEmailLeadId,
+  ];
+  const fallback = [
+    payload.lead_id,
+    payload.leadId,
+    payload.lead?.id,
+    leadData.lead_id,
+    leadData.leadId,
+    leadData.id,
+  ];
+  return pickPositiveIntId(preferred, { skipId: mapId })
+    || pickPositiveIntId(fallback, { skipId: mapId });
 }
 
 /** Campaign id from SmartLead webhook / inbox row. */
@@ -377,6 +407,7 @@ module.exports = {
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
+  normalizeSmartleadLeadMapId,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
