@@ -9,12 +9,12 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 describe('disqualified-prospects wiring', () => {
   it('exposes DQ on draft and alert Slack cards', () => {
     const slack = read('src/services/slack.js');
-    const draftIdx = slack.indexOf('async function postDraftApproval');
+    const actionsIdx = slack.indexOf('function draftApprovalActionsBlock');
     const alertIdx = slack.indexOf('async function postAlert');
-    assert.ok(draftIdx >= 0 && alertIdx > draftIdx);
-    const draftBlock = slack.slice(draftIdx, alertIdx);
+    assert.ok(actionsIdx >= 0 && alertIdx > actionsIdx);
+    const draftActions = slack.slice(actionsIdx, alertIdx);
     const alertBlock = slack.slice(alertIdx, slack.indexOf('async function postError'));
-    assert.match(draftBlock, /dq_prospect/);
+    assert.match(draftActions, /dq_prospect/);
     assert.match(alertBlock, /dq_prospect/);
   });
 

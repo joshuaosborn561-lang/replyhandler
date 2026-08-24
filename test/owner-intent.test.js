@@ -592,3 +592,48 @@ test('Parlay excludes .io and .ai from drafting', () => {
   assert.match(poller, /applyClientDraftPolicy/,
     reversal('Parlay excludes .io and .ai from drafting', 'SmartLead poller no longer applies the policy'));
 });
+
+// ── Decision: ticket-yes + wait-for-hire is INTERESTED ────────────────
+// Chris Catignani: send the tickets here, wait to meet until the CIO is hired.
+test('Ticket-yes plus wait-for-hire classifies as INTERESTED', () => {
+  const { applyDeferredHireInterest, looksLikeDeferredHireInterest } = require('../src/utils/deferred-hire-interest');
+  const { slackChannelSuppressionReason } = require('../src/utils/slack-channel-policy');
+
+  const catignani = `Hi John,
+
+You can send the tickets via this email. For a meeting we are currently in the process of hiring a CIO and it may be best to wait until they are on board.
+
+Chris`;
+
+  assert.ok(looksLikeDeferredHireInterest(catignani),
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'Catignani inbound no longer matches the heuristic'));
+  assert.strictEqual(applyDeferredHireInterest('OTHER', catignani), 'INTERESTED',
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'OTHER is not upgraded'));
+  assert.strictEqual(applyDeferredHireInterest('OBJECTION', catignani), 'INTERESTED');
+  assert.strictEqual(applyDeferredHireInterest('WRONG_PERSON', catignani), 'INTERESTED');
+  assert.strictEqual(applyDeferredHireInterest('NOT_INTERESTED', catignani), 'INTERESTED');
+  assert.strictEqual(applyDeferredHireInterest('OOO', catignani), 'OOO',
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'OOO is being overridden'));
+  assert.strictEqual(
+    slackChannelSuppressionReason({
+      classification: applyDeferredHireInterest('OTHER', catignani),
+      inboundMessage: catignani,
+    }),
+    null,
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'upgraded Catignani still suppressed from Slack'),
+  );
+
+  assert.ok(!looksLikeDeferredHireInterest('Not interested, thanks.'));
+  assert.ok(!looksLikeDeferredHireInterest('You can send the tickets via this email. Tuesday works.'));
+  assert.ok(!looksLikeDeferredHireInterest('We are hiring a CIO. Not interested in tickets.'));
+
+  const webhook = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const classifier = read('src/services/classifier.js');
+  assert.match(webhook, /applyDeferredHireInterest/,
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'webhook no longer applies the override after SmartLead category'));
+  assert.match(poller, /applyDeferredHireInterest/,
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'poller no longer applies the override after SmartLead category'));
+  assert.match(classifier, /applyDeferredHireInterest/,
+    reversal('Ticket-yes plus wait-for-hire classifies as INTERESTED', 'classifier no longer upgrades before drafting'));
+});

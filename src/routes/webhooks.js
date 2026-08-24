@@ -28,6 +28,7 @@ const {
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { applyDeferredHireInterest } = require('../utils/deferred-hire-interest');
 
 const router = Router();
 
@@ -347,24 +348,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       'Unknown';
 
     let resolvedCampaignId = campaignId;
-    if ((!resolvedCampaignId || !leadId) && client.smartlead_api_key) {
-      try {
-        const resolved = await smartlead.resolveIdsFromMasterInbox(client.smartlead_api_key, {
-          leadId,
-          leadEmail,
-          statsId: payload.stats_id || payload.statsId || payload.email_stats_id,
-        });
-        if (resolved) {
-          resolvedCampaignId = resolvedCampaignId || resolved.campaignId;
-          leadId = leadId || resolved.leadId;
-          console.log('[Webhook] SmartLead resolved ids from master inbox', {
-            clientId, campaignId: resolvedCampaignId, leadId, via: 'master_inbox',
-          });
-        }
-      } catch (err) {
-        console.warn('[Webhook] SmartLead master inbox id resolution failed', { clientId, err: err.message });
-      }
-    }
 
     if (slEnhance) {
       const ev = String(
@@ -394,14 +377,46 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       hasReplyObj: !!replyObj,
     });
 
-    if (!resolvedCampaignId || !leadId) {
-      console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId, leadId, hasEmail: !!leadEmail });
+    if (!resolvedCampaignId && !leadId && !leadEmail) {
+      console.error('[Webhook] SmartLead payload missing campaign_id, lead_id, and email', { clientId });
       return res.status(200).json({ ok: true, error: 'missing required fields' });
     }
 
     if (!client.smartlead_api_key) {
       console.warn('[Webhook] SmartLead skipped — no API key on client', { clientId, client: client.name });
       return res.status(200).json({ ok: true, skipped: true, reason: 'no_smartlead_api_key' });
+    }
+
+    // Fetch full thread history AND resolve email_lead_id + SENT stats_id.
+    // Inbox URLs use leadMap (sl_email_lead_map_id); message-history 404s on that id.
+    let threadContext;
+    let smartleadEmailStatsId = payload.stats_id || payload.statsId || null;
+    try {
+      const sendable = await smartlead.resolveSendableThread(client.smartlead_api_key, {
+        campaignId: resolvedCampaignId,
+        leadId,
+        leadEmail,
+      });
+      resolvedCampaignId = sendable.campaignId;
+      leadId = sendable.leadId;
+      smartleadEmailStatsId = sendable.statsId;
+      threadContext = sendable.history;
+      console.log('[Webhook] SmartLead resolved sendable thread', {
+        clientId, campaignId: resolvedCampaignId, leadId, emailStatsId: smartleadEmailStatsId,
+      });
+    } catch (err) {
+      console.error('[Webhook] Failed to resolve sendable SmartLead thread', { clientId, client: client.name, err: err.message });
+      let fallbackMsg = String(inboundMessage || '').trim();
+      if (slEnhance && fallbackMsg) {
+        fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
+        fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
+      }
+      threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
+    }
+
+    if (!resolvedCampaignId || !leadId) {
+      console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId, leadId, hasEmail: !!leadEmail });
+      return res.status(200).json({ ok: true, error: 'missing required fields' });
     }
 
     const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, resolvedCampaignId);
@@ -419,23 +434,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       leadId,
       conversationId: null,
     });
-
-    // Fetch full thread history AND resolve the email_stats_id we'll need at send time.
-    let threadContext;
-    let smartleadEmailStatsId = payload.stats_id || payload.statsId || null;
-    try {
-      threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, resolvedCampaignId, leadId);
-      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext) || smartleadEmailStatsId;
-      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId: resolvedCampaignId, leadId, emailStatsId: smartleadEmailStatsId });
-    } catch (err) {
-      console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      let fallbackMsg = String(inboundMessage || '').trim();
-      if (slEnhance && fallbackMsg) {
-        fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
-        fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
-      }
-      threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
-    }
 
     let inboundEffective = String(inboundMessage || '').trim();
     if (slEnhance && inboundEffective) {
@@ -531,6 +529,12 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       classification = slCategory.classification;
       reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
     }
+    const afterSl = applyDeferredHireInterest(classification, inboundEffective);
+    if (afterSl !== classification) {
+      console.log('[Webhook] Deferred-hire interest override', { leadName, from: classification, to: afterSl });
+      reasoning = `Deferred-hire interest → ${afterSl}. ${reasoning}`;
+      classification = afterSl;
+    }
 
     if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
       try {
@@ -562,6 +566,19 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       console.log('[Webhook] SmartLead draft skipped by client policy', {
         leadName, leadEmail, classification, reason: policy.skipReason,
       });
+    }
+
+    if (!smartleadEmailStatsId) {
+      console.error('[Webhook] SmartLead missing stats_id — not posting a card that cannot send', {
+        clientId, campaignId: resolvedCampaignId, leadId, leadEmail,
+      });
+      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+        leadName: `${leadName} (SmartLead)`,
+        platform: 'smartlead',
+        error:
+          'Could not resolve email_lead_id / stats_id (inbox leadMap ids cannot send). Reply manually in SmartLead.',
+      });
+      return res.status(200).json({ ok: true, error: 'unresolved_smartlead_stats_id' });
     }
 
     const { rows: [reply] } = await db.query(

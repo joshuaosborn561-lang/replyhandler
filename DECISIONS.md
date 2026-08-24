@@ -498,3 +498,41 @@ of the thread in order (deduped, full text chunked — no `_(truncated)_`) →
 suggested bump.
 
 Guard: `FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons`
+
+---
+
+## 2026-08-24
+
+### Ticket-yes + wait-for-hire is INTERESTED
+
+*"write up a pr to classify these kinds of responses as interested"*
+
+Chris Catignani accepted Nationals tickets ("send them via this email") and
+asked to wait on a meeting until a CIO is hired. Gemini / SmartLead labeled
+that OTHER / OBJECTION, so the interested-only Slack gate never posted a
+card. That is still a live, bookable thread — not noise.
+
+If they take the offer (tickets) and only defer the meeting until a hire is
+onboard, force `INTERESTED` even when the model or SmartLead says OTHER,
+OBJECTION, NOT_INTERESTED, or WRONG_PERSON. Do not override OOO or
+unsubscribe. Interested-only Slack policy stays; these replies join the
+positive set instead of punching a hole in the gate.
+
+Guard: `Ticket-yes plus wait-for-hire classifies as INTERESTED`
+
+## 2026-08-24
+
+### Slack cards store email_lead_id + stats_id, never inbox leadMap
+
+Catignani's first recovered card used `lead_id` `3512474990` from SmartLead's
+master-inbox URL (`leadMap=` / `sl_email_lead_map_id`). Message-history 404s
+on that id, so Approve could not resolve `stats_id` and the send failed. The
+working card used inbox `email_lead_id` `4324451336` and a real SENT
+`stats_id`.
+
+Webhook, poller, admin recover, Slack-card recovery, and Approve must resolve
+a sendable thread (campaign + `email_lead_id` + SENT `stats_id`) and persist
+those ids. Do not take a caller-supplied lead id at face value.
+
+Guard: `webhook, poller, admin, and send resolve sendable ids before a card can Approve`
+

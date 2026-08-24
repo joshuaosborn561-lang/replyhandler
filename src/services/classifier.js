@@ -4,6 +4,7 @@ const {
   looksLikeNotInterested,
   looksLikeWrongPerson,
 } = require('../utils/smartlead-webhook-helpers');
+const { applyDeferredHireInterest } = require('../utils/deferred-hire-interest');
 const {
   looksLikeBookingLinkRequest,
   stripBookingUrls,
@@ -308,6 +309,7 @@ function buildClassifyModel() {
       `Important:\n` +
       `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
       `- If it is clearly OOO, output OOO (not OTHER).\n` +
+      `- If they accept the offer (tickets / send them here) but want to wait on a meeting until a new hire or CIO is onboard, that is INTERESTED, not OTHER, OBJECTION, or WRONG_PERSON.\n` +
       `- OUT_OF_OFFICE is legacy; prefer OOO.`,
     generationConfig: {
       // ONE WORD. Cannot truncate meaningfully.
@@ -845,6 +847,14 @@ async function classifyAndDraft(
       const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
       if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
     }
+  }
+
+  const beforeDeferred = classification;
+  classification = applyDeferredHireInterest(classification, inboundMessage);
+  if (classification === 'INTERESTED' && beforeDeferred !== 'INTERESTED') {
+    preGate = preGate
+      ? `${preGate}; deferred-hire→INTERESTED`
+      : `deferred-hire (${beforeDeferred})`;
   }
 
   const { resolveReplyOrdinal } = require('../utils/reply-ordinal');

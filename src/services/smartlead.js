@@ -413,15 +413,17 @@ async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } 
 
     for (const row of rows) {
       const rowLead = row.email_lead_id || row.emailLeadId || row.sl_email_lead_id || null;
+      const rowMap = row.sl_email_lead_map_id || row.slEmailLeadMapId || row.leadMap || null;
       const rowEmail = String(row.lead_email || row.email || '').trim().toLowerCase();
       const rowCampaign = row.email_campaign_id || row.emailCampaignId || null;
       const hist = Array.isArray(row.email_history) ? row.email_history : [];
       const statsMatch = wantStats && hist.some((h) => String(h.stats_id || h.email_stats_id || '') === wantStats);
 
       const leadMatch = wantLead && rowLead != null && String(rowLead) === wantLead;
+      const mapMatch = wantLead && rowMap != null && String(rowMap) === wantLead;
       const emailMatch = wantEmail && rowEmail && rowEmail === wantEmail;
 
-      if ((leadMatch || emailMatch || statsMatch) && rowCampaign) {
+      if ((leadMatch || mapMatch || emailMatch || statsMatch) && rowCampaign) {
         return {
           campaignId: String(rowCampaign),
           leadId: rowLead != null ? String(rowLead) : wantLead,
@@ -434,6 +436,71 @@ async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } 
   return null;
 }
 
+/**
+ * Ids that can actually send a reply: campaign + email_lead_id + SENT stats_id.
+ *
+ * Inbox URLs use leadMap (sl_email_lead_map_id). Message-history 404s on that
+ * id, so Approve stores a row that can never resolve stats_id. Prefer history
+ * on the given lead id; if that fails, look up email_lead_id from master inbox
+ * by email and try again.
+ */
+async function resolveSendableThread(apiKey, { campaignId, leadId, leadEmail } = {}) {
+  if (!apiKey) throw new Error('SmartLead API key required to resolve sendable thread');
+
+  async function tryHistory(cid, lid) {
+    if (cid == null || lid == null || cid === '' || lid === '') return null;
+    try {
+      const history = await getThreadHistory(apiKey, cid, lid);
+      const statsId = extractStatsIdFromHistory(history);
+      if (!statsId) return null;
+      return {
+        campaignId: String(cid),
+        leadId: String(lid),
+        statsId: String(statsId),
+        history,
+      };
+    } catch (err) {
+      console.warn('[SmartLead] getThreadHistory not sendable', {
+        campaignId: cid, leadId: lid, err: err.message,
+      });
+      return null;
+    }
+  }
+
+  const cidHint = campaignId != null && String(campaignId).trim() ? String(campaignId).trim() : null;
+  const lidHint = leadId != null && String(leadId).trim() ? String(leadId).trim() : null;
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+
+  const direct = await tryHistory(cidHint, lidHint);
+  if (direct) return direct;
+
+  const inbox = await resolveIdsFromMasterInbox(apiKey, {
+    leadId: lidHint,
+    leadEmail: email || null,
+  });
+  if (!inbox?.campaignId || !inbox?.leadId) {
+    throw new Error(
+      'Could not resolve SmartLead email_lead_id (inbox lead id, not leadMap) for this thread',
+    );
+  }
+  const viaInbox = await tryHistory(inbox.campaignId, inbox.leadId);
+  if (viaInbox) return viaInbox;
+  const inboxStats = extractStatsIdFromHistory({
+    history: Array.isArray(inbox.inboxRow?.email_history) ? inbox.inboxRow.email_history : [],
+  });
+  if (inboxStats) {
+    return {
+      campaignId: String(inbox.campaignId),
+      leadId: String(inbox.leadId),
+      statsId: String(inboxStats),
+      history: { history: inbox.inboxRow.email_history },
+    };
+  }
+  throw new Error(
+    `Could not resolve SmartLead stats_id for email_lead_id ${inbox.leadId}`,
+  );
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -443,6 +510,7 @@ module.exports = {
   verifyCampaignAccess,
   resolveEmailStatsId,
   resolveIdsFromMasterInbox,
+  resolveSendableThread,
   extractStatsIdFromHistory,
   extractForwardAnchorFromHistory,
   formatPlainTextAsSmartleadHtml,
