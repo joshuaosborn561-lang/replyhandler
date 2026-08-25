@@ -520,3 +520,16 @@ Response: pause contaminated Goliath campaigns immediately; cron
 attached sender signs the campaign's own brand.
 
 Guard: `test/smartlead-sender-guard.test.js`
+
+### Correction: Deliverability Wizard owns sender-brand QA
+
+*"Stop the SmartLead sender-brand guard. Deliverability Wizard owns this.
+… A leftover Peterson line on mail that already went out is not a
+replyhandler pause."*
+
+ReplyHandler does **not** scan SmartLead sends for foreign signatures, does
+not Slack cross-client signature alerts, and does not auto-pause or unpause
+campaigns. That guard is removed. Wizard rewrites foreign brands on the
+mailbox, pulls cross-client attachments, and STARTs a paused Goliath
+campaign only after signature QA. Follow-ups in this repo stay reply-card
+cadence only.
