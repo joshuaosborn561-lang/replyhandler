@@ -136,30 +136,6 @@ function startCron() {
     });
   }
 
-  // ─── SmartLead sender-brand guard (cross-client signature bleed) ──
-  // Shared SmartLead workspace: moving a mailbox between clients mid-sequence
-  // makes Goliath send with a "Roofs by Peterson" signature (2026-08-25).
-  if (!/^(0|false|no|off)$/i.test(String(process.env.SMARTLEAD_SENDER_GUARD_ENABLED || '1').trim())) {
-    const guardEvery = (() => {
-      const n = parseInt(process.env.SMARTLEAD_SENDER_GUARD_MINUTES || '30', 10);
-      return Number.isFinite(n) && n >= 5 && n <= 59 ? n : 30;
-    })();
-    cron.schedule(`*/${guardEvery} * * * *`, async () => {
-      try {
-        const { runSmartleadSenderGuard } = require('./services/smartlead-sender-guard');
-        const result = await runSmartleadSenderGuard();
-        const bad = (result.results || []).filter((r) => r.foreignCount > 0);
-        if (bad.length) {
-          console.error('[Cron] Sender guard found contamination', {
-            clients: bad.map((r) => ({ client: r.client, foreignCount: r.foreignCount, paused: r.paused })),
-          });
-        }
-      } catch (err) {
-        console.error('[Cron] Sender guard failed', { err: err.message });
-      }
-    });
-  }
-
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
