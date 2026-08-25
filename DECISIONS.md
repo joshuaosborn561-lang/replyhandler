@@ -498,3 +498,25 @@ of the thread in order (deduped, full text chunked — no `_(truncated)_`) →
 suggested bump.
 
 Guard: `FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons`
+
+## 2026-08-25
+
+### Never send another client's signature on a campaign
+
+*"this email was sent out by goliath aug 25. ensure this never ever happens
+again with the sig Sean, that offer's still open whenever you want it. …
+Aarav Sanchez Roofs by Peterson"*
+
+Exact send: Goliath Education Receipts → Sean Dean (`sdean@mscok.edu`),
+seq-2, 2026-08-25 15:42Z, body correct, signature `Aarav Sanchez / Roofs by
+Peterson`. Same day: dozens of Goliath sends signed Peterson or Culture Fits.
+
+Cause: shared SmartLead workspace. Mailboxes moved / rebranded between
+clients while in-flight sequences kept sending from them.
+
+Response: pause contaminated Goliath campaigns immediately; cron
+`smartlead-sender-guard` scans recent statistics for foreign brand lines in
+`%signature%`, Slack-alerts, and auto-pauses. Do not unpause until every
+attached sender signs the campaign's own brand.
+
+Guard: `test/smartlead-sender-guard.test.js`
