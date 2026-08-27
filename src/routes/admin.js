@@ -2,6 +2,8 @@ const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
+const { cancelPendingForLead } = require('../services/outbound-follow-up');
+const { suppressUnpostedFollowUpInboxRows } = require('../services/reply-dedupe');
 
 const router = Router();
 
@@ -242,6 +244,26 @@ router.post('/admin/post-approval-card', async (req, res) => {
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Cancel a follow-up cadence and stop poller recovery of FOLLOW_UP inbox rows.
+ * POST { leadEmail } or { leadName }
+ */
+router.post('/admin/stop-follow-ups', async (req, res) => {
+  const { leadEmail, leadName, clientId } = req.body || {};
+  if (!leadEmail && !leadName) {
+    return res.status(400).json({ error: 'leadEmail or leadName is required' });
+  }
+  try {
+    const retired = await suppressUnpostedFollowUpInboxRows();
+    const stopped = await cancelPendingForLead({ clientId: clientId || null, leadEmail, leadName });
+    console.log('[Admin] stop-follow-ups', { leadEmail, leadName, retired, ...stopped });
+    return res.json({ ok: true, retiredUnpostedFollowUps: retired, ...stopped });
+  } catch (err) {
+    console.error('[Admin] stop-follow-ups error', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });
