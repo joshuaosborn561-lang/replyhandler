@@ -2,6 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { draftApprovalActionsBlock } = require('../src/services/slack');
 
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -14,7 +15,12 @@ describe('disqualified-prospects wiring', () => {
     assert.ok(draftIdx >= 0 && alertIdx > draftIdx);
     const draftBlock = slack.slice(draftIdx, alertIdx);
     const alertBlock = slack.slice(alertIdx, slack.indexOf('async function postError'));
-    assert.match(draftBlock, /dq_prospect/);
+    assert.match(draftBlock, /draftApprovalActionsBlock/);
+    const draftActions = draftApprovalActionsBlock('reply-1');
+    assert.ok(
+      draftActions.elements.some((e) => e.action_id === 'dq_prospect'),
+      'draft approval cards must include the DQ button',
+    );
     assert.match(alertBlock, /dq_prospect/);
   });
 
