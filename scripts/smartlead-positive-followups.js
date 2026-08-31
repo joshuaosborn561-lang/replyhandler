@@ -301,6 +301,9 @@ async function upsertAndPost(db, client, lead) {
     inboundMessage: lead.inbound,
     lastOutboundMessage: lead.lastOutbound || undefined,
     campaignDisplay,
+    bookingLink: client.booking_link,
+    ccEmails: client.cc_emails || client.cc_email,
+    ccRoundRobinEmails: client.cc_round_robin_emails,
   });
 
   // Store the new top-level message ts
@@ -328,7 +331,8 @@ async function main() {
   await db.connect();
 
   const { rows: clients } = await db.query(
-    `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt
+    `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt,
+            cc_email, cc_emails, cc_round_robin_emails
        FROM clients WHERE name = ANY($1) AND active = true ORDER BY name`,
     [TARGET_CLIENT_NAMES],
   );

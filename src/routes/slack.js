@@ -194,6 +194,7 @@ async function handleOpenEditModal(replyId, interaction) {
     ccEmail: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
+    bookingLink: reply.platform === 'smartlead' ? client.booking_link : null,
   });
 }
 

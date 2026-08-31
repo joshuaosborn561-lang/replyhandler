@@ -129,13 +129,26 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
   };
 }
 
-/** Always-on client-notify notice — forward list + round-robin pool. */
-function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
+/** Slack mrkdwn for a client booking link (clickable, escaped URL). */
+function bookingLinkMrkdwn(bookingLink) {
+  const link = String(bookingLink || '').trim();
+  if (!link.startsWith('http')) return '';
+  const safe = link.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<${safe}|Booking link>`;
+}
+
+/** Always-on client-notify notice — forward list + round-robin pool + booking link. */
+function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, bookingLink }) {
   const always = String(ccEmails || '').trim();
   const rr = String(ccRoundRobinEmails || '').trim();
-  if (!always && !rr) return null;
+  const linkBit = bookingLinkMrkdwn(bookingLink);
+  if (!always && !rr && !linkBit) return null;
   const lines = [];
-  if (always) lines.push(`*Always notify:* ${escMrkdwn(always)}`);
+  if (always) {
+    lines.push(`*Always notify:* ${escMrkdwn(always)}${linkBit ? ` · ${linkBit}` : ''}`);
+  } else if (linkBit) {
+    lines.push(`*Booking link:* ${linkBit}`);
+  }
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   return {
     type: 'context',
@@ -517,7 +530,7 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
-  ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  ccEmails, ccRoundRobinEmails, bookingLink, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages,
 }) {
   const slack = getClient(token);
@@ -582,10 +595,11 @@ async function postDraftApproval(token, channelId, {
         },
       ];
 
-  if (!isFollowUp && platform === 'smartlead') {
+  if (platform === 'smartlead') {
     const notice = ccAutoNoticeBlock({
       ccEmails: ccEmails || ccEmail,
       ccRoundRobinEmails,
+      bookingLink,
     });
     if (notice) blocks.push(notice);
   }
@@ -715,6 +729,7 @@ async function updateMessage(token, channelId, messageTs, text) {
 
 async function openEditReplyModal(token, triggerId, {
   replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
+  bookingLink,
 }) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
@@ -738,6 +753,7 @@ async function openEditReplyModal(token, triggerId, {
   const notice = ccAutoNoticeBlock({
     ccEmails: ccEmails || ccEmail,
     ccRoundRobinEmails,
+    bookingLink,
   });
   if (notice) {
     blocks.push({
@@ -859,6 +875,8 @@ module.exports = {
   buildConversationBlocks,
   buildFollowUpConversationBlocks,
   draftApprovalActionsBlock,
+  bookingLinkMrkdwn,
+  ccAutoNoticeBlock,
   openEditReplyModal,
   postMorningDigestHeader,
   postAttentionDigestHeader,

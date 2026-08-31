@@ -185,7 +185,7 @@ async function postProspectSlackCard({
 
   if (isDraft && replyId && platform === 'smartlead') {
     const { rows: [ccRow] } = await db.query(
-      `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, pr.cc_on_send
+      `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, c.booking_link, pr.cc_on_send
          FROM pending_replies pr
          JOIN clients c ON c.id = pr.client_id
         WHERE pr.id = $1`,
@@ -195,6 +195,7 @@ async function postProspectSlackCard({
       payload.ccEmail = ccRow.cc_email;
       payload.ccEmails = ccRow.cc_emails || ccRow.cc_email;
       payload.ccRoundRobinEmails = ccRow.cc_round_robin_emails;
+      payload.bookingLink = ccRow.booking_link;
       payload.ccOnSend = !!ccRow.cc_on_send;
     }
   }
