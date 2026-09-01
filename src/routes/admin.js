@@ -2,6 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
+const { restartFollowUpsForLead } = require('../services/outbound-follow-up');
 
 const router = Router();
 
@@ -242,6 +243,30 @@ router.post('/admin/post-approval-card', async (req, res) => {
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Undo Meeting booked / booking-bridge for a lead and reschedule 2h → 24h → 48h → 1w.
+ * POST { leadEmail } and/or { leadName }. Optional clientId, postNow (default true).
+ */
+router.post('/admin/restart-follow-ups', async (req, res) => {
+  const { leadEmail, leadName, clientId, postNow } = req.body || {};
+  if (!leadEmail && !leadName) {
+    return res.status(400).json({ error: 'leadEmail or leadName is required' });
+  }
+  try {
+    const result = await restartFollowUpsForLead({
+      clientId: clientId || null,
+      leadEmail,
+      leadName,
+      postNow: postNow !== false,
+    });
+    if (!result.ok) return res.status(404).json(result);
+    return res.json(result);
+  } catch (err) {
+    console.error('[Admin] restart-follow-ups error', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });

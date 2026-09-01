@@ -233,10 +233,131 @@ async function cancelForInboundReply({ clientId, platform, campaignId, leadId, c
   }
 }
 
+/**
+ * Undo Slack "Meeting booked" / booking-bridge for a lead and start the
+ * 2h → 24h → 48h → 1w cadence again from now.
+ *
+ * Clears booked/proposed meeting rows so the runner does not skip as
+ * already booked. Does not touch calendar events — a real hold on the
+ * calendar still suppresses.
+ */
+async function restartFollowUpsForLead({
+  clientId = null,
+  leadEmail,
+  leadName,
+  postNow = true,
+} = {}) {
+  const email = String(leadEmail || '').trim().toLowerCase();
+  const name = String(leadName || '').trim();
+  if (!email && !name) {
+    throw new Error('leadEmail or leadName is required');
+  }
+
+  const positives = [...POSITIVE_FOLLOW_UP_CLASSIFICATIONS];
+  const { rows: replies } = await db.query(
+    `SELECT *
+       FROM pending_replies
+      WHERE status = 'sent'
+        AND ($1::uuid IS NULL OR client_id = $1)
+        AND upper(COALESCE(classification, '')) = ANY($4::text[])
+        AND (
+          ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
+          OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
+        )
+      ORDER BY updated_at DESC NULLS LAST, created_at DESC
+      LIMIT 40`,
+    [clientId || null, email, name, positives]
+  );
+
+  if (!replies.length) {
+    return { ok: false, error: 'no sent positive reply found for this lead', restarted: [] };
+  }
+
+  const latestByClient = new Map();
+  for (const reply of replies) {
+    if (!latestByClient.has(reply.client_id)) latestByClient.set(reply.client_id, reply);
+  }
+
+  const restarted = [];
+  for (const [cid, reply] of latestByClient) {
+    const matchEmail = email || String(reply.lead_email || '').trim().toLowerCase();
+    const matchName = name || String(reply.lead_name || '').trim();
+
+    const meetings = await db.query(
+      `UPDATE meetings
+          SET status = 'cancelled', updated_at = now()
+        WHERE client_id = $1
+          AND status IN ('proposed', 'confirmed', 'booked')
+          AND (
+            ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
+            OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
+          )`,
+      [cid, matchEmail, matchName]
+    );
+
+    await scheduleAfterOutboundSend(cid, {
+      ...reply,
+      updated_at: new Date(),
+      created_at: new Date(),
+    });
+
+    let postedReplyId = null;
+    if (postNow) {
+      const { rows: [fu] } = await db.query(
+        `SELECT * FROM outbound_follow_ups
+          WHERE client_id = $1
+            AND status = 'pending'
+            AND step = 1
+            AND source_pending_reply_id = $2
+          ORDER BY due_at ASC
+          LIMIT 1`,
+        [cid, reply.id]
+      );
+      if (fu) {
+        const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [cid]);
+        if (client) {
+          const { postFollowUpCard } = require('./follow-up-runner');
+          const posted = await postFollowUpCard(client, fu, {
+            reasoningExtra: 'Cadence restarted — Meeting booked cleared. Follow-up step 1 (2h) posted now.',
+          });
+          postedReplyId = posted?.id || null;
+          await db.query(
+            `UPDATE outbound_follow_ups
+                SET status = 'notified', skip_reason = NULL, last_checked_at = now(),
+                    attempts = attempts + 1, updated_at = now()
+              WHERE id = $1`,
+            [fu.id]
+          );
+        }
+      }
+    }
+
+    console.log('[FollowUp] Restarted cadence', {
+      clientId: cid,
+      lead: reply.lead_name,
+      email: reply.lead_email,
+      sourceReplyId: reply.id,
+      meetingsCleared: meetings.rowCount || 0,
+      postedReplyId,
+    });
+    restarted.push({
+      clientId: cid,
+      leadName: reply.lead_name,
+      leadEmail: reply.lead_email,
+      sourceReplyId: reply.id,
+      meetingsCleared: meetings.rowCount || 0,
+      postedReplyId,
+    });
+  }
+
+  return { ok: true, restarted };
+}
+
 module.exports = {
   scheduleAfterOutboundSend,
   cancelForInboundReply,
   cancelPendingForThread,
+  restartFollowUpsForLead,
   followUpHours,
   followUpCadenceHours,
   heyreachConversationId,
