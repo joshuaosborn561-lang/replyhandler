@@ -154,6 +154,20 @@ do not. FOLLOW_UP sends still do not restart the clock. Booking skips unchanged.
 
 Guard: `follow-ups after any positive reply at 2h/24h/48h/1w`
 
+### First follow-up at 3:30pm CT (not 2h)
+
+*"change 2h to 3:30 pm cst the day the reply came in, unless it came after 2 cst"*
+
+Replaces the former 2-hour first step. Default cadence is now:
+1. **3:30 PM America/Chicago** on the calendar day the inbound arrived
+2. If inbound was at/after **2:00 PM Central**, use the **next** calendar day at 3:30
+3. If that 3:30 is already past when we approve/send, roll forward day-by-day
+4. Then **24h → 48h → 1 week** after our send (unchanged)
+
+`FOLLOW_UP_HOURS` still overrides the whole sequence with pure hour offsets.
+
+Guard: `first follow-up at 3:30pm CT same day unless inbound after 2pm CT`
+
 ### No follow-up backfill older than 3 days
 
 *"stop backfilling past 3 days ago"*
