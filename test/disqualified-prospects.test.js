@@ -9,13 +9,16 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 describe('disqualified-prospects wiring', () => {
   it('exposes DQ on draft and alert Slack cards', () => {
     const slack = read('src/services/slack.js');
+    const actionsIdx = slack.indexOf('function draftApprovalActionsBlock');
     const draftIdx = slack.indexOf('async function postDraftApproval');
     const alertIdx = slack.indexOf('async function postAlert');
-    assert.ok(draftIdx >= 0 && alertIdx > draftIdx);
+    assert.ok(actionsIdx >= 0 && draftIdx > actionsIdx && alertIdx > draftIdx);
+    const actionsBlock = slack.slice(actionsIdx, draftIdx);
     const draftBlock = slack.slice(draftIdx, alertIdx);
     const alertBlock = slack.slice(alertIdx, slack.indexOf('async function postError'));
-    assert.match(draftBlock, /dq_prospect/);
-    assert.match(alertBlock, /dq_prospect/);
+    assert.match(actionsBlock, /dq_prospect/, 'draft cards share the DQ button via draftApprovalActionsBlock');
+    assert.match(draftBlock, /draftApprovalActionsBlock/, 'postDraftApproval must attach the shared action row');
+    assert.match(alertBlock, /dq_prospect/, 'alert-only cards still expose DQ');
   });
 
   it('persists DQ via migration and service', () => {
