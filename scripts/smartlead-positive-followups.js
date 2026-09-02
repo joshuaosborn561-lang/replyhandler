@@ -9,7 +9,9 @@
  *
  * Usage:
  *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js
- *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js --days=14 --dry-run
+ *   DATABASE_URL=... GEMINI_API_KEY=... node scripts/smartlead-positive-followups.js --days=3 --dry-run
+ *
+ * Hard cap: never look back more than 3 days (Josh: no backfill past 3 days ago).
  */
 
 const { Client } = require('pg');
@@ -21,8 +23,9 @@ const { draftOnly } = require('../src/services/classifier');
 const TARGET_CLIENT_NAMES = ['Culture Fits', 'MSRS'];
 const BASE = 'https://server.smartlead.ai/api/v1';
 const DRY_RUN = process.argv.includes('--dry-run');
+const MAX_DAYS_BACK = 3;
 const daysArg = (process.argv.find(a => a.startsWith('--days=')) || '').split('=')[1];
-const DAYS_BACK = parseInt(daysArg || '14', 10);
+const DAYS_BACK = Math.min(Math.max(parseInt(daysArg || String(MAX_DAYS_BACK), 10) || MAX_DAYS_BACK, 1), MAX_DAYS_BACK);
 const CUTOFF = new Date(Date.now() - DAYS_BACK * 24 * 3600 * 1000);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -214,6 +217,8 @@ async function generateDraft(client, lead) {
         bookingLink: client.booking_link || '',
         schedulingPromptBlock: '',
         platform: 'smartlead',
+        // Ops backfill script — Gemini only, never Claude.
+        draftMode: 'bulk',
       });
       if (draft && draft.length > 10) return draft;
     } catch (e) {
@@ -296,6 +301,9 @@ async function upsertAndPost(db, client, lead) {
     inboundMessage: lead.inbound,
     lastOutboundMessage: lead.lastOutbound || undefined,
     campaignDisplay,
+    bookingLink: client.booking_link,
+    ccEmails: client.cc_emails || client.cc_email,
+    ccRoundRobinEmails: client.cc_round_robin_emails,
   });
 
   // Store the new top-level message ts
@@ -323,7 +331,8 @@ async function main() {
   await db.connect();
 
   const { rows: clients } = await db.query(
-    `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt
+    `SELECT id, name, smartlead_api_key, slack_bot_token, slack_channel_id, booking_link, voice_prompt,
+            cc_email, cc_emails, cc_round_robin_emails
        FROM clients WHERE name = ANY($1) AND active = true ORDER BY name`,
     [TARGET_CLIENT_NAMES],
   );

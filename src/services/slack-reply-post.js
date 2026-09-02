@@ -1,7 +1,10 @@
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
-const { enrichPendingReplyPhone } = require('./reply-phone-enrichment');
+const {
+  enrichPendingReplyPhone,
+  shouldSkipEnrichment,
+} = require('./reply-phone-enrichment');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -131,7 +134,9 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId) {
 }
 
 /**
- * Post a prospect reply card to Slack, threaded under the first card for this lead when one exists.
+ * Post a prospect reply card to Slack.
+ * By default, threads under the first card for this lead when one exists.
+ * Pass postInThread: false to force a top-level channel message (FOLLOW_UP cards).
  * Always enriches context with your last outbound (or previous thread message).
  */
 async function postProspectSlackCard({
@@ -145,9 +150,12 @@ async function postProspectSlackCard({
   isDraft,
   card,
   replyId,
+  postInThread = true,
 }) {
   let enrichedCard = card;
-  if (replyId) {
+  // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
+  // burn enrichment credits — those are not bookable follow-ups.
+  if (replyId && !shouldSkipEnrichment(card?.classification)) {
     const phone = await enrichPendingReplyPhone(replyId);
     enrichedCard = {
       ...card,
@@ -157,7 +165,9 @@ async function postProspectSlackCard({
     };
   }
 
-  const threadTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId);
+  const threadTs = postInThread
+    ? await findSlackThreadRootTs(clientId, platform, campaignId, leadId)
+    : null;
   const contextMessage = resolveSlackContextMessage({
     platform,
     threadContext,
@@ -175,7 +185,7 @@ async function postProspectSlackCard({
 
   if (isDraft && replyId && platform === 'smartlead') {
     const { rows: [ccRow] } = await db.query(
-      `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, pr.cc_on_send
+      `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, c.booking_link, pr.cc_on_send
          FROM pending_replies pr
          JOIN clients c ON c.id = pr.client_id
         WHERE pr.id = $1`,
@@ -185,6 +195,7 @@ async function postProspectSlackCard({
       payload.ccEmail = ccRow.cc_email;
       payload.ccEmails = ccRow.cc_emails || ccRow.cc_email;
       payload.ccRoundRobinEmails = ccRow.cc_round_robin_emails;
+      payload.bookingLink = ccRow.booking_link;
       payload.ccOnSend = !!ccRow.cc_on_send;
     }
   }

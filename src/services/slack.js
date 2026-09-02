@@ -67,11 +67,12 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
     }[provider.toLowerCase()] || provider;
     return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
   }
-  if (phoneEnrichmentStatus === 'not_found') {
-    return '\n📱 _not found after GetLeads → AI Ark → LeadMagic_';
-  }
-  if (phoneEnrichmentStatus === 'failed') {
-    return '\n📱 _enrichment failed_';
+  // After enrichment finishes with no cell — plain English, not provider jargon.
+  if (
+    phoneEnrichmentStatus === 'not_found' ||
+    phoneEnrichmentStatus === 'failed'
+  ) {
+    return '\n📱 _phone number not found_';
   }
   return '';
 }
@@ -128,13 +129,26 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
   };
 }
 
-/** Always-on client-notify notice — forward list + round-robin pool. */
-function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
+/** Slack mrkdwn for a client booking link (clickable, escaped URL). */
+function bookingLinkMrkdwn(bookingLink) {
+  const link = String(bookingLink || '').trim();
+  if (!link.startsWith('http')) return '';
+  const safe = link.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<${safe}|Booking link>`;
+}
+
+/** Always-on client-notify notice — forward list + round-robin pool + booking link. */
+function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, bookingLink }) {
   const always = String(ccEmails || '').trim();
   const rr = String(ccRoundRobinEmails || '').trim();
-  if (!always && !rr) return null;
+  const linkBit = bookingLinkMrkdwn(bookingLink);
+  if (!always && !rr && !linkBit) return null;
   const lines = [];
-  if (always) lines.push(`*Always notify:* ${escMrkdwn(always)}`);
+  if (always) {
+    lines.push(`*Always notify:* ${escMrkdwn(always)}${linkBit ? ` · ${linkBit}` : ''}`);
+  } else if (linkBit) {
+    lines.push(`*Booking link:* ${linkBit}`);
+  }
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   return {
     type: 'context',
@@ -186,18 +200,132 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
   }));
 }
 
+function normBodyKey(body) {
+  return plainTextForSlack(body).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * FOLLOW_UP layout: original inbound → our reply → rest of the thread in order
+ * (no re-showing those two), then the suggested bump. Full text (chunked) —
+ * never the `… _(truncated)_` / Slack "Show more" trap from capped mid-bodies.
+ */
+function buildFollowUpConversationBlocks({
+  lastOutboundMessage,
+  inboundMessage,
+  draft,
+  threadMessages = null,
+}) {
+  const blocks = [];
+  const history = Array.isArray(threadMessages)
+    ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
+    : [];
+
+  const firstThem = history.find((m) => m.role === 'them') || null;
+  const firstUs = history.find((m) => m.role === 'us') || null;
+  const originalBody = String(
+    (inboundMessage && String(inboundMessage).trim())
+    || firstThem?.body
+    || ''
+  ).trim();
+  const ourReplyBody = String(
+    (lastOutboundMessage && String(lastOutboundMessage).trim())
+    || firstUs?.body
+    || ''
+  ).trim();
+
+  const shown = new Set();
+  if (originalBody) {
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📥',
+        label: 'Original message',
+        body: originalBody,
+        neverTruncate: true,
+      }),
+    );
+    shown.add(normBodyKey(originalBody));
+  }
+
+  if (ourReplyBody) {
+    if (blocks.length) blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '📤',
+        label: 'Our reply',
+        body: ourReplyBody,
+        neverTruncate: true,
+      }),
+    );
+    shown.add(normBodyKey(ourReplyBody));
+  }
+
+  const rest = history.filter((m) => {
+    const key = normBodyKey(m.body);
+    if (!key || shown.has(key)) return false;
+    shown.add(key);
+    return true;
+  });
+
+  let usN = 1; // already counted "Our reply"
+  let themN = 1; // already counted "Original message"
+  for (const m of rest) {
+    const isUs = m.role === 'us';
+    if (isUs) usN += 1;
+    else themN += 1;
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: isUs ? '📤' : '📥',
+        label: isUs ? `You sent (${usN})` : `They replied (${themN})`,
+        body: m.body,
+        neverTruncate: true,
+      }),
+    );
+  }
+
+  if (draft != null && String(draft).trim() !== '') {
+    blocks.push(dividerBlock());
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: '✍️',
+        label: 'Suggested follow-up',
+        body: draft,
+        neverTruncate: true,
+      }),
+    );
+  }
+
+  return blocks;
+}
+
 function buildConversationBlocks({
   lastOutboundMessage,
   inboundMessage,
   draft,
   priorLabel,
+  inboundLabel,
+  /** FOLLOW_UP cards: original → our reply → rest of thread → bump draft. */
+  followUpContext = false,
+  /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
+  threadMessages = null,
 }) {
+  if (followUpContext) {
+    return buildFollowUpConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft,
+      threadMessages,
+    });
+  }
+
   const blocks = [];
+  const theirLabel = inboundLabel || 'They replied';
+  const ourLabel = priorLabel || 'You sent';
 
   blocks.push(
     ...conversationStepBlocks({
       emoji: '📤',
-      label: priorLabel || 'You sent',
+      label: ourLabel,
       body: lastOutboundMessage,
       maxLen: OUTBOUND_DISPLAY_MAX,
     }),
@@ -208,7 +336,7 @@ function buildConversationBlocks({
   blocks.push(
     ...conversationStepBlocks({
       emoji: '📥',
-      label: 'They replied',
+      label: theirLabel,
       body: inboundMessage,
       maxLen: INBOUND_DISPLAY_MAX,
     }),
@@ -229,9 +357,53 @@ function buildConversationBlocks({
   return blocks;
 }
 
+/** Approve / Edit / Reject / DQ / Meeting booked — shared so FOLLOW_UP can pin them up top. */
+function draftApprovalActionsBlock(replyId) {
+  return {
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '✅ Approve & Send' },
+        style: 'primary',
+        action_id: 'approve_reply',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '✏️ Edit & send' },
+        action_id: 'open_edit_modal',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '❌ Reject' },
+        style: 'danger',
+        action_id: 'reject_reply',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '🚫 DQ' },
+        action_id: 'dq_prospect',
+        value: replyId,
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '📅 Meeting booked' },
+        action_id: 'meeting_booked',
+        value: replyId,
+      },
+    ],
+  };
+}
+
 function buildSentConfirmationBlocks({
   leadName,
   leadEmail,
+  leadPhone,
+  phoneProvider,
+  phoneEnrichmentStatus,
   platform,
   classification,
   inboundMessage,
@@ -243,20 +415,30 @@ function buildSentConfirmationBlocks({
   userId,
   extraFooter,
   ccUsed,
+  threadMessages,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const leadLine = `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}`;
+  // Keep the enriched cellphone on the Lead line after Approve/Reject/DQ —
+  // it used to vanish when the card flipped to the confirmation layout.
+  const leadLine =
+    `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
+    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
   const headers = {
     approved: '✅ SENT — Approved & sent',
     edited: '✏️ SENT — Edited & sent',
     rejected: '❌ Rejected',
+    disqualified: '🚫 DQ — no follow-ups',
+    meeting_booked: '📅 Meeting booked — follow-ups stopped',
     failed: '⚠️ Send failed',
   };
   const footers = {
     approved: 'Approved & sent',
     edited: 'Edited & sent',
     rejected: 'Rejected',
+    disqualified: 'Disqualified · excluded from follow-up nudges',
+    meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     failed: 'Send failed',
   };
   const kind = headers[actionKind] ? actionKind : 'approved';
@@ -279,10 +461,14 @@ function buildSentConfirmationBlocks({
       inboundMessage,
       draft: null,
       priorLabel: contextLabel || 'You sent',
+      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+      followUpContext: isFollowUp,
+      threadMessages: isFollowUp ? threadMessages : null,
     }),
   ];
 
-  if (sentReply && String(sentReply).trim() && kind !== 'rejected') {
+  if (sentReply && String(sentReply).trim()
+      && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked') {
     blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
@@ -324,7 +510,14 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   const blocks = buildSentConfirmationBlocks(opts);
   const preview = plainTextForSlack(opts.sentReply || opts.inboundMessage).slice(0, 120);
   const lead = opts.leadName || 'prospect';
-  const text = `${opts.actionKind === 'rejected' ? 'Rejected' : 'Sent'} — ${lead}${preview ? `: ${preview}` : ''}`;
+  const textPrefix = opts.actionKind === 'rejected'
+    ? 'Rejected'
+    : opts.actionKind === 'disqualified'
+      ? 'DQ'
+      : opts.actionKind === 'meeting_booked'
+        ? 'Meeting booked'
+        : 'Sent';
+  const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
   return slack.chat.update({
     channel: channelId,
@@ -337,18 +530,25 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
 async function postDraftApproval(token, channelId, {
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
-  ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  ccEmails, ccRoundRobinEmails, bookingLink, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  threadPermalink, threadMessages,
 }) {
   const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
     ? `↩️ ${platform.toUpperCase()} — ${classification}`
     : `📩 ${platform.toUpperCase()} — ${classification}`;
 
-  const blocks = [
+  let contextText = `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`;
+  if (threadPermalink) {
+    contextText += ` · <${threadPermalink}|Original thread>`;
+  }
+
+  const metaBlocks = [
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },
@@ -360,55 +560,54 @@ async function postDraftApproval(token, channelId, {
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
     },
-    dividerBlock(),
-    ...buildConversationBlocks({
-      lastOutboundMessage,
-      inboundMessage,
-      draft,
-      priorLabel: contextLabel || 'You sent',
-    }),
-    {
-      type: 'context',
-      elements: [{
-        type: 'mrkdwn',
-        text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`,
-      }],
-    },
   ];
+
+  const conversation = buildConversationBlocks({
+    lastOutboundMessage,
+    inboundMessage,
+    draft,
+    priorLabel: contextLabel || 'You sent',
+    inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+    followUpContext: isFollowUp,
+    threadMessages: isFollowUp ? threadMessages : null,
+  });
+
+  const blocks = isFollowUp
+    ? [
+        // Buttons immediately under campaign/lead/phone so they are never buried
+        // under a long thread (Slack "Show more" collapses tall messages).
+        ...metaBlocks,
+        draftApprovalActionsBlock(replyId),
+        dividerBlock(),
+        ...conversation,
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: contextText }],
+        },
+      ]
+    : [
+        ...metaBlocks,
+        dividerBlock(),
+        ...conversation,
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: contextText }],
+        },
+      ];
 
   if (platform === 'smartlead') {
     const notice = ccAutoNoticeBlock({
       ccEmails: ccEmails || ccEmail,
       ccRoundRobinEmails,
+      bookingLink,
     });
     if (notice) blocks.push(notice);
   }
 
-  blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✅ Approve & Send' },
-          style: 'primary',
-          action_id: 'approve_reply',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '✏️ Edit & send' },
-          action_id: 'open_edit_modal',
-          value: replyId,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '❌ Reject' },
-          style: 'danger',
-          action_id: 'reject_reply',
-          value: replyId,
-        },
-      ],
-    });
+  // Non-follow-up cards keep actions at the bottom (short cards).
+  if (!isFollowUp) {
+    blocks.push(draftApprovalActionsBlock(replyId));
+  }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 
@@ -421,7 +620,7 @@ async function postDraftApproval(token, channelId, {
 }
 
 async function postAlert(token, channelId, {
-  leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
@@ -464,6 +663,26 @@ async function postAlert(token, channelId, {
       ],
     },
   ];
+
+  if (replyId) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🚫 DQ' },
+          action_id: 'dq_prospect',
+          value: replyId,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📅 Meeting booked' },
+          action_id: 'meeting_booked',
+          value: replyId,
+        },
+      ],
+    });
+  }
 
   return slack.chat.postMessage({
     channel: channelId,
@@ -510,6 +729,7 @@ async function updateMessage(token, channelId, messageTs, text) {
 
 async function openEditReplyModal(token, triggerId, {
   replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
+  bookingLink,
 }) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
@@ -533,6 +753,7 @@ async function openEditReplyModal(token, triggerId, {
   const notice = ccAutoNoticeBlock({
     ccEmails: ccEmails || ccEmail,
     ccRoundRobinEmails,
+    bookingLink,
   });
   if (notice) {
     blocks.push({
@@ -627,6 +848,22 @@ async function postPendingApprovalDigest(token, channelId, { pending, dateLabel 
   });
 }
 
+/** Best-effort Slack permalink for an existing channel message. */
+async function getPermalink(token, channelId, messageTs) {
+  if (!token || !channelId || !messageTs) return null;
+  try {
+    const slack = getClient(token);
+    const res = await slack.chat.getPermalink({
+      channel: channelId,
+      message_ts: String(messageTs),
+    });
+    return res?.permalink || null;
+  } catch (err) {
+    console.warn('[Slack] getPermalink failed', { channelId, messageTs, err: err.message });
+    return null;
+  }
+}
+
 module.exports = {
   postDraftApproval,
   postAlert,
@@ -635,8 +872,14 @@ module.exports = {
   updateMessage,
   updateSentConfirmationCard,
   buildSentConfirmationBlocks,
+  buildConversationBlocks,
+  buildFollowUpConversationBlocks,
+  draftApprovalActionsBlock,
+  bookingLinkMrkdwn,
+  ccAutoNoticeBlock,
   openEditReplyModal,
   postMorningDigestHeader,
   postAttentionDigestHeader,
   postPendingApprovalDigest,
+  getPermalink,
 };

@@ -130,16 +130,100 @@ conversation, and adds lead name, email and cell phone from enrichment.
 
 Guard: `client notification stays on the enriched send path`
 
-### Follow-ups after 3 hours, from this deploy onward
+### Follow-ups after meeting propose: 2h → 24h → 48h → 1 week
 
-*"if a prospect doesnt reply to our reply after 3 hours and it looks like they
-havent booked, then draft a follow up and post in slack"* — and on the
-accumulated backlog, *"yea no backlog just from here on out."*
+Only schedule when the approved outbound proposes a meeting (times, Calendly,
+"book for you") — not after every send. Cadence from that send: 2h, 24h, 48h,
+then 1 week. Approving a FOLLOW_UP card does not restart the clock.
 
 Skipped when the prospect already booked, proposed a time, has a calendar event,
-or a call transcript shows the meeting was set. Both SmartLead and LinkedIn.
+or a call transcript (Allo / Cube ACR) shows the meeting was set. Both SmartLead
+and LinkedIn. No backlog replay (`FOLLOW_UP_MAX_AGE_HOURS`).
 
-Guard: `follow-ups wait 3h and never replay a backlog`
+Guard: `follow-ups after meeting propose at 2h/24h/48h/1w`
+
+### Correction: follow-ups after any positive reply
+
+*"no any positive reply should be on that cadence"*
+
+Supersedes the meeting-propose-only gate above. Soft positives (tickets,
+"sure", questions) were not getting 2h/24h/48h/1w nudges because our outbound
+didn't always propose times. Cadence now starts whenever we send a reply to
+`INTERESTED`, `MEETING_PROPOSED`, or `QUESTION`. Declines / OOO / other still
+do not. FOLLOW_UP sends still do not restart the clock. Booking skips unchanged.
+
+Guard: `follow-ups after any positive reply at 2h/24h/48h/1w`
+
+### No follow-up backfill older than 3 days
+
+*"stop backfilling past 3 days ago"*
+
+Positive-reply cadence backfills and ops scripts must not look further than
+3 days. `scheduleAfterOutboundSend` also refuses to start a cadence from a
+send older than 3 days.
+
+Guard: covered by `MAX_SCHEDULE_AGE_DAYS` in `outbound-follow-up.js` and the
+3-day caps in `scripts/smartlead-positive-followups.js` /
+`scripts/post-followup-nudges.js`
+
+### Follow-up drafts must tolerate a null timezone
+
+Every client had `digest_timezone = NULL`. `nextBusinessDayLabel(null)` threw
+`RangeError: Invalid time zone`, so the follow-up runner failed on every tick
+(200+ attempts, zero Slack cards). Fall back to America/Chicago.
+
+Guard: `follow-up draft tolerates null digest_timezone`
+
+### FOLLOW_UP cards post in the main channel with thread context
+
+*"dont post followups in the thread post them in the main channel....give me
+the context of our thread though"*
+
+Cadence FOLLOW_UP cards must be top-level channel messages (`postInThread:
+false`), not buried under the original Slack thread. The card still shows the
+original prospect reply, what we sent, the suggested follow-up, and a permalink
+back to the original Slack card when available.
+
+Guard: `FOLLOW_UP cards post in the main channel with thread context`
+
+### FOLLOW_UP bumps are offer-first; show full thread; Meeting booked button
+
+*"Followup drafts need to be different than form the first reply look aty
+recent bumps, they should mirror those. Mostly reference the offer. I also
+need you to show me all messages between us not just the first 2. Lastly add
+a button meeting booked that stops follow ups and the sequence."*
+
+FOLLOW_UP drafts must NOT reuse the first-reply times-first template
+("thanks for getting back… mid-morning or early afternoon… booking link").
+They mirror the human-edited bumps: short, soft, offer-first (tickets / free
+campaign / video / case study). Slack cards render the full back-and-forth
+(not just one inbound + one outbound). A **Meeting booked** button records a
+booked meeting, cancels pending cadence steps, and stops future nudges
+without DQ'ing the lead.
+
+Guard: `FOLLOW_UP bumps are offer-first with full thread and Meeting booked button`
+
+### FOLLOW_UP bumps reframe the value prop; 3rd bump never uses dashes
+
+*"for the 3rd bump....no dashes ever, you can use ... and for any follow up
+you need to reframe the value prop somehow. ie still interested in meeting
+for x (whatever was in the original email)"*
+
+Every cadence bump must reframe what the original outbound offered
+(tickets / free campaign / video / case study / scraped value prop) —
+e.g. "still interested in meeting for the Rangers tickets". Step 3+ copy
+never uses em/en dashes or spaced hyphen dashes; use "..." instead.
+
+Guard: `FOLLOW_UP bumps reframe value prop and 3rd bump has no dashes`
+
+### Allo call match is by phone digits, not API filter alone
+
+Allo's `/calls?contact_number=` has returned the account's recent call list
+unrelated to the prospect. Judging those transcripts marked innocent leads
+`call_transcript_booked` (Parlay VM follow-ups). Always filter to calls whose
+to/from matches the prospect's last 10 digits.
+
+Guard: `Allo booking check matches the prospect phone`
 
 ### A call that booked skips silently
 
@@ -251,3 +335,201 @@ Wrong-person stays in the silent set with no carve-out for referrals.
 Guard: covered by `NOT_INTERESTED reaches Slack and drafts — reversed once,
 settled`, which asserts the silent set is exactly ooo / unsubscribe /
 wrong_person.
+
+## 2026-08-05
+
+### Parlay Tech: no drafts for .io / .ai reply domains
+
+*"for parlay. please exclude all .io and .ai form drafting replies, DQd at
+client request"*
+
+Parlay asked to DQ those TLDs. Replies still reach Slack as alert-only (with a
+DQ reason) so nothing is silently dropped, but they never get an Approve/Edit
+draft, meetings are not opened, and phone enrichment is skipped.
+
+Other clients are unaffected — a `.io` lead for SalesGlider still drafts.
+
+Guard: `Parlay excludes .io and .ai from drafting`
+
+### Slack campaign field shows the campaign name
+
+*"also i need the campaign ID in slack to be the name of the cmapaign not just
+the numbers"*
+
+Slack cards were rendering `Campaign 3739758`. We now resolve and persist the
+human SmartLead/HeyReach campaign name and show `Name (id)` on draft, alert,
+follow-up, and approve-confirmation cards.
+
+Guard: `Slack campaign field shows the campaign name`
+
+### Missing phone says "phone number not found"
+
+*"and if you cant find one say phone number not found"*
+
+When enrichment finishes without a cellphone, Slack shows
+`phone number not found` — not provider waterfall jargon.
+
+Guard: `missing phone says phone number not found on Slack`
+
+### Phone stays on the Slack card after approve
+
+*"also i dont want the persons number to disappear in slack after i approve"*
+
+The approval confirmation card rebuilt the Lead line without `lead_phone`, so
+the enriched cellphone vanished the moment Approve/Reject/DQ flipped the card.
+Confirmation cards now keep the same phone line as the draft/alert card.
+
+Guard: `phone stays on Slack card after approve`
+
+### Slack DQ button excludes follow-up nudges
+
+*"also add in a DQ button in slack that excludes form followup nudges"*
+
+Every draft and alert card gets a **🚫 DQ** button. Hitting it marks the
+prospect disqualified, cancels pending follow-up cadence steps, and blocks
+future follow-up scheduling / digest nudges for that lead. Separate from
+Reject (which only declines the current draft).
+
+Guard: `Slack DQ button excludes follow-up nudges`
+
+---
+
+## 2026-08-17
+
+### Vasco / Carlos drafts offer in-person meetings only
+
+*"carlos is offering to meet in person, change his replies only to reflrect"*
+
+Vasco Warranty drafts must offer stopping by / meeting in person — not Zoom,
+phone, "quick call with our CEO", or booking links. Other clients keep the
+global times-first + booking-link default. Driven by Vasco's `voice_prompt`
+via `meeting-modality.js` (first-touch fallback, Gemini prompt, FOLLOW_UP bumps).
+
+Guard: `Vasco fallback drafts stop-by in person, never CEO call or booking link`
+
+---
+
+## 2026-08-13
+
+### AI reply Slack channels are interested-only
+
+*"i only want interested replies to come through there. no OOO and no
+not interested"*
+
+Supersedes "Only three kinds of reply are silent" / "NOT_INTERESTED reaches
+Slack and drafts" for the AI reply channels. Cards post only for
+`INTERESTED`, `MEETING_PROPOSED`, and `QUESTION`. OOO, not-interested,
+other/objection noise stay out of those channels. Text heuristics still
+silence OOO / unsubscribe / wrong-person that mis-classify as positive.
+`DRAFT_CLASSIFICATIONS` matches that set (no decline drafts on Slack).
+
+Guard: `Slack channels are interested-only — OOO and NOT_INTERESTED suppressed`
+
+### Josh drafts ack-first; first vs continuation; scrub CEO handoff
+
+SalesGlider voice audit: drafts must acknowledge the prospect's point before
+any CTA; second+ replies on a thread must not reset to cold first-touch;
+Josh-as-CEO clients must never ship "our CEO" / "our founder" handoff voice
+(Chase Dawson leak). RAG prefers client-scoped SalesGlider examples, does
+not learn FOLLOW_UP / placeholder inbounds, and seeds gold ack-first pairs.
+
+Guard: `Josh drafts ack-first with first vs continuation and CEO handoff scrub`
+
+---
+
+## 2026-08-17
+
+### Claude draft failures fall through to Gemini, not the robotic template
+
+Anthropic hit usage limits (blocked until 2026-09-01). Claude + RAG was
+still "configured", so every draft attempt failed and dumped into
+`fallbackDraftText` — the "Happy to jump on a quick call… mid-morning or
+early afternoon" template. That is why replies looked like the old default
+even though ack-first / CEO-voice / RAG code was on the deploy branch.
+
+Fix: Claude failure → Gemini with the same voice prompt. Deterministic
+template only when Gemini also fails. MEETING_PROPOSED last-resort confirms
+their times instead of inventing new ones.
+
+Guard: `classifier no longer dumps Claude failures into deterministic fallback only`
+
+### Claude never runs on poller/backfill; draft positives only
+
+*"so do what you need to to gate it and make sure that never happens oand only
+draft for interested question meeting proposed. neevr let claude do a
+backfill"*
+
+After the Aug 2026 Anthropic burn (poller drafted thousands of
+NOT_INTERESTED/OTHER with Sonnet), Claude is hard-disabled whenever
+`draftMode: 'bulk'` (SmartLead/HeyReach pollers + ops backfill scripts). No
+env opt-in. Drafts only for `INTERESTED` / `MEETING_PROPOSED` / `QUESTION`.
+
+Guard: `Claude never runs on bulk backfill; only positives get drafts`
+
+## 2026-08-20
+
+### Booking-page confirmations stop ReplyHandler follow-ups
+
+Campaignintelligence `log-booking` POSTs to
+`/webhook/booking-bridge` with `Authorization: Bearer` matching
+`BOOKING_BRIDGE_WEBHOOK_SECRET` (same value as campaignintelligence
+`REPLYHANDLER_WEBHOOK_SECRET`). On `booking_confirmed` — and on
+Culture Fits / MS Bookings first-click with `treat_as_booked: true` —
+skip pending `outbound_follow_ups` by email, close open Slack cards as
+`meeting_booked`, and record a booked meeting so the runner does not
+nudge someone who already booked.
+
+Guard: `test/booking-bridge.test.js`
+
+## 2026-08-21
+
+### FOLLOW_UP bumps go to a dedicated Slack channel with buttons up top
+
+*"i want followups and bumps to go in a seperate slack channel, and also the
+actual buttons are buried deep in the thread....each post should be the
+cmapaign, lead, enriched number. then oroginal message, our reply, and then
+the conversation in order. no dupes, no show more"*
+
+All FOLLOW_UP cards post to `C0BRRS8DV19` (override with
+`FOLLOW_UP_SLACK_CHANNEL_ID`), still top-level (`postInThread: false`) — not
+under the original inbox card. Layout: campaign + lead + enriched phone →
+Approve/Edit/Reject/DQ/Meeting booked → original message → our reply → rest
+of the thread in order (deduped, full text chunked — no `_(truncated)_`) →
+suggested bump.
+
+Guard: `FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons`
+
+## 2026-08-25
+
+### Never send another client's signature on a campaign
+
+*"this email was sent out by goliath aug 25. ensure this never ever happens
+again with the sig Sean, that offer's still open whenever you want it. …
+Aarav Sanchez Roofs by Peterson"*
+
+Exact send: Goliath Education Receipts → Sean Dean (`sdean@mscok.edu`),
+seq-2, 2026-08-25 15:42Z, body correct, signature `Aarav Sanchez / Roofs by
+Peterson`. Same day: dozens of Goliath sends signed Peterson or Culture Fits.
+
+Cause: shared SmartLead workspace. Mailboxes moved / rebranded between
+clients while in-flight sequences kept sending from them.
+
+Response: pause contaminated Goliath campaigns immediately; cron
+`smartlead-sender-guard` scans recent statistics for foreign brand lines in
+`%signature%`, Slack-alerts, and auto-pauses. Do not unpause until every
+attached sender signs the campaign's own brand.
+
+Guard: `test/smartlead-sender-guard.test.js`
+
+### Correction: Deliverability Wizard owns sender-brand QA
+
+*"Stop the SmartLead sender-brand guard. Deliverability Wizard owns this.
+… A leftover Peterson line on mail that already went out is not a
+replyhandler pause."*
+
+ReplyHandler does **not** scan SmartLead sends for foreign signatures, does
+not Slack cross-client signature alerts, and does not auto-pause or unpause
+campaigns. That guard is removed. Wizard rewrites foreign brands on the
+mailbox, pulls cross-client attachments, and STARTs a paused Goliath
+campaign only after signature QA. Follow-ups in this repo stay reply-card
+cadence only.

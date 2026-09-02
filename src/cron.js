@@ -1,13 +1,10 @@
 const cron = require('node-cron');
 const db = require('./db');
 const slack = require('./services/slack');
-const { postProspectSlackCard } = require('./services/slack-reply-post');
 const { sendReminder } = require('./services/reminder-email');
-const { draftReattemptToBook } = require('./services/follow-up-drafts');
 const { runDueFollowUps } = require('./services/follow-up-runner');
 const { logIntegrationStatus } = require('./services/integration-check');
 const { logInterestedSweep } = require('./services/interested-sweep');
-const { lastOutboundBodyFromSmartleadHistory } = require('./utils/smartlead-webhook-helpers');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
 
@@ -263,25 +260,75 @@ async function recordAttentionDigest({ clientId, digestDate, digestType, pending
   );
 }
 
+/**
+ * How far back the digest looks. Bounded on purpose.
+ *
+ * The list is ordered oldest-first (within a sane window, oldest is the most
+ * urgent), but with no lower bound a large backlog fills all 25 slots with
+ * ancient rows and current work becomes structurally invisible. Measured
+ * 2026-08-18 against a 2,075-row backlog: the newest item SalesGlider's digest
+ * could show was 38 days old, and Culture Fits' was 22 days old.
+ */
+function attentionDigestWindowDays() {
+  const n = parseInt(process.env.ATTENTION_DIGEST_WINDOW_DAYS || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 7;
+}
+
+const PENDING_DIGEST_LIMIT = 25;
+
+/**
+ * @returns {{ rows: object[], totalInWindow: number, backlogOlder: number }}
+ *   `rows` is capped for display; `totalInWindow` is the real count so the
+ *   header cannot report the cap as if it were the total.
+ */
 async function pendingApprovalRows(clientId) {
+  const windowDays = attentionDigestWindowDays();
+
   const { rows } = await db.query(
     `SELECT id, platform, campaign_id, lead_name, classification, created_at, slack_message_ts
        FROM pending_replies
       WHERE client_id = $1
         AND status = 'pending'
         AND classification <> 'FOLLOW_UP'
+        AND created_at > now() - ($2::int * interval '1 day')
       ORDER BY created_at ASC
-      LIMIT 25`,
-    [clientId]
+      LIMIT ${PENDING_DIGEST_LIMIT}`,
+    [clientId, windowDays]
   );
-  return rows;
+
+  const { rows: [counts] } = await db.query(
+    `SELECT count(*) FILTER (WHERE created_at > now() - ($2::int * interval '1 day'))::int AS in_window,
+            count(*) FILTER (WHERE created_at <= now() - ($2::int * interval '1 day'))::int AS older
+       FROM pending_replies
+      WHERE client_id = $1
+        AND status = 'pending'
+        AND classification <> 'FOLLOW_UP'`,
+    [clientId, windowDays]
+  );
+
+  return {
+    rows,
+    totalInWindow: counts ? counts.in_window : rows.length,
+    backlogOlder: counts ? counts.older : 0,
+  };
 }
 
 /** Collect pending approvals + silent prospects, draft follow-ups, post digest/update in Slack. */
 async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType, dateLabel }) {
   if (await alreadyPostedAttentionDigest(client.id, digestDate, digestType)) return;
 
-  const pendingApprovals = await pendingApprovalRows(client.id);
+  const {
+    rows: pendingApprovals,
+    totalInWindow: pendingTotal,
+    backlogOlder,
+  } = await pendingApprovalRows(client.id);
+
+  if (backlogOlder > 0) {
+    console.log('[Cron] Attention digest: backlog outside window not shown', {
+      clientId: client.id, client: client.name, backlogOlder,
+      windowDays: attentionDigestWindowDays(),
+    });
+  }
 
   // Candidate follow-ups: scheduled outbound where the due time has arrived and the prospect
   // still has not replied. Morning and 3pm digests are the only Slack notifications for these.
@@ -292,7 +339,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
      WHERE f.client_id = $1
        AND f.status = 'pending'
        AND f.due_at <= now()
-     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at DESC`,
+     ORDER BY f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''), f.due_at ASC`,
     [client.id]
   );
 
@@ -320,7 +367,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     {
       digestType,
       dateLabel,
-      pendingCount: pendingApprovals.length,
+      pendingCount: pendingTotal,
       followUpCount: pendingFollowUps.length,
     }
   );
@@ -333,100 +380,32 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   }
 
   let posted = 0;
+  const { isDisqualified } = require('./services/disqualified-prospects');
+  const { postFollowUpCard } = require('./services/follow-up-runner');
   for (const fu of pendingFollowUps) {
     try {
-      const draft = await draftReattemptToBook({
-        leadName: fu.lead_name,
-        platform: fu.platform,
-        voicePrompt: client.voice_prompt,
-        bookingLink: client.booking_link,
-        lastInboundMessage: null,
-        lastOutboundMessage: null,
-        digestTimezone: client.digest_timezone,
-      });
-
-      // Create a reusable pending_replies row; Slack Approve/Edit uses the existing send path.
-      let threadContext = null;
-      let smartleadStatsId = null;
-      if (fu.source_pending_reply_id) {
-        const { rows: [src] } = await db.query(
-          'SELECT thread_context, smartlead_email_stats_id FROM pending_replies WHERE id = $1',
-          [fu.source_pending_reply_id]
-        );
-        if (src) {
-          threadContext = src.thread_context;
-          smartleadStatsId = src.smartlead_email_stats_id;
-          if (typeof threadContext === 'string') {
-            try { threadContext = JSON.parse(threadContext); } catch { /* keep string */ }
-          }
-        }
-      }
-
-      const { rows: [newReply] } = await db.query(
-        `INSERT INTO pending_replies
-          (client_id, platform, campaign_id, lead_id, lead_name, lead_email, linkedin_url,
-           inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'FOLLOW_UP', $10, 'pending', $11)
-         RETURNING *`,
-        [
-          client.id,
-          fu.platform,
-          fu.campaign_id,
-          fu.lead_id,
-          fu.lead_name,
-          fu.lead_email,
-          fu.linkedin_url,
-          '(no new reply — follow-up re-attempt)',
-          typeof threadContext === 'object' && threadContext !== null ? JSON.stringify(threadContext) : threadContext,
-          draft,
-          smartleadStatsId,
-        ]
-      );
-
-      let lastOutFollow = '';
-      if (fu.platform === 'smartlead' && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
-        lastOutFollow = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
-      } else if (fu.platform === 'heyreach' && threadContext && typeof threadContext === 'object' && threadContext.messages) {
-        const msgs = threadContext.messages;
-        if (Array.isArray(msgs)) {
-          for (const m of msgs) {
-            if (!m || typeof m !== 'object') continue;
-            const role = String(m.role || '').toLowerCase();
-            if (role === 'us' || role === 'me') {
-              const t = (typeof m.message === 'string' && m.message) || (typeof m.text === 'string' && m.text) || '';
-              if (t.trim()) lastOutFollow = t.trim();
-            }
-          }
-        }
-      }
-      const campFollow =
-        fu.campaign_id != null && String(fu.campaign_id).trim() !== ''
-          ? `Campaign ${String(fu.campaign_id).trim()}`
-          : '';
-
-      await postProspectSlackCard({
-        token: client.slack_bot_token,
-        channelId: client.slack_channel_id,
-        clientId: client.id,
+      if (await isDisqualified(client.id, {
         platform: fu.platform,
         campaignId: fu.campaign_id,
         leadId: fu.lead_id,
-        threadContext,
-        isDraft: true,
-        replyId: newReply.id,
-        card: {
-          replyId: newReply.id,
-          leadName: fu.lead_name,
-          leadEmail: fu.lead_email,
-          platform: fu.platform,
-          classification: 'FOLLOW_UP',
-          draft,
-          reasoning: `No reply since our last message (${fu.sent_at.toISOString ? fu.sent_at.toISOString() : fu.sent_at}). AI drafted a re-attempt to book.`,
-          inboundMessage: '(no new reply from prospect)',
-          campaignDisplay: campFollow || undefined,
-          lastOutboundMessage: lastOutFollow || undefined,
-        },
-      });
+        conversationId: fu.conversation_id,
+        leadEmail: fu.lead_email,
+        linkedinUrl: fu.linkedin_url,
+      })) {
+        await db.query(
+          `UPDATE outbound_follow_ups
+              SET status = 'skipped', skip_reason = 'disqualified', updated_at = now()
+            WHERE id = $1`,
+          [fu.id]
+        );
+        console.log('[Cron] Digest follow-up skipped — disqualified', {
+          clientId: client.id, lead: fu.lead_name,
+        });
+        continue;
+      }
+
+      // Same top-level FOLLOW_UP card as the timed runner (dedicated follow-ups channel).
+      await postFollowUpCard(client, fu);
       await db.query('UPDATE outbound_follow_ups SET status = $1, updated_at = now() WHERE id = $2', ['notified', fu.id]);
       posted++;
     } catch (err) {
@@ -438,7 +417,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     clientId: client.id,
     digestDate,
     digestType,
-    pendingCount: pendingApprovals.length,
+    pendingCount: pendingTotal,
     followUpCount: posted,
     slackMessageTs: header?.ts || null,
   });
@@ -451,4 +430,4 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   });
 }
 
-module.exports = { startCron };
+module.exports = { startCron, attentionDigestWindowDays, PENDING_DIGEST_LIMIT };

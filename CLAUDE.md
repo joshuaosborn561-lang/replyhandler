@@ -47,23 +47,57 @@ quoted thread history plus signatures — are rejected with 413 **before the
 webhook route runs**. There is no log line, no error, no Slack card. Replies
 just vanish. This cost us a day of missed replies across every client.
 
-## Suppression policy — only three things are silent
+## Suppression policy — AI reply channels are interested-only
 
-`slackSuppressionReason()` in `src/utils/smartlead-webhook-helpers.js` is the
-single source of truth. Silent: **out-of-office, explicit unsubscribe/opt-out,
-wrong-person**. Everything else reaches Slack.
+Final Slack gate: `slackChannelSuppressionReason()` in
+`src/utils/slack-channel-policy.js`. Only **`INTERESTED`**,
+**`MEETING_PROPOSED`**, and **`QUESTION`** post to the AI reply channels.
+`NOT_INTERESTED`, `OOO`, `OTHER`, `OBJECTION`, and similar stay out.
 
-In particular, **`NOT_INTERESTED` must post to Slack and must get a draft.** It
-is an objection worth working, not a dead lead. It drafts in decline mode —
-acknowledge, no pitch, no times, no link, then ask about checking back later.
+Text heuristics in `slackSuppressionReason()`
+(`src/utils/smartlead-webhook-helpers.js`) still catch OOO / unsubscribe /
+wrong-person that mis-classify as a positive. Prefer returning a distinct
+reason string from the shared helpers so poller `skipCounts` stay accurate.
 
-If you add a suppression rule, add it to `slackSuppressionReason()` and return a
-distinct reason string. Do not hardcode a reason at the call site — the pollers
-report these in `skipCounts`, and a log that misreports *why* a reply went
-silent is how a real reply gets lost.
+Drafts follow the same set: `DRAFT_CLASSIFICATIONS` is only those three
+positives. Decline-mode helpers remain for fallbacks, but declines are not
+Slack-carded.
 
 Note: wrong-person also catches "please contact Jane instead", so genuine
 referrals are currently silenced. Known tradeoff, deliberate.
+
+## Josh / SalesGlider draft voice
+
+Ack what they said before any CTA. First outbound on a thread is
+`FIRST_TOUCH`; after any prior sent reply it is `CONTINUATION` (do not reset
+to cold first-touch voice). For Josh-as-CEO clients, scrub "our CEO" /
+"our founder" handoffs to first person (`principal-draft-guard.js`). RAG
+prefers client-scoped examples (`match_replies_v2`), skips FOLLOW_UP /
+placeholder inbounds for learning, and can be seeded via
+`scripts/seed-josh-gold-reply-examples.js`.
+
+## Draft provider order
+
+1. Claude + RAG when `ANTHROPIC_API_KEY` + Supabase embeddings are configured
+   **and** `draftMode` is realtime (webhooks only)
+2. On Claude failure (including Anthropic usage limits), **Gemini** with the
+   same voice prompt — do not skip to the template
+3. Deterministic `fallbackDraftText` only if Gemini also fails / returns empty
+
+**Hard rule:** pollers and backfill scripts pass `draftMode: 'bulk'`. Claude is
+never used there — no env opt-in. Only `INTERESTED` / `MEETING_PROPOSED` /
+`QUESTION` get drafts at all.
+
+If drafts suddenly all look like "Happy to jump on a quick call…", check
+Anthropic quota first, then confirm this fallthrough is still wired.
+
+## Client meeting modality (Vasco / Carlos)
+
+Some clients meet in person. That is driven by `clients.voice_prompt` via
+`src/utils/meeting-modality.js` — not a global default. Vasco's prompt says
+Carlos stops by the dealership in person; drafts and FOLLOW_UP bumps then
+omit Zoom / phone / "our CEO" / booking links. Leave other clients on
+times-first + booking-link.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 
@@ -102,13 +136,22 @@ events otherwise burn a Gemini call and post a duplicate card.
 Lookback defaults to 168h. Anything dropped longer ago than that will not
 self-recover and needs a manual sweep.
 
-## Follow-ups: 3h, gated on four booking signals
+## Follow-ups: 2h → 24h → 48h → 1w after any positive reply
 
-`follow-up-runner.js` posts a re-attempt card once a send goes unanswered for
-`FOLLOW_UP_HOURS` (3). Before posting it asks `booking-check.js` whether the
-prospect already booked — a `meetings` row, a later reply proposing a time or
-confirming, a calendar event with them as attendee, or a call transcript.
-Any one suppresses the card silently and records `skip_reason`.
+`scheduleAfterOutboundSend` queues when we send a reply to a positive inbound
+(`INTERESTED`, `MEETING_PROPOSED`, `QUESTION`). Default cadence is `2,24,48,168`
+hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
+
+`follow-up-runner.js` posts the next due step as a **top-level** Slack channel
+card (not threaded under the original reply). Drafts are **offer-first bumps**
+(different from the first times-first reply). The card shows the **full**
+back-and-forth, a permalink to the original card, and a **Meeting booked**
+button that cancels the cadence.
+Before posting it asks `booking-check.js` whether the prospect already booked —
+a `meetings` row, a later reply proposing a time or confirming, a calendar
+event with them as attendee, or a call transcript (Allo / Cube ACR). Any one
+suppresses the card silently, records `skip_reason`, and cancels later steps
+for that thread.
 
 Rows more than `FOLLOW_UP_MAX_AGE_HOURS` (24) past due are retired as `stale`
 rather than posted. That guard matters: the table accumulated for months while

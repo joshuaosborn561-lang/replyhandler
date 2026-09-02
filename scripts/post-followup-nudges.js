@@ -3,14 +3,21 @@
  * Post follow-up nudge messages to Slack for positive replies from Culture Fits and MSRS.
  * Each nudge shows the lead name, email, and their original reply so the team can follow up.
  *
- * Usage: DATABASE_URL=... node scripts/post-followup-nudges.js [--days N] [--dry-run]
+ * Usage: DATABASE_URL=... node scripts/post-followup-nudges.js [--days=N] [--dry-run]
+ *
+ * Hard cap: never look back more than 3 days (Josh: no backfill past 3 days ago).
  */
 const { Client } = require('pg');
 const { resolveDatabaseUrl, pgSslOption } = require('./railway-database-url');
 const { stripHtmlToText } = require('../src/utils/smartlead-webhook-helpers');
 
 const TARGET_CLIENTS = ['Culture Fits', 'MSRS'];
-const DAYS_BACK = parseInt(process.env.DAYS_BACK || '7', 10);
+const MAX_DAYS_BACK = 3;
+const daysCli = (process.argv.find((a) => a.startsWith('--days=')) || '').split('=')[1];
+const DAYS_BACK = Math.min(
+  Math.max(parseInt(daysCli || process.env.DAYS_BACK || String(MAX_DAYS_BACK), 10) || MAX_DAYS_BACK, 1),
+  MAX_DAYS_BACK
+);
 const DRY_RUN = process.argv.includes('--dry-run');
 
 function norm(s) {
@@ -135,8 +142,8 @@ async function buildNudgeBlocks(clientName, positives) {
 }
 
 async function main() {
-  const daysArg = process.argv.find(a => a.startsWith('--days='));
-  const days = daysArg ? parseInt(daysArg.split('=')[1], 10) : DAYS_BACK;
+  // Always use DAYS_BACK (already clamped to MAX_DAYS_BACK = 3).
+  const days = DAYS_BACK;
 
   const conn = resolveDatabaseUrl();
   const db = new Client({ connectionString: conn, ssl: pgSslOption(conn) });

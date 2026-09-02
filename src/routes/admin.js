@@ -1,5 +1,7 @@
 const { Router } = require('express');
 const db = require('../db');
+const { postProspectSlackCard } = require('../services/slack-reply-post');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 
 const router = Router();
 
@@ -146,6 +148,101 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
   } catch (err) {
     console.error('[Admin] Update client error', { err: err.message });
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Insert a pending reply and post the real Approve / Edit & send Slack card.
+ * Used to recover a reply the interested-only gate silenced.
+ */
+router.post('/admin/post-approval-card', async (req, res) => {
+  const {
+    clientId,
+    leadName,
+    leadEmail,
+    campaignId,
+    campaignName,
+    leadId,
+    inboundMessage,
+    draft,
+    lastOutboundMessage,
+    classification = 'INTERESTED',
+    reasoning = 'Recovered for Slack approval.',
+  } = req.body || {};
+
+  if (!clientId || !leadName || !inboundMessage || !draft || !campaignId || !leadId) {
+    return res.status(400).json({
+      error: 'clientId, leadName, inboundMessage, draft, campaignId, and leadId are required',
+    });
+  }
+
+  try {
+    const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    if (!client || !client.active) {
+      return res.status(404).json({ error: 'client not found or inactive' });
+    }
+
+    const lastOut = String(lastOutboundMessage || '').trim();
+    const threadContext = lastOut
+      ? [
+        { role: 'us', message: lastOut },
+        { role: 'prospect', message: inboundMessage },
+      ]
+      : [{ role: 'prospect', message: inboundMessage }];
+    const display = formatCampaignDisplay(campaignName, campaignId) || String(campaignId);
+
+    const { rows: [reply] } = await db.query(
+      `INSERT INTO pending_replies
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email,
+         inbound_message, thread_context, classification, draft_reply, status)
+       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending') RETURNING *`,
+      [
+        clientId,
+        String(campaignId),
+        campaignName || null,
+        String(leadId),
+        leadName,
+        leadEmail || null,
+        inboundMessage,
+        JSON.stringify(threadContext),
+        classification,
+        draft,
+      ]
+    );
+
+    const slackResult = await postProspectSlackCard({
+      token: client.slack_bot_token,
+      channelId: client.slack_channel_id,
+      clientId,
+      platform: 'smartlead',
+      campaignId: String(campaignId),
+      leadId: String(leadId),
+      threadContext,
+      isDraft: true,
+      replyId: reply.id,
+      postInThread: false,
+      card: {
+        replyId: reply.id,
+        leadName,
+        leadEmail: leadEmail || null,
+        platform: 'smartlead',
+        classification,
+        draft,
+        reasoning,
+        inboundMessage,
+        campaignDisplay: display,
+        lastOutboundMessage: lastOut || undefined,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      replyId: reply.id,
+      slackMessageTs: slackResult.ts,
+    });
+  } catch (err) {
+    console.error('[Admin] post-approval-card error', { err: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 

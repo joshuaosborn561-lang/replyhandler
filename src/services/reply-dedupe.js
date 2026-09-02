@@ -1,9 +1,22 @@
 const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
-const { DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
+/**
+ * Collapse every Unicode space (including NBSP U+00A0) to a single ASCII space.
+ *
+ * Critical: Postgres POSIX `\s` does NOT match NBSP, while JavaScript `\s`
+ * does. LinkedIn/HeyReach bodies often contain NBSP (e.g. before a URL).
+ * If SQL keeps the NBSP and JS turns it into a normal space, dedupe never
+ * matches and the poller re-posts the same card every cycle.
+ */
 function normalizeInboundText(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(text || '')
+    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 /**
@@ -24,11 +37,41 @@ function inboundPrefix(text) {
   return normalizeInboundText(text).slice(0, PREFIX_LEN);
 }
 
-/** SQL for the same key, applied to the stored column. */
-const STORED_PREFIX_SQL = `left(lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')), ${PREFIX_LEN})`;
+/**
+ * Every codepoint normalizeInboundText's regex strips, mirrored for SQL.
+ * Postgres POSIX `\s` matches none of these, so each needs its own `replace()`
+ * before the `\s+` collapse — chr(160) and chr(8239) alone (the old list)
+ * missed zero-width space (8203) and friends. A prospect's signature line with
+ * invisible characters like "Pete Langlois ​ ​ ​ ​" then
+ * normalized differently on the JS side vs the stored-column SQL side, so
+ * dedupe never matched and the poller re-posted the same reply every cycle
+ * (2026-08-05, Pete Langlois/TechEvolution — 170 duplicate cards over ~4h).
+ */
+const UNICODE_SPACE_CODEPOINTS = [
+  160,   // NBSP
+  5760,  // OGHAM SPACE MARK
+  8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8203, // EN QUAD .. ZERO WIDTH SPACE
+  8239,  // NARROW NBSP
+  8287,  // MEDIUM MATHEMATICAL SPACE
+  12288, // IDEOGRAPHIC SPACE
+  65279, // ZERO WIDTH NO-BREAK SPACE / BOM
+];
 
-/** The stored body, normalised the same way as inboundPrefix does in JS. */
-const STORED_NORM_SQL = `lower(regexp_replace(inbound_message, '\\s+', ' ', 'g'))`;
+function stripUnicodeSpacesSql(column) {
+  return UNICODE_SPACE_CODEPOINTS.reduce(
+    (sql, code) => `replace(${sql}, chr(${code}), ' ')`,
+    column
+  );
+}
+
+const STORED_NORM_SQL = (
+  `lower(trim(both from regexp_replace(` +
+  `${stripUnicodeSpacesSql('inbound_message')}, ` +
+  `'\\s+', ' ', 'g')))`
+);
+
+/** SQL for the same key, applied to the stored column. */
+const STORED_PREFIX_SQL = `left(${STORED_NORM_SQL}, ${PREFIX_LEN})`;
 
 /**
  * Shortest text that can safely be called "the same reply". Below this, a
@@ -72,25 +115,38 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
+  // Text only — never smartlead_email_stats_id. That id is the most recent
+  // outbound SENT stats id, identical across different replies to the same
+  // send. Matching on it silently drops a new reply (webhook fixed in #31;
+  // poller still had the OR-branch). emailStatsId kept in the signature for
+  // callers; unused for matching.
+  void emailStatsId;
+  void campaignId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return false;
+  if (!normalized) return false;
 
   const { rows } = await db.query(
-    `SELECT slack_message_ts
+    `SELECT id
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$3', '$6')}
-        )
+        AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
         )
-        AND slack_message_ts IS NOT NULL
+        AND (
+          slack_message_ts IS NOT NULL
+          -- A suppressed reply is a decided reply: it reached a terminal state
+          -- on purpose and must never be reprocessed. It has no
+          -- slack_message_ts by definition, so requiring one here meant every
+          -- poll cycle re-classified and re-inserted the same suppressed reply
+          -- forever. Measured 2026-08-19: 88,769 suppressed rows over 3 days
+          -- for 193 distinct replies (~460x), worst offenders at 863 copies of
+          -- a single reply, each copy having burned a classifier call.
+          OR status = 'suppressed'
+        )
       ORDER BY created_at DESC
       LIMIT 1`,
     [
@@ -98,7 +154,6 @@ async function alreadyPostedToSlack({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
-      stats,
       fullNorm,
     ]
   );
@@ -113,10 +168,11 @@ async function findUnpostedReply({
   inboundMessage,
   emailStatsId,
 }) {
+  void emailStatsId;
+  void campaignId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return null;
+  if (!normalized) return null;
 
   const { rows } = await db.query(
     `SELECT *
@@ -125,10 +181,7 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$3', '$6')}
-        )
+        AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -140,7 +193,6 @@ async function findUnpostedReply({
       platform,
       normalized,
       leadId != null ? String(leadId) : '',
-      stats,
       fullNorm,
     ]
   );
@@ -148,9 +200,7 @@ async function findUnpostedReply({
 }
 
 function formatCampaignDisplayFromReply(reply) {
-  const id = reply.campaign_id != null ? String(reply.campaign_id).trim() : '';
-  if (id) return `Campaign ${id}`;
-  return '';
+  return formatCampaignDisplay(campaignNameFromReply(reply), reply.campaign_id);
 }
 
 function lastOutboundFromThreadContext(reply) {
@@ -176,15 +226,40 @@ function lastOutboundFromThreadContext(reply) {
 }
 
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(reply.classification);
+  const { shouldPostToSlackChannel } = require('../utils/slack-channel-policy');
+  if (!shouldPostToSlackChannel({
+    classification: reply.classification,
+    inboundMessage: reply.inbound_message,
+  })) {
+    console.log('[Dedupe] Skip Slack recovery — not an interested-channel classification', {
+      replyId: reply.id,
+      classification: reply.classification,
+    });
+    return false;
+  }
+
+  const policy = applyClientDraftPolicy(client, reply.lead_email, {
+    classification: reply.classification,
+    draft: reply.draft_reply,
+    reasoning: reasoningExtra || `Recovered unposted Slack card for ${reply.lead_name}.`,
+  });
+  if (policy.skippedDraft && reply.draft_reply) {
+    await db.query(
+      `UPDATE pending_replies
+          SET draft_reply = NULL, status = 'alert_only', updated_at = now()
+        WHERE id = $1`,
+      [reply.id]
+    );
+  }
+  const isDraft = policy.isDraft;
   const card = {
     replyId: reply.id,
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
     platform: reply.platform,
     classification: reply.classification,
-    draft: reply.draft_reply,
-    reasoning: reasoningExtra || `Recovered unposted Slack card for ${reply.lead_name}.`,
+    draft: policy.draft,
+    reasoning: policy.reasoning,
     inboundMessage: reply.inbound_message,
     campaignDisplay: formatCampaignDisplayFromReply(reply),
     lastOutboundMessage: lastOutboundFromThreadContext(reply) || undefined,
@@ -213,6 +288,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
        JOIN clients c ON c.id = pr.client_id
       WHERE pr.slack_message_ts IS NULL
         AND pr.status IN ('pending', 'alert_only')
+        AND pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
         AND c.active IS DISTINCT FROM false
         AND pr.created_at > now() - interval '7 days'
       ORDER BY pr.created_at ASC
@@ -251,7 +327,8 @@ module.exports = {
   sameReplySql,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
-  normalizeInboundText,
+  STORED_NORM_SQL,
+  UNICODE_SPACE_CODEPOINTS,
   alreadyPostedToSlack,
   findUnpostedReply,
   repostReplyRowToSlack,

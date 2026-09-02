@@ -18,12 +18,37 @@ const CLASSIFICATIONS = [
   'MEETING_PROPOSED', 'OTHER',
 ];
 
-const NO_REPLY_NEEDED = new Set(['OOO', 'OUT_OF_OFFICE', 'WRONG_PERSON', 'REMOVE_ME', 'COMPETITOR']);
-/** Declines still get a draft, but a graceful check-back one — never a times-first push. */
+// Interested-only Slack channels: draft + post only bookable positives.
+const NO_REPLY_NEEDED = new Set([
+  'OOO', 'OUT_OF_OFFICE', 'WRONG_PERSON', 'REMOVE_ME', 'COMPETITOR',
+  'NOT_INTERESTED', 'OTHER', 'OBJECTION',
+]);
+/** Kept for fallback copy / tests — declines are no longer drafted for Slack. */
 const DECLINE_CLASSIFICATIONS = new Set(['NOT_INTERESTED']);
-const DRAFT_CLASSIFICATIONS = CLASSIFICATIONS.filter((c) => !NO_REPLY_NEEDED.has(c));
+/** Only these get an AI draft. Never expand without Josh. */
+const DRAFT_CLASSIFICATIONS = Object.freeze(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
+let loggedAnthropicBulkSkip = false;
+
+/**
+ * Claude+RAG is realtime webhooks only.
+ * Pollers / backfill scripts MUST pass draftMode: 'bulk' — Claude is never used there.
+ * There is intentionally no env opt-in to re-enable Claude on bulk (Aug 2026 burn).
+ */
+function isBulkDraftMode(draftMode) {
+  return String(draftMode || 'realtime').toLowerCase() === 'bulk';
+}
+
+function shouldUseAnthropicDrafts({ draftMode } = {}) {
+  if (!claudeReplyDraft.isConfigured()) return false;
+  if (isBulkDraftMode(draftMode)) return false;
+  return true;
+}
+
+function assertDraftableClassification(classification) {
+  return DRAFT_CLASSIFICATIONS.includes(String(classification || '').toUpperCase());
+}
 
 async function withGeminiRetry(fn, { attempts = 3, baseDelayMs = 800 } = {}) {
   let lastErr;
@@ -48,10 +73,24 @@ function firstNameFromLead(leadName) {
   return s.split(/\s+/)[0];
 }
 
+/** Resolve a usable IANA TZ; null/invalid → America/Chicago. */
+function resolveDraftTimeZone(timeZone) {
+  let tz = String(timeZone || '').trim() || DEFAULT_DRAFT_TZ;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
+    return tz;
+  } catch {
+    return DEFAULT_DRAFT_TZ;
+  }
+}
+
 /** Next weekday after today in the given IANA timezone (skips Sat/Sun). */
 function nextBusinessDayLabel(timeZone = DEFAULT_DRAFT_TZ) {
-  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  // Clients often have digest_timezone NULL — Intl throws on null/invalid TZ
+  // and that was silently killing every follow-up card (hundreds of retries).
+  const tz = resolveDraftTimeZone(timeZone);
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
   let cursor = Date.now();
   for (let i = 0; i < 8; i += 1) {
     cursor += 24 * 60 * 60 * 1000;
@@ -152,6 +191,7 @@ function fallbackDraftText({
   threadContext,
   digestTimezone,
   includeBookingLink,
+  voicePrompt,
 } = {}) {
   const name = firstNameFromLead(leadName);
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
@@ -163,7 +203,10 @@ function fallbackDraftText({
     ? includeBookingLink
     : looksLikeBookingLinkRequest(msg, threadContext || '');
 
-  if (wantLink) {
+  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
+
+  if (wantLink && !inPerson) {
     return link
       ? `Hey ${name}, sounds good — here's the booking link: ${link}`
       : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
@@ -176,15 +219,83 @@ function fallbackDraftText({
     );
   }
 
+  if (inPerson) {
+    const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
+    const ack = clearInterest
+      ? 'Would love to see if this is a fit.'
+      : 'Happy to stop by and walk through it in person.';
+    const cta = meetingCta({ voicePrompt, day1: d1, day2: d2 });
+    return (
+      `Hey ${name}, thanks for getting back to me. ${ack} ` +
+      `${cta.suggestLine} ${cta.neitherLine}`
+    );
+  }
+
+  const { callWithWhom } = require('../utils/principal-voice');
+  const whom = callWithWhom(voicePrompt);
+
+  // They already threw times — confirm those instead of inventing mid-morning defaults.
+  if (classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(msg)) {
+    const theirTimes = summarizeProposedTimes(msg);
+    if (theirTimes) {
+      return (
+        `Hey ${name}, appreciate you throwing times over — ${theirTimes} works on my end. ` +
+        `I'll send something over shortly. If that window shifted, just say the word.`
+      );
+    }
+    return (
+      `Hey ${name}, appreciate you throwing times over. ` +
+      `That window works on my end — I'll send something over shortly. ` +
+      `If you need to shift it, just say the word.`
+    );
+  }
+
   const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
   const ack = clearInterest
     ? 'Would love to see if this is a fit.'
     : 'Happy to jump on a quick call and walk through it.';
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
-    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with our CEO? ` +
+    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with ${whom}? ` +
     `If neither works I can send a booking link.`
   );
+}
+
+/** Loose detect: prospect named a day/time window in their reply. */
+function looksLikeTheyProposedTimes(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  if (/\b(monday|tuesday|wednesday|thursday|friday|tomorrow|today|next week)\b/i.test(s)
+      && /\b(\d{1,2}\s*(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)|\d{1,2}\s*-\s*\d{1,2}|noon|morning|afternoon|evening)\b/i.test(s)) {
+    return true;
+  }
+  if (/\b\d{1,2}\s*(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)\s*(est|edt|cst|cdt|mst|mdt|pst|pdt)?\b/i.test(s)) {
+    return true;
+  }
+  return false;
+}
+
+/** Short plain fragment of the times they offered (best-effort). */
+function summarizeProposedTimes(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+
+  const day = (s.match(
+    /\b((?:this |next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today))\b/i
+  ) || [])[1];
+
+  const window = (s.match(
+    /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?(?:\s*(?:est|edt|cst|cdt|mst|mdt|pst|pdt))?)/i
+  ) || [])[1];
+
+  const single = (s.match(
+    /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)(?:\s*(?:est|edt|cst|cdt|mst|mdt|pst|pdt))?)/i
+  ) || [])[1];
+
+  const time = (window || single || '').replace(/\s+/g, ' ').trim();
+  if (day && time) return `${day} ${time}`;
+  if (day) return day;
+  return time;
 }
 
 function buildClassifyModel() {
@@ -293,8 +404,9 @@ function summarizeThread(threadContext) {
 
 /** Next two weekday labels for time suggestions (skips weekends). */
 function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
-  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' });
+  const tz = resolveDraftTimeZone(timeZone);
+  const weekdayFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+  const longFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
   const labels = [];
   let cursor = Date.now();
   for (let i = 0; i < 14 && labels.length < 2; i += 1) {
@@ -307,7 +419,14 @@ function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
   return labels;
 }
 
-function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, includeBookingLink }) {
+function buildTimeSuggestionBlock({
+  digestTimezone, schedulingPromptBlock, includeBookingLink, voicePrompt,
+}) {
+  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
+  if (prefersInPersonMeeting(voicePrompt)) {
+    const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
+    return meetingCta({ voicePrompt, day1: d1, day2: d2 }).timeRule;
+  }
   if (includeBookingLink) {
     return 'The prospect wants the booking link — include it once. Keep the reply short.';
   }
@@ -326,8 +445,18 @@ function buildTimeSuggestionBlock({ digestTimezone, schedulingPromptBlock, inclu
   );
 }
 
-function buildSdrVoicePrompt({ name, booking, classification, channel, includeBookingLink }) {
+function buildSdrVoicePrompt({
+  name, booking, classification, channel, includeBookingLink, voicePrompt,
+  replyMode = 'FIRST_TOUCH',
+}) {
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
+  const inPerson = prefersInPersonMeeting(voicePrompt);
   const isDecline = DECLINE_CLASSIFICATIONS.has(classification);
+  const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
+    ? 'CONTINUATION'
+    : 'FIRST_TOUCH';
   const link = booking || '{BOOKING_LINK}';
   const channelNote = channel === 'linkedin'
     ? 'This is a LinkedIn message. Keep it shorter - 1-2 sentences when possible. No sign-off or signature.'
@@ -341,34 +470,80 @@ function buildSdrVoicePrompt({ name, booking, classification, channel, includeBo
 
   const bookingRules = isDecline
     ? declineRules
+    : inPerson
+    ? `- IN-PERSON MODE: Offer to stop by / meet in person. Never Zoom, phone, "quick call", "our CEO", Calendly, or any booking URL.\n` +
+      `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
+      `- Close by offering to work around their schedule if neither time works.`
     : includeBookingLink
     ? `- BOOKING LINK MODE: The prospect asked for the booking link or accepted our offer to send it.\n` +
       `- Include this exact URL once near the end: ${link}\n` +
       `- Keep it casual ("here's the link if easier"). Do not dump a long calendar pitch.`
-    : `- TIMES-FIRST MODE (default): Do NOT include any booking URL, Calendly link, or http link.\n` +
-      `- Suggest 2 concrete times in the next few business days.\n` +
+    : `- AFTER ACK: Do NOT include any booking URL, Calendly link, or http link.\n` +
+      `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
       `- Close by offering to send a booking link if neither time works.\n` +
       `- Booking link exists for later follow-up only: ${link} — do not paste it now.`;
 
-  return `You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.
+  const roleLine = asPrincipal
+    ? 'You ghostwrite replies as Joshua Osborn, founder/CEO (first person). You ARE the CEO — never say "our CEO" or "our founder", never hand off. Suggest a quick call with you ("with me").'
+    : inPerson
+    ? 'You ghostwrite replies for a B2B seller who meets prospects in person. Output PLAIN TEXT only. No markdown. No quotes around the message.'
+    : 'You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.';
+  const modeRules = mode === 'CONTINUATION'
+    ? `- CONTINUATION MODE: This is NOT their first reply. Do not use a first-touch "thanks for getting back to me" opener.\n` +
+      `- Continue the thread — answer their latest point first ("Ok great…", "Fair enough…", "Sorry for the mixup…").`
+    : `- FIRST_TOUCH MODE: Soft yes can use "thanks for getting back to me". Questions/objections must be answered before any CTA.`;
 
-Voice reference (match warmth/directness; do NOT copy booking-link habits from older examples):
+  const exampleA = asPrincipal
+    ? `Prospect: "What's the catch?"
+Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value on the front end for you. I know your inbox is full of this kind of stuff...time Monday morning or Tuesday to connect?"`
+    : inPerson
+    ? `Prospect: "What's the catch?"
+Reply: "Hey Scott, no catch — happy to show you in person. Are you free mid-morning Tuesday or early afternoon Wednesday for me to stop by?"`
+    : `Prospect: "What's the catch?"
+Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value on the front end for you. Time Monday morning or Tuesday to connect?"`;
 
-EXAMPLE A (times-first — no link):
-Prospect: "Worth a reply. Tell me more."
-Reply: "Awesome, thanks! Easiest will be a quick chat with our CEO — he built the whole thing out. Can you do Thursday mid-morning or Friday early afternoon? If neither works I can send a booking link."
+  const exampleB = asPrincipal
+    ? `Prospect: "Sure."
+Reply: "Hey Dean, thanks for getting back to me, sounds good! I have some time to connect before 11 CST to see if this makes sense? Or I can send my calendar link if that is better."`
+    : inPerson
+    ? `Prospect: "Sure."
+Reply: "Hey Dean, thanks for getting back to me, sounds good! Are you free Thursday mid-morning or Friday early afternoon for me to stop by in person? Happy to work around your schedule if neither works."`
+    : `Prospect: "Sure."
+Reply: "Hey Dean, thanks for getting back to me, sounds good! Happy to jump on a quick call — Thursday mid-morning or Friday early afternoon?"`;
 
-EXAMPLE B (times-first — interest):
-Prospect: "I'd be curious to learn more about your services and if you are a fit for our company."
-Reply: "Hey Tony thanks for getting back. Would love to see if this is a fit. Does Tuesday morning or Wednesday around 2 work for a quick call with our CEO? If not, happy to send a booking link."
+  const exampleC = inPerson
+    ? `Prospect: "Can we do next week?"
+Reply: "Absolutely — want me to stop by Monday or Tuesday afternoon? Whatever is easiest on your end."`
+    : `Prospect: "Sure, send the link."
+Reply: "Sounds good — here's the booking link: ${link}"`;
 
-EXAMPLE C (they asked for the link):
-Prospect: "Sure, send the link."
-Reply: "Sounds good — here's the booking link: ${link}"
+  const logisticalRule = asPrincipal
+    ? '- If they ask a logistical question: answer briefly FIRST, then suggest a quick call with you'
+    : inPerson
+    ? '- If they ask a logistical question: answer briefly FIRST, then offer to stop by in person'
+    : '- If they ask a logistical question: answer briefly FIRST, then suggest times';
 
-EXAMPLE D (decline):
-Prospect: "Thanks, I will pass at this time."
-Reply: "Thanks for getting back to me, Marina. Understood, no problem at all. Can I check back in a few months or should I take you off the list? Ticket offer stands."
+  const clientVoice = String(voicePrompt || '').trim()
+    ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
+    : '';
+
+  return `${roleLine}
+Output PLAIN TEXT only. No markdown. No quotes around the message.
+${clientVoice}
+Voice reference (match warmth/directness; ACK what they said before any CTA):
+
+EXAMPLE A (answer the question first):
+${exampleA}
+
+EXAMPLE B (soft yes — first touch):
+${exampleB}
+
+EXAMPLE C (${inPerson ? 'they floated timing' : 'they asked for the link'}):
+${exampleC}
+
+EXAMPLE D (continuation / second inbound on cost):
+Prospect: "What's the cost per lead?"
+Reply: "Ok great! Most of my clients actually prefer a straight monthly cost, but I could do a per lead if you prefer. Would be around $300. If you're up for it I have 15 minutes right now actually...or we can chat later."
 
 EXAMPLE E (provider already):
 Prospect: "Normally I would, but we switched to a new provider a few months ago."
@@ -378,12 +553,14 @@ Reply: "Ah man, a few months too late! No worries. If you would still want the t
 
 RULES:
 - Greet with "Hey {first name}," — first name only
+- ACK FIRST: react to their specific point before pitching times
 - Warm, direct, a little playful when it fits — match their energy
-- If they decline: graceful, offer to check back — never push
-- If they ask a logistical question: answer briefly, then suggest a quick CEO call with two times
+${modeRules}
+${logisticalRule}
 ${bookingRules}
 - Prospect first name: ${name}
 - Classification: ${classification}
+- Draft mode: ${mode}
 
 ${channelNote}
 
@@ -442,6 +619,22 @@ async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
   return null;
 }
 
+function finalizeDraft(text, {
+  booking, includeBookingLink, voicePrompt, leadName,
+}) {
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
+  let draft = sanitizeDraft(text, { bookingLink: booking, includeBookingLink });
+  const guarded = enforcePrincipalVoice(draft, {
+    asPrincipal: speaksAsPrincipal(voicePrompt),
+  });
+  if (guarded.scrubbed) {
+    console.warn('[Classifier] Scrubbed principal handoff leak', { leadName });
+    draft = sanitizeDraft(guarded.text, { bookingLink: booking, includeBookingLink });
+  }
+  return draft;
+}
+
 async function draftOnly({
   classification,
   threadContext,
@@ -453,12 +646,26 @@ async function draftOnly({
   digestTimezone,
   platform,
   includeBookingLink: includeBookingLinkOverride,
+  replyMode = 'FIRST_TOUCH',
+  replyOrdinal = 1,
+  clientName = null,
+  draftMode = 'realtime',
 }) {
+  if (!assertDraftableClassification(classification)) {
+    console.warn('[Classifier] Refusing draft for non-positive classification', {
+      classification, leadName, draftMode,
+    });
+    return null;
+  }
+
   const booking = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';
   const name = firstNameFromLead(leadName);
   const channel = String(platform || 'smartlead').toLowerCase() === 'heyreach' ? 'linkedin' : 'email';
+  const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
+    ? 'CONTINUATION'
+    : 'FIRST_TOUCH';
 
   // Include Calendly only when the prospect asks for / accepts a booking link.
   // Otherwise suggest concrete times and offer to send a link later.
@@ -472,74 +679,57 @@ async function draftOnly({
     classification,
     channel,
     includeBookingLink,
+    voicePrompt,
+    replyMode: mode,
   });
 
-  // voicePrompt kept in signature for callers; few-shot voice is primary.
-  void voicePrompt;
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
 
   const timeBlock = buildTimeSuggestionBlock({
     digestTimezone,
     schedulingPromptBlock,
     includeBookingLink,
+    voicePrompt,
   });
 
-  const modeNote = includeBookingLink
+  const proposedTimesNote = (
+    classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(inboundMessage)
+  )
+    ? 'They already proposed times — confirm or lightly counter those times. Do NOT invent unrelated mid-morning / early afternoon slots.'
+    : null;
+
+  const modeNote = inPerson
+    ? `${mode} MODE: Acknowledge their latest point first, then offer to stop by in person. No Zoom/phone/CEO call/booking URL.`
+    : includeBookingLink
     ? 'BOOKING LINK MODE: Include the booking URL once. Keep it short.'
-    : 'TIMES-FIRST MODE: Suggest two concrete times. Offer to send a booking link if neither works. Do NOT include any booking URL.';
+    : `${mode} MODE: Acknowledge their latest point first, then suggest next step/times. Do NOT include any booking URL.`;
 
   const prompt =
     `Thread:\n${summarizeThread(threadContext)}\n\n` +
     `Latest prospect reply:\n${inboundMessage}\n\n` +
+    `${proposedTimesNote ? `${proposedTimesNote}\n\n` : ''}` +
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
-    `Write the reply now. Match the voice from the examples exactly. Finish every sentence.`;
+    `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.`;
 
-  // When the Supabase + Anthropic pipeline is configured, Gemini is used only
-  // for embedding/retrieval and Claude Sonnet 5 writes the actual draft.
-  if (claudeReplyDraft.isConfigured()) {
-    try {
-      const result = await claudeReplyDraft.generateClaudeReply({
-        inboundMessage,
-        threadContext,
-        classification,
-        leadName,
-        bookingLink: booking,
-        schedulingPromptBlock: timeBlock,
-        includeBookingLink,
-        platform,
-      });
-      const draft = sanitizeDraft(result.text, {
-        bookingLink: booking,
-        includeBookingLink,
-      });
-      if (!draft) throw new Error('Claude draft was empty after sanitization');
-      console.log('[Classifier] Claude retrieval draft generated', {
-        model: result.model,
-        examples: result.examples.length,
-        leadName,
-      });
-      return draft;
-    } catch (err) {
-      console.error('[Classifier] Claude retrieval draft failed — using deterministic fallback', {
-        err: err.message,
-        leadName,
-      });
-      return fallbackDraftText({
-        leadName,
-        inboundMessage,
-        bookingLink: booking,
-        classification,
-        threadContext,
-        digestTimezone,
-        includeBookingLink,
-      });
-    }
-  }
+  const deterministicFallback = () => finalizeDraft(fallbackDraftText({
+    leadName,
+    inboundMessage,
+    bookingLink: booking,
+    classification,
+    threadContext,
+    digestTimezone,
+    includeBookingLink,
+    voicePrompt,
+  }), { booking, includeBookingLink, voicePrompt, leadName });
 
-  try {
+  async function draftWithGemini() {
     const model = buildDraftModel(systemInstruction);
     let res = await withGeminiRetry(() => model.generateContent(prompt));
-    let draft = sanitizeDraft(res.response.text(), { bookingLink: booking, includeBookingLink });
+    let draft = finalizeDraft(res.response.text(), {
+      booking, includeBookingLink, voicePrompt, leadName,
+    });
 
     if (looksTruncatedDraft(draft)) {
       console.warn('[Classifier] Draft looked truncated — regenerating once', {
@@ -554,7 +744,9 @@ async function draftOnly({
       res = await withGeminiRetry(() => model.generateContent(
         `${prompt}\n\nIMPORTANT: Your previous attempt was cut off mid-sentence. ${retryHint}`
       ));
-      draft = sanitizeDraft(res.response.text(), { bookingLink: booking, includeBookingLink });
+      draft = finalizeDraft(res.response.text(), {
+        booking, includeBookingLink, voicePrompt, leadName,
+      });
       if (looksTruncatedDraft(draft)) {
         console.warn('[Classifier] Draft still truncated after retry — keeping model output (no template fallback)', {
           leadName,
@@ -565,29 +757,58 @@ async function draftOnly({
 
     if (!draft) {
       console.warn('[Classifier] Empty Gemini draft — using times-first fallback', { leadName, classification });
-      return fallbackDraftText({
-        leadName,
+      return deterministicFallback();
+    }
+    return draft;
+  }
+
+  // Claude+RAG: realtime webhooks only. Bulk/poller/backfill never touch Anthropic.
+  if (shouldUseAnthropicDrafts({ draftMode })) {
+    try {
+      const result = await claudeReplyDraft.generateClaudeReply({
         inboundMessage,
-        bookingLink: booking,
-        classification,
         threadContext,
-        digestTimezone,
+        classification,
+        leadName,
+        bookingLink: booking,
+        schedulingPromptBlock: timeBlock,
         includeBookingLink,
+        platform,
+        voicePrompt,
+        replyMode: mode,
+        replyOrdinal,
+        clientName,
+        draftMode,
+      });
+      const draft = finalizeDraft(result.text, {
+        booking, includeBookingLink, voicePrompt, leadName,
+      });
+      if (!draft) throw new Error('Claude draft was empty after sanitization');
+      console.log('[Classifier] Claude retrieval draft generated', {
+        model: result.model,
+        examples: result.examples.length,
+        leadName,
+        replyMode: mode,
+        replyOrdinal,
+        draftMode,
+      });
+      return draft;
+    } catch (err) {
+      console.error('[Classifier] Claude retrieval draft failed — falling through to Gemini', {
+        err: err.message,
+        leadName,
       });
     }
+  } else if (isBulkDraftMode(draftMode) && claudeReplyDraft.isConfigured() && !loggedAnthropicBulkSkip) {
+    console.log('[Classifier] Claude drafts hard-disabled for bulk/poller/backfill (Gemini only).');
+    loggedAnthropicBulkSkip = true;
+  }
 
-    return draft;
+  try {
+    return await draftWithGemini();
   } catch (err) {
     console.error('[Classifier] draft call failed — using times-first fallback', { err: err.message });
-    return fallbackDraftText({
-      leadName,
-      inboundMessage,
-      bookingLink: booking,
-      classification,
-      threadContext,
-      digestTimezone,
-      includeBookingLink,
-    });
+    return deterministicFallback();
   }
 }
 
@@ -601,7 +822,11 @@ async function classifyAndDraft(
   voicePrompt,
   bookingLink,
   schedulingPromptBlock,
-  { leadName, digestTimezone, platform } = {},
+  {
+    leadName, digestTimezone, platform,
+    clientId = null, leadId = null, leadEmail = null, clientName = null,
+    draftMode = 'realtime',
+  } = {},
 ) {
   // Deterministic pre-classification gates — kill drafts that should not exist.
   let classification = null;
@@ -622,7 +847,12 @@ async function classifyAndDraft(
     }
   }
 
-  const needsDraft = DRAFT_CLASSIFICATIONS.includes(classification);
+  const { resolveReplyOrdinal } = require('../utils/reply-ordinal');
+  const ordinal = await resolveReplyOrdinal({
+    clientId, platform, leadId, leadEmail,
+  });
+
+  const needsDraft = assertDraftableClassification(classification);
   const includeBookingLink = needsDraft
     ? looksLikeBookingLinkRequest(inboundMessage, threadContext)
     : false;
@@ -639,18 +869,24 @@ async function classifyAndDraft(
       digestTimezone,
       platform,
       includeBookingLink,
+      replyMode: ordinal.mode,
+      replyOrdinal: ordinal.replyOrdinal,
+      clientName,
+      draftMode,
     })
     : null;
 
   const note = preGate ? ` (pre-gate: ${preGate})` : '';
   const linkNote = needsDraft
-    ? (includeBookingLink ? ' (booking-link follow-up)' : ' (times-first)')
+    ? (includeBookingLink ? ' (booking-link follow-up)' : ` (${ordinal.mode.toLowerCase()})`)
     : '';
   return {
     classification,
     draft,
     proposed_time: null,
     includeBookingLink,
+    replyMode: ordinal.mode,
+    replyOrdinal: ordinal.replyOrdinal,
     reasoning: needsDraft
       ? `Classified as ${classification}; draft generated${note}${linkNote}.`
       : `Classified as ${classification}; no draft${note}.`,
@@ -670,6 +906,9 @@ module.exports = {
   buildTimeSuggestionBlock,
   sanitizeDraft,
   stripSignOff,
+  shouldUseAnthropicDrafts,
+  isBulkDraftMode,
+  assertDraftableClassification,
   CLASSIFICATIONS,
   DRAFT_CLASSIFICATIONS,
   DECLINE_CLASSIFICATIONS,

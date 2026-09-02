@@ -2,7 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('../services/classifier');
+const { classifyAndDraft } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
@@ -11,6 +11,8 @@ const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   stripHtmlToText,
   stripEmailQuotePrefix,
@@ -22,10 +24,10 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
-  slackSuppressionReason,
   looksLikeUnsubscribe,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const router = Router();
 
@@ -67,15 +69,6 @@ function heyreachLastOutboundFromThread(threadContext) {
     if (txt && String(txt).trim()) last = String(txt).trim();
   }
   return last;
-}
-
-function formatCampaignDisplay(campaignName, campaignId) {
-  const id = campaignId != null ? String(campaignId).trim() : '';
-  const name = campaignName != null ? String(campaignName).trim() : '';
-  if (name && id) return `${name} (${id})`;
-  if (name) return name;
-  if (id) return `Campaign ${id}`;
-  return 'Campaign (unknown)';
 }
 
 function smartleadCampaignName(payload) {
@@ -272,24 +265,28 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * card. Unbounded window on purpose: an identical body from the same lead in the
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
+ *
+ * Text only — never smartlead_email_stats_id alone. That id is resolved from
+ * thread history as "the most recent outbound SENT message" (see
+ * smartlead.extractStatsIdFromHistory), which stays identical across multiple
+ * *different* replies to the same send. Matching on it alone silently dropped
+ * a genuinely new reply with zero trace (2026-08-03, Doug Baden/Parlay Tech —
+ * no pending_replies row was ever created). Per DECISIONS.md: "dedupe on text
+ * only, never on time" — same text = duplicate, different text always shows.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, emailStatsId }) {
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  if (!normalized && !stats) return false;
+  if (!normalized) return false;
   const { rows } = await db.query(
     `SELECT 1
        FROM pending_replies
       WHERE client_id = $1
         AND platform = 'smartlead'
         AND COALESCE(lead_id, '') = $3
-        AND (
-          ($5::text <> '' AND COALESCE(smartlead_email_stats_id, '') = $5)
-          OR ${sameReplySql('$4', '$6')}
-        )
+        AND ${sameReplySql('$4', '$5')}
       LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, stats, fullNorm]
+    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, fullNorm]
   );
   return rows.length > 0;
 }
@@ -472,14 +469,22 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
     }
 
-    const campaignDisplaySl = formatCampaignDisplay(smartleadCampaignName(payload), resolvedCampaignId);
+    let resolvedCampaignName = smartleadCampaignName(payload);
+    if (!resolvedCampaignName && client.smartlead_api_key && resolvedCampaignId) {
+      resolvedCampaignName = await smartlead.resolveCampaignName(
+        client.smartlead_api_key,
+        resolvedCampaignId
+      );
+    }
+    const campaignDisplaySl =
+      formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
     const lastOutboundSl =
       smartleadLastOutboundFromPayload(payload) ||
       (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
         ? lastOutboundBodyFromSmartleadHistory(threadContext)
         : '');
 
-    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective, emailStatsId: smartleadEmailStatsId })) {
+    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective })) {
       console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
@@ -494,7 +499,16 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         client.voice_prompt,
         client.booking_link,
         schedulingPromptBlock,
-        { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+        {
+          leadName,
+          digestTimezone: client.digest_timezone,
+          platform: 'smartlead',
+          clientId,
+          leadId,
+          leadEmail,
+          clientName: client.name,
+          draftMode: 'realtime',
+        },
       );
     } catch (err) {
       console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
@@ -527,7 +541,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
       }
     }
-    const suppressedReason = slackSuppressionReason(inboundEffective);
+    const suppressedReason = slackChannelSuppressionReason({
+      classification, inboundMessage: inboundEffective,
+    });
     if (suppressedReason) {
       console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
       await recordSuppressedReply({
@@ -537,14 +553,22 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
     }
-    const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-    const status = isDraft ? 'pending' : 'alert_only';
+    const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+    draft = policy.draft;
+    reasoning = policy.reasoning;
+    const isDraft = policy.isDraft;
+    const status = policy.status;
+    if (policy.skippedDraft) {
+      console.log('[Webhook] SmartLead draft skipped by client policy', {
+        leadName, leadEmail, classification, reason: policy.skipReason,
+      });
+    }
 
     const { rows: [reply] } = await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [clientId, 'smartlead', resolvedCampaignId, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
     );
 
     if (isDraft && classification === 'MEETING_PROPOSED') {
@@ -690,10 +714,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       payload.thread ||
       [{ role: 'prospect', message: inboundMessage || '(no message body)' }];
 
-    const campaignDisplayHr = formatCampaignDisplay(
-      hrCampaignName || (payload.campaign && payload.campaign.name),
-      campaignId
-    );
+    const resolvedHrCampaignName =
+      hrCampaignName || (payload.campaign && payload.campaign.name) || null;
+    const campaignDisplayHr = formatCampaignDisplay(resolvedHrCampaignName, campaignId);
     let lastOutboundHr = heyreachLastOutboundFromThread(threadContext);
 
     await cancelForInboundReply({
@@ -755,7 +778,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             client.voice_prompt,
             client.booking_link,
             schedulingPromptBlock,
-            { leadName: resolvedLeadName, digestTimezone: client.digest_timezone, platform: 'heyreach' },
+            {
+              leadName: resolvedLeadName,
+              digestTimezone: client.digest_timezone,
+              platform: 'heyreach',
+              clientId,
+              leadId: leadId || hrConversationId,
+              clientName: client.name,
+              draftMode: 'realtime',
+            },
           );
         } catch (err) {
           console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
@@ -765,8 +796,10 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           return;
         }
 
-        const { classification, draft, proposed_time, reasoning } = result;
-        const hrSuppressed = slackSuppressionReason(inboundMessage);
+        let { classification, draft, proposed_time, reasoning } = result;
+        const hrSuppressed = slackChannelSuppressionReason({
+          classification, inboundMessage,
+        });
         if (hrSuppressed) {
           console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });
           await recordSuppressedReply({
@@ -777,8 +810,12 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           return;
         }
 
-        const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-        const status = isDraft ? 'pending' : 'alert_only';
+        // HeyReach often has no email at ingest; policy applies when email is known.
+        const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+        draft = policy.draft;
+        reasoning = policy.reasoning;
+        const isDraft = policy.isDraft;
+        const status = policy.status;
 
         const contextWithMeta = {
           messages: threadContext,
@@ -788,7 +825,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             linkedinUrl: resolvedLinkedinUrl,
             conversationId: hrConversationId,
             senderId: hrSenderId,
-            campaignName: hrCampaignName || (payload.campaign && payload.campaign.name) || null,
+            campaignName: resolvedHrCampaignName,
           },
         };
 
@@ -796,9 +833,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
         const { rows: [reply] } = await db.query(
           `INSERT INTO pending_replies
-            (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-          [clientId, 'heyreach', campaignId, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+            (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          [clientId, 'heyreach', campaignId, resolvedHrCampaignName || null, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
         );
 
         const slackCard = {
@@ -833,6 +870,22 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             leadEmail = await profileToEmail(resolvedLinkedinUrl);
             console.log('[LeadMagic] Email lookup result', { linkedinUrl: resolvedLinkedinUrl, email: leadEmail });
             if (leadEmail) {
+              const latePolicy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+              if (latePolicy.skippedDraft) {
+                await db.query(
+                  `UPDATE pending_replies
+                      SET lead_email = $1,
+                          draft_reply = NULL,
+                          status = 'alert_only',
+                          updated_at = now()
+                    WHERE id = $2`,
+                  [leadEmail, reply.id]
+                );
+                console.log('[Webhook] HeyReach draft revoked by client policy after email lookup', {
+                  leadName: resolvedLeadName, leadEmail, reason: latePolicy.skipReason,
+                });
+                return;
+              }
               await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
             }
           } catch (err) {
@@ -855,6 +908,36 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
   } catch (err) {
     console.error('[Webhook] HeyReach handler error', { clientId, err: err.message, stack: err.stack });
     res.status(200).json({ ok: true, error: 'internal error' });
+  }
+});
+
+/**
+ * Campaignintelligence booking page → stop ReplyHandler follow-ups.
+ *
+ * POST /webhook/booking-bridge
+ * Authorization: Bearer <BOOKING_BRIDGE_WEBHOOK_SECRET>
+ * Body: { event, treat_as_booked, email, name?, client_slug?, client_name?, campaign? }
+ */
+router.post('/webhook/booking-bridge', async (req, res) => {
+  const {
+    assertBookingBridgeSecret,
+    handleBookingBridgeEvent,
+  } = require('../services/booking-bridge');
+
+  const auth = assertBookingBridgeSecret(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ ok: false, error: auth.error });
+  }
+
+  try {
+    const result = await handleBookingBridgeEvent(req.body || {});
+    if (!result.ok) {
+      return res.status(result.status || 400).json(result);
+    }
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('[BookingBridge] handler error', { err: err.message, stack: err.stack });
+    return res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });
 

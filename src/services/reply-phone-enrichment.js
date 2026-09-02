@@ -3,10 +3,25 @@
  *
  * Provider order is implemented by enrichProspect:
  *   GetLeads -> AI Ark -> LeadMagic
+ *
+ * OOO / REMOVE_ME never get enriched for client Slack channels — those cards
+ * are informational only and burning waterfall credits on them is waste.
  */
 
 const db = require('../db');
 const { enrichProspect } = require('./prospect-enrich');
+const { draftSkipReason } = require('../utils/client-draft-policy');
+
+/** Classifications that must never trigger phone/waterfall enrichment. */
+const SKIP_ENRICH_CLASSIFICATIONS = new Set([
+  'OOO',
+  'OUT_OF_OFFICE',
+  'REMOVE_ME',
+]);
+
+function shouldSkipEnrichment(classification) {
+  return SKIP_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
+}
 
 function storedResult(reply) {
   return {
@@ -23,9 +38,9 @@ function storedResult(reply) {
 
 async function getReply(replyId) {
   const { rows } = await db.query(
-    `SELECT id, campaign_id, lead_name, lead_email, linkedin_url, lead_phone,
+    `SELECT id, client_id, campaign_id, lead_name, lead_email, linkedin_url, lead_phone,
             lead_phone_provider, lead_website, phone_enrichment_status,
-            phone_enrichment_error, phone_enriched_at
+            phone_enrichment_error, phone_enriched_at, classification, status
        FROM pending_replies
       WHERE id = $1`,
     [replyId]
@@ -45,8 +60,47 @@ async function enrichPendingReplyPhone(replyId) {
   if (existing.campaign_id === 'test-campaign') {
     return { ...storedResult(existing), status: 'skipped' };
   }
+  const clientDqReason = draftSkipReason(
+    { id: existing.client_id },
+    existing.lead_email
+  );
+  if (
+    shouldSkipEnrichment(existing.classification) ||
+    existing.status === 'suppressed' ||
+    clientDqReason
+  ) {
+    if (existing.phone_enrichment_status !== 'skipped') {
+      try {
+        await db.query(
+          `UPDATE pending_replies
+              SET phone_enrichment_status = 'skipped',
+                  phone_enrichment_error = $2,
+                  phone_enriched_at = now(),
+                  updated_at = now()
+            WHERE id = $1
+              AND (phone_enrichment_status IS NULL
+                   OR phone_enrichment_status = 'failed'
+                   OR phone_enrichment_status = 'processing')`,
+          [
+            replyId,
+            clientDqReason
+              ? 'skipped_client_dq_domain'
+              : shouldSkipEnrichment(existing.classification)
+                ? `skipped_${String(existing.classification || '').toLowerCase()}`
+                : 'skipped_suppressed',
+          ]
+        );
+      } catch (err) {
+        console.warn('[ReplyPhone] Could not persist skipped status', {
+          replyId, err: err.message,
+        });
+      }
+    }
+    return { ...storedResult(existing), status: 'skipped' };
+  }
   if (existing.phone_enrichment_status === 'found' ||
-      existing.phone_enrichment_status === 'not_found') {
+      existing.phone_enrichment_status === 'not_found' ||
+      existing.phone_enrichment_status === 'skipped') {
     return storedResult(existing);
   }
   if (existing.phone_enrichment_status === 'processing') {
@@ -127,4 +181,9 @@ async function enrichPendingReplyPhone(replyId) {
   }
 }
 
-module.exports = { enrichPendingReplyPhone, storedResult };
+module.exports = {
+  enrichPendingReplyPhone,
+  storedResult,
+  shouldSkipEnrichment,
+  SKIP_ENRICH_CLASSIFICATIONS,
+};

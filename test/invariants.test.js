@@ -40,10 +40,15 @@ test('express.json keeps a raised body limit', () => {
 });
 
 // ── Suppression policy ────────────────────────────────────────────────
-// Exactly three things are silent. Everything else reaches Slack.
-test('only OOO, unsubscribe and wrong-person are suppressed', () => {
+// AI reply channels: interested positives only (plus classic text silence).
+test('Slack channel policy posts only interested classifications', () => {
   const { slackSuppressionReason } = require('../src/utils/smartlead-webhook-helpers');
+  const {
+    slackChannelSuppressionReason,
+    SLACK_CHANNEL_CLASSIFICATIONS,
+  } = require('../src/utils/slack-channel-policy');
 
+  // Text heuristics still catch OOO / unsubscribe / wrong-person.
   const silent = {
     'I am out of the office until Monday': 'ooo',
     'Automatic reply: on vacation': 'ooo',
@@ -57,25 +62,34 @@ test('only OOO, unsubscribe and wrong-person are suppressed', () => {
     assert.strictEqual(slackSuppressionReason(text), reason, `"${text}" should be silenced as ${reason}`);
   }
 
-  // NOT_INTERESTED is an objection worth working, not a dead lead.
-  const mustReachSlack = [
-    'Not interested at this time',
-    'We are not interested in this service',
-    'No thanks, we are all set',
-    'This is too expensive',
-    'Who else do you work with?',
-    'Sounds good, lets book a time',
-  ];
-  for (const text of mustReachSlack) {
-    assert.strictEqual(slackSuppressionReason(text), null, `"${text}" must reach Slack`);
-  }
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('INTERESTED'));
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'NOT_INTERESTED', inboundMessage: 'Not interested' }),
+    'not_interested',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OOO', inboundMessage: 'ooo' }),
+    'ooo',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OTHER', inboundMessage: 'hmm' }),
+    'not_interested_channel',
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'QUESTION', inboundMessage: 'What is the catch?' }),
+    null,
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'INTERESTED', inboundMessage: 'Sounds good, lets book a time' }),
+    null,
+  );
 });
 
-test('NOT_INTERESTED still gets a draft', () => {
+test('only INTERESTED / MEETING_PROPOSED / QUESTION get drafts', () => {
   const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
-  assert.ok(
-    DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
-    'NOT_INTERESTED must draft — in decline mode, but it must draft'
+  assert.deepEqual(
+    [...DRAFT_CLASSIFICATIONS].sort(),
+    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
   );
 });
 
@@ -110,6 +124,34 @@ test('dedupe key survives tail divergence but separates real replies', () => {
     inboundPrefix('Sounds good, Wednesday works'),
     'genuinely different replies must not collapse'
   );
+});
+
+// The SQL-side stored-column normalization must strip exactly the same
+// codepoints as the JS-side one. A gap here (chr(160)/chr(8239) only, missing
+// zero-width space and friends) let a signature with invisible characters
+// dodge dedupe entirely: Pete Langlois/TechEvolution re-posted every 5-minute
+// poll for hours (2026-08-05, 170 duplicate cards) because JS stripped the
+// zero-width spaces in his signature and SQL did not, so the two renderings
+// of "the same" reply never matched.
+test('SQL and JS strip the exact same invisible-space codepoints', () => {
+  const { UNICODE_SPACE_CODEPOINTS, normalizeInboundText } = require('../src/services/reply-dedupe');
+
+  const jsStripsSpace = (code) => normalizeInboundText(`a${String.fromCodePoint(code)}b`) === 'a b';
+
+  for (const code of UNICODE_SPACE_CODEPOINTS) {
+    assert.ok(jsStripsSpace(code), `JS must also normalize codepoint ${code} that SQL strips`);
+  }
+
+  // Spot-check the JS side does not strip anything outside the SQL list —
+  // otherwise the two sides silently diverge again in the other direction.
+  const notInList = [0x2E, 0x41, 0x09]; // '.', 'A', tab (a real \s char, handled separately)
+  for (const code of notInList) {
+    if (UNICODE_SPACE_CODEPOINTS.includes(code)) continue;
+    assert.ok(
+      code === 0x09 || !jsStripsSpace(code),
+      `codepoint ${code} is stripped by JS but missing from the SQL list`
+    );
+  }
 });
 
 // ── Drafts ────────────────────────────────────────────────────────────
@@ -158,5 +200,27 @@ test('client notification stays on the enriched send path', () => {
   assert.ok(
     !/forwardEmail\s*\(/.test(webhooks),
     'do not forward inbound replies from the webhook — it fires before classification and emails clients every auto-reply'
+  );
+});
+
+// OOO / REMOVE_ME may still alert in Slack, but never burn enrichment credits.
+test('OOO and REMOVE_ME replies are not phone-enriched for client channels', () => {
+  const {
+    shouldSkipEnrichment,
+    SKIP_ENRICH_CLASSIFICATIONS,
+  } = require('../src/services/reply-phone-enrichment');
+  const post = read('src/services/slack-reply-post.js');
+
+  assert.ok(SKIP_ENRICH_CLASSIFICATIONS.has('OOO'));
+  assert.ok(SKIP_ENRICH_CLASSIFICATIONS.has('REMOVE_ME'));
+  assert.ok(shouldSkipEnrichment('OOO'));
+  assert.ok(shouldSkipEnrichment('OUT_OF_OFFICE'));
+  assert.ok(shouldSkipEnrichment('REMOVE_ME'));
+  assert.ok(!shouldSkipEnrichment('INTERESTED'));
+  assert.ok(!shouldSkipEnrichment('QUESTION'));
+  assert.match(
+    post,
+    /shouldSkipEnrichment\(card\?\.classification\)/,
+    'Slack card posts must skip enrichment for OOO/REMOVE_ME'
   );
 });

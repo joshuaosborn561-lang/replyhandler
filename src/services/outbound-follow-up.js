@@ -1,10 +1,45 @@
 const db = require('../db');
 const { isSlackTestFixtureReply } = require('./reply-send');
 
+/** Default: 2h → 24h → 48h → 1 week after we reply to a positive inbound. */
+const DEFAULT_CADENCE = [2, 24, 48, 168];
+
+/** Never start a cadence from a send older than this (no deep backfill). */
+const MAX_SCHEDULE_AGE_DAYS = 3;
+
+/**
+ * Inbound classifications that start the follow-up cadence when we send our reply.
+ * Matches the "positive" set used for phone enrichment.
+ */
+const POSITIVE_FOLLOW_UP_CLASSIFICATIONS = new Set([
+  'INTERESTED',
+  'MEETING_PROPOSED',
+  'QUESTION',
+]);
+
+function isPositiveFollowUpClassification(classification) {
+  return POSITIVE_FOLLOW_UP_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
+}
+
+/**
+ * Parse FOLLOW_UP_HOURS as a comma-separated cadence (hours).
+ * Single number still works (one-step). Env override replaces the whole sequence.
+ */
+function followUpCadenceHours() {
+  const raw = process.env.FOLLOW_UP_HOURS || process.env.FOLLOW_UP_REMINDER_HOURS || '';
+  if (!String(raw).trim()) return [...DEFAULT_CADENCE];
+
+  const parts = String(raw)
+    .split(/[,\s]+/)
+    .map((p) => parseFloat(p))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  return parts.length ? parts : [...DEFAULT_CADENCE];
+}
+
+/** First step only — kept for older callers/tests. */
 function followUpHours() {
-  const raw = process.env.FOLLOW_UP_HOURS || process.env.FOLLOW_UP_REMINDER_HOURS || '3';
-  const h = parseFloat(raw);
-  return Number.isFinite(h) && h > 0 ? h : 3;
+  return followUpCadenceHours()[0];
 }
 
 function parseThreadContext(reply) {
@@ -23,8 +58,39 @@ function heyreachConversationId(reply) {
   return ctx?.heyreach?.conversationId || null;
 }
 
+function threadMatchParams(reply) {
+  const platform = reply.platform;
+  const campaignId = reply.campaign_id != null ? String(reply.campaign_id) : null;
+  const leadId = reply.lead_id != null ? String(reply.lead_id) : null;
+  const conversationId = platform === 'heyreach' ? heyreachConversationId(reply) : null;
+  return { platform, campaignId, leadId, conversationId };
+}
+
+/** Cancel every pending step for this prospect thread. */
+async function cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId }) {
+  const result = await db.query(
+    `UPDATE outbound_follow_ups SET status = 'cancelled', updated_at = now()
+     WHERE client_id = $1 AND platform = $2 AND status = 'pending'
+       AND COALESCE(campaign_id, '') = COALESCE($3, '')
+       AND COALESCE(lead_id, '') = COALESCE($4, '')
+       AND COALESCE(conversation_id, '') = COALESCE($5, '')`,
+    [
+      clientId,
+      platform,
+      campaignId != null ? String(campaignId) : null,
+      leadId != null ? String(leadId) : null,
+      conversationId != null ? String(conversationId) : null,
+    ]
+  );
+  return result.rowCount || 0;
+}
+
 /**
  * After we successfully send a prospect-facing message (Slack approve/edit).
+ *
+ * Starts the 2h → 24h → 48h → 1w cadence for every positive inbound
+ * (INTERESTED / MEETING_PROPOSED / QUESTION). FOLLOW_UP sends do not restart
+ * the clock — later steps from the original send keep their due times.
  */
 async function scheduleAfterOutboundSend(clientId, reply) {
   if (!reply || isSlackTestFixtureReply(reply)) return;
@@ -32,9 +98,50 @@ async function scheduleAfterOutboundSend(clientId, reply) {
   const platform = reply.platform;
   if (platform !== 'smartlead' && platform !== 'heyreach') return;
 
-  const campaignId = reply.campaign_id != null ? String(reply.campaign_id) : null;
-  const leadId = reply.lead_id != null ? String(reply.lead_id) : null;
-  const conversationId = platform === 'heyreach' ? heyreachConversationId(reply) : null;
+  // Follow-up cards are steps in an existing sequence — do not reschedule.
+  if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    console.log('[FollowUp] Skip schedule — FOLLOW_UP send keeps existing cadence', {
+      replyId: reply.id,
+    });
+    return;
+  }
+
+  const { isReplyDisqualified } = require('./disqualified-prospects');
+  if (await isReplyDisqualified(clientId, reply)) {
+    console.log('[FollowUp] Skip schedule — prospect disqualified', {
+      replyId: reply.id,
+      lead: reply.lead_name,
+    });
+    return;
+  }
+
+  if (!isPositiveFollowUpClassification(reply.classification)) {
+    console.log('[FollowUp] Skip schedule — inbound was not positive', {
+      replyId: reply.id,
+      lead: reply.lead_name,
+      classification: reply.classification,
+    });
+    return;
+  }
+
+  // Refuse deep backfills — only schedule from recent sends.
+  const sentAtCandidate = reply.updated_at || reply.created_at || null;
+  if (sentAtCandidate) {
+    const sentMs = new Date(sentAtCandidate).getTime();
+    if (Number.isFinite(sentMs)) {
+      const ageDays = (Date.now() - sentMs) / (24 * 3600 * 1000);
+      if (ageDays > MAX_SCHEDULE_AGE_DAYS) {
+        console.log('[FollowUp] Skip schedule — send older than 3 days', {
+          replyId: reply.id,
+          lead: reply.lead_name,
+          ageDays: Math.round(ageDays * 10) / 10,
+        });
+        return;
+      }
+    }
+  }
+
+  const { campaignId, leadId, conversationId } = threadMatchParams(reply);
 
   if (platform === 'smartlead' && (!campaignId || !leadId)) {
     console.warn('[FollowUp] Skip schedule — SmartLead missing campaign_id or lead_id', { replyId: reply.id });
@@ -45,44 +152,46 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
-  const hours = followUpHours();
-  const due = new Date(Date.now() + Math.round(hours * 3600 * 1000));
+  const cadence = followUpCadenceHours();
+  const sentAt = new Date();
 
-  await db.query(
-    `UPDATE outbound_follow_ups SET status = 'cancelled', updated_at = now()
-     WHERE client_id = $1 AND platform = $2 AND status = 'pending'
-       AND COALESCE(campaign_id, '') = COALESCE($3, '')
-       AND COALESCE(lead_id, '') = COALESCE($4, '')
-       AND COALESCE(conversation_id, '') = COALESCE($5, '')`,
-    [clientId, platform, campaignId, leadId, conversationId]
-  );
+  await cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId });
 
-  await db.query(
-    `INSERT INTO outbound_follow_ups
-      (client_id, platform, campaign_id, lead_id, conversation_id, lead_name, lead_email, linkedin_url, source_pending_reply_id, due_at, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')`,
-    [
-      clientId,
-      platform,
-      campaignId,
-      leadId,
-      conversationId,
-      reply.lead_name || null,
-      reply.lead_email || null,
-      reply.linkedin_url || null,
-      reply.id,
-      due,
-    ]
-  );
+  for (let i = 0; i < cadence.length; i++) {
+    const hours = cadence[i];
+    const due = new Date(sentAt.getTime() + Math.round(hours * 3600 * 1000));
+    await db.query(
+      `INSERT INTO outbound_follow_ups
+        (client_id, platform, campaign_id, lead_id, conversation_id, lead_name, lead_email, linkedin_url,
+         source_pending_reply_id, sent_at, due_at, status, step, sequence_hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)`,
+      [
+        clientId,
+        platform,
+        campaignId,
+        leadId,
+        conversationId,
+        reply.lead_name || null,
+        reply.lead_email || null,
+        reply.linkedin_url || null,
+        reply.id,
+        sentAt,
+        due,
+        i + 1,
+        hours,
+      ]
+    );
+  }
 
-  console.log('[FollowUp] Scheduled', {
+  console.log('[FollowUp] Scheduled cadence', {
     clientId,
     platform,
     campaignId,
     leadId,
     conversationId,
-    dueAt: due.toISOString(),
-    hours,
+    classification: reply.classification,
+    steps: cadence,
+    sentAt: sentAt.toISOString(),
   });
 }
 
@@ -127,6 +236,12 @@ async function cancelForInboundReply({ clientId, platform, campaignId, leadId, c
 module.exports = {
   scheduleAfterOutboundSend,
   cancelForInboundReply,
+  cancelPendingForThread,
   followUpHours,
+  followUpCadenceHours,
   heyreachConversationId,
+  isPositiveFollowUpClassification,
+  POSITIVE_FOLLOW_UP_CLASSIFICATIONS,
+  DEFAULT_CADENCE,
+  MAX_SCHEDULE_AGE_DAYS,
 };

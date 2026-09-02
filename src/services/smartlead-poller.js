@@ -3,9 +3,11 @@ const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
 const { classifyFromSmartlead } = require('./smartlead-category');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
@@ -17,10 +19,10 @@ const {
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
-  slackSuppressionReason,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -35,25 +37,15 @@ function numberEnv(name, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function formatCampaignDisplay(name, id) {
-  const cid = id != null ? String(id).trim() : '';
-  const cname = name != null ? String(name).trim() : '';
-  if (cname && cid) return `${cname} (${cid})`;
-  if (cname) return cname;
-  if (cid) return `Campaign ${cid}`;
-  return '';
-}
-
 function historyFromRow(row) {
   const list = row?.email_history || row?.emailHistory || row?.message_history || [];
   return { history: Array.isArray(list) ? list : [] };
 }
 
-function latestInboundFromRow(row) {
-  const hist = historyFromRow(row);
-  const fromHist = latestInboundFromSmartleadHistory(hist, row?.lead_email);
+function latestInboundFromHistory(hist, leadEmail) {
+  const fromHist = latestInboundFromSmartleadHistory(hist, leadEmail);
   if (fromHist) return fromHist;
-  const list = hist.history || [];
+  const list = (hist && hist.history) || [];
   for (let i = list.length - 1; i >= 0; i--) {
     const m = list[i];
     if (!m || typeof m !== 'object') continue;
@@ -66,10 +58,95 @@ function latestInboundFromRow(row) {
   return '';
 }
 
+function latestInboundFromRow(row) {
+  return latestInboundFromHistory(historyFromRow(row), row?.lead_email);
+}
+
 function replyTime(row) {
   const raw = row?.last_reply_time || row?.lastReplyTime;
   const d = raw ? new Date(raw) : null;
   return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+
+/** Newest REPLY/INBOUND timestamp inside a thread history, or null. */
+function newestReplyTimeFromHistory(hist) {
+  const list = (hist && hist.history) || [];
+  let newest = null;
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    if (type !== 'REPLY' && type !== 'INBOUND') continue;
+    const raw = m.time || m.sent_at || m.received_at || m.created_at;
+    const d = raw ? new Date(raw) : null;
+    if (d && !Number.isNaN(d.getTime()) && (!newest || d > newest)) newest = d;
+  }
+  return newest;
+}
+
+function staleToleranceMs() {
+  const n = parseInt(process.env.SMARTLEAD_HISTORY_STALE_TOLERANCE_SEC || '', 10);
+  return (Number.isFinite(n) && n >= 0 ? n : 60) * 1000;
+}
+
+/**
+ * True when a master-inbox row contradicts itself: it reports a `last_reply_time`
+ * newer than the newest REPLY in the `email_history` it shipped with.
+ *
+ * SmartLead's master-inbox can serve a stale `email_history` while its
+ * `last_reply_time` is already current. When that happens the newest reply is
+ * invisible to this poller, and because the older reply it *can* see was already
+ * carded, dedupe correctly calls it a duplicate and skips — so a real reply is
+ * never posted, and the webhook is the only path left. Observed 2026-08-11:
+ * Chase Dawson (SalesGlider, campaign 3739758) replied "Wednesday works. 1-3pm
+ * est if possible." at 16:09; master-inbox still showed only the 15:53 reply
+ * 2.5h later, while campaigns/:id/leads/:id/message-history had it all along.
+ */
+function historyLagsLastReply(row, hist) {
+  const last = replyTime(row);
+  if (!last) return false;
+  const newest = newestReplyTimeFromHistory(hist);
+  // Row claims a reply but shipped no reply at all — always worth a real fetch.
+  if (!newest) return true;
+  return last.getTime() - newest.getTime() > staleToleranceMs();
+}
+
+/**
+ * Should a stale-looking thread actually be refetched?
+ *
+ * Callers pass this only when the row is already known stale. Staleness by
+ * itself is common and cheap to tolerate — what is expensive is a stale row
+ * whose visible reply we have *already carded*, because dedupe then drops the
+ * thread as a duplicate and the newer reply behind it is never seen. Those are
+ * the only cases worth spending an API call on.
+ *
+ * A stale row whose visible reply is new needs no refetch: it gets carded now,
+ * and on the next cycle that same reply reads as already-carded, so the probe
+ * fires then and recovers anything hidden behind it. Costs at most one cycle.
+ */
+function shouldRefetchStaleHistory({ hasVisibleInbound, visibleAlreadyCarded }) {
+  // Row claims a reply but shipped none — nothing to card, always worth a look.
+  if (!hasVisibleInbound) return true;
+  return !!visibleAlreadyCarded;
+}
+
+/**
+ * Authoritative per-thread history. Fail-open: on any error the caller keeps the
+ * master-inbox copy, so a refetch problem can never cost us a poll cycle.
+ */
+async function refetchThreadHistory(client, campaignId, leadId) {
+  try {
+    const hist = await smartlead.getThreadHistory(client.smartlead_api_key, campaignId, leadId);
+    const list = Array.isArray(hist?.history) ? hist.history
+      : Array.isArray(hist?.messages) ? hist.messages
+        : Array.isArray(hist) ? hist : [];
+    if (!list.length) return null;
+    return { history: list };
+  } catch (err) {
+    console.warn('[SmartLeadPoll] Thread history refetch failed — keeping master-inbox copy', {
+      client: client.name, campaignId, leadId, err: err.message,
+    });
+    return null;
+  }
 }
 
 async function fetchInboxReplies(apiKey, offset, limit) {
@@ -94,9 +171,6 @@ async function processInboxRow(client, row, options) {
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
 
-  const inbound = latestInboundFromRow(row);
-  if (!inbound) return { skipped: 'no_inbound' };
-
   const at = replyTime(row);
   const lookbackMs = options.lookbackHours * 3600 * 1000;
   if (at && Date.now() - at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
@@ -104,7 +178,65 @@ async function processInboxRow(client, row, options) {
   // Derived before the dedupe checks: the webhook and this poller build the inbound
   // text differently (payload body vs rebuilt history), so an exact text match is not
   // a reliable identity. stats_id comes from the same thread history in both paths.
-  const threadContext = historyFromRow(row);
+  let threadContext = historyFromRow(row);
+  let inbound = latestInboundFromHistory(threadContext, row?.lead_email);
+
+  // Master-inbox can ship a stale email_history while last_reply_time is already
+  // current, hiding the newest reply from this poller entirely.
+  //
+  // Staleness alone is far too common to refetch on — budgeting 10 per cycle was
+  // exhausted every run, and threads past the budget fell through exactly as if
+  // there were no fix at all (2026-08-18: Melissa Page / Goliath confirmed a
+  // 9:30am meeting and no card was ever created). So target the refetch instead:
+  // a hidden newer reply only *costs* us something when the reply we can see was
+  // already carded, because that is what makes dedupe drop the thread silently.
+  // When the visible reply is new we card it now and, once it is on the record,
+  // the next cycle's probe fires and recovers whatever was behind it.
+  const staleHistory = historyLagsLastReply(row, threadContext);
+  if (staleHistory && client.smartlead_api_key) {
+    const visibleAlreadyCarded = inbound
+      ? await alreadyPostedToSlack({
+        clientId: client.id,
+        platform: 'smartlead',
+        campaignId,
+        leadId,
+        inboundMessage: inbound,
+        emailStatsId: null,
+      })
+      : false;
+
+    if (shouldRefetchStaleHistory({ hasVisibleInbound: !!inbound, visibleAlreadyCarded })) {
+      const counter = options.refetchCounter;
+      const cap = options.maxHistoryRefetch;
+      if (!counter || counter.count < cap) {
+        if (counter) counter.count++;
+        const fresh = await refetchThreadHistory(client, campaignId, leadId);
+        if (fresh) {
+          const before = newestReplyTimeFromHistory(threadContext);
+          const after = newestReplyTimeFromHistory(fresh);
+          threadContext = fresh;
+          inbound = latestInboundFromHistory(threadContext, row?.lead_email);
+          console.log('[SmartLeadPoll] Master-inbox history was stale — refetched thread', {
+            client: client.name,
+            campaignId,
+            leadId,
+            leadEmail: row.lead_email || null,
+            lastReplyTime: at ? at.toISOString() : null,
+            newestReplyBefore: before ? before.toISOString() : null,
+            newestReplyAfter: after ? after.toISOString() : null,
+            recoveredNewerReply: !!(before && after && after > before),
+          });
+        }
+      } else {
+        console.warn('[SmartLeadPoll] Stale master-inbox history but refetch cap reached', {
+          client: client.name, campaignId, leadId, cap, leadEmail: row.lead_email || null,
+        });
+      }
+    }
+  }
+
+  if (!inbound) return { skipped: 'no_inbound' };
+
   const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
 
   const unposted = await findUnpostedReply({
@@ -144,7 +276,11 @@ async function processInboxRow(client, row, options) {
   const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
   const leadEmail = row.lead_email || null;
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
-  const campaignDisplay = formatCampaignDisplay(row.email_campaign_name, campaignId);
+  let campaignName = row.email_campaign_name || row.emailCampaignName || null;
+  if (!campaignName && client.smartlead_api_key && campaignId) {
+    campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, campaignId);
+  }
+  const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
 
   const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   let result;
@@ -155,7 +291,17 @@ async function processInboxRow(client, row, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName, digestTimezone: client.digest_timezone, platform: 'smartlead' },
+      {
+        leadName,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientId: client.id,
+        leadId,
+        leadEmail,
+        clientName: client.name,
+        // Poller = backfill/sweep. Never burn Anthropic here.
+        draftMode: 'bulk',
+      },
     );
   } catch (err) {
     console.error('[SmartLeadPoll] classifyAndDraft threw — using OTHER/empty draft', {
@@ -179,7 +325,7 @@ async function processInboxRow(client, row, options) {
     reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
   }
 
-  const suppressed = slackSuppressionReason(inbound);
+  const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'smartlead', campaignId, leadId,
@@ -189,15 +335,23 @@ async function processInboxRow(client, row, options) {
     return { skipped: suppressed };
   }
 
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-  const status = isDraft ? 'pending' : 'alert_only';
+  const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+  draft = policy.draft;
+  reasoning = policy.reasoning;
+  const isDraft = policy.isDraft;
+  const status = policy.status;
+  if (policy.skippedDraft) {
+    console.log('[SmartLeadPoll] Draft skipped by client policy', {
+      client: client.name, leadName, leadEmail, reason: policy.skipReason,
+    });
+  }
 
   const { rows: [reply] } = await db.query(
     `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-     VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+     VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
     [
-      client.id, String(campaignId), String(leadId), leadName, leadEmail, inbound,
+      client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
       JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
     ]
   );
@@ -239,7 +393,7 @@ async function processInboxRow(client, row, options) {
     return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName };
   }
 
-  if (classification === 'MEETING_PROPOSED' && leadEmail) {
+  if (isDraft && classification === 'MEETING_PROPOSED' && leadEmail) {
     await db.query(
       `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
        VALUES ($1, $2, $3, $4, $5, 'proposed')`,
@@ -273,6 +427,7 @@ async function pollSmartleadReplies() {
   const totals = { processed: 0, skipped: 0 };
   // Declared outside try so finally can log without ReferenceError.
   const skipCounts = {};
+  const refetchCounter = { count: 0 };
   try {
     const recovery = await recoverUnpostedSlackCards({ limit: 15 });
     if (recovery.recovered) {
@@ -284,6 +439,11 @@ async function pollSmartleadReplies() {
     const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
     const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
+    // Per-cycle budget for stale-history refetches, so a broadly stale
+    // master-inbox cannot turn one poll into hundreds of extra API calls.
+    // Now that refetches are targeted rather than fired on every stale row, this
+    // is a safety valve against a pathological cycle — not the normal limit.
+    const maxHistoryRefetch = numberEnv('SMARTLEAD_POLL_MAX_HISTORY_REFETCH', 40);
 
     for (const client of clients) {
       let scanned = 0;
@@ -307,7 +467,9 @@ async function pollSmartleadReplies() {
           if (scanned >= maxReplies) break;
           scanned++;
           try {
-            const result = await processInboxRow(client, row, { lookbackHours });
+            const result = await processInboxRow(client, row, {
+              lookbackHours, refetchCounter, maxHistoryRefetch,
+            });
             if (result.posted) {
               posted++;
               totals.processed++;
@@ -331,9 +493,21 @@ async function pollSmartleadReplies() {
     console.error('[SmartLeadPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {
     isPollingRunning = false;
-    console.log('[SmartLeadPoll] Finished', { ms: Date.now() - started, ...totals, skipCounts });
+    console.log('[SmartLeadPoll] Finished', {
+      ms: Date.now() - started, ...totals, skipCounts, staleHistoryRefetches: refetchCounter.count,
+    });
   }
   return totals;
 }
 
-module.exports = { pollSmartleadReplies, fetchInboxReplies, historyFromRow, latestInboundFromRow, replyTime };
+module.exports = {
+  pollSmartleadReplies,
+  fetchInboxReplies,
+  historyFromRow,
+  latestInboundFromRow,
+  latestInboundFromHistory,
+  replyTime,
+  newestReplyTimeFromHistory,
+  historyLagsLastReply,
+  shouldRefetchStaleHistory,
+};

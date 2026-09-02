@@ -2,23 +2,25 @@ const db = require('../db');
 const heyreach = require('./heyreach');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
-const { classifyAndDraft, DRAFT_CLASSIFICATIONS } = require('./classifier');
+const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
+const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  normalizeInboundText,
+  STORED_NORM_SQL,
 } = require('./reply-dedupe');
-const {
-  slackSuppressionReason,
-} = require('../utils/smartlead-webhook-helpers');
+const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 
 const HR_BASE = 'https://api.heyreach.io/api/public';
 
 function normWs(s) {
-  return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return normalizeInboundText(s);
 }
 
 function envFlag(name, defaultValue = true) {
@@ -117,14 +119,19 @@ function campaignId(conv) {
   );
 }
 
-function campaignDisplay(conv, id) {
+function campaignNameOf(conv) {
   const fromTags = campaignIdFromAutoTags(conv);
-  const name = conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || fromTags.name || '';
-  const cid = id != null ? String(id).trim() : '';
-  if (name && cid) return `${name} (${cid})`;
-  if (name) return name;
-  if (cid) return `Campaign ${cid}`;
-  return undefined;
+  return (
+    conv?.campaignName ||
+    conv?.campaign_name ||
+    conv?.campaign?.name ||
+    fromTags.name ||
+    null
+  );
+}
+
+function campaignDisplay(conv, id) {
+  return formatCampaignDisplay(campaignNameOf(conv), id) || undefined;
 }
 
 function leadId(conv) {
@@ -230,7 +237,7 @@ async function maybeUpdateExistingThinReply({ clientId, campaignId: cid, leadKey
         AND platform = 'heyreach'
         AND COALESCE(campaign_id, '') = COALESCE($2, '')
         AND COALESCE(lead_id, '') = COALESCE($3, '')
-        AND lower(regexp_replace(inbound_message, '\\s+', ' ', 'g')) = $4
+        AND ${STORED_NORM_SQL} = $4
       ORDER BY created_at DESC
       LIMIT 1`,
     [clientId, cid == null ? null : String(cid), leadKey == null ? null : String(leadKey), normalized]
@@ -377,7 +384,16 @@ async function processConversation(client, conv, options) {
       client.voice_prompt,
       client.booking_link,
       promptBlock,
-      { leadName: leadName(conv), digestTimezone: client.digest_timezone, platform: 'heyreach' },
+      {
+        leadName: leadName(conv),
+        digestTimezone: client.digest_timezone,
+        platform: 'heyreach',
+        clientId: client.id,
+        leadId,
+        clientName: client.name,
+        // Poller = backfill/sweep. Never burn Anthropic here.
+        draftMode: 'bulk',
+      },
     );
   } catch (err) {
     // classifyAndDraft is supposed to never throw; keep poll moving if it does.
@@ -391,9 +407,11 @@ async function processConversation(client, conv, options) {
       reasoning: `Classifier failed: ${err.message}`,
     };
   }
-  const { classification, draft, proposed_time, reasoning } = result;
+  let { classification, draft, proposed_time, reasoning } = result;
 
-  const suppressed = slackSuppressionReason(inbound.text);
+  const suppressed = slackChannelSuppressionReason({
+    classification, inboundMessage: inbound.text,
+  });
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'heyreach', campaignId, leadId,
@@ -403,8 +421,12 @@ async function processConversation(client, conv, options) {
     return { skipped: suppressed };
   }
 
-  const isDraft = DRAFT_CLASSIFICATIONS.includes(classification);
-  const status = isDraft ? 'pending' : 'alert_only';
+  const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+  draft = policy.draft;
+  reasoning = policy.reasoning;
+  const isDraft = policy.isDraft;
+  const status = policy.status;
+  const hrCampaignName = campaignNameOf(conv);
   const meta = {
     messages: threadContext,
     heyreach: {
@@ -413,18 +435,19 @@ async function processConversation(client, conv, options) {
       linkedinUrl: linkedinUrl(conv),
       conversationId: convId,
       senderId: senderId(conv),
-      campaignName: conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || null,
+      campaignName: hrCampaignName,
     },
   };
 
   const { rows: [reply] } = await db.query(
     `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-     VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+     VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       client.id,
       cid == null ? null : String(cid),
+      hrCampaignName || null,
       String(leadKey),
       leadName(conv),
       linkedinUrl(conv),
@@ -473,7 +496,7 @@ async function processConversation(client, conv, options) {
     return { posted: false, skipped: 'slack_post_failed', replyId: reply.id, leadName: reply.lead_name };
   }
 
-  if (classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
+  if (isDraft && classification === 'MEETING_PROPOSED' && linkedinUrl(conv)) {
     await db.query(
       `INSERT INTO meetings (client_id, pending_reply_id, lead_name, linkedin_url, proposed_time, status)
        VALUES ($1, $2, $3, $4, $5, 'proposed')`,
