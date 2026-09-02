@@ -559,28 +559,12 @@ async function postDraftApproval(token, channelId, {
     threadMessages: isFollowUp ? threadMessages : null,
   });
 
-  const blocks = isFollowUp
-    ? [
-        // Buttons immediately under campaign/lead/phone so they are never buried
-        // under a long thread (Slack "Show more" collapses tall messages).
-        ...metaBlocks,
-        draftApprovalActionsBlock(replyId),
-        dividerBlock(),
-        ...conversation,
-        {
-          type: 'context',
-          elements: [{ type: 'mrkdwn', text: contextText }],
-        },
-      ]
-    : [
-        ...metaBlocks,
-        dividerBlock(),
-        ...conversation,
-        {
-          type: 'context',
-          elements: [{ type: 'mrkdwn', text: contextText }],
-        },
-      ];
+  // Buttons immediately under campaign/lead/phone so they are never buried
+  // under a long thread (Slack "See more" collapses tall messages).
+  const blocks = [
+    ...metaBlocks,
+    draftApprovalActionsBlock(replyId),
+  ];
 
   if (!isFollowUp && platform === 'smartlead') {
     const notice = ccAutoNoticeBlock({
@@ -590,10 +574,14 @@ async function postDraftApproval(token, channelId, {
     if (notice) blocks.push(notice);
   }
 
-  // Non-follow-up cards keep actions at the bottom (short cards).
-  if (!isFollowUp) {
-    blocks.push(draftApprovalActionsBlock(replyId));
-  }
+  blocks.push(
+    dividerBlock(),
+    ...conversation,
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: contextText }],
+    },
+  );
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
 

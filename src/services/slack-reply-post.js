@@ -121,6 +121,7 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId) {
         AND COALESCE(campaign_id, '') = COALESCE($3::text, '')
         AND COALESCE(lead_id, '') = COALESCE($4::text, '')
         AND slack_message_ts IS NOT NULL
+        AND status IN ('pending', 'flagged', 'alert_only')
       ORDER BY created_at ASC
       LIMIT 1`,
     [
@@ -135,7 +136,9 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId) {
 
 /**
  * Post a prospect reply card to Slack.
- * By default, threads under the first card for this lead when one exists.
+ * By default, threads under an *open* card for this lead when one exists.
+ * Already-sent / rejected / DQ'd parents are skipped so Approve buttons are
+ * not buried under a SENT confirmation (Igor Duenas / Goliath).
  * Pass postInThread: false to force a top-level channel message (FOLLOW_UP cards).
  * Always enriches context with your last outbound (or previous thread message).
  */
