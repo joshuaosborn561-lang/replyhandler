@@ -154,6 +154,39 @@ do not. FOLLOW_UP sends still do not restart the clock. Booking skips unchanged.
 
 Guard: `follow-ups after any positive reply at 2h/24h/48h/1w`
 
+### First follow-up at 3:30pm CT (not 2h)
+
+*"change 2h to 3:30 pm cst the day the reply came in, unless it came after 2 cst"*
+
+Replaces the former 2-hour first step. Default cadence is now:
+1. **3:30 PM America/Chicago** on the calendar day the inbound arrived
+2. If inbound was at/after **2:00 PM Central**, use the **next** calendar day at 3:30
+3. If that 3:30 is already past when we approve/send, roll forward day-by-day
+4. Then **24h → 48h → 1 week** after our send (unchanged)
+
+Hard floor: **no follow-up is ever due sooner than 2 hours after our send**
+(`MIN_FOLLOW_UP_HOURS`). Same-day 3:30 that would land inside that window is
+pushed to `sentAt + 2h`.
+
+`FOLLOW_UP_HOURS` still overrides the whole sequence with pure hour offsets
+(also clamped to ≥ 2h).
+
+Guard: `first follow-up at 3:30pm CT same day unless inbound after 2pm CT`
+
+### Follow-ups pull campaignintelligence booking_events
+
+*"Follow-Up AI replies needs to talk to booking bridge to see when a client
+has already booked"*
+
+Push webhook (`/webhook/booking-bridge`) still stops the cadence on confirm.
+Additionally, before posting a FOLLOW_UP card, `looksAlreadyBooked` queries
+campaignintelligence `booking_events` (same `SUPABASE_URL`) for
+`booking_confirmed` — and Culture Fits / MS Bookings `page_view` treated as
+booked — so a missed or raced webhook still suppresses the nudge and seeds a
+local `meetings` row.
+
+Guard: `test/booking-bridge.test.js` (`campaignIntelligenceSaysBooked`)
+
 ### No follow-up backfill older than 3 days
 
 *"stop backfilling past 3 days ago"*

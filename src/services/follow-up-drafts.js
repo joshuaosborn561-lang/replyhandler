@@ -87,7 +87,8 @@ function scrubDashes(text) {
 
 /**
  * Short bump copy keyed by offer + cadence step.
- * Step 1 ≈ 2h, later steps rotate phrasing so we don't spam the same line.
+ * Step 1 ≈ same-day 3:30pm CT (or next day if inbound after 2pm CT);
+ * later steps rotate phrasing so we don't spam the same line.
  * Every step reframes the original value prop.
  */
 function bumpForOffer({ name, offer, step, inPerson = false, lastOutboundMessage = '' } = {}) {

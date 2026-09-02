@@ -203,10 +203,10 @@ test('booking link is withheld until the prospect asks', () => {
   assert.ok(!looksLikeBookingLinkRequest('what does pricing look like?', ''), 'a question is not a link request');
 });
 
-// ── Decision: follow-ups after any positive reply at 2h/24h/48h/1w ─────
-// Supersedes "only after meeting propose". "no any positive reply should
-// be on that cadence"
-test('follow-ups after any positive reply at 2h/24h/48h/1w', () => {
+// ── Decision: follow-ups after any positive reply; first step 3:30pm CT ─
+// Soft positives get the cadence. First step is 3:30pm CT the inbound day
+// (next day if after 2pm CT), then 24h/48h/1w after our send.
+test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
   delete process.env.FOLLOW_UP_HOURS;
   delete process.env.FOLLOW_UP_REMINDER_HOURS;
   delete process.env.FOLLOW_UP_MAX_AGE_HOURS;
@@ -217,15 +217,28 @@ test('follow-ups after any positive reply at 2h/24h/48h/1w', () => {
   const {
     followUpCadenceHours,
     DEFAULT_CADENCE,
+    DEFAULT_LATER_CADENCE_HOURS,
+    usesClockFirstStep,
+    firstFollowUpDueAt,
     isPositiveFollowUpClassification,
     POSITIVE_FOLLOW_UP_CLASSIFICATIONS,
   } = require('../src/services/outbound-follow-up');
   const { maxAgeHours, retireStaleFollowUps } = require('../src/services/follow-up-runner');
   const scheduleSrc = read('src/services/outbound-follow-up.js');
 
-  assert.deepStrictEqual(followUpCadenceHours(), DEFAULT_CADENCE);
-  assert.deepStrictEqual(DEFAULT_CADENCE, [2, 24, 48, 168],
-    reversal('follow-ups after any positive reply at 2h/24h/48h/1w', 'the cadence has been changed'));
+  assert.ok(usesClockFirstStep(),
+    reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', 'clock first-step was disabled'));
+  assert.deepStrictEqual(followUpCadenceHours(), DEFAULT_LATER_CADENCE_HOURS);
+  assert.deepStrictEqual(DEFAULT_CADENCE, [24, 48, 168],
+    reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', 'the later-step cadence has been changed'));
+  assert.strictEqual(typeof firstFollowUpDueAt, 'function',
+    reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', 'firstFollowUpDueAt was removed'));
+  assert.ok(scheduleSrc.includes('SAME_DAY_CUTOFF_HOUR') && scheduleSrc.includes('FIRST_DUE_HOUR'),
+    reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', '3:30pm / 2pm CT constants were removed'));
+  assert.match(scheduleSrc, /MIN_FOLLOW_UP_HOURS\s*=\s*2/,
+    reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', '2h minimum floor was removed'));
+  assert.ok(read('src/services/booking-check.js').includes('campaignIntelligenceSaysBooked'),
+    'follow-up booked check must pull campaignintelligence booking_events');
   assert.strictEqual(maxAgeHours(), 24,
     reversal('no backlog — follow-ups from deploy onward', 'the stale guard has been widened or removed'));
   assert.strictEqual(typeof retireStaleFollowUps, 'function', 'the backlog guard must remain');
