@@ -167,8 +167,8 @@ async function fetchInboxReplies(apiKey, offset, limit) {
 }
 
 async function processInboxRow(client, row, options) {
-  const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
-  const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
+  let campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
+  let leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
 
   const at = replyTime(row);
@@ -237,7 +237,27 @@ async function processInboxRow(client, row, options) {
 
   if (!inbound) return { skipped: 'no_inbound' };
 
-  const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+  const mapId = row?.sl_email_lead_map_id || row?.slEmailLeadMapId || row?.leadMap;
+  let smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+  const storedMapId = mapId && String(leadId) === String(mapId);
+  if ((!smartleadEmailStatsId || storedMapId) && client.smartlead_api_key) {
+    try {
+      const resolved = await smartlead.resolveSendableThread(client.smartlead_api_key, {
+        campaignId,
+        leadId,
+        leadEmail: row?.lead_email || row?.email,
+      });
+      campaignId = resolved.campaignId;
+      leadId = resolved.leadId;
+      smartleadEmailStatsId = resolved.statsId;
+      if (resolved.history) threadContext = resolved.history;
+    } catch (err) {
+      console.warn('[SmartLeadPoll] Could not resolve sendable ids', {
+        client: client.name, campaignId, leadId, err: err.message,
+      });
+    }
+  }
+  if (!smartleadEmailStatsId) return { skipped: 'missing_stats_id' };
 
   const unposted = await findUnpostedReply({
     clientId: client.id,

@@ -225,6 +225,39 @@ function lastOutboundFromThreadContext(reply) {
   return last;
 }
 
+async function ensureSmartleadSendableIds(client, reply) {
+  if (!reply || reply.platform !== 'smartlead') return reply;
+  const apiKey = client.smartlead_api_key;
+  if (!apiKey) {
+    throw new Error('SmartLead API key required to resolve sendable thread before posting a card');
+  }
+  const smartlead = require('./smartlead');
+  const resolved = await smartlead.resolveSendableThread(apiKey, {
+    campaignId: reply.campaign_id,
+    leadId: reply.lead_id,
+    leadEmail: reply.lead_email,
+  });
+  if (
+    String(reply.lead_id) !== String(resolved.leadId)
+    || String(reply.campaign_id) !== String(resolved.campaignId)
+    || String(reply.smartlead_email_stats_id || '') !== String(resolved.statsId)
+  ) {
+    await db.query(
+      `UPDATE pending_replies
+          SET lead_id = $1, campaign_id = $2, smartlead_email_stats_id = $3, updated_at = now()
+        WHERE id = $4`,
+      [resolved.leadId, resolved.campaignId, resolved.statsId, reply.id]
+    );
+  }
+  return {
+    ...reply,
+    lead_id: resolved.leadId,
+    campaign_id: resolved.campaignId,
+    smartlead_email_stats_id: resolved.statsId,
+    thread_context: resolved.history || reply.thread_context,
+  };
+}
+
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
   const { shouldPostToSlackChannel } = require('../utils/slack-channel-policy');
   if (!shouldPostToSlackChannel({
@@ -237,6 +270,8 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     });
     return false;
   }
+
+  reply = await ensureSmartleadSendableIds(client, reply);
 
   const policy = applyClientDraftPolicy(client, reply.lead_email, {
     classification: reply.classification,
@@ -283,7 +318,8 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
 /** Retry any DB rows that never made it to Slack (e.g. Slack API error after insert). */
 async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
   const { rows } = await db.query(
-    `SELECT pr.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name
+    `SELECT pr.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name,
+            c.smartlead_api_key
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
       WHERE pr.slack_message_ts IS NULL
@@ -303,6 +339,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
       name: row.client_name,
       slack_bot_token: row.slack_bot_token,
       slack_channel_id: row.slack_channel_id,
+      smartlead_api_key: row.smartlead_api_key,
     };
     try {
       await repostReplyRowToSlack(client, row, {

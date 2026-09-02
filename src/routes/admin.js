@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const db = require('../db');
+const smartlead = require('../services/smartlead');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 
@@ -153,7 +154,8 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
 
 /**
  * Insert a pending reply and post the real Approve / Edit & send Slack card.
- * Used to recover a reply the interested-only gate silenced.
+ * Resolves email_lead_id + SENT stats_id first — never trust a leadMap URL id.
+ * Pass `replyId` to repair an existing row instead of inserting a duplicate.
  */
 router.post('/admin/post-approval-card', async (req, res) => {
   const {
@@ -168,11 +170,13 @@ router.post('/admin/post-approval-card', async (req, res) => {
     lastOutboundMessage,
     classification = 'INTERESTED',
     reasoning = 'Recovered for Slack approval.',
+    replyId,
+    postCard,
   } = req.body || {};
 
-  if (!clientId || !leadName || !inboundMessage || !draft || !campaignId || !leadId) {
+  if (!clientId || !leadName || !inboundMessage || !draft || !leadEmail) {
     return res.status(400).json({
-      error: 'clientId, leadName, inboundMessage, draft, campaignId, and leadId are required',
+      error: 'clientId, leadName, leadEmail, inboundMessage, and draft are required',
     });
   }
 
@@ -182,63 +186,127 @@ router.post('/admin/post-approval-card', async (req, res) => {
       return res.status(404).json({ error: 'client not found or inactive' });
     }
 
-    const lastOut = String(lastOutboundMessage || '').trim();
-    const threadContext = lastOut
-      ? [
-        { role: 'us', message: lastOut },
-        { role: 'prospect', message: inboundMessage },
-      ]
-      : [{ role: 'prospect', message: inboundMessage }];
-    const display = formatCampaignDisplay(campaignName, campaignId) || String(campaignId);
+    if (!client.smartlead_api_key) {
+      return res.status(400).json({ error: 'client has no SmartLead API key; cannot resolve sendable thread' });
+    }
 
-    const { rows: [reply] } = await db.query(
-      `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email,
-         inbound_message, thread_context, classification, draft_reply, status)
-       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending') RETURNING *`,
-      [
-        clientId,
-        String(campaignId),
-        campaignName || null,
-        String(leadId),
-        leadName,
-        leadEmail || null,
-        inboundMessage,
-        JSON.stringify(threadContext),
-        classification,
-        draft,
-      ]
-    );
-
-    const slackResult = await postProspectSlackCard({
-      token: client.slack_bot_token,
-      channelId: client.slack_channel_id,
-      clientId,
-      platform: 'smartlead',
-      campaignId: String(campaignId),
-      leadId: String(leadId),
-      threadContext,
-      isDraft: true,
-      replyId: reply.id,
-      postInThread: false,
-      card: {
-        replyId: reply.id,
-        leadName,
-        leadEmail: leadEmail || null,
-        platform: 'smartlead',
-        classification,
-        draft,
-        reasoning,
-        inboundMessage,
-        campaignDisplay: display,
-        lastOutboundMessage: lastOut || undefined,
-      },
+    const resolved = await smartlead.resolveSendableThread(client.smartlead_api_key, {
+      campaignId,
+      leadId,
+      leadEmail,
     });
 
-    return res.status(201).json({
+    const lastOut = String(lastOutboundMessage || '').trim();
+    const threadContext = resolved.history && typeof resolved.history === 'object'
+      ? resolved.history
+      : (lastOut
+        ? [
+          { role: 'us', message: lastOut },
+          { role: 'prospect', message: inboundMessage },
+        ]
+        : [{ role: 'prospect', message: inboundMessage }]);
+    const display = formatCampaignDisplay(campaignName, resolved.campaignId) || String(resolved.campaignId);
+
+    let reply;
+    if (replyId) {
+      const { rows } = await db.query(
+        `UPDATE pending_replies
+            SET campaign_id = $1,
+                campaign_name = COALESCE($2, campaign_name),
+                lead_id = $3,
+                lead_name = $4,
+                lead_email = $5,
+                inbound_message = $6,
+                thread_context = $7,
+                classification = $8,
+                draft_reply = $9,
+                smartlead_email_stats_id = $10,
+                status = 'pending',
+                updated_at = now()
+          WHERE id = $11 AND client_id = $12
+          RETURNING *`,
+        [
+          resolved.campaignId,
+          campaignName || null,
+          resolved.leadId,
+          leadName,
+          leadEmail,
+          inboundMessage,
+          JSON.stringify(threadContext),
+          classification,
+          draft,
+          resolved.statsId,
+          replyId,
+          clientId,
+        ]
+      );
+      reply = rows[0];
+      if (!reply) {
+        return res.status(404).json({ error: 'replyId not found for this client' });
+      }
+    } else {
+      const inserted = await db.query(
+        `INSERT INTO pending_replies
+          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email,
+           inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+         VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11) RETURNING *`,
+        [
+          clientId,
+          resolved.campaignId,
+          campaignName || null,
+          resolved.leadId,
+          leadName,
+          leadEmail,
+          inboundMessage,
+          JSON.stringify(threadContext),
+          classification,
+          draft,
+          resolved.statsId,
+        ]
+      );
+      reply = inserted.rows[0];
+    }
+
+    const alreadyPosted = !!reply.slack_message_ts;
+    const shouldPost = postCard === true || (postCard !== false && !alreadyPosted);
+
+    let slackResult = null;
+    if (shouldPost) {
+      slackResult = await postProspectSlackCard({
+        token: client.slack_bot_token,
+        channelId: client.slack_channel_id,
+        clientId,
+        platform: 'smartlead',
+        campaignId: resolved.campaignId,
+        leadId: resolved.leadId,
+        threadContext,
+        isDraft: true,
+        replyId: reply.id,
+        postInThread: false,
+        card: {
+          replyId: reply.id,
+          leadName,
+          leadEmail,
+          platform: 'smartlead',
+          classification,
+          draft,
+          reasoning,
+          inboundMessage,
+          campaignDisplay: display,
+          lastOutboundMessage: lastOut || undefined,
+        },
+      });
+    }
+
+    return res.status(alreadyPosted && !shouldPost ? 200 : 201).json({
       ok: true,
       replyId: reply.id,
-      slackMessageTs: slackResult.ts,
+      leadId: resolved.leadId,
+      campaignId: resolved.campaignId,
+      statsId: resolved.statsId,
+      repaired: !!replyId,
+      posted: !!slackResult,
+      slackMessageTs: slackResult?.ts || reply.slack_message_ts || null,
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });

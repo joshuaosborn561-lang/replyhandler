@@ -533,3 +533,38 @@ campaigns. That guard is removed. Wizard rewrites foreign brands on the
 mailbox, pulls cross-client attachments, and STARTs a paused Goliath
 campaign only after signature QA. Follow-ups in this repo stay reply-card
 cadence only.
+
+## 2026-08-24
+
+### Slack cards store email_lead_id + stats_id, never inbox leadMap
+
+Catignani's first recovered card used `lead_id` `3512474990` from SmartLead's
+master-inbox URL (`leadMap=` / `sl_email_lead_map_id`). Message-history 404s
+on that id, so Approve could not resolve `stats_id` and the send failed. The
+working card used inbox `email_lead_id` `4324451336` and a real SENT
+`stats_id`.
+
+Webhook, poller, admin recover, Slack-card recovery, and Approve must resolve
+a sendable thread (campaign + `email_lead_id` + SENT `stats_id`) and persist
+those ids. Do not take a caller-supplied lead id at face value.
+
+The same failure shows up on recovered continuation cards (Igor Duenas /
+Goliath, 2026-09-02): the poller posted a MEETING_PROPOSED card under a
+already-sent parent, and Approve could not send if the stored id was leadMap.
+
+Guard: `webhook, poller, admin, and send resolve sendable ids before a card can Approve`
+
+## 2026-09-02
+
+### New draft cards do not thread under a SENT parent
+
+Igor's Friday-11am card landed as a thread reply under the already-sent
+first-touch confirmation. Channel view showed a SENT card with no buttons;
+Approve/Edit lived in the collapsed thread. Only thread under a still-open
+(`pending` / `flagged` / `alert_only`) card. If the previous card for that
+lead is already sent, rejected, or DQ'd, post a new top-level message.
+
+All draft cards pin Approve/Edit/Reject/DQ/Meeting booked under the lead
+header, not under the conversation — Slack "See more" hides bottom actions.
+
+Guard: `draft cards do not thread under sent parents; buttons stay above the conversation`

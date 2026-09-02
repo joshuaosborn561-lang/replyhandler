@@ -288,11 +288,10 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
     reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost original → our reply → rest'));
   assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
     reversal('FOLLOW_UP dedicated Slack channel', 'shared approval actions helper missing'));
-  // Buttons must be assembled before the long conversation for FOLLOW_UP.
+  // Buttons must sit above the long conversation (Slack "See more" hides bottom actions).
   const postFn = slackSrc.slice(slackSrc.indexOf('async function postDraftApproval'));
-  const followUpBranch = postFn.slice(postFn.indexOf('const blocks = isFollowUp'), postFn.indexOf('if (!isFollowUp && platform'));
   assert.ok(
-    followUpBranch.indexOf('draftApprovalActionsBlock') < followUpBranch.indexOf('...conversation'),
+    postFn.indexOf('draftApprovalActionsBlock') < postFn.indexOf('...conversation'),
     reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP buttons are buried under the conversation again'),
   );
 });
@@ -591,4 +590,25 @@ test('Parlay excludes .io and .ai from drafting', () => {
     reversal('Parlay excludes .io and .ai from drafting', 'SmartLead webhook no longer applies the policy'));
   assert.match(poller, /applyClientDraftPolicy/,
     reversal('Parlay excludes .io and .ai from drafting', 'SmartLead poller no longer applies the policy'));
+});
+
+// ── Decision: draft cards do not thread under SENT parents; buttons on top ──
+test('draft cards do not thread under sent parents; buttons stay above the conversation', () => {
+  const post = read('src/services/slack-reply-post.js');
+  const finder = post.slice(
+    post.indexOf('async function findSlackThreadRootTs'),
+    post.indexOf('async function postProspectSlackCard'),
+  );
+  assert.match(finder, /status IN \('pending', 'flagged', 'alert_only'\)/,
+    reversal('draft cards do not thread under sent parents', 'thread root query no longer requires an open card'));
+
+  const slackSrc = read('src/services/slack.js');
+  const postFn = slackSrc.slice(slackSrc.indexOf('async function postDraftApproval'));
+  const actionsAt = postFn.indexOf('draftApprovalActionsBlock');
+  const convoAt = postFn.indexOf('...conversation');
+  const pushBottom = postFn.indexOf('Non-follow-up cards keep actions at the bottom');
+  assert.ok(actionsAt >= 0 && convoAt > actionsAt,
+    reversal('draft cards do not thread under sent parents', 'Approve buttons are below the conversation again'));
+  assert.equal(pushBottom, -1,
+    reversal('draft cards do not thread under sent parents', 'non-follow-up cards still append buttons at the bottom'));
 });
