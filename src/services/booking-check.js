@@ -3,11 +3,16 @@ const google = require('./google-calendar');
 const microsoft = require('./microsoft-calendar');
 const { replySuppressesFollowUp } = require('../utils/booking-signals');
 const { callSaysBooked } = require('./call-booking-check');
+const {
+  campaignIntelligenceSaysBooked,
+  stopFollowUpsForEmail,
+  normalizeEmail,
+} = require('./booking-bridge');
 
 /**
  * "Does it look like this prospect already booked?"
  *
- * Four independent signals, cheapest first. Any one is enough — a follow-up
+ * Independent signals, cheapest first. Any one is enough — a follow-up
  * nudging someone who already has time on the calendar is worse than a missed
  * nudge, so this errs toward saying yes.
  *
@@ -107,6 +112,30 @@ async function calendarHasEventWith(clientId, { leadEmail, leadName }) {
 async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, leadId, since }) {
   if (await meetingRowExists(clientId, { leadEmail, leadName })) return 'meeting_row_exists';
 
+  // Campaignintelligence booking page (push webhook + live pull of booking_events).
+  // Pull covers webhook races / misses so FOLLOW_UP cards still suppress.
+  const fromBridge = await campaignIntelligenceSaysBooked(leadEmail);
+  if (fromBridge) {
+    const email = normalizeEmail(leadEmail);
+    if (clientId && email) {
+      try {
+        await stopFollowUpsForEmail({
+          clientId,
+          email,
+          name: leadName || null,
+          skipReason: fromBridge,
+        });
+      } catch (err) {
+        console.warn('[BookingCheck] Failed to sync local skip after bridge hit', {
+          clientId,
+          email,
+          err: err.message,
+        });
+      }
+    }
+    return fromBridge;
+  }
+
   const fromReply = await laterReplySaysBooked(clientId, {
     leadEmail, leadId, platform, since: since || new Date(0),
   });
@@ -114,7 +143,7 @@ async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, lea
 
   if (await calendarHasEventWith(clientId, { leadEmail, leadName })) return 'calendar_event_found';
 
-  // 4. We called them back and the transcript shows a meeting was set.
+  // We called them back and the transcript shows a meeting was set.
   const fromCall = await callSaysBooked(clientId, { platform, leadEmail, leadId, since });
   if (fromCall) return fromCall;
 

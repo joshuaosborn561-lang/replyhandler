@@ -5,7 +5,8 @@ const { isSlackTestFixtureReply } = require('./reply-send');
  * Default cadence after we reply to a positive inbound:
  *   1) 3:30 PM America/Chicago the day the inbound arrived
  *      (next calendar day if inbound was at/after 2:00 PM Central, or if 3:30
- *      that day is already past when we schedule)
+ *      that day is already past when we schedule) — never sooner than 2h after
+ *      our send
  *   2–4) 24h → 48h → 1 week after our send
  */
 const DEFAULT_LATER_CADENCE_HOURS = [24, 48, 168];
@@ -22,6 +23,8 @@ const FIRST_DUE_HOUR = 15;
 const FIRST_DUE_MINUTE = 30;
 /** Inbounds at/after this local hour skip same-day 3:30 and use the next day. */
 const SAME_DAY_CUTOFF_HOUR = 14;
+/** Hard floor: never ping sooner than this many hours after our send. */
+const MIN_FOLLOW_UP_HOURS = 2;
 
 /**
  * Inbound classifications that start the follow-up cadence when we send our reply.
@@ -158,22 +161,40 @@ function hoursBetween(from, to) {
   return Math.round((ms / 3600000) * 100) / 100;
 }
 
+/** Never schedule a due time earlier than sentAt + MIN_FOLLOW_UP_HOURS. */
+function enforceMinFollowUpDelay(due, sentAt, minHours = MIN_FOLLOW_UP_HOURS) {
+  const sent = sentAt instanceof Date ? sentAt : new Date(sentAt);
+  const target = due instanceof Date ? due : new Date(due);
+  const floorMs = sent.getTime() + Math.round(minHours * 3600 * 1000);
+  if (!Number.isFinite(target.getTime()) || target.getTime() < floorMs) {
+    return new Date(floorMs);
+  }
+  return target;
+}
+
 /**
  * Build { due, sequenceHours } rows for the cadence.
  * Default: clock first step + later hour offsets from sentAt.
  * FOLLOW_UP_HOURS override: every step is hours from sentAt.
+ * Every step is clamped to ≥ MIN_FOLLOW_UP_HOURS after our send.
  */
 function buildCadenceSteps(sentAt, inboundAt) {
   const sent = sentAt instanceof Date ? sentAt : new Date(sentAt);
 
   if (!usesClockFirstStep()) {
-    return followUpCadenceHours().map((hours) => ({
-      due: new Date(sent.getTime() + Math.round(hours * 3600 * 1000)),
-      sequenceHours: hours,
-    }));
+    return followUpCadenceHours().map((hours) => {
+      const clampedHours = Math.max(hours, MIN_FOLLOW_UP_HOURS);
+      return {
+        due: new Date(sent.getTime() + Math.round(clampedHours * 3600 * 1000)),
+        sequenceHours: clampedHours,
+      };
+    });
   }
 
-  const firstDue = firstFollowUpDueAt(inboundAt || sent, sent);
+  const firstDue = enforceMinFollowUpDelay(
+    firstFollowUpDueAt(inboundAt || sent, sent),
+    sent
+  );
   const steps = [
     {
       due: firstDue,
@@ -181,9 +202,10 @@ function buildCadenceSteps(sentAt, inboundAt) {
     },
   ];
   for (const hours of DEFAULT_LATER_CADENCE_HOURS) {
+    const clampedHours = Math.max(hours, MIN_FOLLOW_UP_HOURS);
     steps.push({
-      due: new Date(sent.getTime() + Math.round(hours * 3600 * 1000)),
-      sequenceHours: hours,
+      due: new Date(sent.getTime() + Math.round(clampedHours * 3600 * 1000)),
+      sequenceHours: clampedHours,
     });
   }
   return steps;
@@ -399,8 +421,10 @@ module.exports = {
   DEFAULT_CADENCE,
   DEFAULT_LATER_CADENCE_HOURS,
   MAX_SCHEDULE_AGE_DAYS,
+  MIN_FOLLOW_UP_HOURS,
   FOLLOW_UP_TZ,
   FIRST_DUE_HOUR,
   FIRST_DUE_MINUTE,
   SAME_DAY_CUTOFF_HOUR,
+  enforceMinFollowUpDelay,
 };

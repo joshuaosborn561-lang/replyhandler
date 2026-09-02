@@ -173,4 +173,21 @@ describe('firstFollowUpDueAt', () => {
     assert.equal(steps[3].sequenceHours, 168);
     assert.equal(steps[1].due.getTime(), sent.getTime() + 24 * 3600 * 1000);
   });
+
+  it('never schedules first due sooner than 2h after send', () => {
+    const {
+      buildCadenceSteps,
+      zonedWallTimeToUtc,
+      MIN_FOLLOW_UP_HOURS,
+    } = require('../src/services/outbound-follow-up');
+    assert.equal(MIN_FOLLOW_UP_HOURS, 2);
+    // Inbound 10am → clock 3:30pm, but we send at 2:45pm → only 45m to 3:30
+    const inbound = zonedWallTimeToUtc(2026, 1, 15, 10, 0);
+    const sent = zonedWallTimeToUtc(2026, 1, 15, 14, 45);
+    const steps = buildCadenceSteps(sent, inbound);
+    const minDue = sent.getTime() + 2 * 3600 * 1000;
+    assert.ok(steps[0].due.getTime() >= minDue);
+    assert.equal(steps[0].due.getTime(), minDue);
+    assert.ok(steps[0].sequenceHours >= 2);
+  });
 });

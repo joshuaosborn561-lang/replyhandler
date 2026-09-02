@@ -266,6 +266,77 @@ async function handleBookingBridgeEvent(payload) {
   };
 }
 
+/**
+ * Pull from campaignintelligence `booking_events` (same Supabase as reply RAG).
+ * Used by follow-up runner so we still suppress nudges if the push webhook was
+ * missed or raced the due tick.
+ *
+ * Booked signals:
+ * - event_type = booking_confirmed
+ * - Culture Fits / MS Bookings first-click treated as booked (page_view)
+ *
+ * Soft-fails (returns null) when Supabase is not configured or the request errors.
+ *
+ * @returns {Promise<string|null>} skip reason, or null if not booked / unknown
+ */
+async function campaignIntelligenceSaysBooked(leadEmail) {
+  const email = normalizeEmail(leadEmail);
+  if (!email) return null;
+
+  const base = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+  if (!base || !key) return null;
+
+  const qs = new URLSearchParams({
+    select: 'id,event_type,client_slug,platform,created_at',
+    lead_email: `ilike.${email}`,
+    order: 'created_at.desc',
+    limit: '25',
+  });
+
+  let rows;
+  try {
+    const res = await fetch(`${base}/rest/v1/booking_events?${qs}`, {
+      method: 'GET',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        Accept: 'application/json',
+      },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.warn('[BookingBridge] campaignintelligence lookup failed', {
+        status: res.status,
+        body: String(text).slice(0, 200),
+      });
+      return null;
+    }
+    rows = text ? JSON.parse(text) : [];
+  } catch (err) {
+    console.warn('[BookingBridge] campaignintelligence lookup error', {
+      err: err.message,
+    });
+    return null;
+  }
+
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  for (const row of rows) {
+    const type = String(row?.event_type || '');
+    if (type === 'booking_confirmed') return 'booking_bridge_confirmed';
+    const slug = String(row?.client_slug || '').toLowerCase();
+    const platform = String(row?.platform || '').toLowerCase();
+    if (
+      type === 'page_view'
+      && (slug === 'culturefits' || platform === 'msbookings')
+    ) {
+      return 'booking_bridge_ms_click';
+    }
+  }
+  return null;
+}
+
 module.exports = {
   CLIENT_SLUG_ALIASES,
   assertBookingBridgeSecret,
@@ -273,5 +344,6 @@ module.exports = {
   resolveClients,
   stopFollowUpsForEmail,
   handleBookingBridgeEvent,
+  campaignIntelligenceSaysBooked,
   normalizeEmail,
 };
