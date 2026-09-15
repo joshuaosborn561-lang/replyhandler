@@ -12,7 +12,7 @@ const db = require('../db');
 const CLIENT_SLUG_ALIASES = {
   goliath: ['Goliath', 'Goliath Cybersecurity', 'Goliath Solutions Group'],
   parlay: ['Parlay Tech'],
-  techevo: ['TechEvolution', 'TechEvo'],
+  techevo: ['TechEvolution', 'TechEvo'], // public wrap: https://book.gosalesglider.com/techevo
   culturefits: ['Culture Fits'],
   bolder: ['Bolder Cyber Partners'],
   salesglider: ['SalesGlider'],

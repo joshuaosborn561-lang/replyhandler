@@ -605,3 +605,107 @@ test('Parlay excludes .io and .ai from drafting', () => {
   assert.match(poller, /applyClientDraftPolicy/,
     reversal('Parlay excludes .io and .ai from drafting', 'SmartLead poller no longer applies the policy'));
 });
+
+// ── Decision: Tech Evolution uses the public booking-bridge wrap ───────
+// Corey Tapper's Calendly destination changed to calendly.com/ctapper/meeting.
+// That update lives in booking-bridge. Replyhandler keeps emitting the
+// existing public page prospects already get.
+test('Tech Evolution booking link is the public booking-bridge wrap', () => {
+  const {
+    prospectBookingLink,
+    TECHEVO_PUBLIC_BOOKING_URL,
+  } = require('../src/utils/public-booking-link');
+  const { fallbackDraftText, sanitizeDraft } = require('../src/services/classifier');
+  const { schedulingPromptBookingLinkOnly } = require('../src/services/scheduling-slots');
+
+  assert.equal(
+    TECHEVO_PUBLIC_BOOKING_URL,
+    'https://book.gosalesglider.com/techevo',
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'the public Tech Evolution URL is no longer book.gosalesglider.com/techevo'
+    )
+  );
+
+  const remapped = prospectBookingLink({
+    clientName: 'TechEvolution',
+    bookingLink: 'https://calendly.com/ctapper/meeting',
+  });
+  assert.equal(
+    remapped,
+    TECHEVO_PUBLIC_BOOKING_URL,
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'Tech Evolution is emitting Corey’s raw Calendly instead of the public wrap'
+    )
+  );
+
+  const draft = fallbackDraftText({
+    leadName: 'Dan',
+    inboundMessage: 'send me the link',
+    includeBookingLink: true,
+    clientName: 'TechEvo',
+    bookingLink: 'https://calendly.com/ctapper/new-meeting',
+  });
+  assert.ok(
+    draft.includes(TECHEVO_PUBLIC_BOOKING_URL),
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'a Tech Evolution link-request draft does not include book.gosalesglider.com/techevo'
+    )
+  );
+  assert.ok(
+    !/calendly\.com\/ctapper/i.test(draft),
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'a Tech Evolution draft still contains calendly.com/ctapper'
+    )
+  );
+
+  const leaked = sanitizeDraft(
+    'Sure — grab a time here: https://calendly.com/ctapper/meeting',
+    { bookingLink: TECHEVO_PUBLIC_BOOKING_URL, includeBookingLink: true }
+  );
+  assert.ok(leaked.includes(TECHEVO_PUBLIC_BOOKING_URL));
+  assert.ok(
+    !/calendly\.com\/ctapper/i.test(leaked),
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'sanitizeDraft let Corey’s raw Calendly through'
+    )
+  );
+
+  const prompt = schedulingPromptBookingLinkOnly({
+    name: 'TechEvolution',
+    booking_link: 'https://calendly.com/ctapper/meeting',
+  });
+  assert.match(prompt.promptBlock, /book\.gosalesglider\.com\/techevo/);
+  assert.doesNotMatch(prompt.promptBlock, /calendly\.com\/ctapper/);
+
+  assert.equal(
+    prospectBookingLink({
+      clientName: 'Bolder Cyber Partners',
+      bookingLink: 'https://book.gosalesglider.com/bolder',
+    }),
+    'https://book.gosalesglider.com/bolder',
+    reversal(
+      'Tech Evolution booking link is the public booking-bridge wrap',
+      'Bolder’s public wrap was changed'
+    )
+  );
+
+  for (const file of [
+    'src/services/classifier.js',
+    'src/services/follow-up-drafts.js',
+    'src/services/claude-reply-draft.js',
+    'src/services/follow-up-runner.js',
+  ]) {
+    assert.ok(
+      !read(file).includes('calendly.com/ctapper/meeting'),
+      reversal(
+        'Tech Evolution booking link is the public booking-bridge wrap',
+        `${file} hardcodes Corey’s raw Calendly into outbound copy`
+      )
+    );
+  }
+});

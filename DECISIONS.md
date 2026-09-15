@@ -566,3 +566,20 @@ campaigns. That guard is removed. Wizard rewrites foreign brands on the
 mailbox, pulls cross-client attachments, and STARTs a paused Goliath
 campaign only after signature QA. Follow-ups in this repo stay reply-card
 cadence only.
+
+## 2026-09-15
+
+### Tech Evolution / Corey Tapper keeps the public booking-bridge wrap
+
+Corey’s underlying Calendly is now `https://calendly.com/ctapper/meeting`.
+That destination is updated in booking-bridge (separate PR) so the public
+page points there. Replyhandler must keep emitting the wrap prospects
+already get:
+
+**`https://book.gosalesglider.com/techevo`**
+
+Do not paste `calendly.com/ctapper/meeting` (or the older
+`calendly.com/ctapper/new-meeting`) into outbound drafts. Other clients
+are unchanged — Bolder stays on `/bolder`.
+
+Guard: `Tech Evolution booking link is the public booking-bridge wrap`
