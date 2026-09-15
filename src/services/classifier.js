@@ -8,6 +8,10 @@ const {
   looksLikeBookingLinkRequest,
   stripBookingUrls,
 } = require('../utils/booking-link-intent');
+const {
+  prospectBookingLink,
+  rewriteRawCtapperCalendly,
+} = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -146,7 +150,7 @@ function stripSignOff(text) {
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function sanitizeDraft(text, { bookingLink, includeBookingLink } = {}) {
+function sanitizeDraft(text, { bookingLink, includeBookingLink, clientName } = {}) {
   let s = String(text || '').trim();
   // Strip markdown fences / leading role labels the model sometimes adds.
   s = s.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
@@ -159,9 +163,10 @@ function sanitizeDraft(text, { bookingLink, includeBookingLink } = {}) {
   s = stripSignOff(s);
   if (!s) return '';
 
-  const link = bookingLink && String(bookingLink).trim().startsWith('http')
-    ? String(bookingLink).trim()
-    : '';
+  const link = prospectBookingLink({ clientName, bookingLink });
+
+  // Corey Tapper's raw Calendly must never go out — public wrap only.
+  s = rewriteRawCtapperCalendly(s, { includeBookingLink });
 
   if (includeBookingLink) {
     // Prospect asked for / accepted the booking link — guarantee it is present.
@@ -192,12 +197,11 @@ function fallbackDraftText({
   digestTimezone,
   includeBookingLink,
   voicePrompt,
+  clientName,
 } = {}) {
   const name = firstNameFromLead(leadName);
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
-  const link = bookingLink && String(bookingLink).trim().startsWith('http')
-    ? String(bookingLink).trim()
-    : '';
+  const link = prospectBookingLink({ clientName, bookingLink });
   const msg = String(inboundMessage || '').trim();
   const wantLink = typeof includeBookingLink === 'boolean'
     ? includeBookingLink
@@ -620,17 +624,17 @@ async function classifyNotInterestedSecondPass(threadContext, inboundMessage) {
 }
 
 function finalizeDraft(text, {
-  booking, includeBookingLink, voicePrompt, leadName,
+  booking, includeBookingLink, voicePrompt, leadName, clientName,
 }) {
   const { speaksAsPrincipal } = require('../utils/principal-voice');
   const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
-  let draft = sanitizeDraft(text, { bookingLink: booking, includeBookingLink });
+  let draft = sanitizeDraft(text, { bookingLink: booking, includeBookingLink, clientName });
   const guarded = enforcePrincipalVoice(draft, {
     asPrincipal: speaksAsPrincipal(voicePrompt),
   });
   if (guarded.scrubbed) {
     console.warn('[Classifier] Scrubbed principal handoff leak', { leadName });
-    draft = sanitizeDraft(guarded.text, { bookingLink: booking, includeBookingLink });
+    draft = sanitizeDraft(guarded.text, { bookingLink: booking, includeBookingLink, clientName });
   }
   return draft;
 }
@@ -658,9 +662,7 @@ async function draftOnly({
     return null;
   }
 
-  const booking = bookingLink && String(bookingLink).trim().startsWith('http')
-    ? String(bookingLink).trim()
-    : '';
+  const booking = prospectBookingLink({ clientName, bookingLink });
   const name = firstNameFromLead(leadName);
   const channel = String(platform || 'smartlead').toLowerCase() === 'heyreach' ? 'linkedin' : 'email';
   const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
@@ -722,13 +724,14 @@ async function draftOnly({
     digestTimezone,
     includeBookingLink,
     voicePrompt,
-  }), { booking, includeBookingLink, voicePrompt, leadName });
+    clientName,
+  }), { booking, includeBookingLink, voicePrompt, leadName, clientName });
 
   async function draftWithGemini() {
     const model = buildDraftModel(systemInstruction);
     let res = await withGeminiRetry(() => model.generateContent(prompt));
     let draft = finalizeDraft(res.response.text(), {
-      booking, includeBookingLink, voicePrompt, leadName,
+      booking, includeBookingLink, voicePrompt, leadName, clientName,
     });
 
     if (looksTruncatedDraft(draft)) {
@@ -745,7 +748,7 @@ async function draftOnly({
         `${prompt}\n\nIMPORTANT: Your previous attempt was cut off mid-sentence. ${retryHint}`
       ));
       draft = finalizeDraft(res.response.text(), {
-        booking, includeBookingLink, voicePrompt, leadName,
+        booking, includeBookingLink, voicePrompt, leadName, clientName,
       });
       if (looksTruncatedDraft(draft)) {
         console.warn('[Classifier] Draft still truncated after retry — keeping model output (no template fallback)', {
@@ -781,7 +784,7 @@ async function draftOnly({
         draftMode,
       });
       const draft = finalizeDraft(result.text, {
-        booking, includeBookingLink, voicePrompt, leadName,
+        booking, includeBookingLink, voicePrompt, leadName, clientName,
       });
       if (!draft) throw new Error('Claude draft was empty after sanitization');
       console.log('[Classifier] Claude retrieval draft generated', {

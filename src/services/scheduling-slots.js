@@ -1,4 +1,5 @@
 const calendar = require('./calendar');
+const { prospectBookingLink } = require('../utils/public-booking-link');
 
 const CALENDLY_API = 'https://api.calendly.com';
 
@@ -196,10 +197,10 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate) {
  * note webhook delivery can lag; blocking on multi-hop Calendly + calendar scans adds seconds–minutes.
  */
 function schedulingPromptBookingLinkOnly(client) {
-  const link =
-    client.booking_link && String(client.booking_link).trim().startsWith('http')
-      ? String(client.booking_link).trim()
-      : '';
+  const link = prospectBookingLink({
+    clientName: client && client.name,
+    bookingLink: client && client.booking_link,
+  });
   return {
     slots: [],
     // Times-first by default: suggest next-few-days windows; booking URL is for

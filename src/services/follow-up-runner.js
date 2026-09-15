@@ -8,6 +8,7 @@ const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
+const { prospectBookingLink } = require('../utils/public-booking-link');
 
 /** Shared Slack channel for all FOLLOW_UP bumps (not per-client inbox channels). */
 const DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID = 'C0BRRS8DV19';
@@ -141,7 +142,10 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     leadName: fu.lead_name,
     platform: fu.platform,
     voicePrompt: client.voice_prompt,
-    bookingLink: client.booking_link,
+    bookingLink: prospectBookingLink({
+      clientName: client.name,
+      bookingLink: client.booking_link,
+    }),
     lastInboundMessage: originalInbound || null,
     lastOutboundMessage: lastOutbound || null,
     digestTimezone: client.digest_timezone,
