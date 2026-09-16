@@ -89,6 +89,66 @@ async function isReplyDisqualified(clientId, reply) {
 }
 
 /**
+ * Remove a false DQ so follow-up scheduling can run again.
+ * Matches the same keys as isDisqualified (email, lead id, HeyReach conversation, LinkedIn).
+ */
+async function clearDisqualified(clientId, {
+  platform,
+  campaignId,
+  leadId,
+  conversationId,
+  leadEmail,
+  linkedinUrl,
+} = {}) {
+  if (!clientId) return { deleted: 0, rows: [] };
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  const camp = campaignId != null ? String(campaignId) : '';
+  const lead = leadId != null ? String(leadId) : '';
+  const conv = conversationId != null ? String(conversationId) : '';
+  const li = linkedinUrl ? String(linkedinUrl).trim() : '';
+
+  if (!email && !lead && !conv && !li) return { deleted: 0, rows: [] };
+
+  const { rows } = await db.query(
+    `DELETE FROM disqualified_prospects
+      WHERE client_id = $1
+        AND (
+          ($2::text <> '' AND lower(lead_email) = $2)
+          OR (
+            platform = $3
+            AND $4::text <> ''
+            AND COALESCE(lead_id, '') = $4
+            AND (
+              $3 = 'heyreach'
+              OR COALESCE(campaign_id, '') = $5
+            )
+          )
+          OR (
+            platform = 'heyreach'
+            AND $6::text <> ''
+            AND COALESCE(conversation_id, '') = $6
+          )
+          OR (
+            $7::text <> ''
+            AND linkedin_url IS NOT NULL
+            AND linkedin_url = $7
+          )
+        )
+      RETURNING id, lead_email, lead_name, lead_id, campaign_id`,
+    [clientId, email, platform || '', lead, camp, conv, li]
+  );
+
+  console.log('[DQ] Prospect DQ cleared', {
+    clientId,
+    email: email || null,
+    leadId: lead || null,
+    deleted: rows.length,
+  });
+
+  return { deleted: rows.length, rows };
+}
+
+/**
  * Record DQ, cancel pending follow-up cadence steps, mark the reply row.
  * @returns {{ cancelledFollowUps: number, already: boolean }}
  */
@@ -207,5 +267,6 @@ module.exports = {
   isDisqualified,
   isReplyDisqualified,
   markDisqualified,
+  clearDisqualified,
   threadKeys,
 };

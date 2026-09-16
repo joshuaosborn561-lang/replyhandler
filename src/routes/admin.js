@@ -3,6 +3,7 @@ const db = require('../db');
 const smartlead = require('../services/smartlead');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
+const { clearDisqualified } = require('../services/disqualified-prospects');
 
 const router = Router();
 
@@ -310,6 +311,55 @@ router.post('/admin/post-approval-card', async (req, res) => {
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Undo a Slack DQ (false positive). Follow-up scheduling can run again
+ * after the next send. Does not resurrect skipped cadence rows.
+ */
+router.post('/admin/clear-disqualified', async (req, res) => {
+  const {
+    clientId,
+    leadEmail,
+    leadId,
+    campaignId,
+    platform = 'smartlead',
+    conversationId,
+    linkedinUrl,
+  } = req.body || {};
+
+  if (!clientId || (!leadEmail && !leadId && !conversationId && !linkedinUrl)) {
+    return res.status(400).json({
+      error: 'clientId and one of leadEmail, leadId, conversationId, or linkedinUrl are required',
+    });
+  }
+
+  try {
+    const { rows: [client] } = await db.query('SELECT id, name FROM clients WHERE id = $1', [clientId]);
+    if (!client) {
+      return res.status(404).json({ error: 'client not found' });
+    }
+
+    const result = await clearDisqualified(clientId, {
+      platform,
+      campaignId,
+      leadId,
+      conversationId,
+      leadEmail,
+      linkedinUrl,
+    });
+
+    return res.json({
+      ok: true,
+      clientId,
+      clientName: client.name,
+      deleted: result.deleted,
+      rows: result.rows,
+    });
+  } catch (err) {
+    console.error('[Admin] clear-disqualified error', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });
