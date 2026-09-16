@@ -11,8 +11,14 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
  * If SQL keeps the NBSP and JS turns it into a normal space, dedupe never
  * matches and the poller re-posts the same card every cycle.
  */
-function normalizeInboundText(text) {
+function stripEmbeddedBinaries(text) {
   return String(text || '')
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ');
+}
+
+function normalizeInboundText(text) {
+  return stripEmbeddedBinaries(text)
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -64,9 +70,15 @@ function stripUnicodeSpacesSql(column) {
   );
 }
 
+const STORED_STRIP_BINARIES_SQL = (
+  `regexp_replace(` +
+  `regexp_replace(inbound_message, 'data:image/[^;]+;base64,[A-Za-z0-9+/=]+', ' ', 'gi'), ` +
+  `'<img[^>]*>', ' ', 'gi')`
+);
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `${stripUnicodeSpacesSql('inbound_message')}, ` +
+  `${stripUnicodeSpacesSql(STORED_STRIP_BINARIES_SQL)}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -122,6 +134,9 @@ async function alreadyPostedToSlack({
   // callers; unused for matching.
   void emailStatsId;
   void campaignId;
+  // Do not require lead_id: inbox leadMap vs email_lead_id would miss and
+  // re-insert the same reply every poll (Carter Howard FOLLOW_UP loop).
+  void leadId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
   if (!normalized) return false;
@@ -131,11 +146,7 @@ async function alreadyPostedToSlack({
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND ${sameReplySql('$3', '$5')}
-        AND (
-          $4::text = ''
-          OR COALESCE(lead_id, '') = $4
-        )
+        AND ${sameReplySql('$3', '$4')}
         AND (
           slack_message_ts IS NOT NULL
           -- A suppressed reply is a decided reply: it reached a terminal state
@@ -153,7 +164,6 @@ async function alreadyPostedToSlack({
       clientId,
       platform,
       normalized,
-      leadId != null ? String(leadId) : '',
       fullNorm,
     ]
   );
@@ -181,6 +191,7 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
+        AND classification <> 'FOLLOW_UP'
         AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
@@ -237,6 +248,12 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     });
     return false;
   }
+  if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    console.log('[Dedupe] Skip Slack recovery — FOLLOW_UP is cadence-only', {
+      replyId: reply.id, lead: reply.lead_name,
+    });
+    return false;
+  }
 
   const policy = applyClientDraftPolicy(client, reply.lead_email, {
     classification: reply.classification,
@@ -281,6 +298,27 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
 }
 
 /** Retry any DB rows that never made it to Slack (e.g. Slack API error after insert). */
+/**
+ * FOLLOW_UP rows are cadence bumps, not inbox recoveries. The poller's
+ * findUnpostedReply used to pick them up and re-post an alert-only card every
+ * cycle (Carter Howard, #parlay-replyhandler, 2026-08-27).
+ */
+async function suppressUnpostedFollowUpInboxRows() {
+  const { rowCount } = await db.query(
+    `UPDATE pending_replies
+        SET status = 'suppressed',
+            suppression_reason = 'follow_up_not_inbox',
+            updated_at = now()
+      WHERE classification = 'FOLLOW_UP'
+        AND slack_message_ts IS NULL
+        AND status IN ('pending', 'alert_only')`
+  );
+  if (rowCount) {
+    console.log('[ReplyDedupe] Suppressed unposted FOLLOW_UP inbox recoveries', { count: rowCount });
+  }
+  return rowCount || 0;
+}
+
 async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
   const { rows } = await db.query(
     `SELECT pr.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name
@@ -324,6 +362,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 module.exports = {
   inboundPrefix,
   normalizeInboundText,
+  stripEmbeddedBinaries,
   sameReplySql,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
@@ -333,4 +372,5 @@ module.exports = {
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  suppressUnpostedFollowUpInboxRows,
 };

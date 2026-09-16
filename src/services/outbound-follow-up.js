@@ -370,6 +370,41 @@ async function scheduleAfterOutboundSend(clientId, reply) {
 /**
  * Prospect replied — cancel pending follow-up for this thread.
  */
+async function cancelPendingForLead({ clientId = null, leadEmail, leadName } = {}) {
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  const name = leadName ? String(leadName).trim() : '';
+  if (!email && !name) return { followUps: 0, replies: 0 };
+
+  const follow = await db.query(
+    `UPDATE outbound_follow_ups SET status = 'cancelled', updated_at = now()
+      WHERE status = 'pending'
+        AND ($1::uuid IS NULL OR client_id = $1)
+        AND (
+          ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
+          OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
+        )`,
+    [clientId || null, email, name]
+  );
+  const replies = await db.query(
+    `UPDATE pending_replies
+        SET status = 'suppressed',
+            suppression_reason = COALESCE(suppression_reason, 'follow_up_stopped'),
+            updated_at = now()
+      WHERE status IN ('pending', 'alert_only', 'flagged')
+        AND classification = 'FOLLOW_UP'
+        AND ($1::uuid IS NULL OR client_id = $1)
+        AND (
+          ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
+          OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
+        )`,
+    [clientId || null, email, name]
+  );
+  return { followUps: follow.rowCount || 0, replies: replies.rowCount || 0 };
+}
+
+/**
+ * Prospect replied — cancel pending follow-up for this thread.
+ */
 async function cancelForInboundReply({ clientId, platform, campaignId, leadId, conversationId }) {
   const camp = campaignId != null ? String(campaignId) : '';
   const lead = leadId != null ? String(leadId) : '';
@@ -409,6 +444,7 @@ module.exports = {
   scheduleAfterOutboundSend,
   cancelForInboundReply,
   cancelPendingForThread,
+  cancelPendingForLead,
   followUpHours,
   followUpCadenceHours,
   usesClockFirstStep,
