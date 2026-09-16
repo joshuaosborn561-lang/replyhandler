@@ -24,6 +24,16 @@ describe('disqualified-prospects wiring', () => {
     assert.match(read('src/services/disqualified-prospects.js'), /isDisqualified/);
   });
 
+  it('can clear a false DQ so follow-ups are not permanently blocked', () => {
+    const src = read('src/services/disqualified-prospects.js');
+    assert.match(src, /async function clearDisqualified/);
+    assert.match(src, /DELETE FROM disqualified_prospects/);
+    assert.match(src, /clearDisqualified,/);
+    const admin = read('src/routes/admin.js');
+    assert.match(admin, /\/admin\/clear-disqualified/);
+    assert.match(admin, /clearDisqualified/);
+  });
+
   it('thread key helper prefers heyreach conversation id', () => {
     const { threadKeys } = require('../src/services/disqualified-prospects');
     const keys = threadKeys({
