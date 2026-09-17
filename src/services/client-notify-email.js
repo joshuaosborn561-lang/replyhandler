@@ -162,7 +162,12 @@ function normalizeThreadSteps(threadContext, {
   // Ensure latest inbound is visible even if history is thin.
   if (inboundMessage) {
     const plain = plainFromHtmlish(inboundMessage);
-    const already = steps.some((s) => s.body === plain);
+    const norm = plain.toLowerCase().replace(/\s+/g, ' ').trim();
+    const already = steps.some((s) => {
+      const body = String(s.body || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!norm || !body) return false;
+      return body === norm || body.includes(norm) || norm.includes(body.slice(0, Math.min(80, body.length)));
+    });
     if (plain && !already) {
       steps.push({
         direction: 'reply',
