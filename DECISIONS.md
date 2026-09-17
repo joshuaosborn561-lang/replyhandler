@@ -130,6 +130,18 @@ conversation, and adds lead name, email and cell phone from enrichment.
 
 Guard: `client notification stays on the enriched send path`
 
+### Client notify thread looks like a normal inbox
+
+*"hey the emails clients getting are weird, the format for the thread should
+look like this just obvious"*
+
+Primary Gmail client-notify used to label steps "Us" / "Prospect" /
+"Us (just sent)". Rebuild the Thread section as email cards with
+**Subject / From / To / body** (and Sent / Replied / You replied status
+lines), matching how the conversation looks in SmartLead.
+
+Guard: `test/client-notify-email.test.js`
+
 ### Follow-ups after meeting propose: 2h → 24h → 48h → 1 week
 
 Only schedule when the approved outbound proposes a meeting (times, Calendly,

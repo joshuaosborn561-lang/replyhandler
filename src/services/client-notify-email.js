@@ -1,6 +1,9 @@
 /**
  * Build the primary-domain client notify email (HTML + text)
  * with enrichment + thread history + outbound reply copy.
+ *
+ * Thread section mirrors a normal inbox: each message is a card with
+ * Subject / From / To / body — not vague "Us" / "Prospect" labels.
  */
 
 function escapeHtml(s) {
@@ -15,12 +18,16 @@ function plainFromHtmlish(s) {
   return String(s || '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&#39;|&rsquo;|&apos;/gi, "'")
     .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -36,40 +43,157 @@ function messageListFromThread(threadContext) {
   return [];
 }
 
-function normalizeThreadSteps(threadContext, { inboundMessage, sentText, leadName } = {}) {
+function classifyDirection(m) {
+  const type = String(m.type || m.direction || m.role || m.sender || '').toUpperCase();
+  if (type === 'SENT' || type === 'OUTBOUND' || type === 'US' || type === 'ME' || type === 'USER') {
+    return 'sent';
+  }
+  if (
+    type === 'REPLY' || type === 'INBOUND' || type === 'PROSPECT'
+    || type === 'LEAD' || type === 'CORRESPONDENT' || type === 'THEM'
+  ) {
+    return 'reply';
+  }
+  if (/prospect|lead|them/i.test(String(m.role || ''))) return 'reply';
+  return null;
+}
+
+function pickAddress(...candidates) {
+  for (const c of candidates) {
+    const s = String(c || '').trim();
+    if (s && s.includes('@')) return s;
+  }
+  return '';
+}
+
+function formatWhen(raw) {
+  if (!raw) return '';
+  const d = raw instanceof Date ? raw : new Date(raw);
+  if (Number.isNaN(d.getTime())) return String(raw);
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(d);
+  } catch {
+    return d.toISOString();
+  }
+}
+
+function statusLabel(direction, when) {
+  const t = when ? ` on ${when}` : '';
+  if (direction === 'sent') return `Email sent${t}`;
+  if (direction === 'reply') return `Replied${t}`;
+  if (direction === 'just_sent') return `You replied${t}`;
+  return when || '';
+}
+
+/**
+ * Normalize SmartLead / HeyReach thread_context into email-card steps.
+ */
+function normalizeThreadSteps(threadContext, {
+  inboundMessage,
+  sentText,
+  leadName,
+  leadEmail,
+} = {}) {
   const rows = messageListFromThread(threadContext);
+  const lead = String(leadName || 'Prospect').trim() || 'Prospect';
+  const leadAddr = pickAddress(leadEmail);
   const steps = [];
-  for (const m of rows) {
+  let lastOurFrom = '';
+  let lastSubject = '';
+
+  const sorted = [...rows].sort((a, b) => {
+    const ta = String(a?.time || a?.sent_at || a?.created_at || '');
+    const tb = String(b?.time || b?.sent_at || b?.created_at || '');
+    if (ta && tb && ta !== tb) return ta.localeCompare(tb);
+    return 0;
+  });
+
+  for (const m of sorted) {
     if (!m || typeof m !== 'object') continue;
-    const type = String(m.type || m.direction || m.role || m.sender || '').toUpperCase();
+    const direction = classifyDirection(m);
+    if (!direction) continue;
     const body = plainFromHtmlish(
-      m.message || m.body || m.text || m.email_body || m.content || ''
+      m.email_body || m.message || m.body || m.text || m.content || ''
     );
     if (!body) continue;
-    let who = 'Message';
-    if (type === 'SENT' || type === 'OUTBOUND' || type === 'US' || type === 'ME' || type === 'USER') {
-      who = 'Us';
-    } else if (
-      type === 'REPLY' || type === 'INBOUND' || type === 'PROSPECT'
-      || type === 'LEAD' || type === 'CORRESPONDENT'
+
+    const from = pickAddress(m.from, m.from_email, m.fromEmail)
+      || (direction === 'sent' ? lastOurFrom : leadAddr);
+    const to = pickAddress(m.to, m.to_email, m.toEmail)
+      || (direction === 'sent' ? leadAddr : lastOurFrom);
+    const subject = String(m.subject || '').trim() || lastSubject || '';
+    const time = m.time || m.sent_at || m.received_at || m.created_at || '';
+
+    if (direction === 'sent' && from) lastOurFrom = from;
+    if (subject) lastSubject = subject;
+
+    // Show lead name only when the From address is the known lead email.
+    // Colleague replies (Ashton vs Shelby) keep their own address.
+    let fromLine = from || (direction === 'sent' ? 'Us' : lead);
+    if (
+      direction === 'reply'
+      && from
+      && lead
+      && leadAddr
+      && from.toLowerCase() === leadAddr.toLowerCase()
     ) {
-      who = leadName || 'Prospect';
-    } else if (/prospect|lead/i.test(String(m.role || ''))) {
-      who = leadName || 'Prospect';
+      fromLine = `${lead} ${from}`;
     }
-    steps.push({ who, body, time: m.time || m.sent_at || m.created_at || '' });
+
+    steps.push({
+      direction,
+      status: statusLabel(direction, formatWhen(time)),
+      subject,
+      from: fromLine,
+      to: to || (direction === 'sent' ? leadAddr || lead : lastOurFrom || 'Us'),
+      body,
+      time: formatWhen(time),
+    });
   }
 
-  // Ensure latest inbound + our just-sent reply are visible even if history is thin.
+  // Ensure latest inbound is visible even if history is thin.
   if (inboundMessage) {
     const plain = plainFromHtmlish(inboundMessage);
     const already = steps.some((s) => s.body === plain);
-    if (plain && !already) steps.push({ who: leadName || 'Prospect', body: plain, time: '' });
+    if (plain && !already) {
+      steps.push({
+        direction: 'reply',
+        status: statusLabel('reply', ''),
+        subject: lastSubject ? `RE: ${lastSubject.replace(/^re:\s*/i, '')}` : '',
+        from: leadAddr ? `${lead} ${leadAddr}` : lead,
+        to: lastOurFrom || 'Us',
+        body: plain,
+        time: '',
+      });
+    }
   }
+
   if (sentText) {
     const plain = plainFromHtmlish(sentText);
-    steps.push({ who: 'Us (just sent)', body: plain, time: '' });
+    if (plain) {
+      const subj = lastSubject
+        ? ( /^re:/i.test(lastSubject) ? lastSubject : `RE: ${lastSubject}` )
+        : '';
+      steps.push({
+        direction: 'just_sent',
+        status: statusLabel('just_sent', formatWhen(new Date())),
+        subject: subj,
+        from: lastOurFrom || 'Us',
+        to: leadAddr || lead,
+        body: plain,
+        time: formatWhen(new Date()),
+      });
+    }
   }
+
   return steps.slice(-12);
 }
 
@@ -107,22 +231,41 @@ function enrichLinesText(enrichment) {
 
 function threadHtml(steps) {
   if (!steps.length) return '<p><em>No prior thread available.</em></p>';
-  return steps.map((s) => (
-    `<div style="margin:0 0 14px 0;">` +
-    `<div style="font-size:12px;color:#666;margin-bottom:4px;"><strong>${escapeHtml(s.who)}</strong>` +
-    `${s.time ? ` · ${escapeHtml(String(s.time))}` : ''}</div>` +
-    `<div style="white-space:pre-wrap;line-height:1.4;">${escapeHtml(s.body)}</div>` +
-    `</div>`
-  )).join('');
+  return steps.map((s) => {
+    const subjectRow = s.subject
+      ? `<div style="font-weight:600;margin:0 0 6px 0;">${escapeHtml(s.subject)}</div>`
+      : '';
+    return (
+      `<div style="margin:0 0 16px 0;">` +
+      `<div style="font-size:12px;color:#666;margin:0 0 6px 0;">${escapeHtml(s.status || '')}</div>` +
+      `<div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">` +
+      subjectRow +
+      `<div style="font-size:13px;color:#374151;margin:0 0 2px 0;">From: ${escapeHtml(s.from || '')}</div>` +
+      `<div style="font-size:13px;color:#374151;margin:0 0 10px 0;">To: ${escapeHtml(s.to || '')}</div>` +
+      `<div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(s.body)}</div>` +
+      `</div></div>`
+    );
+  }).join('');
 }
 
 function threadText(steps) {
   if (!steps.length) return '(No prior thread available.)';
-  return steps.map((s) => `[${s.who}${s.time ? ` · ${s.time}` : ''}]\n${s.body}`).join('\n\n---\n\n');
+  return steps.map((s) => {
+    const lines = [
+      s.status || '',
+      s.subject ? `Subject: ${s.subject}` : null,
+      `From: ${s.from || ''}`,
+      `To: ${s.to || ''}`,
+      '',
+      s.body,
+    ].filter((x) => x != null);
+    return lines.join('\n');
+  }).join('\n\n---\n\n');
 }
 
 function buildClientNotifyEmail({
   leadName,
+  leadEmail,
   clientName,
   campaignName,
   enrichment,
@@ -131,12 +274,17 @@ function buildClientNotifyEmail({
   sentText,
 }) {
   const name = String(leadName || 'Prospect').trim() || 'Prospect';
-  const steps = normalizeThreadSteps(threadContext, { inboundMessage, sentText, leadName: name });
+  const steps = normalizeThreadSteps(threadContext, {
+    inboundMessage,
+    sentText,
+    leadName: name,
+    leadEmail: leadEmail || enrichment?.email || null,
+  });
   const subject = `Prospect reply: ${name}${clientName ? ` · ${clientName}` : ''}`;
 
   const htmlBody = `
 <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
-  <p>FYI — we just replied to <strong>${escapeHtml(name)}</strong>${campaignName ? ` (${escapeHtml(campaignName)})` : ''}.</p>
+  <p>FYI — we just replied to <strong>${escapeHtml(name)}</strong>${campaignName ? ` (${escapeHtml(String(campaignName))})` : ''}.</p>
   <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
   <table style="border-collapse:collapse;font-size:14px;">${enrichLinesHtml(enrichment)}</table>
   <h3 style="margin:22px 0 8px;font-size:14px;">Thread</h3>
@@ -161,4 +309,6 @@ module.exports = {
   buildClientNotifyEmail,
   normalizeThreadSteps,
   escapeHtml,
+  formatWhen,
+  statusLabel,
 };

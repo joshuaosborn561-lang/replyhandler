@@ -96,8 +96,9 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
       const notify = buildClientNotifyEmail({
         leadName: reply.lead_name,
+        leadEmail: reply.lead_email,
         clientName: client.name,
-        campaignName: reply.campaign_id,
+        campaignName: reply.campaign_name || reply.campaign_id,
         enrichment,
         threadContext: reply.thread_context,
         inboundMessage: reply.inbound_message,
