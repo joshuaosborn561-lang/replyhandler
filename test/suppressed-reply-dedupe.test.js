@@ -71,3 +71,38 @@ test('recovery paths still ignore suppressed rows', () => {
     'recovery must only resurrect pending/alert_only, never suppressed'
   );
 });
+
+test('poller recovery never resurrects FOLLOW_UP cadence rows', () => {
+  const src = read('src/services/reply-dedupe.js');
+
+  // FOLLOW_UP pending_replies reuse the original prospect inbound text and
+  // post to #followups-ai-replies. If findUnpostedReply / repostReplyRowToSlack
+  // treat them as inbox recoveries, the same reply reappears in the client
+  // channel (Zach Walls, 2026-09-04 — "I'm not opposed" twice).
+  const unposted = src.slice(
+    src.indexOf('async function findUnpostedReply'),
+    src.indexOf('function formatCampaignDisplayFromReply')
+  );
+  assert.match(
+    unposted,
+    /COALESCE\(classification, ''\) <> 'FOLLOW_UP'/,
+    'findUnpostedReply must exclude FOLLOW_UP cadence rows'
+  );
+
+  const repost = src.slice(
+    src.indexOf('async function repostReplyRowToSlack'),
+    src.indexOf('async function recoverUnpostedSlackCards')
+  );
+  assert.match(
+    repost,
+    /FOLLOW_UP/,
+    'repostReplyRowToSlack must refuse FOLLOW_UP rows as a second guard'
+  );
+
+  const recover = src.slice(src.indexOf('async function recoverUnpostedSlackCards'));
+  assert.match(
+    recover,
+    /classification IN \('INTERESTED', 'MEETING_PROPOSED', 'QUESTION'\)/,
+    'recoverUnpostedSlackCards must stay on bookable positives only'
+  );
+});
