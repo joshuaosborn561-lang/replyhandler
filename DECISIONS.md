@@ -595,3 +595,17 @@ Do not paste `calendly.com/ctapper/meeting` (or the older
 are unchanged — Bolder stays on `/bolder`.
 
 Guard: `Tech Evolution booking link is the public booking-bridge wrap`
+
+## 2026-09-29
+
+### No follow-up messages past 5pm CT or on the weekend
+
+*"Make sure this accounts for nights and weekends. I don't want messages past 5 CST or on the weekend"*
+
+The 3:30pm CT first step is already before 5, but Friday-after-2pm and Saturday/Sunday inbounds were landing on weekend 3:30s, the 2h floor can push a late send past 5pm, and the 24h/48h/1w offsets are raw hour math — Friday 4:30pm + 24h is Saturday.
+
+Follow-up due times now snap into **Monday–Friday, 8:00 AM–5:00 PM America/Chicago**. Weekend and after-5 dues roll to the next weekday 8am (first step still prefers weekday 3:30 when that is valid). Colliding steps that would all pile onto Monday morning are spread a business day apart. The runner and the attention digest do not post FOLLOW_UP cards outside that window; off-hours `due_at` rows are deferred so `FOLLOW_UP_MAX_AGE_HOURS` does not retire them as stale over the weekend.
+
+Approve-to-send is unchanged — if Josh hits Approve at 6pm the email still goes out. This is the automated cadence, not a hold on a manual send.
+
+Guard: `no follow-up messages past 5pm CT or on the weekend`

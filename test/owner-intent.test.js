@@ -262,6 +262,62 @@ test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
     reversal('follow-ups after any positive reply at 2h/24h/48h/1w', '3-day backfill cap was removed'));
 });
 
+// ── Decision: no follow-up messages past 5pm CT or on the weekend ────
+test('no follow-up messages past 5pm CT or on the weekend', () => {
+  delete process.env.FOLLOW_UP_HOURS;
+  delete process.env.FOLLOW_UP_REMINDER_HOURS;
+  delete require.cache[require.resolve('../src/services/outbound-follow-up')];
+  delete require.cache[require.resolve('../src/services/follow-up-runner')];
+
+  const {
+    firstFollowUpDueAt,
+    buildCadenceSteps,
+    inSendWindow,
+    snapDueToSendWindow,
+    zonedWallTimeToUtc,
+    SEND_WINDOW_START_HOUR,
+    SEND_WINDOW_END_HOUR,
+  } = require('../src/services/outbound-follow-up');
+  const runner = read('src/services/follow-up-runner.js');
+  const cron = read('src/cron.js');
+  const scheduleSrc = read('src/services/outbound-follow-up.js');
+
+  assert.strictEqual(SEND_WINDOW_START_HOUR, 8,
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'send-window start is no longer 8am CT'));
+  assert.strictEqual(SEND_WINDOW_END_HOUR, 17,
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'send-window end is no longer 5pm CT'));
+  assert.ok(scheduleSrc.includes('snapDueToSendWindow'),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'due times are no longer snapped into the send window'));
+  assert.ok(runner.includes('inSendWindow') && runner.includes('deferOffHoursFollowUps'),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'the runner no longer defers/skips nights and weekends'));
+  assert.ok(cron.includes('inSendWindow') && cron.includes('followUpsToPost'),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'the attention digest can still post follow-up cards off-hours'));
+
+  const friAfter2 = zonedWallTimeToUtc(2026, 1, 16, 15, 0);
+  const due = firstFollowUpDueAt(friAfter2, friAfter2);
+  assert.ok(inSendWindow(due),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'Friday-afternoon first step landed off-hours'));
+  // 2026-01-19 is the following Monday
+  assert.strictEqual(due.toISOString(), zonedWallTimeToUtc(2026, 1, 19, 15, 30).toISOString(),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'Friday after 2pm no longer rolls to Monday 3:30pm CT'));
+
+  const satNight = zonedWallTimeToUtc(2026, 1, 17, 21, 0);
+  assert.equal(inSendWindow(satNight), false);
+  assert.ok(inSendWindow(snapDueToSendWindow(satNight)),
+    reversal('no follow-up messages past 5pm CT or on the weekend', 'a Saturday night due does not snap into the weekday window'));
+
+  const steps = buildCadenceSteps(
+    zonedWallTimeToUtc(2026, 1, 16, 16, 30),
+    zonedWallTimeToUtc(2026, 1, 16, 15, 0)
+  );
+  for (const step of steps) {
+    assert.ok(
+      inSendWindow(step.due),
+      reversal('no follow-up messages past 5pm CT or on the weekend', `cadence due ${step.due.toISOString()} is outside weekday 8am–5pm CT`)
+    );
+  }
+});
+
 // ── Decision: a call that booked skips silently ───────────────────────
 // Offered a Slack note on skip; he chose "Skip silently."
 test('a call-transcript booking suppresses without posting', () => {
