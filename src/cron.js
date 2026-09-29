@@ -343,7 +343,10 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     [client.id]
   );
 
-  if (pendingApprovals.length === 0 && pendingFollowUps.length === 0) {
+  const { inSendWindow } = require('./services/outbound-follow-up');
+  const followUpsToPost = inSendWindow(new Date()) ? pendingFollowUps : [];
+
+  if (pendingApprovals.length === 0 && followUpsToPost.length === 0) {
     const header = await slack.postAttentionDigestHeader(client.slack_bot_token, client.slack_channel_id, {
       digestType,
       dateLabel,
@@ -368,7 +371,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
       digestType,
       dateLabel,
       pendingCount: pendingTotal,
-      followUpCount: pendingFollowUps.length,
+      followUpCount: followUpsToPost.length,
     }
   );
 
@@ -382,7 +385,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   let posted = 0;
   const { isDisqualified } = require('./services/disqualified-prospects');
   const { postFollowUpCard } = require('./services/follow-up-runner');
-  for (const fu of pendingFollowUps) {
+  for (const fu of followUpsToPost) {
     try {
       if (await isDisqualified(client.id, {
         platform: fu.platform,

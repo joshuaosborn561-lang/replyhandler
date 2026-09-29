@@ -2,7 +2,11 @@ const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { draftReattemptToBook } = require('./follow-up-drafts');
 const { looksAlreadyBooked } = require('./booking-check');
-const { cancelPendingForThread } = require('./outbound-follow-up');
+const {
+  cancelPendingForThread,
+  inSendWindow,
+  snapDueToSendWindow,
+} = require('./outbound-follow-up');
 const smartlead = require('./smartlead');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
@@ -254,6 +258,35 @@ function maxAgeHours() {
  * backlog would bury the channel. Retired in bulk, with no Slack post and no
  * per-row API calls.
  */
+/**
+ * Rows scheduled onto a night or weekend would sit pending until they trip
+ * FOLLOW_UP_MAX_AGE_HOURS and die as stale. Snap those due_ats into the next
+ * weekday window so Monday still fires.
+ */
+async function deferOffHoursFollowUps() {
+  const { rows } = await db.query(
+    `SELECT id, due_at FROM outbound_follow_ups WHERE status = 'pending'`
+  );
+  let deferred = 0;
+  for (const row of rows) {
+    const due = new Date(row.due_at);
+    if (inSendWindow(due)) continue;
+    const next = snapDueToSendWindow(due);
+    if (!Number.isFinite(next.getTime()) || next.getTime() === due.getTime()) continue;
+    await db.query(
+      `UPDATE outbound_follow_ups
+          SET due_at = $1, updated_at = now()
+        WHERE id = $2 AND status = 'pending'`,
+      [next, row.id]
+    );
+    deferred += 1;
+  }
+  if (deferred) {
+    console.log('[FollowUp] Deferred off-hours follow-ups into send window', { count: deferred });
+  }
+  return deferred;
+}
+
 async function retireStaleFollowUps() {
   const { rowCount } = await db.query(
     `UPDATE outbound_follow_ups
@@ -296,9 +329,23 @@ async function dueFollowUps(limit) {
  * time, post a Slack card for the rest.
  */
 async function runDueFollowUps({ limit = 25 } = {}) {
+  const deferred = await deferOffHoursFollowUps();
+  // Do not post — and do not retire as stale — at night or on the weekend.
+  // Stale is 24h past due; a Saturday skip would otherwise kill Monday's card.
+  if (!inSendWindow(new Date())) {
+    return {
+      posted: 0,
+      skipped: 0,
+      failed: 0,
+      retired: 0,
+      deferred,
+      skipReasons: { outside_send_window: 1 },
+    };
+  }
+
   const retired = await retireStaleFollowUps();
   const rows = await dueFollowUps(limit);
-  const totals = { posted: 0, skipped: 0, failed: 0, retired, skipReasons: {} };
+  const totals = { posted: 0, skipped: 0, failed: 0, retired, deferred, skipReasons: {} };
 
   for (const fu of rows) {
     const client = {
@@ -387,6 +434,7 @@ module.exports = {
   postFollowUpCard,
   dueFollowUps,
   retireStaleFollowUps,
+  deferOffHoursFollowUps,
   maxAgeHours,
   followUpSlackChannelId,
   DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID,

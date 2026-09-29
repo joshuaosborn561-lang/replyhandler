@@ -113,13 +113,14 @@ describe('firstFollowUpDueAt', () => {
       firstFollowUpDueAt,
       zonedWallTimeToUtc,
     } = require('../src/services/outbound-follow-up');
-    const inbound = zonedWallTimeToUtc(2026, 1, 15, 14, 0);
-    const now = zonedWallTimeToUtc(2026, 1, 15, 14, 30);
+    // Wednesday — next day is Thursday, still before Friday's noon cutoff.
+    const inbound = zonedWallTimeToUtc(2026, 1, 14, 14, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 14, 14, 30);
     const due = firstFollowUpDueAt(inbound, now);
     const p = chicagoParts(due);
     assert.equal(p.y, '2026');
     assert.equal(p.m, '01');
-    assert.equal(p.d, '16');
+    assert.equal(p.d, '15');
     assert.equal(p.h, 15);
     assert.equal(p.min, 30);
   });
@@ -129,11 +130,11 @@ describe('firstFollowUpDueAt', () => {
       firstFollowUpDueAt,
       zonedWallTimeToUtc,
     } = require('../src/services/outbound-follow-up');
-    const inbound = zonedWallTimeToUtc(2026, 1, 15, 9, 0);
-    const now = zonedWallTimeToUtc(2026, 1, 15, 16, 0); // after 3:30
+    const inbound = zonedWallTimeToUtc(2026, 1, 14, 9, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 14, 16, 0); // after 3:30 Wednesday
     const due = firstFollowUpDueAt(inbound, now);
     const p = chicagoParts(due);
-    assert.equal(p.d, '16');
+    assert.equal(p.d, '15');
     assert.equal(p.h, 15);
     assert.equal(p.min, 30);
   });
@@ -189,5 +190,122 @@ describe('firstFollowUpDueAt', () => {
     assert.ok(steps[0].due.getTime() >= minDue);
     assert.equal(steps[0].due.getTime(), minDue);
     assert.ok(steps[0].sequenceHours >= 2);
+  });
+
+  it('Friday morning inbound skips Friday 3:30 (noon cutoff) and lands Monday 3:30', () => {
+    const {
+      firstFollowUpDueAt,
+      zonedWallTimeToUtc,
+    } = require('../src/services/outbound-follow-up');
+    // Friday 10am would have been Friday 3:30 — after noon, so Monday.
+    const inbound = zonedWallTimeToUtc(2026, 1, 16, 10, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 16, 10, 30);
+    const due = firstFollowUpDueAt(inbound, now);
+    const p = chicagoParts(due);
+    assert.equal(p.d, '19');
+    assert.equal(p.h, 15);
+    assert.equal(p.min, 30);
+  });
+
+  it('skips Saturday/Sunday for the 3:30pm first step', () => {
+    const {
+      firstFollowUpDueAt,
+      zonedWallTimeToUtc,
+    } = require('../src/services/outbound-follow-up');
+    // 2026-01-16 is Friday. After 2pm → would have been Sat 3:30; must be Mon.
+    const inbound = zonedWallTimeToUtc(2026, 1, 16, 15, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 16, 15, 30);
+    const due = firstFollowUpDueAt(inbound, now);
+    const p = chicagoParts(due);
+    assert.equal(p.y, '2026');
+    assert.equal(p.m, '01');
+    assert.equal(p.d, '19'); // Monday
+    assert.equal(p.h, 15);
+    assert.equal(p.min, 30);
+
+    // Saturday morning inbound would have been Sat 3:30.
+    const satIn = zonedWallTimeToUtc(2026, 1, 17, 10, 0);
+    const satNow = zonedWallTimeToUtc(2026, 1, 17, 11, 0);
+    const satDue = firstFollowUpDueAt(satIn, satNow);
+    const satP = chicagoParts(satDue);
+    assert.equal(satP.d, '19');
+    assert.equal(satP.h, 15);
+    assert.equal(satP.min, 30);
+  });
+
+  it('snaps night and weekend dues into weekday 8am–5pm CT', () => {
+    const {
+      inSendWindow,
+      snapDueToSendWindow,
+      zonedWallTimeToUtc,
+      SEND_WINDOW_START_HOUR,
+      SEND_WINDOW_END_HOUR,
+    } = require('../src/services/outbound-follow-up');
+    assert.equal(SEND_WINDOW_START_HOUR, 8);
+    assert.equal(SEND_WINDOW_END_HOUR, 17);
+
+    const thu1030 = zonedWallTimeToUtc(2026, 1, 15, 10, 30);
+    assert.equal(inSendWindow(thu1030), true);
+    assert.equal(snapDueToSendWindow(thu1030).getTime(), thu1030.getTime());
+
+    const thu5pm = zonedWallTimeToUtc(2026, 1, 15, 17, 0);
+    assert.equal(inSendWindow(thu5pm), false);
+    const after5 = chicagoParts(snapDueToSendWindow(thu5pm));
+    assert.equal(after5.d, '16'); // Friday 8am (before Friday noon)
+    assert.equal(after5.h, 8);
+    assert.equal(after5.min, 0);
+
+    const fri11 = zonedWallTimeToUtc(2026, 1, 16, 11, 0);
+    assert.equal(inSendWindow(fri11), true);
+    const friNoon = zonedWallTimeToUtc(2026, 1, 16, 12, 0);
+    assert.equal(inSendWindow(friNoon), false);
+    const friNoonSnap = chicagoParts(snapDueToSendWindow(friNoon));
+    assert.equal(friNoonSnap.d, '19'); // Monday, not Friday afternoon
+    assert.equal(friNoonSnap.h, 8);
+    const fri2pm = zonedWallTimeToUtc(2026, 1, 16, 14, 0);
+    assert.equal(inSendWindow(fri2pm), false);
+    const fri2pmSnap = chicagoParts(snapDueToSendWindow(fri2pm));
+    assert.equal(fri2pmSnap.d, '19');
+    assert.equal(fri2pmSnap.h, 8);
+
+    const fri9pm = zonedWallTimeToUtc(2026, 1, 16, 21, 0);
+    const friNight = chicagoParts(snapDueToSendWindow(fri9pm));
+    assert.equal(friNight.d, '19'); // Monday, not Saturday
+    assert.equal(friNight.h, 8);
+
+    const sat330 = zonedWallTimeToUtc(2026, 1, 17, 15, 30);
+    assert.equal(inSendWindow(sat330), false);
+    const satSnap = chicagoParts(snapDueToSendWindow(sat330));
+    assert.equal(satSnap.d, '19');
+    assert.equal(satSnap.h, 8);
+
+    const tue2am = zonedWallTimeToUtc(2026, 1, 13, 2, 0); // Tuesday
+    const early = chicagoParts(snapDueToSendWindow(tue2am));
+    assert.equal(early.d, '13');
+    assert.equal(early.h, 8);
+  });
+
+  it('Friday evening send does not land any step on the weekend or after 5pm CT', () => {
+    const {
+      buildCadenceSteps,
+      inSendWindow,
+      zonedWallTimeToUtc,
+    } = require('../src/services/outbound-follow-up');
+    // Friday 4:30pm send, inbound Friday 3pm (after 2pm cutoff)
+    const inbound = zonedWallTimeToUtc(2026, 1, 16, 15, 0);
+    const sent = zonedWallTimeToUtc(2026, 1, 16, 16, 30);
+    const steps = buildCadenceSteps(sent, inbound);
+    assert.equal(steps.length, 4);
+    const seen = new Set();
+    for (const step of steps) {
+      assert.equal(inSendWindow(step.due), true, `due ${step.due.toISOString()} is outside the send window`);
+      assert.ok(step.due.getTime() >= sent.getTime() + 2 * 3600 * 1000);
+      const key = step.due.toISOString();
+      assert.equal(seen.has(key), false, 'cadence steps must not collapse onto the same instant');
+      seen.add(key);
+    }
+    const first = chicagoParts(steps[0].due);
+    assert.equal(first.d, '19');
+    assert.ok(first.h < 17);
   });
 });
