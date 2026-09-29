@@ -277,6 +277,7 @@ test('no follow-up messages past 5pm CT or on the weekend', () => {
     zonedWallTimeToUtc,
     SEND_WINDOW_START_HOUR,
     SEND_WINDOW_END_HOUR,
+    SEND_WINDOW_FRIDAY_END_HOUR,
   } = require('../src/services/outbound-follow-up');
   const runner = read('src/services/follow-up-runner.js');
   const cron = read('src/cron.js');
@@ -286,6 +287,8 @@ test('no follow-up messages past 5pm CT or on the weekend', () => {
     reversal('no follow-up messages past 5pm CT or on the weekend', 'send-window start is no longer 8am CT'));
   assert.strictEqual(SEND_WINDOW_END_HOUR, 17,
     reversal('no follow-up messages past 5pm CT or on the weekend', 'send-window end is no longer 5pm CT'));
+  assert.strictEqual(SEND_WINDOW_FRIDAY_END_HOUR, 12,
+    reversal('Friday follow-ups stop at noon CT', 'Friday cutoff is no longer noon CT'));
   assert.ok(scheduleSrc.includes('snapDueToSendWindow'),
     reversal('no follow-up messages past 5pm CT or on the weekend', 'due times are no longer snapped into the send window'));
   assert.ok(runner.includes('inSendWindow') && runner.includes('deferOffHoursFollowUps'),
@@ -300,6 +303,16 @@ test('no follow-up messages past 5pm CT or on the weekend', () => {
   // 2026-01-19 is the following Monday
   assert.strictEqual(due.toISOString(), zonedWallTimeToUtc(2026, 1, 19, 15, 30).toISOString(),
     reversal('no follow-up messages past 5pm CT or on the weekend', 'Friday after 2pm no longer rolls to Monday 3:30pm CT'));
+
+  const friMorning = zonedWallTimeToUtc(2026, 1, 16, 10, 0);
+  const friFirst = firstFollowUpDueAt(friMorning, friMorning);
+  assert.ok(inSendWindow(friFirst),
+    reversal('Friday follow-ups stop at noon CT', 'Friday-morning first step landed off-hours'));
+  assert.strictEqual(friFirst.toISOString(), zonedWallTimeToUtc(2026, 1, 19, 15, 30).toISOString(),
+    reversal('Friday follow-ups stop at noon CT', 'Friday 3:30pm is after noon and must roll to Monday'));
+  assert.equal(inSendWindow(zonedWallTimeToUtc(2026, 1, 16, 11, 0)), true);
+  assert.equal(inSendWindow(zonedWallTimeToUtc(2026, 1, 16, 12, 0)), false,
+    reversal('Friday follow-ups stop at noon CT', 'Friday noon is still inside the send window'));
 
   const satNight = zonedWallTimeToUtc(2026, 1, 17, 21, 0);
   assert.equal(inSendWindow(satNight), false);

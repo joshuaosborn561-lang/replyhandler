@@ -113,13 +113,14 @@ describe('firstFollowUpDueAt', () => {
       firstFollowUpDueAt,
       zonedWallTimeToUtc,
     } = require('../src/services/outbound-follow-up');
-    const inbound = zonedWallTimeToUtc(2026, 1, 15, 14, 0);
-    const now = zonedWallTimeToUtc(2026, 1, 15, 14, 30);
+    // Wednesday — next day is Thursday, still before Friday's noon cutoff.
+    const inbound = zonedWallTimeToUtc(2026, 1, 14, 14, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 14, 14, 30);
     const due = firstFollowUpDueAt(inbound, now);
     const p = chicagoParts(due);
     assert.equal(p.y, '2026');
     assert.equal(p.m, '01');
-    assert.equal(p.d, '16');
+    assert.equal(p.d, '15');
     assert.equal(p.h, 15);
     assert.equal(p.min, 30);
   });
@@ -129,11 +130,11 @@ describe('firstFollowUpDueAt', () => {
       firstFollowUpDueAt,
       zonedWallTimeToUtc,
     } = require('../src/services/outbound-follow-up');
-    const inbound = zonedWallTimeToUtc(2026, 1, 15, 9, 0);
-    const now = zonedWallTimeToUtc(2026, 1, 15, 16, 0); // after 3:30
+    const inbound = zonedWallTimeToUtc(2026, 1, 14, 9, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 14, 16, 0); // after 3:30 Wednesday
     const due = firstFollowUpDueAt(inbound, now);
     const p = chicagoParts(due);
-    assert.equal(p.d, '16');
+    assert.equal(p.d, '15');
     assert.equal(p.h, 15);
     assert.equal(p.min, 30);
   });
@@ -191,6 +192,21 @@ describe('firstFollowUpDueAt', () => {
     assert.ok(steps[0].sequenceHours >= 2);
   });
 
+  it('Friday morning inbound skips Friday 3:30 (noon cutoff) and lands Monday 3:30', () => {
+    const {
+      firstFollowUpDueAt,
+      zonedWallTimeToUtc,
+    } = require('../src/services/outbound-follow-up');
+    // Friday 10am would have been Friday 3:30 — after noon, so Monday.
+    const inbound = zonedWallTimeToUtc(2026, 1, 16, 10, 0);
+    const now = zonedWallTimeToUtc(2026, 1, 16, 10, 30);
+    const due = firstFollowUpDueAt(inbound, now);
+    const p = chicagoParts(due);
+    assert.equal(p.d, '19');
+    assert.equal(p.h, 15);
+    assert.equal(p.min, 30);
+  });
+
   it('skips Saturday/Sunday for the 3:30pm first step', () => {
     const {
       firstFollowUpDueAt,
@@ -235,9 +251,22 @@ describe('firstFollowUpDueAt', () => {
     const thu5pm = zonedWallTimeToUtc(2026, 1, 15, 17, 0);
     assert.equal(inSendWindow(thu5pm), false);
     const after5 = chicagoParts(snapDueToSendWindow(thu5pm));
-    assert.equal(after5.d, '16'); // Friday 8am
+    assert.equal(after5.d, '16'); // Friday 8am (before Friday noon)
     assert.equal(after5.h, 8);
     assert.equal(after5.min, 0);
+
+    const fri11 = zonedWallTimeToUtc(2026, 1, 16, 11, 0);
+    assert.equal(inSendWindow(fri11), true);
+    const friNoon = zonedWallTimeToUtc(2026, 1, 16, 12, 0);
+    assert.equal(inSendWindow(friNoon), false);
+    const friNoonSnap = chicagoParts(snapDueToSendWindow(friNoon));
+    assert.equal(friNoonSnap.d, '19'); // Monday, not Friday afternoon
+    assert.equal(friNoonSnap.h, 8);
+    const fri2pm = zonedWallTimeToUtc(2026, 1, 16, 14, 0);
+    assert.equal(inSendWindow(fri2pm), false);
+    const fri2pmSnap = chicagoParts(snapDueToSendWindow(fri2pm));
+    assert.equal(fri2pmSnap.d, '19');
+    assert.equal(fri2pmSnap.h, 8);
 
     const fri9pm = zonedWallTimeToUtc(2026, 1, 16, 21, 0);
     const friNight = chicagoParts(snapDueToSendWindow(fri9pm));

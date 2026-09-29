@@ -9,9 +9,10 @@ const { isSlackTestFixtureReply } = require('./reply-send');
  *      our send
  *   2–4) 24h → 48h → 1 week after our send
  *
- * Every due time is then snapped into the send window: weekday 8:00 AM–5:00 PM
- * America/Chicago. Nights and weekends roll forward; colliding steps spread
- * across later weekdays so they do not pile onto the same Monday morning.
+ * Every due time is then snapped into the send window: Mon–Thu 8:00 AM–5:00 PM
+ * America/Chicago, Friday 8:00 AM–12:00 PM. Nights, Friday afternoon, and
+ * weekends roll forward; colliding steps spread across later weekdays so they
+ * do not pile onto the same Monday morning.
  */
 const DEFAULT_LATER_CADENCE_HOURS = [24, 48, 168];
 
@@ -30,11 +31,14 @@ const SAME_DAY_CUTOFF_HOUR = 14;
 /** Hard floor: never ping sooner than this many hours after our send. */
 const MIN_FOLLOW_UP_HOURS = 2;
 /**
- * Prospect-facing follow-ups only fire Mon–Fri, 8:00 AM inclusive through
- * 5:00 PM exclusive, America/Chicago. "No messages past 5 CST or on the weekend."
+ * Prospect-facing follow-ups only fire weekdays, America/Chicago:
+ *   Mon–Thu  8:00 AM inclusive through 5:00 PM exclusive
+ *   Friday   8:00 AM inclusive through 12:00 PM exclusive (stop at noon)
+ * "No messages past 5 CST or on the weekend" + Friday cuts off at noon.
  */
 const SEND_WINDOW_START_HOUR = 8;
 const SEND_WINDOW_END_HOUR = 17;
+const SEND_WINDOW_FRIDAY_END_HOUR = 12;
 
 /**
  * Inbound classifications that start the follow-up cadence when we send our reply.
@@ -133,9 +137,18 @@ function chicagoMinutes(parts) {
   return parts.hour * 60 + parts.minute + (parts.second || 0) / 60;
 }
 
+function isFridayYmd(year, month, day) {
+  return weekdayYmd(year, month, day) === 5;
+}
+
+/** Exclusive end hour for that civil date — Friday noon, otherwise 5pm. */
+function sendWindowEndHour(year, month, day) {
+  return isFridayYmd(year, month, day) ? SEND_WINDOW_FRIDAY_END_HOUR : SEND_WINDOW_END_HOUR;
+}
+
 /**
- * True when `date` is a weekday in FOLLOW_UP_TZ and local time is in
- * [8:00 AM, 5:00 PM). 5:00 PM exactly is outside — no messages at/after 5.
+ * True when `date` is a weekday in FOLLOW_UP_TZ and local time is inside
+ * the send window. Mon–Thu: [8:00 AM, 5:00 PM). Friday: [8:00 AM, 12:00 PM).
  */
 function inSendWindow(date, timeZone = FOLLOW_UP_TZ) {
   const d = date instanceof Date ? date : new Date(date);
@@ -143,7 +156,8 @@ function inSendWindow(date, timeZone = FOLLOW_UP_TZ) {
   const p = zonedParts(d, timeZone);
   if (isWeekendYmd(p.year, p.month, p.day)) return false;
   const minutes = chicagoMinutes(p);
-  return minutes >= SEND_WINDOW_START_HOUR * 60 && minutes < SEND_WINDOW_END_HOUR * 60;
+  const endHour = sendWindowEndHour(p.year, p.month, p.day);
+  return minutes >= SEND_WINDOW_START_HOUR * 60 && minutes < endHour * 60;
 }
 
 /**
@@ -228,7 +242,8 @@ function isWeekendDue(date, timeZone = FOLLOW_UP_TZ) {
  * First follow-up due: 3:30 PM America/Chicago on the inbound's calendar day,
  * unless the inbound arrived at/after 2:00 PM Central (then next day 3:30).
  * If that instant is already past when scheduling, roll forward day-by-day.
- * Weekend 3:30s keep rolling to the next weekday — never Saturday or Sunday.
+ * Weekend and Friday 3:30s (Friday stops at noon) keep rolling to the next
+ * in-window weekday — never Friday afternoon, Saturday, or Sunday.
  *
  * @param {Date|string|number} inboundAt when the prospect's reply came in
  * @param {Date|string|number} [now] schedule time (usually our send)
@@ -250,7 +265,7 @@ function firstFollowUpDueAt(inboundAt, now = new Date()) {
 
   let due = zonedWallTimeToUtc(year, month, day, FIRST_DUE_HOUR, FIRST_DUE_MINUTE);
   let guard = 0;
-  while ((due.getTime() <= scheduleNow.getTime() || isWeekendDue(due)) && guard < 14) {
+  while ((due.getTime() <= scheduleNow.getTime() || !inSendWindow(due)) && guard < 14) {
     ({ year, month, day } = addCalendarDays(year, month, day, 1));
     due = zonedWallTimeToUtc(year, month, day, FIRST_DUE_HOUR, FIRST_DUE_MINUTE);
     guard += 1;
@@ -366,7 +381,8 @@ async function cancelPendingForThread(clientId, { platform, campaignId, leadId, 
  * Starts the cadence for every positive inbound (INTERESTED / MEETING_PROPOSED /
  * QUESTION): 3:30pm CT the day the reply came in (next weekday if after 2pm CT
  * or if that 3:30 is a weekend), then 24h → 48h → 1w after our send, each
- * snapped into weekday 8am–5pm CT. FOLLOW_UP sends do not restart the clock.
+ * snapped into Mon–Thu 8am–5pm CT / Friday 8am–noon. FOLLOW_UP sends do not
+ * restart the clock.
  */
 async function scheduleAfterOutboundSend(clientId, reply) {
   if (!reply || isSlackTestFixtureReply(reply)) return;
@@ -541,5 +557,7 @@ module.exports = {
   SAME_DAY_CUTOFF_HOUR,
   SEND_WINDOW_START_HOUR,
   SEND_WINDOW_END_HOUR,
+  SEND_WINDOW_FRIDAY_END_HOUR,
+  sendWindowEndHour,
   enforceMinFollowUpDelay,
 };

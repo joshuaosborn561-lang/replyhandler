@@ -609,3 +609,11 @@ Follow-up due times now snap into **Monday–Friday, 8:00 AM–5:00 PM America/C
 Approve-to-send is unchanged — if Josh hits Approve at 6pm the email still goes out. This is the automated cadence, not a hold on a manual send.
 
 Guard: `no follow-up messages past 5pm CT or on the weekend`
+
+### Friday follow-ups stop at noon CT
+
+*"Friday should stop sending at noon cst."*
+
+Tightens the send window above. Monday–Thursday stay 8:00 AM–5:00 PM America/Chicago. **Friday is 8:00 AM–12:00 PM** — noon and after roll to Monday. Friday 3:30pm first steps are past that cutoff, so a Friday inbound (or Thursday after 2pm) lands Monday 3:30pm, not Friday afternoon.
+
+Guard: `no follow-up messages past 5pm CT or on the weekend` (asserts `SEND_WINDOW_FRIDAY_END_HOUR === 12`)
