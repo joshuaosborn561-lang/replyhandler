@@ -364,7 +364,7 @@ function draftApprovalActionsBlock(replyId) {
       },
       {
         type: 'button',
-        text: { type: 'plain_text', text: '❌ Reject' },
+        text: { type: 'plain_text', text: '❌ Reject & not interested' },
         style: 'danger',
         action_id: 'reject_reply',
         value: replyId,
@@ -415,7 +415,7 @@ function buildSentConfirmationBlocks({
   const headers = {
     approved: '✅ SENT — Approved & sent',
     edited: '✏️ SENT — Edited & sent',
-    rejected: '❌ Rejected',
+    rejected: '❌ Rejected — not interested',
     disqualified: '🚫 DQ — no follow-ups',
     meeting_booked: '📅 Meeting booked — follow-ups stopped',
     failed: '⚠️ Send failed',
@@ -423,7 +423,7 @@ function buildSentConfirmationBlocks({
   const footers = {
     approved: 'Approved & sent',
     edited: 'Edited & sent',
-    rejected: 'Rejected',
+    rejected: 'Rejected · marked not interested',
     disqualified: 'Disqualified · excluded from follow-up nudges',
     meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     failed: 'Send failed',
@@ -498,7 +498,7 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   const preview = plainTextForSlack(opts.sentReply || opts.inboundMessage).slice(0, 120);
   const lead = opts.leadName || 'prospect';
   const textPrefix = opts.actionKind === 'rejected'
-    ? 'Rejected'
+    ? 'Rejected — not interested'
     : opts.actionKind === 'disqualified'
       ? 'DQ'
       : opts.actionKind === 'meeting_booked'

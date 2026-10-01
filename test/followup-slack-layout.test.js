@@ -79,6 +79,8 @@ describe('FOLLOW_UP card conversation layout', () => {
       'dq_prospect',
       'meeting_booked',
     ]);
+    const reject = actions.elements.find((e) => e.action_id === 'reject_reply');
+    assert.match(reject.text.text, /not interested/i);
   });
 });
 

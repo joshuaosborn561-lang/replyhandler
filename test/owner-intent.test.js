@@ -617,6 +617,40 @@ test('phone stays on Slack card after approve', () => {
     reversal('phone stays on Slack card after approve', 'confirmation card no longer renders the phone'));
 });
 
+// ── Decision: Reject also marks Not Interested in SmartLead ───────────
+// "change the reject button to be reject and mark as not interested
+// where it changes the classification in smartlead"
+test('Reject marks the lead Not Interested in SmartLead', () => {
+  const slackService = read('src/services/slack.js');
+  const slackRoute = read('src/routes/slack.js');
+  const sl = read('src/services/smartlead.js');
+  const { categoryIdForClassification } = require('../src/services/smartlead-category');
+
+  assert.match(slackService, /Reject & not interested/,
+    reversal('Reject marks Not Interested in SmartLead', 'the Slack button no longer says reject and mark as not interested'));
+  assert.match(slackRoute, /markLeadNotInterested/,
+    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer updates the SmartLead category'));
+  assert.match(slackRoute, /classification = 'NOT_INTERESTED'/,
+    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer writes NOT_INTERESTED locally'));
+  assert.match(sl, /\/campaigns\/\$\{cid\}\/leads\/\$\{lid\}\/category/,
+    reversal('Reject marks Not Interested in SmartLead', 'updateLeadCategory lost the SmartLead category path'));
+  assert.match(sl, /fetch-categories/,
+    reversal('Reject marks Not Interested in SmartLead', 'category list lookup was removed'));
+  assert.strictEqual(
+    categoryIdForClassification(
+      [{ id: 1, name: 'Interested' }, { id: 3, name: 'Not Interested' }],
+      'NOT_INTERESTED'
+    ),
+    3,
+    reversal('Reject marks Not Interested in SmartLead', 'we no longer resolve the Not Interested category by name')
+  );
+  assert.strictEqual(
+    categoryIdForClassification([{ id: 4, name: 'Do Not Contact' }], 'NOT_INTERESTED'),
+    null,
+    reversal('Reject marks Not Interested in SmartLead', 'Do Not Contact is being treated as Not Interested')
+  );
+});
+
 // ── Decision: Slack DQ button excludes follow-up nudges ───────────────
 // "also add in a DQ button in slack that excludes form followup nudges"
 test('Slack DQ button excludes follow-up nudges', () => {

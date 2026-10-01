@@ -4,7 +4,7 @@ const slackService = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
-const { scheduleAfterOutboundSend } = require('../services/outbound-follow-up');
+const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
 const { markMeetingBooked } = require('../services/meeting-booked');
 const smartlead = require('../services/smartlead');
@@ -363,7 +363,10 @@ async function handleApprove(replyId, interaction) {
 
 async function handleReject(replyId, interaction) {
   const { rows: [reply] } = await db.query(
-    'UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2 AND status = $3 RETURNING *',
+    `UPDATE pending_replies
+        SET status = $1, classification = 'NOT_INTERESTED', updated_at = now()
+      WHERE id = $2 AND status = $3
+      RETURNING *`,
     ['rejected', replyId, 'pending']
   );
 
@@ -372,16 +375,53 @@ async function handleReject(replyId, interaction) {
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
   const ctx = await slackCardContextFromReply(reply, client);
 
+  let extraFooter = '';
+  if (reply.platform === 'smartlead' && !isSlackTestFixtureReply(reply)) {
+    try {
+      const marked = await smartlead.markLeadNotInterested(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id
+      );
+      extraFooter = 'SmartLead category set to Not Interested.';
+      console.log('[Slack] SmartLead marked not interested', {
+        replyId, lead: reply.lead_name, categoryId: marked.categoryId,
+      });
+    } catch (err) {
+      extraFooter = `Rejected locally; SmartLead category update failed: ${err.message}`;
+      console.error('[Slack] SmartLead not-interested update failed', {
+        replyId, lead: reply.lead_name, err: err.message,
+      });
+    }
+  }
+
+  let cancelled = 0;
+  try {
+    cancelled = await cancelPendingForThread(client.id, {
+      platform: reply.platform,
+      campaignId: reply.campaign_id,
+      leadId: reply.lead_id,
+      conversationId: heyreachConversationId(reply),
+    });
+  } catch (err) {
+    console.error('[Slack] Reject follow-up cancel failed', { replyId, err: err.message });
+  }
+  if (cancelled > 0) {
+    extraFooter += extraFooter ? '\n' : '';
+    extraFooter += `Cancelled ${cancelled} pending follow-up nudge${cancelled === 1 ? '' : 's'}.`;
+  }
+
   await slackService.updateSentConfirmationCard(
     client.slack_bot_token, interaction.channel.id, interaction.message.ts,
     sentCardPayload(reply, ctx, {
       sentReply: null,
       actionKind: 'rejected',
       userId: interaction.user.id,
+      extraFooter: extraFooter.trim() || undefined,
     })
   );
 
-  console.log('[Slack] Reply rejected', { replyId, lead: reply.lead_name });
+  console.log('[Slack] Reply rejected and marked not interested', { replyId, lead: reply.lead_name });
 }
 
 /**
