@@ -2,6 +2,8 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildFollowUpConversationBlocks,
+  buildSentConfirmationBlocks,
+  lastThreadTurn,
   draftApprovalActionsBlock,
 } = require('../src/services/slack');
 const {
@@ -36,7 +38,7 @@ describe('FOLLOW_UP Slack channel', () => {
 });
 
 describe('FOLLOW_UP card conversation layout', () => {
-  it('shows original → our reply → rest without dupes or truncated markers', () => {
+  it('shows the suggested send and last thread turn, not the full dump', () => {
     const blocks = buildFollowUpConversationBlocks({
       inboundMessage: 'Sure, Tuesday works.',
       lastOutboundMessage: 'Great — talk Tuesday at 2.',
@@ -51,24 +53,56 @@ describe('FOLLOW_UP card conversation layout', () => {
 
     const texts = blocks
       .filter((b) => b.type === 'section')
-      .map((b) => b.text.text);
+      .map((b) => b.text.text)
+      .join('\n');
 
-    assert.ok(texts.some((t) => t.includes('*Original message*') && t.includes('Sure, Tuesday works.')));
-    assert.ok(texts.some((t) => t.includes('*Our reply*') && t.includes('Great')));
-    assert.ok(texts.some((t) => t.includes('Bump #1 checking in')));
-    assert.ok(texts.some((t) => t.includes('Still around next week?')));
-    assert.ok(texts.some((t) => t.includes('*Suggested follow-up*')));
+    assert.match(texts, /\*Suggested follow-up\*/);
+    assert.match(texts, /Still interested in meeting for a free campaign/);
+    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /Still around next week/);
+    assert.doesNotMatch(texts, /\*Original message\*/);
+    assert.doesNotMatch(texts, /Bump #1 checking in/);
+    assert.ok(!texts.includes('Sure, Tuesday works.'), 'original inbound is not dumped');
 
-    // Original + our reply appear once each (not again in the rest).
-    const originalHits = texts.filter((t) => t.includes('Sure, Tuesday works.')).length;
-    const ourHits = texts.filter((t) => t.includes('Great — talk Tuesday at 2.')).length;
-    assert.equal(originalHits, 1);
-    assert.equal(ourHits, 1);
-
-    assert.ok(!texts.some((t) => t.includes('_(truncated)_')));
+    const last = lastThreadTurn({
+      threadMessages: [
+        { role: 'them', body: 'I am more interested in PowerGRYD.\n\nOn Wednesday, September 30, 2026 at 10:27 AM Rebecca White wrote: old thread' },
+      ],
+    });
+    assert.equal(last.role, 'them');
+    assert.match(last.body, /more interested in PowerGRYD/);
+    assert.doesNotMatch(last.body, /Rebecca White wrote/);
   });
 
-  it('approval actions sit in a reusable block (pinned above the thread on FOLLOW_UP)', () => {
+  it('sent confirmation stays compact — send first, last turn, no thread dump', () => {
+    const blocks = buildSentConfirmationBlocks({
+      leadName: 'Patrick Lefler',
+      leadEmail: 'plefler@seeking-eureeka.com',
+      platform: 'smartlead',
+      classification: 'FOLLOW_UP',
+      inboundMessage: 'I am more interested in PowerGRYD.\n\nOn Wednesday Rebecca White wrote: old pitch',
+      lastOutboundMessage: 'Patrick, I have got an extra pair of 76ers tickets.',
+      sentReply: 'Hey Patrick, still interested in meeting for this?',
+      actionKind: 'edited',
+      threadMessages: [
+        { role: 'us', body: 'Patrick, I have got an extra pair of 76ers tickets.' },
+        { role: 'them', body: 'I am more interested in PowerGRYD.\n\nOn Wednesday Rebecca White wrote: old pitch' },
+      ],
+    });
+    const texts = blocks
+      .filter((b) => b.type === 'section' && b.text)
+      .map((b) => b.text.text)
+      .join('\n');
+    assert.match(texts, /\*Sent to prospect\*/);
+    assert.match(texts, /still interested in meeting/);
+    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /more interested in PowerGRYD/);
+    assert.doesNotMatch(texts, /\*Original message\*/);
+    assert.doesNotMatch(texts, /\*They replied/);
+    assert.doesNotMatch(texts, /Rebecca White wrote/);
+  });
+
+  it('approval actions sit in a reusable block', () => {
     const actions = draftApprovalActionsBlock('reply-123');
     assert.equal(actions.type, 'actions');
     const ids = actions.elements.map((e) => e.action_id);
@@ -79,6 +113,8 @@ describe('FOLLOW_UP card conversation layout', () => {
       'dq_prospect',
       'meeting_booked',
     ]);
+    const reject = actions.elements.find((e) => e.action_id === 'reject_reply');
+    assert.match(reject.text.text, /not interested/i);
   });
 });
 

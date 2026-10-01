@@ -93,8 +93,26 @@ function classifyFromSmartlead(...sources) {
   return null;
 }
 
+/**
+ * SmartLead category id whose name maps to our classification.
+ * Default "Not Interested" is id 3, but names are account-editable — match
+ * the mapped label, never a hardcoded id.
+ */
+function categoryIdForClassification(categories, classification) {
+  const want = String(classification || '').toUpperCase();
+  if (!want) return null;
+  const list = Array.isArray(categories) ? categories : [];
+  for (const cat of list) {
+    if (!cat || cat.id == null) continue;
+    const mapped = categoryToClassification(cat.name || cat.label || cat.category);
+    if (mapped === want) return cat.id;
+  }
+  return null;
+}
+
 module.exports = {
   extractCategory,
   categoryToClassification,
   classifyFromSmartlead,
+  categoryIdForClassification,
 };

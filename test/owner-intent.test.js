@@ -262,6 +262,45 @@ test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
     reversal('follow-ups after any positive reply at 2h/24h/48h/1w', '3-day backfill cap was removed'));
 });
 
+// ── Decision: follow-up Slack cards stay compact; only after we sent ──
+test('FOLLOW_UP cards show draft + last message; only after we have sent', () => {
+  const slackSrc = read('src/services/slack.js');
+  const runner = read('src/services/follow-up-runner.js');
+  const scheduleSrc = read('src/services/outbound-follow-up.js');
+  const cron = read('src/cron.js');
+  const { lastThreadTurn, buildFollowUpConversationBlocks } = require('../src/services/slack');
+
+  assert.ok(slackSrc.includes('lastThreadTurn') && slackSrc.includes('Last message'),
+    reversal('FOLLOW_UP cards show draft + last message', 'last-thread-turn helper was removed'));
+  assert.ok(!/label: 'Original message'/.test(slackSrc),
+    reversal('FOLLOW_UP cards show draft + last message', 'full original-message dump is back'));
+  const blocks = buildFollowUpConversationBlocks({
+    draft: 'Hey Pat, still interested in meeting for this?',
+    inboundMessage: 'Tell me more.',
+    lastOutboundMessage: 'Happy to share tickets.',
+    threadMessages: [
+      { role: 'them', body: 'Tell me more.' },
+      { role: 'us', body: 'Happy to share tickets.' },
+    ],
+  });
+  const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
+  assert.match(text, /Suggested follow-up/);
+  assert.match(text, /Hey Pat, still interested/);
+  assert.match(text, /Last message \(you\)/);
+  assert.doesNotMatch(text, /Original message/);
+  const last = lastThreadTurn({
+    inboundMessage: 'Yes please.\nOn Monday Jane wrote: old',
+  });
+  assert.doesNotMatch(last.body, /Jane wrote/);
+
+  assert.ok(runner.includes('threadHasOurSend') && runner.includes('no_prior_send'),
+    reversal('follow-ups only after we have replied', 'runner no longer requires a prior Slack send'));
+  assert.ok(scheduleSrc.includes("sent_reply || '').trim()") || scheduleSrc.includes('sent_reply || ""'),
+    reversal('follow-ups only after we have replied', 'scheduleAfterOutboundSend no longer requires sent_reply'));
+  assert.ok(cron.includes('threadHasOurSend') && cron.includes('no_prior_send'),
+    reversal('follow-ups only after we have replied', 'digest can still post follow-ups before we have sent'));
+});
+
 // ── Decision: no follow-up messages past 5pm CT or on the weekend ────
 test('no follow-up messages past 5pm CT or on the weekend', () => {
   delete process.env.FOLLOW_UP_HOURS;
@@ -366,16 +405,16 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
   assert.ok(!/channelId:\s*client\.slack_channel_id/.test(
     runner.slice(runner.indexOf('await postProspectSlackCard'), runner.indexOf('return newReply'))
   ), reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP cards still post to the client inbox channel'));
-  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Original message'),
-    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost original → our reply → rest'));
+  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Last message'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the last-message block'));
   assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
     reversal('FOLLOW_UP dedicated Slack channel', 'shared approval actions helper missing'));
-  // Buttons must be assembled before the long conversation for FOLLOW_UP.
+  // Suggested send must appear on the card (not only after Slack "See more").
   const postFn = slackSrc.slice(slackSrc.indexOf('async function postDraftApproval'));
   const followUpBranch = postFn.slice(postFn.indexOf('const blocks = isFollowUp'), postFn.indexOf('if (!isFollowUp && platform'));
   assert.ok(
-    followUpBranch.indexOf('draftApprovalActionsBlock') < followUpBranch.indexOf('...conversation'),
-    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP buttons are buried under the conversation again'),
+    followUpBranch.includes('...conversation') && followUpBranch.includes('draftApprovalActionsBlock'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP card lost draft or buttons'),
   );
 });
 
@@ -391,7 +430,7 @@ test('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button
   assert.ok(!/return\s*\(?\s*`Hey \$\{name\}, thanks for getting back to me/.test(drafts),
     reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'FOLLOW_UP drafts reused the first-reply opener'));
   assert.ok(runner.includes('threadMessages') && runner.includes('extractThreadMessages'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'full thread history is no longer passed to Slack'));
+    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'thread history is no longer loaded for the last-message line'));
   assert.ok(slackSrc.includes("action_id: 'meeting_booked'") || slackSrc.includes('action_id: "meeting_booked"'),
     reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked button missing from Slack cards'));
   assert.ok(routes.includes('handleMeetingBooked') && routes.includes('meeting_booked'),
@@ -615,6 +654,40 @@ test('phone stays on Slack card after approve', () => {
   assert.ok(confStart >= 0 && confEnd > confStart);
   assert.match(slackService.slice(confStart, confEnd), /phoneEnrichmentLine/,
     reversal('phone stays on Slack card after approve', 'confirmation card no longer renders the phone'));
+});
+
+// ── Decision: Reject also marks Not Interested in SmartLead ───────────
+// "change the reject button to be reject and mark as not interested
+// where it changes the classification in smartlead"
+test('Reject marks the lead Not Interested in SmartLead', () => {
+  const slackService = read('src/services/slack.js');
+  const slackRoute = read('src/routes/slack.js');
+  const sl = read('src/services/smartlead.js');
+  const { categoryIdForClassification } = require('../src/services/smartlead-category');
+
+  assert.match(slackService, /Reject & not interested/,
+    reversal('Reject marks Not Interested in SmartLead', 'the Slack button no longer says reject and mark as not interested'));
+  assert.match(slackRoute, /markLeadNotInterested/,
+    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer updates the SmartLead category'));
+  assert.match(slackRoute, /classification = 'NOT_INTERESTED'/,
+    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer writes NOT_INTERESTED locally'));
+  assert.match(sl, /\/campaigns\/\$\{cid\}\/leads\/\$\{lid\}\/category/,
+    reversal('Reject marks Not Interested in SmartLead', 'updateLeadCategory lost the SmartLead category path'));
+  assert.match(sl, /fetch-categories/,
+    reversal('Reject marks Not Interested in SmartLead', 'category list lookup was removed'));
+  assert.strictEqual(
+    categoryIdForClassification(
+      [{ id: 1, name: 'Interested' }, { id: 3, name: 'Not Interested' }],
+      'NOT_INTERESTED'
+    ),
+    3,
+    reversal('Reject marks Not Interested in SmartLead', 'we no longer resolve the Not Interested category by name')
+  );
+  assert.strictEqual(
+    categoryIdForClassification([{ id: 4, name: 'Do Not Contact' }], 'NOT_INTERESTED'),
+    null,
+    reversal('Reject marks Not Interested in SmartLead', 'Do Not Contact is being treated as Not Interested')
+  );
 });
 
 // ── Decision: Slack DQ button excludes follow-up nudges ───────────────

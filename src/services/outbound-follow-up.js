@@ -407,6 +407,14 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
+  if (!String(reply.sent_reply || '').trim()) {
+    console.log('[FollowUp] Skip schedule — no sent reply on this row', {
+      replyId: reply.id,
+      lead: reply.lead_name,
+    });
+    return;
+  }
+
   if (!isPositiveFollowUpClassification(reply.classification)) {
     console.log('[FollowUp] Skip schedule — inbound was not positive', {
       replyId: reply.id,

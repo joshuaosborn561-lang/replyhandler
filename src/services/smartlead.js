@@ -1,4 +1,10 @@
+const { categoryIdForClassification } = require('./smartlead-category');
+
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
+
+/** apiKey prefix → { fetchedAt, list } */
+const categoryListCache = new Map();
+const CATEGORY_LIST_TTL_MS = 30 * 60 * 1000;
 
 function toSmartleadId(value, name) {
   const n = typeof value === 'number' ? value : Number(String(value || '').trim());
@@ -434,6 +440,66 @@ async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } 
   return null;
 }
 
+/**
+ * Account lead categories (Interested, Not Interested, …).
+ * @see GET /leads/fetch-categories
+ */
+async function fetchLeadCategories(apiKey) {
+  if (!apiKey) throw new Error('SmartLead fetchLeadCategories missing api_key');
+  const cacheKey = String(apiKey).slice(0, 12);
+  const hit = categoryListCache.get(cacheKey);
+  if (hit && Date.now() - hit.fetchedAt < CATEGORY_LIST_TTL_MS) {
+    return hit.list;
+  }
+  const url = `${BASE_URL}/leads/fetch-categories?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`SmartLead fetchLeadCategories failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(body); } catch {
+    throw new Error(`SmartLead fetchLeadCategories invalid JSON: ${body.slice(0, 200)}`);
+  }
+  const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+  categoryListCache.set(cacheKey, { list, fetchedAt: Date.now() });
+  return list;
+}
+
+/**
+ * Set a campaign lead's SmartLead category.
+ * @see POST /campaigns/{campaign_id}/leads/{lead_id}/category
+ */
+async function updateLeadCategory(apiKey, campaignId, leadId, categoryId) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const lid = toSmartleadId(leadId, 'lead_id');
+  const cat = toSmartleadId(categoryId, 'category_id');
+  const url = `${BASE_URL}/campaigns/${cid}/leads/${lid}/category?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_id: cat }),
+  });
+  const responseBody = await res.text();
+  if (!res.ok) {
+    throw new Error(`SmartLead updateLeadCategory failed (${res.status}): ${responseBody.slice(0, 300)}`);
+  }
+  try { return JSON.parse(responseBody); } catch { return { ok: true, raw: responseBody }; }
+}
+
+/**
+ * Resolve the account's "Not Interested" category and apply it to this lead.
+ */
+async function markLeadNotInterested(apiKey, campaignId, leadId) {
+  const categories = await fetchLeadCategories(apiKey);
+  const categoryId = categoryIdForClassification(categories, 'NOT_INTERESTED');
+  if (categoryId == null) {
+    throw new Error('SmartLead has no "Not Interested" category on this account');
+  }
+  const result = await updateLeadCategory(apiKey, campaignId, leadId, categoryId);
+  return { categoryId, result };
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -447,4 +513,7 @@ module.exports = {
   extractForwardAnchorFromHistory,
   formatPlainTextAsSmartleadHtml,
   looksLikeHandwrittenHtmlEmailBody,
+  fetchLeadCategories,
+  updateLeadCategory,
+  markLeadNotInterested,
 };

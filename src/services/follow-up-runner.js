@@ -70,6 +70,19 @@ function lastOutboundFor(platform, threadContext) {
   return last;
 }
 
+/** True when we have already sent a prospect-facing reply on this thread. */
+async function threadHasOurSend(clientId, fu) {
+  if (fu?.source_pending_reply_id) {
+    const { rows: [src] } = await db.query(
+      `SELECT sent_reply FROM pending_replies WHERE id = $1`,
+      [fu.source_pending_reply_id]
+    );
+    if (src && String(src.sent_reply || '').trim()) return true;
+  }
+  const extras = await priorSentMessages(clientId, fu);
+  return extras.some((m) => m.role === 'us' && String(m.body || '').trim());
+}
+
 /** Prior sent messages on this thread (first reply + earlier FOLLOW_UP sends). */
 async function priorSentMessages(clientId, fu) {
   const { rows } = await db.query(
@@ -126,7 +139,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       if (!isFollowUpPlaceholder(src.inbound_message)) {
         originalInbound = String(src.inbound_message || '').trim();
       }
-      ourLastSend = String(src.sent_reply || src.draft_reply || '').trim();
+      ourLastSend = String(src.sent_reply || '').trim();
       sourceSlackTs = src.slack_message_ts || null;
     }
   }
@@ -139,6 +152,13 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, fu.campaign_id);
   }
 
+  // Campaign sequence mail in SmartLead history is not "we replied". Follow-ups
+  // only fire after a Slack-approved send on this thread.
+  if (!(await threadHasOurSend(client.id, fu))) {
+    const err = new Error('no_prior_send');
+    err.code = 'no_prior_send';
+    throw err;
+  }
   const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
   const inboundForCard = originalInbound || '(no new reply from prospect)';
 
@@ -200,8 +220,8 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   );
 
   // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
-  // under the original card). Layout: campaign/lead/phone → buttons → original →
-  // our reply → rest of thread → suggested bump.
+  // under the original card). Compact layout: campaign/lead → suggested send →
+  // last thread turn → buttons. Full thread dump hid the draft behind "See more".
   await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: followUpSlackChannelId(),
@@ -392,6 +412,22 @@ async function runDueFollowUps({ limit = 25 } = {}) {
         since: fu.sent_at,
       });
 
+      if (!(await threadHasOurSend(fu.client_id, fu))) {
+        await resolve(fu, 'skipped', 'no_prior_send');
+        const cancelled = await cancelPendingForThread(fu.client_id, {
+          platform: fu.platform,
+          campaignId: fu.campaign_id,
+          leadId: fu.lead_id,
+          conversationId: fu.conversation_id,
+        });
+        totals.skipped++;
+        totals.skipReasons.no_prior_send = (totals.skipReasons.no_prior_send || 0) + 1;
+        console.log('[FollowUp] Skipped — no Slack-approved send on this thread yet', {
+          client: client.name, lead: fu.lead_name, cancelledLaterSteps: cancelled,
+        });
+        continue;
+      }
+
       if (bookedReason) {
         await resolve(fu, 'skipped', bookedReason);
         // Drop later cadence steps for this thread — already booked.
@@ -435,6 +471,7 @@ module.exports = {
   dueFollowUps,
   retireStaleFollowUps,
   deferOffHoursFollowUps,
+  threadHasOurSend,
   maxAgeHours,
   followUpSlackChannelId,
   DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID,
