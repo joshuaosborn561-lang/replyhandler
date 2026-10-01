@@ -1,6 +1,7 @@
 const path = require('path');
 const express = require('express');
 const webhookRoutes = require('./routes/webhooks');
+const bookingBridgeRecapRoutes = require('./routes/booking-bridge-recap');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
 const authRoutes = require('./routes/auth');
@@ -11,7 +12,7 @@ const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Body parsing ────────────────────────────────────────────────────
+// ─── Body parsing ────────────────────────────────
 // Capture raw body for Slack signature verification
 app.use('/slack', express.urlencoded({
   extended: true,
@@ -23,7 +24,7 @@ app.use('/slack', express.urlencoded({
 // Raise limit so we don't 413 and "miss" replies.
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' }));
 
-// ─── Dashboard UI ────────────────────────────────────────────────────
+// ─── Dashboard UI ────────────────────────────────
 app.use('/dashboard', express.static(path.join(__dirname, 'public')));
 app.get('/', (_req, res) => res.redirect('/dashboard'));
 
@@ -38,14 +39,15 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-// ─── Routes ──────────────────────────────────────────────────────────
+// ─── Routes ──────────────────────────────────
 app.use(webhookRoutes);
+app.use(bookingBridgeRecapRoutes);
 app.use(slackRoutes);
 app.use(adminRoutes);
 app.use(authRoutes);
 app.use(testWebhookRoutes);
 
-// ─── Start ───────────────────────────────────────────────────────────
+// ─── Start ──────────────────────────────────
 async function start() {
   try {
     await assertDatabaseReady();
