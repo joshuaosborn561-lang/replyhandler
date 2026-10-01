@@ -16,9 +16,87 @@ const CLIENT_SLUG_ALIASES = {
   culturefits: ['Culture Fits'],
   bolder: ['Bolder Cyber Partners'],
   salesglider: ['SalesGlider'],
+  powergryd: ['PowerGryd', 'PowerGRYD'],
   peterson: ['Roofs By Peterson', 'Roofs by Peterson'],
   vasco: ['Vasco Warranty', 'Vasco Warranty Management'],
+  emcor: ['Emcor'],
+  insight: ['Insight'],
+  cornerstone: ['CornerStone Earthworks', 'Cornerstone Earthworks'],
 };
+
+/** Same set ReplyHandler posts to Slack as a real prospect positive. */
+const POSITIVE_CLASSIFICATIONS = ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'];
+
+function slugFromClientName(name) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return '';
+  const compact = n.replace(/[^a-z0-9]/g, '');
+  for (const [slug, aliases] of Object.entries(CLIENT_SLUG_ALIASES)) {
+    if (n === slug || compact === slug) return slug;
+    for (const alias of aliases) {
+      const a = String(alias).toLowerCase();
+      if (n === a || compact === a.replace(/[^a-z0-9]/g, '')) return slug;
+    }
+  }
+  return compact;
+}
+
+function parseRecapWindow(query) {
+  const startIso = String(query?.start || '').trim();
+  const endIso = String(query?.end || '').trim();
+  if (!startIso || !endIso) return { ok: false, status: 400, error: 'start_end_required' };
+  const start = Date.parse(startIso);
+  const end = Date.parse(endIso);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return { ok: false, status: 400, error: 'invalid_window' };
+  }
+  return { ok: true, startIso, endIso };
+}
+
+/**
+ * Active clients + same-window positive replies for booking-bridge Slack recap.
+ * New ReplyHandler clients show up here automatically — no hardcoded list.
+ */
+async function buildRecap({ startIso, endIso }) {
+  const { rows: clients } = await db.query(
+    `SELECT id, name FROM clients
+      WHERE active IS DISTINCT FROM false
+      ORDER BY name ASC`
+  );
+  const { rows: positives } = await db.query(
+    `SELECT c.name AS client_name,
+            pr.lead_name,
+            pr.lead_email,
+            pr.classification,
+            pr.platform,
+            pr.created_at
+       FROM pending_replies pr
+       JOIN clients c ON c.id = pr.client_id
+      WHERE pr.classification = ANY($3::text[])
+        AND pr.status NOT IN ('suppressed', 'disqualified')
+        AND pr.created_at >= $1::timestamptz
+        AND pr.created_at < $2::timestamptz
+      ORDER BY c.name ASC, pr.created_at ASC`,
+    [startIso, endIso, POSITIVE_CLASSIFICATIONS]
+  );
+  return {
+    ok: true,
+    clients: clients.map((c) => ({
+      id: c.id,
+      name: c.name,
+      slug: slugFromClientName(c.name),
+    })),
+    positives: positives.map((p) => ({
+      client_name: p.client_name,
+      slug: slugFromClientName(p.client_name),
+      lead_name: p.lead_name || null,
+      lead_email: p.lead_email || null,
+      classification: p.classification,
+      platform: p.platform,
+      created_at: p.created_at,
+    })),
+  };
+}
 
 function normalizeEmail(email) {
   const s = String(email || '').trim().toLowerCase();
@@ -339,6 +417,10 @@ async function campaignIntelligenceSaysBooked(leadEmail) {
 
 module.exports = {
   CLIENT_SLUG_ALIASES,
+  POSITIVE_CLASSIFICATIONS,
+  slugFromClientName,
+  parseRecapWindow,
+  buildRecap,
   assertBookingBridgeSecret,
   parseBridgePayload,
   resolveClients,
