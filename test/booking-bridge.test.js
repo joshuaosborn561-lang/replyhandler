@@ -5,6 +5,9 @@ const {
   normalizeEmail,
   CLIENT_SLUG_ALIASES,
   assertBookingBridgeSecret,
+  slugFromClientName,
+  parseRecapWindow,
+  POSITIVE_CLASSIFICATIONS,
 } = require('../src/services/booking-bridge');
 
 describe('booking-bridge payload', () => {
@@ -42,10 +45,34 @@ describe('booking-bridge payload', () => {
   it('has slug aliases for every campaignintelligence client', () => {
     for (const slug of [
       'goliath', 'parlay', 'techevo', 'culturefits',
-      'bolder', 'salesglider', 'peterson', 'vasco',
+      'bolder', 'salesglider', 'powergryd', 'peterson', 'vasco',
     ]) {
       assert.ok(CLIENT_SLUG_ALIASES[slug]?.length, `missing aliases for ${slug}`);
     }
+  });
+});
+
+describe('booking-bridge recap helpers', () => {
+  it('maps known display names and new clients to slugs', () => {
+    assert.equal(slugFromClientName('Goliath Cybersecurity'), 'goliath');
+    assert.equal(slugFromClientName('PowerGRYD'), 'powergryd');
+    assert.equal(slugFromClientName('Acme Solar'), 'acmesolar');
+  });
+
+  it('requires a valid start/end window', () => {
+    assert.equal(parseRecapWindow({}).ok, false);
+    assert.equal(parseRecapWindow({ start: '2026-10-01T00:00:00-06:00' }).ok, false);
+    const ok = parseRecapWindow({
+      start: '2026-10-01T00:00:00-06:00',
+      end: '2026-10-02T00:00:00-06:00',
+    });
+    assert.equal(ok.ok, true);
+  });
+
+  it('counts only Slack-channel positives', () => {
+    assert.deepEqual(POSITIVE_CLASSIFICATIONS, [
+      'INTERESTED', 'MEETING_PROPOSED', 'QUESTION',
+    ]);
   });
 });
 
