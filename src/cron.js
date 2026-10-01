@@ -384,9 +384,28 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
 
   let posted = 0;
   const { isDisqualified } = require('./services/disqualified-prospects');
-  const { postFollowUpCard } = require('./services/follow-up-runner');
+  const { postFollowUpCard, threadHasOurSend } = require('./services/follow-up-runner');
+  const { cancelPendingForThread } = require('./services/outbound-follow-up');
   for (const fu of followUpsToPost) {
     try {
+      if (!(await threadHasOurSend(client.id, fu))) {
+        await db.query(
+          `UPDATE outbound_follow_ups
+              SET status = 'skipped', skip_reason = 'no_prior_send', updated_at = now()
+            WHERE id = $1`,
+          [fu.id]
+        );
+        await cancelPendingForThread(client.id, {
+          platform: fu.platform,
+          campaignId: fu.campaign_id,
+          leadId: fu.lead_id,
+          conversationId: fu.conversation_id,
+        });
+        console.log('[Cron] Digest follow-up skipped — no Slack-approved send yet', {
+          clientId: client.id, lead: fu.lead_name,
+        });
+        continue;
+      }
       if (await isDisqualified(client.id, {
         platform: fu.platform,
         campaignId: fu.campaign_id,

@@ -1,4 +1,5 @@
 const { WebClient } = require('@slack/web-api');
+const { cleanInboundReply } = require('../utils/smartlead-webhook-helpers');
 
 // Cache WebClient instances per token
 const clientCache = new Map();
@@ -187,97 +188,65 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
   }));
 }
 
-function normBodyKey(body) {
-  return plainTextForSlack(body).toLowerCase().replace(/\s+/g, ' ').trim();
+const LAST_THREAD_DISPLAY_MAX = 800;
+
+/**
+ * Latest turn on the thread — quoted email history stripped so the card
+ * shows the actual last message, not the whole back-and-forth.
+ */
+function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage } = {}) {
+  const history = Array.isArray(threadMessages)
+    ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
+    : [];
+  if (history.length) {
+    const last = history[history.length - 1];
+    const raw = String(last.body || '');
+    const body = last.role === 'them' ? cleanInboundReply(raw) : plainTextForSlack(raw);
+    if (body) return { role: last.role === 'us' ? 'us' : 'them', body };
+  }
+  const inbound = cleanInboundReply(inboundMessage || '');
+  if (inbound) return { role: 'them', body: inbound };
+  const ours = plainTextForSlack(lastOutboundMessage || '');
+  if (ours) return { role: 'us', body: ours };
+  return null;
 }
 
 /**
- * FOLLOW_UP layout: original inbound → our reply → rest of the thread in order
- * (no re-showing those two), then the suggested bump. Full text (chunked) —
- * never the `… _(truncated)_` / Slack "Show more" trap from capped mid-bodies.
+ * FOLLOW_UP layout: what we are sending, then the last thread turn.
+ * The full dump (original → our reply → rest) forced Slack "See more" and
+ * hid both the draft and the latest message.
  */
 function buildFollowUpConversationBlocks({
   lastOutboundMessage,
   inboundMessage,
   draft,
   threadMessages = null,
+  outgoingLabel = 'Suggested follow-up',
+  outgoingBody = null,
 }) {
   const blocks = [];
-  const history = Array.isArray(threadMessages)
-    ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
-    : [];
-
-  const firstThem = history.find((m) => m.role === 'them') || null;
-  const firstUs = history.find((m) => m.role === 'us') || null;
-  const originalBody = String(
-    (inboundMessage && String(inboundMessage).trim())
-    || firstThem?.body
-    || ''
-  ).trim();
-  const ourReplyBody = String(
-    (lastOutboundMessage && String(lastOutboundMessage).trim())
-    || firstUs?.body
-    || ''
-  ).trim();
-
-  const shown = new Set();
-  if (originalBody) {
+  const sendBody = outgoingBody != null ? outgoingBody : draft;
+  if (sendBody != null && String(sendBody).trim() !== '') {
+    const isSent = /sent/i.test(String(outgoingLabel || ''));
     blocks.push(
       ...conversationStepBlocks({
-        emoji: '📥',
-        label: 'Original message',
-        body: originalBody,
+        emoji: isSent ? '📤' : '✍️',
+        label: outgoingLabel,
+        body: sendBody,
         neverTruncate: true,
       }),
     );
-    shown.add(normBodyKey(originalBody));
   }
 
-  if (ourReplyBody) {
+  const last = lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage });
+  if (last) {
     if (blocks.length) blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
-        emoji: '📤',
-        label: 'Our reply',
-        body: ourReplyBody,
-        neverTruncate: true,
-      }),
-    );
-    shown.add(normBodyKey(ourReplyBody));
-  }
-
-  const rest = history.filter((m) => {
-    const key = normBodyKey(m.body);
-    if (!key || shown.has(key)) return false;
-    shown.add(key);
-    return true;
-  });
-
-  let usN = 1; // already counted "Our reply"
-  let themN = 1; // already counted "Original message"
-  for (const m of rest) {
-    const isUs = m.role === 'us';
-    if (isUs) usN += 1;
-    else themN += 1;
-    blocks.push(dividerBlock());
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: isUs ? '📤' : '📥',
-        label: isUs ? `You sent (${usN})` : `They replied (${themN})`,
-        body: m.body,
-        neverTruncate: true,
-      }),
-    );
-  }
-
-  if (draft != null && String(draft).trim() !== '') {
-    blocks.push(dividerBlock());
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: '✍️',
-        label: 'Suggested follow-up',
-        body: draft,
-        neverTruncate: true,
+        emoji: last.role === 'us' ? '📤' : '📥',
+        label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
+        body: last.body,
+        maxLen: LAST_THREAD_DISPLAY_MAX,
       }),
     );
   }
@@ -443,18 +412,27 @@ function buildSentConfirmationBlocks({
       ],
     },
     dividerBlock(),
-    ...buildConversationBlocks({
-      lastOutboundMessage,
-      inboundMessage,
-      draft: null,
-      priorLabel: contextLabel || 'You sent',
-      inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
-      followUpContext: isFollowUp,
-      threadMessages: isFollowUp ? threadMessages : null,
-    }),
+    ...(isFollowUp
+      ? buildFollowUpConversationBlocks({
+          lastOutboundMessage,
+          inboundMessage,
+          draft: (sentReply && String(sentReply).trim()
+            && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked')
+            ? sentReply
+            : null,
+          threadMessages,
+          outgoingLabel: 'Sent to prospect',
+        })
+      : buildConversationBlocks({
+          lastOutboundMessage,
+          inboundMessage,
+          draft: null,
+          priorLabel: contextLabel || 'You sent',
+          inboundLabel: 'They replied',
+        })),
   ];
 
-  if (sentReply && String(sentReply).trim()
+  if (!isFollowUp && sentReply && String(sentReply).trim()
       && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked') {
     blocks.push(dividerBlock());
     blocks.push(
@@ -554,19 +532,19 @@ async function postDraftApproval(token, channelId, {
     inboundMessage,
     draft,
     priorLabel: contextLabel || 'You sent',
-    inboundLabel: isFollowUp ? 'They replied (original)' : 'They replied',
+    inboundLabel: isFollowUp ? 'Last message (them)' : 'They replied',
     followUpContext: isFollowUp,
     threadMessages: isFollowUp ? threadMessages : null,
   });
 
   const blocks = isFollowUp
     ? [
-        // Buttons immediately under campaign/lead/phone so they are never buried
-        // under a long thread (Slack "Show more" collapses tall messages).
+        // Compact: lead → suggested send → last thread turn → buttons.
+        // The old full-thread dump hid the draft behind Slack "See more".
         ...metaBlocks,
-        draftApprovalActionsBlock(replyId),
         dividerBlock(),
         ...conversation,
+        draftApprovalActionsBlock(replyId),
         {
           type: 'context',
           elements: [{ type: 'mrkdwn', text: contextText }],
@@ -858,6 +836,7 @@ module.exports = {
   buildSentConfirmationBlocks,
   buildConversationBlocks,
   buildFollowUpConversationBlocks,
+  lastThreadTurn,
   draftApprovalActionsBlock,
   openEditReplyModal,
   postMorningDigestHeader,

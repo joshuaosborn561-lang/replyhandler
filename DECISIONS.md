@@ -633,3 +633,21 @@ The Slack **❌ Reject** button is now **❌ Reject & not interested**. Hitting 
 A SmartLead API failure does not undo the local reject — the card stays rejected and the footer reports the error. HeyReach cards update locally only (no SmartLead category). DQ stays a separate "out of ICP" action.
 
 Guard: `Reject marks the lead Not Interested in SmartLead`
+
+### FOLLOW_UP Slack cards show the draft and last message only
+
+*"the follow up channels in slack make no sense. It's cluttered and I can't see what I'm sending till I click into it and I can't easily see last message in thread."*
+
+Supersedes "original → our reply → rest of thread → suggested bump" / "show all messages between us" on the FOLLOW_UP channel. That dump forced Slack "See more", so the suggested send and the latest turn were off-screen.
+
+New card (approval and confirmation): **lead + campaign → suggested send (or what we just sent) → last thread turn → buttons**. Quoted email history is stripped from the last-message line. Permalink to the original inbox card stays. The full back-and-forth is no longer rendered on the follow-up card.
+
+Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
+
+### Follow-ups only fire after we have replied first
+
+*"Also make sure follow up only fired if we have replied first."*
+
+A SmartLead/HeyReach sequence email in thread history is not "we replied." Cadence scheduling requires a non-empty `sent_reply` on the approved row. The runner and the attention digest skip (and cancel later steps) with `no_prior_send` unless that thread already has a Slack-approved send. `draft_reply` is not treated as a send.
+
+Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
