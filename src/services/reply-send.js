@@ -5,13 +5,103 @@ const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
-const { buildClientNotifyEmail } = require('./client-notify-email');
+const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
   return reply.campaign_id === 'test-campaign' && reply.lead_id === 'test-lead';
+}
+
+function isFollowUpPlaceholder(text) {
+  const s = String(text || '').trim().toLowerCase();
+  return !s
+    || s.startsWith('(no new reply')
+    || s.includes('follow-up re-attempt');
+}
+
+/**
+ * Live SmartLead history + prior approved sends, so a FOLLOW_UP notify
+ * includes the first reply — not just the inbound-time snapshot.
+ */
+async function resolveClientNotifyThread(client, reply) {
+  let live = null;
+  const leadIdNumeric = reply.lead_id != null && /^\d+$/.test(String(reply.lead_id).trim());
+  if (
+    reply.platform === 'smartlead'
+    && client.smartlead_api_key
+    && reply.campaign_id
+    && leadIdNumeric
+  ) {
+    try {
+      live = await smartlead.getThreadHistory(
+        client.smartlead_api_key,
+        reply.campaign_id,
+        reply.lead_id,
+      );
+    } catch (err) {
+      console.warn('[ReplySend] Live thread history for client notify failed', {
+        replyId: reply.id, err: err.message,
+      });
+    }
+  }
+
+  const extraMessages = [];
+  if (reply.client_id && reply.platform) {
+    try {
+      const { rows } = await db.query(
+        `SELECT id, sent_reply, inbound_message, classification, updated_at
+           FROM pending_replies
+          WHERE client_id = $1
+            AND platform = $2
+            AND status = 'sent'
+            AND sent_reply IS NOT NULL
+            AND trim(sent_reply) <> ''
+            AND ($5::uuid IS NULL OR id <> $5)
+            AND (
+              ($3::text <> '' AND COALESCE(lead_id, '') = $3)
+              OR ($4::text <> '' AND lower(COALESCE(lead_email, '')) = $4)
+            )
+          ORDER BY updated_at ASC
+          LIMIT 20`,
+        [
+          reply.client_id,
+          reply.platform,
+          reply.lead_id != null ? String(reply.lead_id) : '',
+          reply.lead_email ? String(reply.lead_email).trim().toLowerCase() : '',
+          reply.id || null,
+        ],
+      );
+      for (const r of rows) {
+        if (
+          r.inbound_message
+          && !isFollowUpPlaceholder(r.inbound_message)
+          && String(r.classification || '').toUpperCase() !== 'FOLLOW_UP'
+        ) {
+          extraMessages.push({
+            type: 'REPLY',
+            email_body: r.inbound_message,
+            time: r.updated_at,
+          });
+        }
+        extraMessages.push({
+          type: 'SENT',
+          email_body: r.sent_reply,
+          time: r.updated_at,
+        });
+      }
+    } catch (err) {
+      console.warn('[ReplySend] Prior-send lookup for client notify failed', {
+        replyId: reply.id, err: err.message,
+      });
+    }
+  }
+
+  return {
+    threadContext: pickRicherThreadContext(live, reply.thread_context),
+    extraMessages,
+  };
 }
 
 async function sendReplyToPlatform(client, reply, replyText) {
@@ -98,13 +188,15 @@ async function sendReplyToPlatform(client, reply, replyText) {
         };
       }
 
+      const { threadContext, extraMessages } = await resolveClientNotifyThread(client, reply);
       const notify = buildClientNotifyEmail({
         leadName: reply.lead_name,
         leadEmail: reply.lead_email,
         clientName: client.name,
         campaignName: reply.campaign_name || reply.campaign_id,
         enrichment,
-        threadContext: reply.thread_context,
+        threadContext,
+        extraMessages,
         inboundMessage: reply.inbound_message,
         sentText: replyText,
       });
@@ -234,4 +326,9 @@ async function maybeBookMeetingAfterSend(reply, client) {
   }
 }
 
-module.exports = { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply };
+module.exports = {
+  sendReplyToPlatform,
+  maybeBookMeetingAfterSend,
+  isSlackTestFixtureReply,
+  resolveClientNotifyThread,
+};

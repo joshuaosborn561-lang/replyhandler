@@ -894,3 +894,49 @@ test('onboarding mirrors to the client portal', () => {
   assert.ok(schema.includes('contact_email'),
     reversal('onboarding mirrors to the client portal', 'clients.contact_email was dropped'));
 });
+
+// ── Decision: client notify includes the full live thread ─────────────
+test('client notify email includes the full live thread', () => {
+  const send = read('src/services/reply-send.js');
+  const notify = read('src/services/client-notify-email.js');
+  assert.match(
+    send,
+    /getThreadHistory/,
+    reversal(
+      'client notify email includes the full live thread',
+      'reply-send no longer refetches SmartLead history before the client email'
+    )
+  );
+  assert.match(
+    send,
+    /resolveClientNotifyThread/,
+    reversal(
+      'client notify email includes the full live thread',
+      'FOLLOW_UP notifies can go out on the inbound-time snapshot again'
+    )
+  );
+  assert.match(
+    send,
+    /extraMessages/,
+    reversal(
+      'client notify email includes the full live thread',
+      'prior approved sends are no longer merged into the client email'
+    )
+  );
+  assert.doesNotMatch(
+    notify,
+    /slice\(\s*-12\s*\)/,
+    reversal(
+      'client notify email includes the full live thread',
+      'the client email is capped at the last 12 messages again'
+    )
+  );
+  assert.match(
+    notify,
+    /<style\[/,
+    reversal(
+      'client notify email includes the full live thread',
+      'style/CSS junk is no longer stripped from notify bodies'
+    )
+  );
+});

@@ -679,3 +679,15 @@ Portal claim/release/note POSTs may include extra fields (`handler_client_id`, `
 If the portal returns a login link, the confirmation screen shows it so Josh can copy it. "Sync all clients to portal" pushes every existing client the same way.
 
 Guard: `onboarding mirrors to the client portal`
+
+## 2026-10-02
+
+### Client notify emails include the full live thread — same for every client
+
+*"myles macintosh just got an auto email from us for cory that is not the full transcript, i thought you had already fixed that for kyle?"*
+
+The Kyle inbox-card format (Subject / From / To) is already live. Myles McAntosh's Cory Schell notify still used the inbound-time `thread_context` snapshot, so a FOLLOW_UP send dropped the first approved reply and looked like a partial transcript. CSS leftovers (`P {margin-top:0}`) and a 12-message tail made it worse.
+
+Client notify now refetches live SmartLead history at send time, merges prior approved sends from `pending_replies` when history lags, keeps the full thread (not `slice(-12)`), and strips style/CSS junk. Same path for Emcor, Peterson, and everyone else. Still on send only — no inbound-receipt forward.
+
+Guard: `client notify email includes the full live thread`
