@@ -851,3 +851,24 @@ test('Tech Evolution booking link is the public booking-bridge wrap', () => {
     );
   }
 });
+
+test('portal takeover stops sends and follow-ups', () => {
+  const route = read('src/routes/client-action.js');
+  const claimed = read('src/services/client-claimed.js');
+  const send = read('src/services/reply-send.js');
+  const runner = read('src/services/follow-up-runner.js');
+  const cron = read('src/cron.js');
+
+  assert.ok(route.includes('/client-action'),
+    reversal('portal takeover stops sends and follow-ups', 'POST /client-action missing'));
+  assert.ok(claimed.includes('PORTAL_WEBHOOK_SECRET') && claimed.includes('x-portal-secret'),
+    reversal('portal takeover stops sends and follow-ups', 'portal secret check was removed'));
+  assert.ok(claimed.includes('client_has_it') && claimed.includes('booked_offline') && claimed.includes('not_a_fit'),
+    reversal('portal takeover stops sends and follow-ups', 'claim statuses were removed'));
+  assert.ok(send.includes('assertNotClaimedOrThrow'),
+    reversal('portal takeover stops sends and follow-ups', 'send path no longer checks client_claimed'));
+  assert.ok(runner.includes('isLeadClaimed') && runner.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'follow-up runner no longer skips claimed leads'));
+  assert.ok(cron.includes('isLeadClaimed') && cron.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'digest can still post follow-ups for claimed leads'));
+});

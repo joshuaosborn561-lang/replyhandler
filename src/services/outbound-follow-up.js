@@ -407,6 +407,15 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
+  const { isLeadClaimed } = require('./client-claimed');
+  if (await isLeadClaimed({ leadEmail: reply.lead_email, campaignId: reply.campaign_id })) {
+    console.log('[FollowUp] Skip schedule — client claimed this lead', {
+      replyId: reply.id,
+      lead: reply.lead_name,
+    });
+    return;
+  }
+
   if (!String(reply.sent_reply || '').trim()) {
     console.log('[FollowUp] Skip schedule — no sent reply on this row', {
       replyId: reply.id,

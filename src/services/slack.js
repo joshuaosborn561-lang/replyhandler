@@ -665,6 +665,16 @@ async function postError(token, channelId, { leadName, platform, error }) {
   });
 }
 
+/** Plain notice for Cayden when the portal claims, releases, or notes a lead. */
+async function postClientActionNotice(token, channelId, text, threadTs) {
+  const slack = getClient(token);
+  return slack.chat.postMessage({
+    channel: channelId,
+    text,
+    ...(threadTs ? { thread_ts: String(threadTs) } : {}),
+  });
+}
+
 async function postProspectFollowUpReminder(token, channelId, {
   leadName, platform, campaignId, leadKey, hours,
 }) {
@@ -830,6 +840,7 @@ module.exports = {
   postDraftApproval,
   postAlert,
   postError,
+  postClientActionNotice,
   postProspectFollowUpReminder,
   updateMessage,
   updateSentConfirmationCard,

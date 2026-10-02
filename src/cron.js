@@ -386,8 +386,25 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   const { isDisqualified } = require('./services/disqualified-prospects');
   const { postFollowUpCard, threadHasOurSend } = require('./services/follow-up-runner');
   const { cancelPendingForThread } = require('./services/outbound-follow-up');
+  const { isLeadClaimed, cancelClaimedLeadWork } = require('./services/client-claimed');
   for (const fu of followUpsToPost) {
     try {
+      if (await isLeadClaimed({ leadEmail: fu.lead_email, campaignId: fu.campaign_id })) {
+        await db.query(
+          `UPDATE outbound_follow_ups
+              SET status = 'skipped', skip_reason = 'client_claimed', updated_at = now()
+            WHERE id = $1`,
+          [fu.id]
+        );
+        await cancelClaimedLeadWork({
+          leadEmail: fu.lead_email,
+          campaignId: fu.campaign_id,
+        });
+        console.log('[Cron] Digest follow-up skipped — client claimed this lead', {
+          clientId: client.id, lead: fu.lead_name,
+        });
+        continue;
+      }
       if (!(await threadHasOurSend(client.id, fu))) {
         await db.query(
           `UPDATE outbound_follow_ups

@@ -20,6 +20,21 @@ CREATE TABLE clients (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE client_claimed_leads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_email TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  status TEXT,
+  claimed BOOLEAN NOT NULL DEFAULT true,
+  last_note TEXT,
+  client_id UUID REFERENCES clients(id),
+  claimed_at TIMESTAMPTZ,
+  cleared_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lead_email, campaign_id)
+);
+
 CREATE OR REPLACE FUNCTION prevent_clients_delete()
 RETURNS trigger AS $$
 BEGIN
@@ -60,6 +75,7 @@ CREATE TABLE pending_replies (
     'alert_only', 'suppressed', 'disqualified', 'meeting_booked'
   )),
   suppression_reason TEXT,
+  client_note TEXT,
   slack_message_ts TEXT,
   smartlead_email_stats_id TEXT,
   cc_on_send BOOLEAN NOT NULL DEFAULT false,

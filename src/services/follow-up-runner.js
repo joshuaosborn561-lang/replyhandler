@@ -13,6 +13,7 @@ const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-web
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { prospectBookingLink } = require('../utils/public-booking-link');
+const { isLeadClaimed, cancelClaimedLeadWork } = require('./client-claimed');
 
 /** Shared Slack channel for all FOLLOW_UP bumps (not per-client inbox channels). */
 const DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID = 'C0BRRS8DV19';
@@ -157,6 +158,11 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   if (!(await threadHasOurSend(client.id, fu))) {
     const err = new Error('no_prior_send');
     err.code = 'no_prior_send';
+    throw err;
+  }
+  if (await isLeadClaimed({ leadEmail: fu.lead_email, campaignId: fu.campaign_id })) {
+    const err = new Error('client_claimed');
+    err.code = 'client_claimed';
     throw err;
   }
   const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
@@ -381,6 +387,20 @@ async function runDueFollowUps({ limit = 25 } = {}) {
 
     try {
       const { isDisqualified } = require('./disqualified-prospects');
+      if (await isLeadClaimed({ leadEmail: fu.lead_email, campaignId: fu.campaign_id })) {
+        await resolve(fu, 'skipped', 'client_claimed');
+        const cancelled = await cancelClaimedLeadWork({
+          leadEmail: fu.lead_email,
+          campaignId: fu.campaign_id,
+        });
+        totals.skipped++;
+        totals.skipReasons.client_claimed = (totals.skipReasons.client_claimed || 0) + 1;
+        console.log('[FollowUp] Skipped — client claimed this lead', {
+          client: client.name, lead: fu.lead_name, cancelled,
+        });
+        continue;
+      }
+
       if (await isDisqualified(fu.client_id, {
         platform: fu.platform,
         campaignId: fu.campaign_id,

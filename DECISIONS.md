@@ -651,3 +651,15 @@ Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 A SmartLead/HeyReach sequence email in thread history is not "we replied." Cadence scheduling requires a non-empty `sent_reply` on the approved row. The runner and the attention digest skip (and cancel later steps) with `no_prior_send` unless that thread already has a Slack-approved send. `draft_reply` is not treated as a send.
 
 Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
+
+### Portal takeover stops our follow-ups and sends
+
+*"My client portal now lets clients take over prospects."*
+
+`POST /client-action` (header `x-portal-secret` = `PORTAL_WEBHOOK_SECRET`) is the only new intake. Classification, drafting, and Slack Approve stay as they are.
+
+`client_has_it` / `booked_offline` / `not_a_fit` sets `client_claimed_leads` for that email + campaign, cancels queued follow-ups and pending drafts (status `suppressed`, reason `client_claimed`, classification unchanged), and posts Slack for Cayden on the client's inbox channel. `open` clears the flag and does not re-queue. `type: note` posts the note and stores it on any pending draft. Repeat of the same payload is a no-op.
+
+Immediately before any approved send or follow-up card, we check the flag. If set, we skip, cancel the rest of that lead's queue, and log `client_claimed`.
+
+Guard: `portal takeover stops sends and follow-ups`
