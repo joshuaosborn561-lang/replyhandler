@@ -753,3 +753,13 @@ the auto-updates until someone remembered to unpin. Global and each client
 revert independently.
 
 Guard: `voice profile history is permanent, auto-updates continue, any earlier week can be restored`
+
+### Portal invite emails go out for new clients
+
+*"Tell ReplyHandler to stop sending skip_invite: true. New clients will now get a real invite email that lands on the new portal."*
+
+DNS is no longer the gate. A new client with a `contact_email` gets a real invite email from the portal. `skip_invite` is true only when `contact_email` is empty **or** `PORTAL_SKIP_INVITE=true` (also `1` / `yes`). Unset and `false` both send the invite. `PORTAL_SKIP_INVITE=true` remains the kill switch if we need to suppress them again.
+
+The portal still returns a one-time `login_link` for the dashboard. First create still needs a `contact_email`.
+
+Guard: `portal invite emails go out for new clients`
