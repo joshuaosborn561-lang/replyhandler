@@ -174,6 +174,12 @@ async function findUnpostedReply({
   const fullNorm = normalizeInboundText(inboundMessage);
   if (!normalized) return null;
 
+  // Never recover FOLLOW_UP cadence rows here. Those store the original
+  // prospect text as inbound_message and post to #followups-ai-replies via
+  // follow-up-runner. Matching them as "unposted" re-posts the same reply
+  // into the client inbox (often mid-race while the real FOLLOW_UP card is
+  // still being written) — looks like the prospect said it twice.
+  // Measured 2026-09-04: Zach Walls "I'm not opposed".
   const { rows } = await db.query(
     `SELECT *
        FROM pending_replies
@@ -181,6 +187,7 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
         AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
@@ -226,6 +233,16 @@ function lastOutboundFromThreadContext(reply) {
 }
 
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
+  // FOLLOW_UP cards belong in the dedicated follow-ups channel and are owned
+  // by follow-up-runner. Re-posting them here threads a duplicate of the
+  // original inbound into the client inbox.
+  if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    console.log('[Dedupe] Skip Slack recovery — FOLLOW_UP cadence cards are not inbox recoveries', {
+      replyId: reply.id,
+    });
+    return false;
+  }
+
   const { shouldPostToSlackChannel } = require('../utils/slack-channel-policy');
   if (!shouldPostToSlackChannel({
     classification: reply.classification,
