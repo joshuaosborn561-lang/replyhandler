@@ -651,3 +651,43 @@ Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 A SmartLead/HeyReach sequence email in thread history is not "we replied." Cadence scheduling requires a non-empty `sent_reply` on the approved row. The runner and the attention digest skip (and cancel later steps) with `no_prior_send` unless that thread already has a Slack-approved send. `draft_reply` is not treated as a send.
 
 Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
+
+## 2026-10-02
+
+### Weekly Friday voice learning from approved, edited and manual replies
+
+*"set up a routine to automatically go in every friday, learn from the weeks
+last replies, and continuously shape yourself to my voice, while also
+acknowledging client specific information. this should be from approved
+replies from slack as well as edited ones or manual replies from smartlead
+and heyreach"*
+
+A scheduled job (`weekly-voice-learning.js`, Friday 4pm Central by default,
+`VOICE_LEARNING_CRON`) sweeps the last eight days and learns from every reply
+Josh actually sent, in four buckets: Slack **approved**, Slack **edited**
+(the original AI draft is now kept in `pending_replies.original_draft` so the
+diff survives), **manual SmartLead** replies (a `SENT` directly after a
+prospect `REPLY` in message-history — structural, never phrase-based), and
+**manual HeyReach** replies. Each pair goes into the RAG corpus, and Gemini
+re-synthesizes a global voice profile plus a per-client profile that carries
+client-specific notes (offer, who takes the meeting, in-person vs call, named
+teammates). Both the Claude and Gemini draft prompts read the latest profile
+as a `LEARNED VOICE` block.
+
+Choices made along the way:
+
+- Realtime learning on approve/edit previously skipped HeyReach. It now learns
+  both platforms; the Friday sweep is also the catch-up for any realtime miss.
+- Learned lines are **style guidance only**. Booking-link, no-sign-off,
+  meeting-modality and principal-voice rules in the prompts still win, and
+  any learned line carrying a URL is dropped. Client notes count as facts for
+  Claude's example-leak check because they come from that client's own sends.
+- A client with fewer than 3 new replies in the week keeps its previous
+  profile rather than overfitting to one message (`VOICE_LEARNING_MIN_EXAMPLES`).
+- The same outbound text in two different threads is a template, not a voice
+  example, and is dropped.
+- It is a bulk job: Gemini only, never Anthropic. Same rule as the pollers.
+- No Slack post. The run logs `[VoiceLearning] Weekly run complete` and is
+  inspectable at `GET /admin/voice-learning/profiles`.
+
+Guard: `weekly Friday voice learning from approved, edited and manual replies`

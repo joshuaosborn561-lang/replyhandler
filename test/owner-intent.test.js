@@ -851,3 +851,56 @@ test('Tech Evolution booking link is the public booking-bridge wrap', () => {
     );
   }
 });
+
+// ── Decision: weekly Friday voice learning ────────────────────────────
+// "set up a routine to automatically go in every friday, learn from the weeks
+// last replies, and continuously shape yourself to my voice, while also
+// acknowledging client specific information. this should be from approved
+// replies from slack as well as edited ones or manual replies from smartlead
+// and heyreach"
+test('weekly Friday voice learning from approved, edited and manual replies', () => {
+  process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://unit-test';
+  const cronSrc = read('src/cron.js');
+  const learning = read('src/services/weekly-voice-learning.js');
+  const profile = read('src/services/voice-profile.js');
+  const classifier = read('src/services/classifier.js');
+  const claude = read('src/services/claude-reply-draft.js');
+  const slackRoute = read('src/routes/slack.js');
+  const approved = read('src/services/approved-reply-learning.js');
+  const { VOICE_LEARNING_CRON } = require('../src/cron');
+
+  // Runs on Fridays, on a schedule, not by hand.
+  assert.ok(cronSrc.includes('runWeeklyVoiceLearning'),
+    reversal('weekly Friday voice learning', 'cron no longer runs the weekly voice learning job'));
+  assert.match(VOICE_LEARNING_CRON, /\s5$/,
+    reversal('weekly Friday voice learning', `default schedule is no longer Friday (got "${VOICE_LEARNING_CRON}")`));
+
+  // All four sources: Slack approved, Slack edited, manual SmartLead, manual HeyReach.
+  for (const source of ['slack_approved', 'slack_edited', 'manual_smartlead', 'manual_heyreach']) {
+    assert.ok(learning.includes(`'${source}'`),
+      reversal('weekly Friday voice learning', `the ${source} source was dropped`));
+  }
+  assert.ok(learning.includes('smartleadManualPairs') && learning.includes('heyreachManualPairs'),
+    reversal('weekly Friday voice learning', 'manual SmartLead / HeyReach replies are no longer collected'));
+  assert.ok(slackRoute.includes('original_draft'),
+    reversal('weekly Friday voice learning', 'Slack edits no longer keep the original AI draft — the edit diff is the strongest voice signal'));
+  assert.ok(approved.includes("'heyreach'"),
+    reversal('weekly Friday voice learning', 'HeyReach approvals are no longer learned in realtime'));
+
+  // Shapes the voice: profiles are synthesized and injected into both draft paths.
+  assert.ok(learning.includes('synthesizeProfile') && learning.includes('storeProfile'),
+    reversal('weekly Friday voice learning', 'voice profiles are no longer synthesized'));
+  assert.ok(profile.includes('client_notes') && learning.includes('client_notes'),
+    reversal('weekly Friday voice learning', 'client-specific notes were removed from the profile'));
+  assert.ok(classifier.includes('loadLearnedVoiceBlock') && classifier.includes('learnedVoiceBlock'),
+    reversal('weekly Friday voice learning', 'Gemini drafts no longer read the learned voice'));
+  assert.ok(claude.includes('learnedVoiceBlock'),
+    reversal('weekly Friday voice learning', 'Claude drafts no longer read the learned voice'));
+
+  // Bulk job: Gemini only. Claude is never used here (Aug 2026 burn).
+  assert.ok(!/anthropic/i.test(learning),
+    reversal('Claude never runs on bulk backfill', 'weekly voice learning touches Anthropic'));
+  // Never learns FOLLOW_UP bumps or placeholder inbounds.
+  assert.ok(learning.includes("'FOLLOW_UP'") && learning.includes('isFollowUpPlaceholder'),
+    reversal('weekly Friday voice learning', 'FOLLOW_UP / placeholder exclusion was removed from learning'));
+});
