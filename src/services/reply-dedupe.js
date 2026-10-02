@@ -4,6 +4,20 @@ const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
 /**
+ * Strip embedded signature images / data-URIs before dedupe.
+ *
+ * SmartLead often re-encodes the same signature PNG on each history fetch, so
+ * the base64 payload changes while the real reply text does not. Leaving it in
+ * the dedupe key made each poll look like a brand-new inbound (Carter Howard
+ * FOLLOW_UP loop, 2026-08-27).
+ */
+function stripEmbeddedBinaries(text) {
+  return String(text || '')
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, ' ')
+    .replace(/<img\b[^>]*>/gi, ' ');
+}
+
+/**
  * Collapse every Unicode space (including NBSP U+00A0) to a single ASCII space.
  *
  * Critical: Postgres POSIX `\s` does NOT match NBSP, while JavaScript `\s`
@@ -12,7 +26,7 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
  * matches and the poller re-posts the same card every cycle.
  */
 function normalizeInboundText(text) {
-  return String(text || '')
+  return stripEmbeddedBinaries(text)
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -64,9 +78,15 @@ function stripUnicodeSpacesSql(column) {
   );
 }
 
+const STORED_STRIP_BINARIES_SQL = (
+  `regexp_replace(` +
+  `regexp_replace(inbound_message, 'data:image/[^;]+;base64,[A-Za-z0-9+/=]+', ' ', 'gi'), ` +
+  `'<img[^>]*>', ' ', 'gi')`
+);
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `${stripUnicodeSpacesSql('inbound_message')}, ` +
+  `${stripUnicodeSpacesSql(STORED_STRIP_BINARIES_SQL)}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -174,6 +194,12 @@ async function findUnpostedReply({
   const fullNorm = normalizeInboundText(inboundMessage);
   if (!normalized) return null;
 
+  // Never recover FOLLOW_UP cadence rows here. Those store the original
+  // prospect text as inbound_message and post to #followups-ai-replies via
+  // follow-up-runner. Matching them as "unposted" re-posts the same reply
+  // into the client inbox (often mid-race while the real FOLLOW_UP card is
+  // still being written) — looks like the prospect said it twice / as if we
+  // never replied. Measured 2026-09-04: Zach Walls "I'm not opposed".
   const { rows } = await db.query(
     `SELECT *
        FROM pending_replies
@@ -181,6 +207,7 @@ async function findUnpostedReply({
         AND platform = $2
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
         AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
@@ -226,6 +253,16 @@ function lastOutboundFromThreadContext(reply) {
 }
 
 async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
+  // FOLLOW_UP cards belong in the dedicated follow-ups channel and are owned
+  // by follow-up-runner. Re-posting them here threads a duplicate of the
+  // original inbound into the client inbox — looks like we never replied.
+  if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    console.log('[Dedupe] Skip Slack recovery — FOLLOW_UP cadence cards are not inbox recoveries', {
+      replyId: reply.id,
+    });
+    return false;
+  }
+
   const { shouldPostToSlackChannel } = require('../utils/slack-channel-policy');
   if (!shouldPostToSlackChannel({
     classification: reply.classification,
@@ -324,6 +361,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 module.exports = {
   inboundPrefix,
   normalizeInboundText,
+  stripEmbeddedBinaries,
   sameReplySql,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
