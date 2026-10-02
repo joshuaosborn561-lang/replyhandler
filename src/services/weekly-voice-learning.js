@@ -492,31 +492,30 @@ function weekEndingDate(now = new Date()) {
   return now.toISOString().slice(0, 10);
 }
 
-async function latestProfile(scope, clientId) {
-  const { rows } = await db.query(
-    `SELECT profile FROM voice_profiles
-      WHERE scope = $1 AND (($1 = 'global') OR client_id = $2)
-      ORDER BY week_ending DESC, created_at DESC LIMIT 1`,
-    [scope, clientId || null]
-  );
-  return rows[0]?.profile || null;
+/**
+ * Seed for refinement = the newest stored version, which is also what drafts
+ * use. After a revert that is the restored week, so a rejected version never
+ * seeds the next one.
+ */
+async function activeProfile(scope, clientId) {
+  const row = await voiceProfile.activeProfileRow({ scope, clientId: clientId || null });
+  return row?.profile || null;
 }
 
-async function storeProfile({ scope, clientId, profile, pairs, examplesUsed, weekEnding }) {
+/**
+ * Always a new row. Nothing is updated or deleted, so every week's style
+ * stays available to revert to (the table also has a delete-blocking trigger).
+ */
+async function storeProfile({ scope, clientId, profile, pairs, examplesUsed, weekEnding, trigger }) {
   const edited = pairs.filter((p) => p.source === 'slack_edited').length;
   const manual = pairs.filter((p) => p.source.startsWith('manual')).length;
-  await db.query(
-    `INSERT INTO voice_profiles (scope, client_id, week_ending, profile, examples_used, edited_used, manual_used, model)
-     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
-     ON CONFLICT (scope, COALESCE(client_id, '00000000-0000-0000-0000-000000000000'::uuid), week_ending)
-     DO UPDATE SET profile = EXCLUDED.profile,
-                   examples_used = EXCLUDED.examples_used,
-                   edited_used = EXCLUDED.edited_used,
-                   manual_used = EXCLUDED.manual_used,
-                   model = EXCLUDED.model,
-                   created_at = now()`,
-    [scope, clientId || null, weekEnding, JSON.stringify(profile), examplesUsed, edited, manual, PROFILE_MODEL]
+  const { rows } = await db.query(
+    `INSERT INTO voice_profiles (scope, client_id, week_ending, profile, examples_used, edited_used, manual_used, model, trigger)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+     RETURNING id`,
+    [scope, clientId || null, weekEnding, JSON.stringify(profile), examplesUsed, edited, manual, PROFILE_MODEL, trigger || null]
   );
+  return rows[0]?.id || null;
 }
 
 // ─── Collection per source ───────────────────────────────────────────────
@@ -779,10 +778,10 @@ async function runWeeklyVoiceLearning({
           continue;
         }
         try {
-          const previous = await latestProfile('client', client.id);
+          const previous = await activeProfile('client', client.id);
           const { profile, examplesUsed } = await synthesizeProfile({ scope: 'client', client, pairs, previousProfile: previous });
           if (!dryRun) {
-            await storeProfile({ scope: 'client', clientId: client.id, profile, pairs, examplesUsed, weekEnding });
+            await storeProfile({ scope: 'client', clientId: client.id, profile, pairs, examplesUsed, weekEnding, trigger });
           }
           summary.profiles.clientsUpdated.push(client.name);
           if (dryRun) summary.profiles[`preview:${client.name}`] = profile;
@@ -793,10 +792,10 @@ async function runWeeklyVoiceLearning({
 
       if (allPairs.length >= minGlobal) {
         try {
-          const previous = await latestProfile('global', null);
+          const previous = await activeProfile('global', null);
           const { profile, examplesUsed } = await synthesizeProfile({ scope: 'global', pairs: allPairs, previousProfile: previous });
           if (!dryRun) {
-            await storeProfile({ scope: 'global', clientId: null, profile, pairs: allPairs, examplesUsed, weekEnding });
+            await storeProfile({ scope: 'global', clientId: null, profile, pairs: allPairs, examplesUsed, weekEnding, trigger });
           }
           summary.profiles.globalUpdated = true;
           if (dryRun) summary.profiles['preview:global'] = profile;

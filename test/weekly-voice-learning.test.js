@@ -23,7 +23,32 @@ const {
   sanitizeProfile,
   renderLearnedVoiceBlock,
   profileIsEmpty,
+  pickPreviousVersion,
 } = require('../src/services/voice-profile');
+
+// ── Version history / revert ─────────────────────────────────────────
+
+test('"revert one week back" walks history from the restored week, not the rejected one', () => {
+  // History is newest first. v3 (this week) is bad.
+  const v1 = { id: 'v1', restored_from: null };
+  const v2 = { id: 'v2', restored_from: null };
+  const v3 = { id: 'v3', restored_from: null };
+
+  assert.equal(pickPreviousVersion([]), null);
+  assert.equal(pickPreviousVersion(null), null);
+  assert.equal(pickPreviousVersion([v3, v2, v1]).id, 'v2', 'one back from current = last week');
+  assert.equal(pickPreviousVersion([v1]), null, 'nothing earlier than the oldest');
+
+  // Revert copies v2 forward as v4. Reverting "previous" again must not land
+  // back on v3 (the one just rejected) — it should continue back to v1.
+  const v4 = { id: 'v4', restored_from: 'v2' };
+  assert.equal(pickPreviousVersion([v4, v3, v2, v1]).id, 'v1');
+
+  // The following Friday appends v5 (auto-update resumed). "Previous" is now
+  // simply v4, the restored version — a normal one-step-back again.
+  const v5 = { id: 'v5', restored_from: null };
+  assert.equal(pickPreviousVersion([v5, v4, v3, v2, v1]).id, 'v4');
+});
 
 // ── Signature / closing stripping ────────────────────────────────────
 

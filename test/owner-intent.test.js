@@ -904,3 +904,56 @@ test('weekly Friday voice learning from approved, edited and manual replies', ()
   assert.ok(learning.includes("'FOLLOW_UP'") && learning.includes('isFollowUpPlaceholder'),
     reversal('weekly Friday voice learning', 'FOLLOW_UP / placeholder exclusion was removed from learning'));
 });
+
+// ── Decision: every week's voice profile is kept and revertable ──────
+// "make sure you save the previous week's style so that if your updates suck
+// i can revert back indefinitely" … "no have it auto update but if i come back
+// in here i should be able to easily revert"
+test('voice profile history is permanent, auto-updates continue, any earlier week can be restored', () => {
+  const learning = read('src/services/weekly-voice-learning.js');
+  const profile = read('src/services/voice-profile.js');
+  const route = read('src/routes/voice-learning.js');
+  const migration = read('migrations/025_voice_profiles.sql');
+  const schema = read('schema.sql');
+
+  // Each run appends; it never overwrites a previous week's row.
+  const storeFn = learning.slice(learning.indexOf('async function storeProfile'));
+  const storeBody = storeFn.slice(0, storeFn.indexOf('\n}\n'));
+  assert.ok(/INSERT INTO voice_profiles/.test(storeBody) && !/ON CONFLICT/i.test(storeBody),
+    reversal('voice history is permanent', 'storeProfile upserts/overwrites instead of appending a new version'));
+
+  // Nothing in the app deletes profiles, and the database refuses deletes too.
+  const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((d) =>
+    d.isDirectory() ? walk(`${dir}/${d.name}`) : d.name.endsWith('.js') ? [`${dir}/${d.name}`] : []);
+  for (const file of [...walk('src'), ...walk('scripts')]) {
+    assert.ok(!/DELETE\s+FROM\s+voice_profiles/i.test(read(file)),
+      reversal('voice history is permanent', `${file} deletes voice_profiles rows`));
+  }
+  for (const [name, sql] of [['migrations/025_voice_profiles.sql', migration], ['schema.sql', schema]]) {
+    assert.ok(sql.includes('prevent_voice_profiles_delete') && /BEFORE DELETE ON voice_profiles/i.test(sql),
+      reversal('voice history is permanent', `${name} no longer blocks DELETE on voice_profiles`));
+    assert.ok(/BEFORE TRUNCATE ON voice_profiles/i.test(sql),
+      reversal('voice history is permanent', `${name} no longer blocks TRUNCATE on voice_profiles`));
+    assert.ok(/restored_from/.test(sql),
+      reversal('voice history is permanent', `${name} lost the restored_from column — reverts would be untraceable`));
+    assert.ok(!/UNIQUE INDEX[^;]*week_ending/i.test(sql),
+      reversal('voice history is permanent', `${name} has a per-week unique index, so a re-run would overwrite that week`));
+  }
+
+  // Revert = copy an earlier version forward as the new current one. Drafts
+  // always read the newest row, so weekly auto-updates keep applying — there
+  // is no pin / freeze that Josh would have to remember to undo.
+  assert.ok(profile.includes('async function restoreProfile') && profile.includes('async function restorePreviousProfile'),
+    reversal('voice history is permanent', 'restore / revert helpers were removed from voice-profile.js'));
+  const restoreBody = profile.slice(profile.indexOf('async function restoreProfile'), profile.indexOf('async function restorePreviousProfile'));
+  assert.ok(/INSERT INTO voice_profiles/.test(restoreBody) && !/UPDATE voice_profiles/i.test(restoreBody),
+    reversal('voice updates stay automatic', 'revert no longer appends a new version — a pin/freeze would stop weekly updates from applying'));
+  assert.ok(!/pinned_at|function (pin|unpin)Profile/i.test(profile + learning + route),
+    reversal('voice updates stay automatic', 'a pin/freeze concept crept back in; Josh wants auto-update with easy revert, not a freeze'));
+  assert.ok(/ORDER BY created_at DESC\s+LIMIT 1/.test(profile.slice(profile.indexOf('async function activeProfileRow'))),
+    reversal('voice updates stay automatic', 'drafts no longer read the newest stored version'));
+  assert.ok(route.includes('/admin/voice-learning/revert') && route.includes('/admin/voice-learning/history'),
+    reversal('voice history is permanent', 'the revert / history admin endpoints were removed'));
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'scripts', 'voice-profile-revert.js')),
+    reversal('voice history is permanent', 'scripts/voice-profile-revert.js was removed'));
+});

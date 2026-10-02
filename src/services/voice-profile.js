@@ -118,17 +118,91 @@ function renderLearnedVoiceBlock({ global, client, clientName } = {}) {
   return lines.join('\n');
 }
 
-async function latestProfileRow({ scope, clientId = null }) {
+// week_ending::text so callers see "2026-10-02", not a midnight-UTC Date.
+const PROFILE_COLUMNS = `id, scope, client_id, week_ending::text AS week_ending, profile, examples_used, edited_used,
+  manual_used, model, trigger, restored_from, note, created_at`;
+
+/**
+ * Which earlier version "go back one" means. `history` is newest first. If
+ * the current version is itself a restore of X, step back from X — otherwise
+ * a second revert would land on the exact version Josh just rejected.
+ * Pure so the rule is testable without a DB.
+ */
+function pickPreviousVersion(history) {
+  const list = Array.isArray(history) ? history.filter(Boolean) : [];
+  if (!list.length) return null;
+  const head = list[0];
+  let anchorIdx = 0;
+  if (head.restored_from) {
+    const i = list.findIndex((r) => r.id === head.restored_from);
+    if (i !== -1) anchorIdx = i;
+  }
+  return list[anchorIdx + 1] || null;
+}
+
+/** Every stored version for a scope, newest first. Nothing is ever deleted. */
+async function profileHistory({ scope, clientId = null, limit = 52 }) {
   const { rows } = await db.query(
-    `SELECT scope, client_id, week_ending, profile, examples_used, edited_used, manual_used, model, created_at
+    `SELECT ${PROFILE_COLUMNS}
        FROM voice_profiles
       WHERE scope = $1
         AND (($1 = 'global') OR client_id = $2)
-      ORDER BY week_ending DESC, created_at DESC
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [scope, clientId, limit]
+  );
+  return rows;
+}
+
+/** The version drafts use right now: always the newest row for the scope. */
+async function activeProfileRow({ scope, clientId = null }) {
+  const { rows } = await db.query(
+    `SELECT ${PROFILE_COLUMNS}
+       FROM voice_profiles
+      WHERE scope = $1
+        AND (($1 = 'global') OR client_id = $2)
+      ORDER BY created_at DESC
       LIMIT 1`,
     [scope, clientId]
   );
   return rows[0] || null;
+}
+
+/**
+ * Revert = copy an earlier version forward as the new newest row. Drafts
+ * switch to it, and the next Friday run refines from it as normal — nothing
+ * is frozen and the rejected version stays in history.
+ */
+async function restoreProfile(profileId, { note = null, trigger = 'revert' } = {}) {
+  const { rows: [source] } = await db.query(
+    `SELECT ${PROFILE_COLUMNS} FROM voice_profiles WHERE id = $1`,
+    [profileId]
+  );
+  if (!source) throw new Error(`voice profile ${profileId} not found`);
+  const current = await activeProfileRow({ scope: source.scope, clientId: source.client_id });
+  const { rows: [restored] } = await db.query(
+    `INSERT INTO voice_profiles
+       (scope, client_id, week_ending, profile, examples_used, edited_used, manual_used, model, trigger, restored_from, note)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING ${PROFILE_COLUMNS}`,
+    [
+      source.scope, source.client_id, source.week_ending, JSON.stringify(source.profile),
+      source.examples_used, source.edited_used, source.manual_used, source.model,
+      trigger, source.id,
+      note || `reverted from ${current?.week_ending || 'unknown'} to ${source.week_ending}`,
+    ]
+  );
+  clearCache();
+  return restored;
+}
+
+/** "Go back one week" for a scope. Repeating it keeps walking back. */
+async function restorePreviousProfile({ scope, clientId = null, note = null }) {
+  const history = await profileHistory({ scope, clientId, limit: 500 });
+  if (!history.length) throw new Error(`no stored voice profile for ${scope}${clientId ? ` ${clientId}` : ''}`);
+  const previous = pickPreviousVersion(history);
+  if (!previous) throw new Error('already on the oldest stored version — nothing earlier to revert to');
+  return restoreProfile(previous.id, { note });
 }
 
 async function resolveClientId({ clientId, clientName }) {
@@ -155,8 +229,8 @@ async function loadLearnedVoice({ clientId = null, clientName = null } = {}) {
   try {
     const resolvedClientId = await resolveClientId({ clientId, clientName });
     const [globalRow, clientRow] = await Promise.all([
-      latestProfileRow({ scope: 'global' }),
-      resolvedClientId ? latestProfileRow({ scope: 'client', clientId: resolvedClientId }) : null,
+      activeProfileRow({ scope: 'global' }),
+      resolvedClientId ? activeProfileRow({ scope: 'client', clientId: resolvedClientId }) : null,
     ]);
     const value = {
       block: renderLearnedVoiceBlock({
@@ -194,5 +268,11 @@ module.exports = {
   renderLearnedVoiceBlock,
   loadLearnedVoice,
   loadLearnedVoiceBlock,
+  pickPreviousVersion,
+  profileHistory,
+  activeProfileRow,
+  restoreProfile,
+  restorePreviousProfile,
+  resolveClientId,
   clearCache,
 };
