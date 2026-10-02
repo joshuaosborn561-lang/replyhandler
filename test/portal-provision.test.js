@@ -62,16 +62,16 @@ describe('portal provision payload', () => {
     assert.equal(normalizeContactEmail('not-an-email'), null);
   });
 
-  it('keeps skip_invite true until PORTAL_SKIP_INVITE is false', () => {
+  it('sends an invite when contact email is present', () => {
     withInviteEnv(undefined, () => {
-      assert.equal(buildProvisionPayload(sample).skip_invite, true);
-    });
-    withInviteEnv('true', () => {
-      assert.equal(buildProvisionPayload(sample).skip_invite, true);
+      assert.equal(buildProvisionPayload(sample).skip_invite, false);
     });
     withInviteEnv('false', () => {
       assert.equal(buildProvisionPayload(sample).skip_invite, false);
       assert.equal(buildProvisionPayload({ ...sample, contact_email: '' }).skip_invite, true);
+    });
+    withInviteEnv('true', () => {
+      assert.equal(buildProvisionPayload(sample).skip_invite, true);
     });
   });
 

@@ -25,12 +25,12 @@ function provisionUrl() {
 }
 
 /**
- * Invite emails stay off until salesglider.ai points at the new portal.
- * Set PORTAL_SKIP_INVITE=false to send them when contact_email is present.
+ * Invite emails go out when contact_email is present.
+ * Set PORTAL_SKIP_INVITE=true only to suppress them again.
  */
 function invitesDisabled() {
-  const raw = String(process.env.PORTAL_SKIP_INVITE ?? 'true').trim().toLowerCase();
-  return !(raw === 'false' || raw === '0' || raw === 'no');
+  const raw = String(process.env.PORTAL_SKIP_INVITE ?? 'false').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
 }
 
 function buildProvisionPayload(client) {

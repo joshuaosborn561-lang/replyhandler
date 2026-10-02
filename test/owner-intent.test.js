@@ -895,6 +895,32 @@ test('onboarding mirrors to the client portal', () => {
     reversal('onboarding mirrors to the client portal', 'clients.contact_email was dropped'));
 });
 
+// ── Decision: portal invite emails go out for new clients ─────────────
+// "Tell ReplyHandler to stop sending skip_invite: true. New clients will
+// now get a real invite email that lands on the new portal."
+// Supersedes the DNS-gated skip_invite default from onboarding.
+test('portal invite emails go out for new clients', () => {
+  const provision = read('src/services/portal-provision.js');
+  const dash = read('src/public/index.html');
+
+  assert.ok(
+    /PORTAL_SKIP_INVITE \?\? ['"]false['"]/.test(provision),
+    reversal('portal invite emails go out for new clients', 'unset PORTAL_SKIP_INVITE no longer defaults to sending invites')
+  );
+  assert.ok(
+    /skip_invite:\s*!contactEmail\s*\|\|\s*invitesDisabled\(\)/.test(provision),
+    reversal('portal invite emails go out for new clients', 'skip_invite is no longer only empty-email or the env kill switch')
+  );
+  assert.ok(
+    !/PORTAL_SKIP_INVITE \?\? ['"]true['"]/.test(provision),
+    reversal('portal invite emails go out for new clients', 'invite default flipped back to skip')
+  );
+  assert.ok(
+    dash.includes('gets an invite email') && dash.includes('PORTAL_SKIP_INVITE=true'),
+    reversal('portal invite emails go out for new clients', 'dashboard no longer says new clients get an invite')
+  );
+});
+
 // ── Decision: client notify includes the full live thread ─────────────
 test('client notify email includes the full live thread', () => {
   const send = read('src/services/reply-send.js');

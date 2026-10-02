@@ -705,7 +705,7 @@
       <div class="form-group">
         <label>Portal contact email (optional)</label>
         <input type="email" id="f_contact_email" placeholder="owner@client.com">
-        <div class="hint">Portal login email. Invite emails stay off until salesglider.ai points at the new portal. The portal needs this email to create the client.</div>
+        <div class="hint">Portal login email. A new client with this address gets an invite email. Leave empty to skip the invite.</div>
       </div>
 
       <div class="form-group">
@@ -1330,7 +1330,7 @@ function copyPortalLoginLink() {
 }
 
 async function syncAllToPortal() {
-  if (!confirm('Push every existing client to the portal? Invite emails stay off until PORTAL_SKIP_INVITE=false.')) {
+  if (!confirm('Push every existing client to the portal? Invite emails go out when a contact email is set. Set PORTAL_SKIP_INVITE=true to suppress them.')) {
     return;
   }
   try {
