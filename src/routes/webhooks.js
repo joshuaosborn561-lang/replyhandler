@@ -531,6 +531,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       classification = slCategory.classification;
       reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
     }
+    if (String(classification || '').toUpperCase() === 'FOLLOW_UP') {
+      classification = 'QUESTION';
+      reasoning = `Inbox FOLLOW_UP remapped to QUESTION (cadence-only label). ${reasoning}`;
+    }
 
     if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
       try {

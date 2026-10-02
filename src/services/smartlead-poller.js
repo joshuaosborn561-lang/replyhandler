@@ -13,6 +13,7 @@ const {
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  suppressUnpostedFollowUpInboxRows,
 } = require('./reply-dedupe');
 const {
   stripHtmlToText,
@@ -324,6 +325,10 @@ async function processInboxRow(client, row, options) {
     classification = slCategory.classification;
     reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
   }
+  if (String(classification || '').toUpperCase() === 'FOLLOW_UP') {
+    classification = 'QUESTION';
+    reasoning = `Inbox FOLLOW_UP remapped to QUESTION (cadence-only label). ${reasoning}`;
+  }
 
   const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
   if (suppressed) {
@@ -429,6 +434,12 @@ async function pollSmartleadReplies() {
   const skipCounts = {};
   const refetchCounter = { count: 0 };
   try {
+    const retiredFollowUps = await suppressUnpostedFollowUpInboxRows();
+    if (retiredFollowUps) {
+      totals.skipped += retiredFollowUps;
+      skipCounts.follow_up_not_inbox = (skipCounts.follow_up_not_inbox || 0) + retiredFollowUps;
+      console.log('[SmartLeadPoll] Suppressed unposted FOLLOW_UP inbox recoveries', { count: retiredFollowUps });
+    }
     const recovery = await recoverUnpostedSlackCards({ limit: 15 });
     if (recovery.recovered) {
       totals.processed += recovery.recovered;
