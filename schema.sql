@@ -14,6 +14,7 @@ CREATE TABLE clients (
   cc_email TEXT,
   cc_emails TEXT,
   cc_round_robin_emails TEXT,
+  contact_email TEXT,
   cc_round_robin_index INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

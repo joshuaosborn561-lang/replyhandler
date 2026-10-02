@@ -653,7 +653,10 @@
 
   <div class="toolbar">
     <h2>Clients</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadClients()">Refresh</button>
+    <div style="display:flex; gap:8px">
+      <button class="btn btn-ghost btn-sm" onclick="syncAllToPortal()">Sync all clients to portal</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadClients()">Refresh</button>
+    </div>
   </div>
 
   <div class="client-grid" id="clientGrid"></div>
@@ -700,6 +703,12 @@
       </div>
 
       <div class="form-group">
+        <label>Portal contact email (optional)</label>
+        <input type="email" id="f_contact_email" placeholder="owner@client.com">
+        <div class="hint">Login invite for the client portal. Leave empty to skip the invite.</div>
+      </div>
+
+      <div class="form-group">
         <label>Booking Link</label>
         <input type="text" id="f_booking_link" placeholder="https://cal.com/acme/30min">
         <div class="hint">Client's scheduling page URL (Calendly, Cal.com, SavvyCal, etc). First replies suggest times; this link is included only when the prospect asks for / accepts a booking link.</div>
@@ -732,6 +741,26 @@
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('formModal')">Cancel</button>
       <button class="btn btn-primary" id="formSubmitBtn" onclick="submitForm()">Create Client</button>
+    </div>
+  </div>
+</div>
+
+<!-- Portal login link after create / update -->
+<div class="modal-overlay" id="portalLinkModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <h3>Client saved</h3>
+      <button class="modal-close" onclick="closeModal('portalLinkModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:12px">Copy this portal login link and send it to the client.</p>
+      <div class="webhook-url">
+        <span class="url-text" id="portalLoginLinkText"></span>
+        <button class="copy-btn" id="portalLoginCopyBtn" onclick="copyPortalLoginLink()" title="Copy">&#128203;</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('portalLinkModal')">Done</button>
     </div>
   </div>
 </div>
@@ -1058,6 +1087,10 @@ function openDetail(id) {
         <span class="value">${esc(c.slack_channel_id)}</span>
       </div>
       <div class="detail-row">
+        <span class="label">Portal contact email</span>
+        <span class="value">${c.contact_email ? esc(c.contact_email) : '—'}</span>
+      </div>
+      <div class="detail-row">
         <span class="label">Booking Link</span>
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
@@ -1149,6 +1182,7 @@ function openEditFromDetail() {
   document.getElementById('f_heyreach_api_key').value = c.heyreach_api_key || '';
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
+  document.getElementById('f_contact_email').value = c.contact_email || '';
   document.getElementById('f_booking_link').value = c.booking_link || '';
   document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
   document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
@@ -1166,6 +1200,7 @@ async function submitForm() {
     heyreach_api_key: document.getElementById('f_heyreach_api_key').value.trim() || null,
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
+    contact_email: document.getElementById('f_contact_email').value.trim() || null,
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
     cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
     cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
@@ -1194,9 +1229,13 @@ async function submitForm() {
       throw new Error(err.error || 'Request failed');
     }
 
+    const saved = await res.json();
     toast(isEdit ? 'Client updated' : 'Client created', 'success');
     closeModal('formModal');
     loadClients();
+    if (saved.portal_login_link) {
+      showPortalLoginLink(saved.portal_login_link);
+    }
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -1212,7 +1251,7 @@ function toggleGuide() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }
@@ -1273,6 +1312,32 @@ function esc(str) {
   const d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+function showPortalLoginLink(link) {
+  document.getElementById('portalLoginLinkText').textContent = link;
+  document.getElementById('portalLoginCopyBtn').dataset.link = link;
+  openModal('portalLinkModal');
+}
+
+function copyPortalLoginLink() {
+  const btn = document.getElementById('portalLoginCopyBtn');
+  const link = btn.dataset.link || document.getElementById('portalLoginLinkText').textContent;
+  copyText(link, btn);
+}
+
+async function syncAllToPortal() {
+  if (!confirm('Push every existing client to the portal? Invites are skipped when contact email is empty.')) {
+    return;
+  }
+  try {
+    const res = await fetch(`${API}/admin/clients/sync-portal`, { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || 'Sync failed');
+    toast(`Portal sync: ${body.synced} of ${body.total} ok`, 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 function toast(msg, type = 'success') {

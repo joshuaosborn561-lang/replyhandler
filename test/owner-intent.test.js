@@ -872,3 +872,21 @@ test('portal takeover stops sends and follow-ups', () => {
   assert.ok(cron.includes('isLeadClaimed') && cron.includes('client_claimed'),
     reversal('portal takeover stops sends and follow-ups', 'digest can still post follow-ups for claimed leads'));
 });
+
+test('onboarding mirrors to the client portal', () => {
+  const admin = read('src/routes/admin.js');
+  const provision = read('src/services/portal-provision.js');
+  const dash = read('src/public/index.html');
+  const schema = read('schema.sql');
+
+  assert.ok(provision.includes('handler_client_id') && provision.includes('/functions/v1/provision-client'),
+    reversal('onboarding mirrors to the client portal', 'provision payload or path was removed'));
+  assert.ok(provision.includes('skip_invite') && provision.includes('normalizeContactEmail'),
+    reversal('onboarding mirrors to the client portal', 'empty contact_email no longer skips the invite'));
+  assert.ok(admin.includes('provisionClientToPortal') && admin.includes('/admin/clients/sync-portal'),
+    reversal('onboarding mirrors to the client portal', 'create/update or sync-all no longer push to the portal'));
+  assert.ok(dash.includes('f_contact_email') && dash.includes('portal_login_link') && dash.includes('syncAllToPortal'),
+    reversal('onboarding mirrors to the client portal', 'dashboard lost contact email, login-link copy, or sync-all'));
+  assert.ok(schema.includes('contact_email'),
+    reversal('onboarding mirrors to the client portal', 'clients.contact_email was dropped'));
+});

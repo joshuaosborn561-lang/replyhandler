@@ -663,3 +663,13 @@ Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 Immediately before any approved send or follow-up card, we check the flag. If set, we skip, cancel the rest of that lead's queue, and log `client_claimed`.
 
 Guard: `portal takeover stops sends and follow-ups`
+
+### Mirror onboarding to the client portal
+
+*"My client portal now auto-provisions clients when I onboard them here."*
+
+After a successful create or update on this dashboard, POST the client fields plus `handler_client_id` (this service's UUID) to `PORTAL_URL/functions/v1/provision-client` with `x-portal-secret` = `PORTAL_WEBHOOK_SECRET`. 10s timeout, one retry after 5s. Failures are logged only — the save here is never rolled back.
+
+If the portal returns a login link, the confirmation screen shows it so Josh can copy it. `contact_email` is optional; empty means `skip_invite: true`. "Sync all clients to portal" pushes every existing client the same way.
+
+Guard: `onboarding mirrors to the client portal`
