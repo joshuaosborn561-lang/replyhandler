@@ -1,5 +1,5 @@
 const { WebClient } = require('@slack/web-api');
-const { cleanInboundReply } = require('../utils/smartlead-webhook-helpers');
+const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 
 // Cache WebClient instances per token
 const clientCache = new Map();
@@ -31,12 +31,14 @@ function plainTextForSlack(raw) {
   let s = String(raw || '');
   if (!s.trim()) return '';
   s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
   s = s.replace(/<br\s*\/?>/gi, '\n');
   s = s.replace(/<\/p>/gi, '\n');
   s = s.replace(/<\/div>/gi, '\n');
   s = s.replace(/<li[^>]*>/gi, '\n• ');
   s = s.replace(/<[^>]+>/g, '');
   s = decodeHtmlEntities(s);
+  s = stripOutlookCss(s);
   s = s.replace(/[ \t]+\n/g, '\n');
   s = s.replace(/\n{3,}/g, '\n\n');
   s = s.replace(/[ \t]{2,}/g, ' ');
@@ -492,13 +494,12 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   });
 }
 
-async function postDraftApproval(token, channelId, {
+function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
-  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
+  campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages,
 }) {
-  const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
@@ -574,11 +575,29 @@ async function postDraftApproval(token, channelId, {
   }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
+  const text = `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`;
+  return { blocks, text };
+}
 
+async function postDraftApproval(token, channelId, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildDraftApprovalCard(opts);
   return slack.chat.postMessage({
     channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`,
+    ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+    text,
+    blocks,
+  });
+}
+
+/** Rewrite an already-posted approval card in place (compact FOLLOW_UP layout). */
+async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildDraftApprovalCard(opts);
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text,
     blocks,
   });
 }
@@ -838,6 +857,8 @@ async function getPermalink(token, channelId, messageTs) {
 
 module.exports = {
   postDraftApproval,
+  updateDraftApprovalCard,
+  buildDraftApprovalCard,
   postAlert,
   postError,
   postClientActionNotice,

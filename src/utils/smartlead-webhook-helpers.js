@@ -3,13 +3,29 @@
  * dedupe of bad REPLY rows that mirror last SENT (SmartLead/Android glitches).
  */
 
+/**
+ * Outlook / Word HTML often leaves stylesheet text after tags are stripped
+ * (`P {margin-top:0;margin-bottom:0;}` or `v\:* {behavior:url(#default#VML);}`).
+ * That is not the prospect's message — drop it so FOLLOW_UP last-message
+ * lines stay readable.
+ */
+function stripOutlookCss(s) {
+  return String(s || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/(?:^|\s)(?:[a-z]{1,8}|[vow]\\?:\*|[#.][\w-]+)\s*\{[^}]{0,200}(?:margin|padding|behavior|font-size|color:|width:|height:|display:|url\()[^}]{0,200}\}/gi, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function stripHtmlToText(s) {
   if (!s) return '';
-  return String(s)
+  return stripOutlookCss(String(s)
     // Angle-bracket addresses look like tags to the stripper below. Unwrap them
     // first, or "From: Name <a@b.com>" loses its address and the quote-cut in
     // stripEmailQuotePrefix — which anchors on that address — stops matching.
     .replace(/<([\w.+-]+@[\w.-]+\.[a-z]{2,})>/gi, '$1')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
     // Keep block boundaries as newlines so quote/signature cutting still has anchors.
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
@@ -23,7 +39,7 @@ function stripHtmlToText(s) {
     .replace(/[ \t]+/g, ' ')
     .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .trim());
 }
 
 function normWs(s) {
@@ -370,6 +386,7 @@ function looksLikeNotInterested(text) {
 
 module.exports = {
   stripHtmlToText,
+  stripOutlookCss,
   stripEmailQuotePrefix,
   stripEmailArtifacts,
   cleanInboundReply,
