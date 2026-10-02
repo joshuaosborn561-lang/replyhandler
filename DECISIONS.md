@@ -651,3 +651,15 @@ Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 A SmartLead/HeyReach sequence email in thread history is not "we replied." Cadence scheduling requires a non-empty `sent_reply` on the approved row. The runner and the attention digest skip (and cancel later steps) with `no_prior_send` unless that thread already has a Slack-approved send. `draft_reply` is not treated as a send.
 
 Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
+
+## 2026-10-02
+
+### Client notify emails include the full live thread — same for every client
+
+*"myles macintosh just got an auto email from us for cory that is not the full transcript, i thought you had already fixed that for kyle?"*
+
+The Kyle inbox-card format (Subject / From / To) is already live. Myles McAntosh's Cory Schell notify still used the inbound-time `thread_context` snapshot, so a FOLLOW_UP send dropped the first approved reply and looked like a partial transcript. CSS leftovers (`P {margin-top:0}`) and a 12-message tail made it worse.
+
+Client notify now refetches live SmartLead history at send time, merges prior approved sends from `pending_replies` when history lags, keeps the full thread (not `slice(-12)`), and strips style/CSS junk. Same path for Emcor, Peterson, and everyone else. Still on send only — no inbound-receipt forward.
+
+Guard: `client notify email includes the full live thread`
