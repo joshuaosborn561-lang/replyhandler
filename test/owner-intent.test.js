@@ -950,6 +950,25 @@ test('portal fills itself from ReplyHandler', () => {
     reversal('portal fills itself from ReplyHandler', 'clients.allo_api_key was dropped'));
 });
 
+// ── Decision: portal create works without contact_email ───────────────
+// "The portal no longer requires contact_email on first create.
+// Clients provisioned without an email get no invite until one is sent;
+// re-send provision-client with contact_email when it is set."
+test('portal create works without contact_email; invite waits for one', () => {
+  const admin = read('src/routes/admin.js');
+  const provision = read('src/services/portal-provision.js');
+  const createFn = admin.slice(admin.indexOf("router.post('/admin/clients'"));
+  const createBody = createFn.slice(0, admin.indexOf("router.get('/admin/clients'"));
+  const patchFn = admin.slice(admin.indexOf("router.patch('/admin/clients/:clientId'"));
+
+  assert.ok(!/if\s*\(\s*!contactEmail/.test(createBody) && !/contact_email.{0,40}required/i.test(createBody),
+    reversal('portal create works without contact_email', 'create now rejects a client with no portal email'));
+  assert.ok(/skip_invite:\s*!contactEmail\s*\|\|\s*invitesDisabled\(\)/.test(provision),
+    reversal('portal create works without contact_email', 'empty email no longer skips the invite'));
+  assert.ok(createBody.includes('provisionClientToPortal') && patchFn.includes('provisionClientToPortal'),
+    reversal('portal create works without contact_email', 'setting contact_email later no longer re-sends provision-client'));
+});
+
 // ── Decision: client notify includes the full live thread ─────────────
 test('client notify email includes the full live thread', () => {
   const send = read('src/services/reply-send.js');
