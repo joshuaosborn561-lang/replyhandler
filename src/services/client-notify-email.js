@@ -16,6 +16,8 @@ function escapeHtml(s) {
 
 function plainFromHtmlish(s) {
   return String(s || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<\/div>/gi, '\n')
@@ -26,9 +28,47 @@ function plainFromHtmlish(s) {
     .replace(/&gt;/g, '>')
     .replace(/&#39;|&rsquo;|&apos;/gi, "'")
     .replace(/\r\n/g, '\n')
+    // Outlook/VML leftover after tag strip: `P {margin-top:0;}` / `v\:* {behavior:...}`
+    .replace(/(^|\n)\s*[A-Za-z.#@\\][^{}\n]{0,80}\{[^}]{0,300}\}/g, '$1')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function sortTime(m) {
+  const raw = m?.time || m?.sent_at || m?.received_at || m?.created_at || '';
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? '' : raw.toISOString();
+  }
+  if (typeof raw === 'number') {
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  return String(raw || '');
+}
+
+function normBody(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** Prefer live SmartLead history (has later sends + From/To) over the inbound snapshot. */
+function pickRicherThreadContext(live, stored) {
+  if (messageListFromThread(live).length > 0) return live;
+  return stored || live || null;
+}
+
+function extraRowsFromMessages(extraMessages) {
+  if (!Array.isArray(extraMessages)) return [];
+  return extraMessages
+    .filter((m) => m && typeof m === 'object')
+    .map((m) => ({
+      type: m.type || m.direction || (m.role === 'them' ? 'REPLY' : 'SENT'),
+      email_body: m.email_body || m.body || m.message || m.text || '',
+      time: m.time || m.sent_at || m.updated_at || '',
+      from: m.from || m.from_email || '',
+      to: m.to || m.to_email || '',
+      subject: m.subject || '',
+    }));
 }
 
 function messageListFromThread(threadContext) {
@@ -101,8 +141,12 @@ function normalizeThreadSteps(threadContext, {
   sentText,
   leadName,
   leadEmail,
+  extraMessages,
 } = {}) {
-  const rows = messageListFromThread(threadContext);
+  const rows = [
+    ...messageListFromThread(threadContext),
+    ...extraRowsFromMessages(extraMessages),
+  ];
   const lead = String(leadName || 'Prospect').trim() || 'Prospect';
   const leadAddr = pickAddress(leadEmail);
   const steps = [];
@@ -110,8 +154,8 @@ function normalizeThreadSteps(threadContext, {
   let lastSubject = '';
 
   const sorted = [...rows].sort((a, b) => {
-    const ta = String(a?.time || a?.sent_at || a?.created_at || '');
-    const tb = String(b?.time || b?.sent_at || b?.created_at || '');
+    const ta = sortTime(a);
+    const tb = sortTime(b);
     if (ta && tb && ta !== tb) return ta.localeCompare(tb);
     return 0;
   });
@@ -134,6 +178,11 @@ function normalizeThreadSteps(threadContext, {
 
     if (direction === 'sent' && from) lastOurFrom = from;
     if (subject) lastSubject = subject;
+
+    const key = `${direction}|${normBody(body).slice(0, 200)}`;
+    if (steps.some((s) => `${s.direction}|${normBody(s.body).slice(0, 200)}` === key)) {
+      continue;
+    }
 
     // Show lead name only when the From address is the known lead email.
     // Colleague replies (Ashton vs Shelby) keep their own address.
@@ -183,7 +232,16 @@ function normalizeThreadSteps(threadContext, {
 
   if (sentText) {
     const plain = plainFromHtmlish(sentText);
-    if (plain) {
+    const norm = normBody(plain);
+    const existing = [...steps].reverse().find((s) => (
+      (s.direction === 'sent' || s.direction === 'just_sent')
+      && norm
+      && normBody(s.body) === norm
+    ));
+    if (existing) {
+      existing.direction = 'just_sent';
+      existing.status = statusLabel('just_sent', existing.time);
+    } else if (plain) {
       const subj = lastSubject
         ? ( /^re:/i.test(lastSubject) ? lastSubject : `RE: ${lastSubject}` )
         : '';
@@ -199,7 +257,20 @@ function normalizeThreadSteps(threadContext, {
     }
   }
 
-  return steps.slice(-12);
+  // Full thread, not a 12-step tail. Long sequences still pin the opener.
+  const MAX = 40;
+  if (steps.length <= MAX) return steps;
+  const head = steps.slice(0, 2);
+  const tail = steps.slice(-(MAX - 2));
+  const seen = new Set();
+  const merged = [];
+  for (const s of [...head, ...tail]) {
+    const key = `${s.direction}|${normBody(s.body).slice(0, 200)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(s);
+  }
+  return merged;
 }
 
 function enrichLinesHtml(enrichment) {
@@ -277,6 +348,7 @@ function buildClientNotifyEmail({
   threadContext,
   inboundMessage,
   sentText,
+  extraMessages,
 }) {
   const name = String(leadName || 'Prospect').trim() || 'Prospect';
   const steps = normalizeThreadSteps(threadContext, {
@@ -284,6 +356,7 @@ function buildClientNotifyEmail({
     sentText,
     leadName: name,
     leadEmail: leadEmail || enrichment?.email || null,
+    extraMessages,
   });
   const subject = `Prospect reply: ${name}${clientName ? ` · ${clientName}` : ''}`;
 
@@ -313,7 +386,10 @@ function buildClientNotifyEmail({
 module.exports = {
   buildClientNotifyEmail,
   normalizeThreadSteps,
+  pickRicherThreadContext,
+  messageListFromThread,
   escapeHtml,
   formatWhen,
   statusLabel,
+  plainFromHtmlish,
 };

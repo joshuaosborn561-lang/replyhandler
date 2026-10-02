@@ -123,7 +123,7 @@ rules in the prompts (booking link, no sign-off, meeting modality, principal
 voice) still win, and the sanitizer drops any learned line carrying a URL.
 
 Every failure in the job is logged and skipped. A missing `voice_profiles`
-table (migration 025 not applied) means drafts simply run without the block.
+table (migration 027 not applied) means drafts simply run without the block.
 Trigger by hand with `scripts/run-weekly-voice-learning.js --dry` or
 `POST /admin/voice-learning/run?secret=…&dry=1`; inspect with
 `GET /admin/voice-learning/profiles?secret=…`.

@@ -17,7 +17,7 @@ const PROFILE_SELECT = `
 function migrationError(res, err) {
   const missing = /relation .*voice_profiles.* does not exist|column .* does not exist/i.test(err.message);
   res.status(missing ? 404 : 500).json({
-    error: missing ? 'voice_profiles not migrated — run migrations/025_voice_profiles.sql' : err.message,
+    error: missing ? 'voice_profiles not migrated — run migrations/027_voice_profiles.sql' : err.message,
   });
 }
 

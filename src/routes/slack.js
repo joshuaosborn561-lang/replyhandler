@@ -258,7 +258,7 @@ async function handleEditModalSubmit(interaction) {
 
     // Keep the AI draft Josh started from: the diff against what he sent is
     // the strongest voice signal the Friday learning job has. Best-effort —
-    // the column arrives with migration 025 and a miss must not fail the send.
+    // the column arrives with migration 027 and a miss must not fail the send.
     if (wasEdited && originalDraft) {
       try {
         await db.query(
@@ -266,7 +266,7 @@ async function handleEditModalSubmit(interaction) {
           [originalDraft, replyId]
         );
       } catch (err) {
-        console.warn('[Slack] Could not store original_draft (migration 025 not applied?)', { replyId, err: err.message });
+        console.warn('[Slack] Could not store original_draft (migration 027 not applied?)', { replyId, err: err.message });
       }
     }
 

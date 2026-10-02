@@ -14,10 +14,26 @@ CREATE TABLE clients (
   cc_email TEXT,
   cc_emails TEXT,
   cc_round_robin_emails TEXT,
+  contact_email TEXT,
   cc_round_robin_index INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE client_claimed_leads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_email TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  status TEXT,
+  claimed BOOLEAN NOT NULL DEFAULT true,
+  last_note TEXT,
+  client_id UUID REFERENCES clients(id),
+  claimed_at TIMESTAMPTZ,
+  cleared_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lead_email, campaign_id)
 );
 
 CREATE OR REPLACE FUNCTION prevent_clients_delete()
@@ -60,6 +76,7 @@ CREATE TABLE pending_replies (
     'alert_only', 'suppressed', 'disqualified', 'meeting_booked'
   )),
   suppression_reason TEXT,
+  client_note TEXT,
   slack_message_ts TEXT,
   smartlead_email_stats_id TEXT,
   cc_on_send BOOLEAN NOT NULL DEFAULT false,
@@ -163,7 +180,7 @@ CREATE TABLE attention_digests (
   UNIQUE (client_id, digest_date, digest_type)
 );
 
--- Weekly voice learning (see migrations/025_voice_profiles.sql).
+-- Weekly voice learning (see migrations/027_voice_profiles.sql).
 ALTER TABLE pending_replies ADD COLUMN IF NOT EXISTS original_draft TEXT;
 
 -- Every run appends a row; rows are never updated or deleted (trigger below).

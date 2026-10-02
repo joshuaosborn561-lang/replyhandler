@@ -113,7 +113,7 @@ version is injected into both the Claude and Gemini draft prompts as a
 `LEARNED VOICE` block under the client's `voice_prompt`. Operational rules
 (booking link, no sign-off, meeting modality) still win over anything learned.
 
-Run `migrations/025_voice_profiles.sql` once on an existing database (it is
+Run `migrations/027_voice_profiles.sql` once on an existing database (it is
 also in the tracked migration list). Run it by hand or inspect the result:
 
 ```bash

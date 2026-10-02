@@ -705,7 +705,7 @@ async function runWeeklyVoiceLearning({
   try {
     const tablesReady = await hasTable('voice_profiles');
     if (!tablesReady) {
-      summary.errors.push('voice_profiles table missing — run migrations/025_voice_profiles.sql');
+      summary.errors.push('voice_profiles table missing — run migrations/027_voice_profiles.sql');
     }
     if (tablesReady && await hasTable('voice_learning_runs')) {
       try {

@@ -31,9 +31,9 @@ const MIGRATION_FILES = [
   '017_follow_up_skip_reasons.sql',
   '018_clear_follow_up_backlog.sql',
   '019_suppressed_replies.sql',
-  // 020–024 were applied by hand before this list was extended; they are not
-  // all idempotent, so they stay out. 025+ are IF NOT EXISTS and safe to track.
-  '025_voice_profiles.sql',
+  '025_client_claimed_leads.sql',
+  '026_client_contact_email.sql',
+  '027_voice_profiles.sql',
 ];
 
 async function clientsTableExists(client) {

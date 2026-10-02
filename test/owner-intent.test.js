@@ -852,6 +852,95 @@ test('Tech Evolution booking link is the public booking-bridge wrap', () => {
   }
 });
 
+test('portal takeover stops sends and follow-ups', () => {
+  const route = read('src/routes/client-action.js');
+  const claimed = read('src/services/client-claimed.js');
+  const send = read('src/services/reply-send.js');
+  const runner = read('src/services/follow-up-runner.js');
+  const cron = read('src/cron.js');
+
+  assert.ok(route.includes('/client-action'),
+    reversal('portal takeover stops sends and follow-ups', 'POST /client-action missing'));
+  assert.ok(claimed.includes('PORTAL_WEBHOOK_SECRET') && claimed.includes('x-portal-secret'),
+    reversal('portal takeover stops sends and follow-ups', 'portal secret check was removed'));
+  assert.ok(claimed.includes('client_has_it') && claimed.includes('booked_offline') && claimed.includes('not_a_fit'),
+    reversal('portal takeover stops sends and follow-ups', 'claim statuses were removed'));
+  assert.ok(send.includes('assertNotClaimedOrThrow'),
+    reversal('portal takeover stops sends and follow-ups', 'send path no longer checks client_claimed'));
+  assert.ok(runner.includes('isLeadClaimed') && runner.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'follow-up runner no longer skips claimed leads'));
+  assert.ok(cron.includes('isLeadClaimed') && cron.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'digest can still post follow-ups for claimed leads'));
+});
+
+test('onboarding mirrors to the client portal', () => {
+  const admin = read('src/routes/admin.js');
+  const provision = read('src/services/portal-provision.js');
+  const dash = read('src/public/index.html');
+  const schema = read('schema.sql');
+
+  assert.ok(provision.includes('handler_client_id') && provision.includes('/functions/v1/provision-client'),
+    reversal('onboarding mirrors to the client portal', 'provision payload or path was removed'));
+  assert.ok(provision.includes('skip_invite') && provision.includes('normalizeContactEmail'),
+    reversal('onboarding mirrors to the client portal', 'empty contact_email no longer skips the invite'));
+  assert.ok(provision.includes('PORTAL_SKIP_INVITE') && provision.includes('invitesDisabled'),
+    reversal('onboarding mirrors to the client portal', 'invite emails are no longer gated while salesglider.ai points at the old site'));
+  assert.ok(!provision.includes('calendly_personal_access_token'),
+    reversal('onboarding mirrors to the client portal', 'provision payload sends the Calendly PAT the portal does not store'));
+  assert.ok(admin.includes('provisionClientToPortal') && admin.includes('/admin/clients/sync-portal'),
+    reversal('onboarding mirrors to the client portal', 'create/update or sync-all no longer push to the portal'));
+  assert.ok(dash.includes('f_contact_email') && dash.includes('portal_login_link') && dash.includes('syncAllToPortal'),
+    reversal('onboarding mirrors to the client portal', 'dashboard lost contact email, login-link copy, or sync-all'));
+  assert.ok(schema.includes('contact_email'),
+    reversal('onboarding mirrors to the client portal', 'clients.contact_email was dropped'));
+});
+
+// ── Decision: client notify includes the full live thread ─────────────
+test('client notify email includes the full live thread', () => {
+  const send = read('src/services/reply-send.js');
+  const notify = read('src/services/client-notify-email.js');
+  assert.match(
+    send,
+    /getThreadHistory/,
+    reversal(
+      'client notify email includes the full live thread',
+      'reply-send no longer refetches SmartLead history before the client email'
+    )
+  );
+  assert.match(
+    send,
+    /resolveClientNotifyThread/,
+    reversal(
+      'client notify email includes the full live thread',
+      'FOLLOW_UP notifies can go out on the inbound-time snapshot again'
+    )
+  );
+  assert.match(
+    send,
+    /extraMessages/,
+    reversal(
+      'client notify email includes the full live thread',
+      'prior approved sends are no longer merged into the client email'
+    )
+  );
+  assert.doesNotMatch(
+    notify,
+    /slice\(\s*-12\s*\)/,
+    reversal(
+      'client notify email includes the full live thread',
+      'the client email is capped at the last 12 messages again'
+    )
+  );
+  assert.match(
+    notify,
+    /<style\[/,
+    reversal(
+      'client notify email includes the full live thread',
+      'style/CSS junk is no longer stripped from notify bodies'
+    )
+  );
+});
+
 // ── Decision: weekly Friday voice learning ────────────────────────────
 // "set up a routine to automatically go in every friday, learn from the weeks
 // last replies, and continuously shape yourself to my voice, while also
@@ -913,7 +1002,7 @@ test('voice profile history is permanent, auto-updates continue, any earlier wee
   const learning = read('src/services/weekly-voice-learning.js');
   const profile = read('src/services/voice-profile.js');
   const route = read('src/routes/voice-learning.js');
-  const migration = read('migrations/025_voice_profiles.sql');
+  const migration = read('migrations/027_voice_profiles.sql');
   const schema = read('schema.sql');
 
   // Each run appends; it never overwrites a previous week's row.
@@ -929,7 +1018,7 @@ test('voice profile history is permanent, auto-updates continue, any earlier wee
     assert.ok(!/DELETE\s+FROM\s+voice_profiles/i.test(read(file)),
       reversal('voice history is permanent', `${file} deletes voice_profiles rows`));
   }
-  for (const [name, sql] of [['migrations/025_voice_profiles.sql', migration], ['schema.sql', schema]]) {
+  for (const [name, sql] of [['migrations/027_voice_profiles.sql', migration], ['schema.sql', schema]]) {
     assert.ok(sql.includes('prevent_voice_profiles_delete') && /BEFORE DELETE ON voice_profiles/i.test(sql),
       reversal('voice history is permanent', `${name} no longer blocks DELETE on voice_profiles`));
     assert.ok(/BEFORE TRUNCATE ON voice_profiles/i.test(sql),

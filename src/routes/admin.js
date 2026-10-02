@@ -2,6 +2,11 @@ const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
+const {
+  normalizeContactEmail,
+  provisionClientToPortal,
+  provisionAllClients,
+} = require('../services/portal-provision');
 
 const router = Router();
 
@@ -40,7 +45,7 @@ router.post('/admin/clients', async (req, res) => {
     const {
       name, smartlead_api_key, heyreach_api_key, slack_bot_token,
       slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
-      cc_email, cc_emails, cc_round_robin_emails,
+      cc_email, cc_emails, cc_round_robin_emails, contact_email,
     } = req.body;
 
     if (!name || !slack_bot_token || !slack_channel_id) {
@@ -51,13 +56,15 @@ router.post('/admin/clients', async (req, res) => {
     const rr = normalizeCcListField(cc_round_robin_emails);
     const legacyCc = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
 
+    const contactEmail = normalizeContactEmail(contact_email);
+
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
          name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id,
          booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
-         cc_email, cc_emails, cc_round_robin_emails
+         cc_email, cc_emails, cc_round_robin_emails, contact_email
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -71,11 +78,18 @@ router.post('/admin/clients', async (req, res) => {
         legacyCc,
         alwaysCc,
         rr,
+        contactEmail,
       ]
     );
 
     console.log('[Admin] Client created', { id: client.id, name: client.name });
-    res.status(201).json(formatClient(client));
+    const portal = await provisionClientToPortal(client);
+    res.status(201).json({
+      ...formatClient(client),
+      portal_login_link: portal.loginLink || null,
+      portal_warning: portal.warning || null,
+      portal_synced: !!portal.ok,
+    });
   } catch (err) {
     console.error('[Admin] Create client error', { err: err.message });
     res.status(500).json({ error: err.message });
@@ -93,6 +107,20 @@ router.get('/admin/clients', async (req, res) => {
   }
 });
 
+// One-time backfill: push every existing client to the portal.
+router.post('/admin/clients/sync-portal', async (_req, res) => {
+  try {
+    const { rows } = await db.query('SELECT * FROM clients ORDER BY created_at ASC');
+    const results = await provisionAllClients(rows);
+    const ok = results.filter((r) => r.ok).length;
+    console.log('[Admin] Portal sync-all finished', { total: results.length, ok });
+    res.json({ ok: true, total: results.length, synced: ok, results });
+  } catch (err) {
+    console.error('[Admin] Portal sync-all error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Update client
 router.patch('/admin/clients/:clientId', async (req, res) => {
   try {
@@ -102,6 +130,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
       'name', 'smartlead_api_key', 'heyreach_api_key', 'slack_bot_token',
       'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
+      'contact_email',
     ];
 
     const updates = [];
@@ -117,6 +146,9 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'cc_round_robin_emails')) {
       fields.cc_round_robin_emails = normalizeCcListField(fields.cc_round_robin_emails);
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'contact_email')) {
+      fields.contact_email = normalizeContactEmail(fields.contact_email);
     }
 
     for (const [key, value] of Object.entries(fields)) {
@@ -144,7 +176,13 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     }
 
     console.log('[Admin] Client updated', { id: client.id, name: client.name });
-    res.json(formatClient(client));
+    const portal = await provisionClientToPortal(client);
+    res.json({
+      ...formatClient(client),
+      portal_login_link: portal.loginLink || null,
+      portal_warning: portal.warning || null,
+      portal_synced: !!portal.ok,
+    });
   } catch (err) {
     console.error('[Admin] Update client error', { err: err.message });
     res.status(500).json({ error: err.message });
