@@ -705,7 +705,7 @@
       <div class="form-group">
         <label>Portal contact email (optional)</label>
         <input type="email" id="f_contact_email" placeholder="owner@client.com">
-        <div class="hint">Login invite for the client portal. Leave empty to skip the invite.</div>
+        <div class="hint">Portal login email. Invite emails stay off until salesglider.ai points at the new portal. The portal needs this email to create the client.</div>
       </div>
 
       <div class="form-group">
@@ -1233,6 +1233,9 @@ async function submitForm() {
     toast(isEdit ? 'Client updated' : 'Client created', 'success');
     closeModal('formModal');
     loadClients();
+    if (saved.portal_warning) {
+      toast(saved.portal_warning, 'error');
+    }
     if (saved.portal_login_link) {
       showPortalLoginLink(saved.portal_login_link);
     }
@@ -1327,7 +1330,7 @@ function copyPortalLoginLink() {
 }
 
 async function syncAllToPortal() {
-  if (!confirm('Push every existing client to the portal? Invites are skipped when contact email is empty.')) {
+  if (!confirm('Push every existing client to the portal? Invite emails stay off until PORTAL_SKIP_INVITE=false.')) {
     return;
   }
   try {
