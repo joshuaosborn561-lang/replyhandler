@@ -652,6 +652,34 @@ A SmartLead/HeyReach sequence email in thread history is not "we replied." Caden
 
 Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 
+### Portal takeover stops our follow-ups and sends
+
+*"My client portal now lets clients take over prospects."*
+
+`POST /client-action` (header `x-portal-secret` = `PORTAL_WEBHOOK_SECRET`) is the only new intake. Classification, drafting, and Slack Approve stay as they are.
+
+`client_has_it` / `booked_offline` / `not_a_fit` sets `client_claimed_leads` for that email + campaign, cancels queued follow-ups and pending drafts (status `suppressed`, reason `client_claimed`, classification unchanged), and posts Slack for Cayden on the client's inbox channel. `open` clears the flag and does not re-queue. `type: note` posts the note and stores it on any pending draft. Repeat of the same payload is a no-op.
+
+Immediately before any approved send or follow-up card, we check the flag. If set, we skip, cancel the rest of that lead's queue, and log `client_claimed`.
+
+Guard: `portal takeover stops sends and follow-ups`
+
+### Mirror onboarding to the client portal
+
+*"My client portal now auto-provisions clients when I onboard them here."*
+
+After a successful create or update on this dashboard, POST the client fields plus `handler_client_id` (this service's UUID) to `PORTAL_URL/functions/v1/provision-client` with `x-portal-secret` = `PORTAL_WEBHOOK_SECRET`. 10s timeout, one retry after 5s. Failures are logged only — the save here is never rolled back.
+
+`PORTAL_URL` is the Supabase project URL (`https://scvrsmfzyvmmbnaolcrg.supabase.co`), not salesglider.ai. The portal only stores `name`, `contact_email`, SmartLead/HeyReach keys, `booking_link`, and `active`. Do not send Slack tokens, Calendly PATs, voice, timezone, or CC lists.
+
+Invite emails stay off until DNS points salesglider.ai at the new portal. `skip_invite` is true when `contact_email` is empty **or** `PORTAL_SKIP_INVITE` is unset/true. Set `PORTAL_SKIP_INVITE=false` to send invites. The portal still returns a one-time `login_link`; if it also returns a warning (email change, no re-invite), show that on the dashboard. First create still needs a `contact_email` — the live function returns 400 without one. Empty email only works on a later update of an existing `handler_client_id`.
+
+Portal claim/release/note POSTs may include extra fields (`handler_client_id`, `client_company`, `name`, `company`, `lead_id`). Ignore them. `/client-action` still keys on email + campaign_id.
+
+If the portal returns a login link, the confirmation screen shows it so Josh can copy it. "Sync all clients to portal" pushes every existing client the same way.
+
+Guard: `onboarding mirrors to the client portal`
+
 ## 2026-10-02
 
 ### Client notify emails include the full live thread — same for every client

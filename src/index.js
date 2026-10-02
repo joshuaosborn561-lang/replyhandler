@@ -4,6 +4,7 @@ const webhookRoutes = require('./routes/webhooks');
 const bookingBridgeRecapRoutes = require('./routes/booking-bridge-recap');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
+const clientActionRoutes = require('./routes/client-action');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const { startCron } = require('./cron');
@@ -44,6 +45,7 @@ app.use(webhookRoutes);
 app.use(bookingBridgeRecapRoutes);
 app.use(slackRoutes);
 app.use(adminRoutes);
+app.use(clientActionRoutes);
 app.use(authRoutes);
 app.use(testWebhookRoutes);
 

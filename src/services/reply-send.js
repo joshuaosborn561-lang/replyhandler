@@ -7,6 +7,7 @@ const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./cl
 const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
+const clientClaimed = require('./client-claimed');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -108,6 +109,9 @@ async function sendReplyToPlatform(client, reply, replyText) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
   }
+
+  // Portal takeover: do not send if the client already claimed this lead.
+  await clientClaimed.assertNotClaimedOrThrow(reply);
 
   if (reply.platform === 'smartlead') {
     // Primary: the stats_id captured at webhook ingestion.

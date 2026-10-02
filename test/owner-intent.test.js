@@ -852,6 +852,49 @@ test('Tech Evolution booking link is the public booking-bridge wrap', () => {
   }
 });
 
+test('portal takeover stops sends and follow-ups', () => {
+  const route = read('src/routes/client-action.js');
+  const claimed = read('src/services/client-claimed.js');
+  const send = read('src/services/reply-send.js');
+  const runner = read('src/services/follow-up-runner.js');
+  const cron = read('src/cron.js');
+
+  assert.ok(route.includes('/client-action'),
+    reversal('portal takeover stops sends and follow-ups', 'POST /client-action missing'));
+  assert.ok(claimed.includes('PORTAL_WEBHOOK_SECRET') && claimed.includes('x-portal-secret'),
+    reversal('portal takeover stops sends and follow-ups', 'portal secret check was removed'));
+  assert.ok(claimed.includes('client_has_it') && claimed.includes('booked_offline') && claimed.includes('not_a_fit'),
+    reversal('portal takeover stops sends and follow-ups', 'claim statuses were removed'));
+  assert.ok(send.includes('assertNotClaimedOrThrow'),
+    reversal('portal takeover stops sends and follow-ups', 'send path no longer checks client_claimed'));
+  assert.ok(runner.includes('isLeadClaimed') && runner.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'follow-up runner no longer skips claimed leads'));
+  assert.ok(cron.includes('isLeadClaimed') && cron.includes('client_claimed'),
+    reversal('portal takeover stops sends and follow-ups', 'digest can still post follow-ups for claimed leads'));
+});
+
+test('onboarding mirrors to the client portal', () => {
+  const admin = read('src/routes/admin.js');
+  const provision = read('src/services/portal-provision.js');
+  const dash = read('src/public/index.html');
+  const schema = read('schema.sql');
+
+  assert.ok(provision.includes('handler_client_id') && provision.includes('/functions/v1/provision-client'),
+    reversal('onboarding mirrors to the client portal', 'provision payload or path was removed'));
+  assert.ok(provision.includes('skip_invite') && provision.includes('normalizeContactEmail'),
+    reversal('onboarding mirrors to the client portal', 'empty contact_email no longer skips the invite'));
+  assert.ok(provision.includes('PORTAL_SKIP_INVITE') && provision.includes('invitesDisabled'),
+    reversal('onboarding mirrors to the client portal', 'invite emails are no longer gated while salesglider.ai points at the old site'));
+  assert.ok(!provision.includes('calendly_personal_access_token'),
+    reversal('onboarding mirrors to the client portal', 'provision payload sends the Calendly PAT the portal does not store'));
+  assert.ok(admin.includes('provisionClientToPortal') && admin.includes('/admin/clients/sync-portal'),
+    reversal('onboarding mirrors to the client portal', 'create/update or sync-all no longer push to the portal'));
+  assert.ok(dash.includes('f_contact_email') && dash.includes('portal_login_link') && dash.includes('syncAllToPortal'),
+    reversal('onboarding mirrors to the client portal', 'dashboard lost contact email, login-link copy, or sync-all'));
+  assert.ok(schema.includes('contact_email'),
+    reversal('onboarding mirrors to the client portal', 'clients.contact_email was dropped'));
+});
+
 // ── Decision: client notify includes the full live thread ─────────────
 test('client notify email includes the full live thread', () => {
   const send = read('src/services/reply-send.js');
