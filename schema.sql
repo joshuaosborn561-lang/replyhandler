@@ -179,3 +179,57 @@ CREATE TABLE attention_digests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (client_id, digest_date, digest_type)
 );
+
+-- Weekly voice learning (see migrations/027_voice_profiles.sql).
+ALTER TABLE pending_replies ADD COLUMN IF NOT EXISTS original_draft TEXT;
+
+-- Every run appends a row; rows are never updated or deleted (trigger below).
+-- Drafts read the newest row. A revert copies an earlier row forward as the
+-- new newest (restored_from), so weekly auto-updates continue from it.
+CREATE TABLE voice_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope TEXT NOT NULL CHECK (scope IN ('global', 'client')),
+  client_id UUID REFERENCES clients(id),
+  week_ending DATE NOT NULL,
+  profile JSONB NOT NULL,
+  examples_used INTEGER NOT NULL DEFAULT 0,
+  edited_used INTEGER NOT NULL DEFAULT 0,
+  manual_used INTEGER NOT NULL DEFAULT 0,
+  model TEXT,
+  trigger TEXT,
+  restored_from UUID REFERENCES voice_profiles(id),
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT voice_profiles_scope_client CHECK (
+    (scope = 'global' AND client_id IS NULL) OR (scope = 'client' AND client_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX voice_profiles_latest_idx
+  ON voice_profiles (scope, client_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION prevent_voice_profiles_delete()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Deleting voice_profiles rows is disabled; pin an earlier version instead.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER protect_voice_profiles_delete
+BEFORE DELETE ON voice_profiles
+FOR EACH ROW EXECUTE FUNCTION prevent_voice_profiles_delete();
+
+CREATE TRIGGER protect_voice_profiles_truncate
+BEFORE TRUNCATE ON voice_profiles
+FOR EACH STATEMENT EXECUTE FUNCTION prevent_voice_profiles_delete();
+
+CREATE TABLE voice_learning_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  lookback_hours INTEGER NOT NULL,
+  trigger TEXT NOT NULL DEFAULT 'cron',
+  dry_run BOOLEAN NOT NULL DEFAULT false,
+  summary JSONB,
+  error TEXT
+);

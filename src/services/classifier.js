@@ -452,6 +452,7 @@ function buildTimeSuggestionBlock({
 function buildSdrVoicePrompt({
   name, booking, classification, channel, includeBookingLink, voicePrompt,
   replyMode = 'FIRST_TOUCH',
+  learnedVoiceBlock = '',
 }) {
   const { speaksAsPrincipal } = require('../utils/principal-voice');
   const { prefersInPersonMeeting } = require('../utils/meeting-modality');
@@ -530,10 +531,15 @@ Reply: "Sounds good — here's the booking link: ${link}"`;
   const clientVoice = String(voicePrompt || '').trim()
     ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
     : '';
+  // Weekly-synthesized profile (voice-profile.js). Style guidance only — the
+  // RULES block below still wins on booking link, sign-off, and modality.
+  const learnedVoice = String(learnedVoiceBlock || '').trim()
+    ? `\n${String(learnedVoiceBlock).trim()}\n`
+    : '';
 
   return `${roleLine}
 Output PLAIN TEXT only. No markdown. No quotes around the message.
-${clientVoice}
+${clientVoice}${learnedVoice}
 Voice reference (match warmth/directness; ACK what they said before any CTA):
 
 EXAMPLE A (answer the question first):
@@ -653,6 +659,7 @@ async function draftOnly({
   replyMode = 'FIRST_TOUCH',
   replyOrdinal = 1,
   clientName = null,
+  clientId = null,
   draftMode = 'realtime',
 }) {
   if (!assertDraftableClassification(classification)) {
@@ -675,6 +682,11 @@ async function draftOnly({
     ? includeBookingLinkOverride
     : looksLikeBookingLinkRequest(inboundMessage, threadContext);
 
+  // Weekly-learned voice (global + this client). Best-effort; empty when the
+  // Friday job has not run yet or the table is not migrated.
+  const { loadLearnedVoiceBlock } = require('./voice-profile');
+  const learnedVoiceBlock = await loadLearnedVoiceBlock({ clientId, clientName });
+
   const systemInstruction = buildSdrVoicePrompt({
     name,
     booking,
@@ -683,6 +695,7 @@ async function draftOnly({
     includeBookingLink,
     voicePrompt,
     replyMode: mode,
+    learnedVoiceBlock,
   });
 
   const { prefersInPersonMeeting } = require('../utils/meeting-modality');
@@ -782,6 +795,7 @@ async function draftOnly({
         replyOrdinal,
         clientName,
         draftMode,
+        learnedVoiceBlock,
       });
       const draft = finalizeDraft(result.text, {
         booking, includeBookingLink, voicePrompt, leadName, clientName,
@@ -875,6 +889,7 @@ async function classifyAndDraft(
       replyMode: ordinal.mode,
       replyOrdinal: ordinal.replyOrdinal,
       clientName,
+      clientId,
       draftMode,
     })
     : null;

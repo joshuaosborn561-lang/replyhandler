@@ -61,6 +61,12 @@ cp .env.example .env
 | `HEYREACH_POLL_CLIENTS_JSON` | Optional fallback client JSON if DB `clients` rows are unavailable. Prefer restoring clients in Postgres. |
 | `AFTERNOON_DIGEST_TIMEZONE` | Optional. Timezone for the afternoon attention digest (default `America/Chicago`) |
 | `AFTERNOON_DIGEST_HOUR` | Optional. 24h local hour for afternoon attention digest (default `15`, i.e. 3pm) |
+| `VOICE_LEARNING_CRON` | Optional. Schedule for the weekly voice-learning job (default `0 16 * * 5` — Friday 4pm) |
+| `VOICE_LEARNING_TIMEZONE` | Optional. IANA zone for that schedule (default `America/Chicago`) |
+| `VOICE_LEARNING_LOOKBACK_HOURS` | Optional. Window the Friday job learns from (default `192`, eight days — overlaps are idempotent) |
+| `VOICE_LEARNING_MIN_EXAMPLES` | Optional. Fewer new replies than this for a client and its profile is left untouched that week (default `3`; global `VOICE_LEARNING_MIN_EXAMPLES_GLOBAL`, default `5`) |
+| `DISABLE_VOICE_LEARNING` | Optional. `1` stops the Friday job from being scheduled |
+| `DISABLE_LEARNED_VOICE` | Optional. `1` stops drafts from reading the learned profiles (job still runs) |
 | `GETLEADS_API_KEY` | GetLeads API key — cellphone lookup for client forwards (preferred) |
 | `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email + mobile-finder fallback |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
@@ -85,8 +91,59 @@ The backfill uses the structural SmartLead signal only:
 `direction = 'outbound' AND sequence_number IS NULL`. Scheduled sequence steps
 are excluded regardless of their wording. It logs total outbound, qualifying
 manual, inserted, skipped, and failed counts. After deployment, approved or
-edited SmartLead replies are added to the corpus automatically. Gemini performs
-embedding/retrieval; Claude Sonnet 5 writes the actual draft.
+edited SmartLead and HeyReach replies are added to the corpus automatically.
+Gemini performs embedding/retrieval; Claude Sonnet 5 writes the actual draft.
+
+### Weekly voice learning (Fridays)
+
+Every Friday at 4pm Central (`VOICE_LEARNING_CRON`) the app sweeps the last
+eight days and learns from every reply Josh actually sent:
+
+- **Slack approved** — the AI draft he accepted as-is
+- **Slack edited** — the draft vs what he changed it to (`pending_replies.original_draft`)
+- **Manual SmartLead** — `SENT` messages that directly follow a prospect `REPLY`
+  in message-history and were not sent from Slack
+- **Manual HeyReach** — our message directly after a prospect message
+
+Each pair is upserted into `reply_examples` (RAG) and then Gemini synthesizes
+a **global voice profile** plus a **per-client profile** that also carries
+client-specific notes (offer, who takes the meeting, in-person vs call, named
+teammates). Every run saves a **new version** in `voice_profiles`; the active
+version is injected into both the Claude and Gemini draft prompts as a
+`LEARNED VOICE` block under the client's `voice_prompt`. Operational rules
+(booking link, no sign-off, meeting modality) still win over anything learned.
+
+Run `migrations/027_voice_profiles.sql` once on an existing database (it is
+also in the tracked migration list). Run it by hand or inspect the result:
+
+```bash
+railway run node scripts/run-weekly-voice-learning.js --dry   # preview, no writes
+railway run node scripts/run-weekly-voice-learning.js --hours 336
+curl -X POST "$HOST/admin/voice-learning/run?secret=$WEBHOOK_TEST_SECRET&dry=1"
+curl "$HOST/admin/voice-learning/profiles?secret=$WEBHOOK_TEST_SECRET&client=SalesGlider"
+```
+
+This is a bulk job: it never calls Anthropic.
+
+**Reverting to an earlier week.** Nothing is ever overwritten or deleted
+(deletes are blocked in the database), so every week's style stays available.
+Drafts always use the newest version, so updates keep applying on their own. A
+revert copies an earlier week forward as the new current version; the next
+Friday learns from that one, and the week you rejected stays in the list in
+case you want it back. Global and each client revert independently.
+
+```bash
+railway run node scripts/voice-profile-revert.js list                     # every version, CURRENT marked
+railway run node scripts/voice-profile-revert.js revert --previous        # global: one week back
+railway run node scripts/voice-profile-revert.js revert --previous --client SalesGlider
+railway run node scripts/voice-profile-revert.js revert <id> --note "Oct 2 version was too salesy"
+
+curl "$HOST/admin/voice-learning/history?secret=$WEBHOOK_TEST_SECRET&client=SalesGlider"
+curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&client=global&previous=1"
+curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&id=<profile id>"
+```
+
+Drafts pick up a revert within 10 minutes (`LEARNED_VOICE_CACHE_MINUTES`).
 
 **If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
 

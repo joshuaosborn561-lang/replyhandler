@@ -190,6 +190,7 @@ async function generateClaudeReply({
   replyOrdinal = 1,
   clientName = null,
   draftMode = 'realtime',
+  learnedVoiceBlock = '',
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
   if (String(draftMode || '').toLowerCase() === 'bulk') {
@@ -224,6 +225,11 @@ async function generateClaudeReply({
   const clientVoice = String(voicePrompt || '').trim()
     ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
     : '';
+  // Weekly-synthesized profile (voice-profile.js). Sits below the fixed style
+  // guide and above the operational rules, which still win on conflict.
+  const learnedVoice = String(learnedVoiceBlock || '').trim()
+    ? `\n${String(learnedVoiceBlock).trim()}\n`
+    : '';
 
   const system = [
     asPrincipal
@@ -235,11 +241,12 @@ async function generateClaudeReply({
     '',
     mode === 'CONTINUATION' ? CONTINUATION_RULES : FIRST_TOUCH_RULES,
     clientVoice,
+    learnedVoice,
     'OPERATIONAL RULES:',
     `- ${bookingPolicy}`,
     '- The operational booking rule overrides any older retrieved example that pasted a link too early.',
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
-    '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply. If it appears only in a retrieved example, remove it.',
+    '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply, the scheduling guidance, or the CLIENT NOTES above. If it appears only in a retrieved example, remove it.',
     teammateRule,
     '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
     '- Before writing, silently check every factual claim against the current thread. If it is not explicitly supported there, leave it out.',
@@ -282,11 +289,14 @@ async function generateClaudeReply({
   let text = extractText(data);
   if (!text) throw new Error('Anthropic returned an empty draft');
 
+  // Learned client notes count as facts: they were distilled from this
+  // client's own sent replies, so a term from them is not an example leak.
   const currentFacts = [
     leadName,
     summarizeThread(threadContext),
     inboundMessage,
     schedulingPromptBlock,
+    learnedVoiceBlock,
   ].filter(Boolean).join('\n');
   let leakedTerms = findExampleOnlyTerms(examples, currentFacts, text);
   if (leakedTerms.length) {

@@ -691,3 +691,65 @@ The Kyle inbox-card format (Subject / From / To) is already live. Myles McAntosh
 Client notify now refetches live SmartLead history at send time, merges prior approved sends from `pending_replies` when history lags, keeps the full thread (not `slice(-12)`), and strips style/CSS junk. Same path for Emcor, Peterson, and everyone else. Still on send only — no inbound-receipt forward.
 
 Guard: `client notify email includes the full live thread`
+
+### Weekly Friday voice learning from approved, edited and manual replies
+
+*"set up a routine to automatically go in every friday, learn from the weeks
+last replies, and continuously shape yourself to my voice, while also
+acknowledging client specific information. this should be from approved
+replies from slack as well as edited ones or manual replies from smartlead
+and heyreach"*
+
+A scheduled job (`weekly-voice-learning.js`, Friday 4pm Central by default,
+`VOICE_LEARNING_CRON`) sweeps the last eight days and learns from every reply
+Josh actually sent, in four buckets: Slack **approved**, Slack **edited**
+(the original AI draft is now kept in `pending_replies.original_draft` so the
+diff survives), **manual SmartLead** replies (a `SENT` directly after a
+prospect `REPLY` in message-history — structural, never phrase-based), and
+**manual HeyReach** replies. Each pair goes into the RAG corpus, and Gemini
+re-synthesizes a global voice profile plus a per-client profile that carries
+client-specific notes (offer, who takes the meeting, in-person vs call, named
+teammates). Both the Claude and Gemini draft prompts read the latest profile
+as a `LEARNED VOICE` block.
+
+Choices made along the way:
+
+- Realtime learning on approve/edit previously skipped HeyReach. It now learns
+  both platforms; the Friday sweep is also the catch-up for any realtime miss.
+- Learned lines are **style guidance only**. Booking-link, no-sign-off,
+  meeting-modality and principal-voice rules in the prompts still win, and
+  any learned line carrying a URL is dropped. Client notes count as facts for
+  Claude's example-leak check because they come from that client's own sends.
+- A client with fewer than 3 new replies in the week keeps its previous
+  profile rather than overfitting to one message (`VOICE_LEARNING_MIN_EXAMPLES`).
+- The same outbound text in two different threads is a template, not a voice
+  example, and is dropped.
+- It is a bulk job: Gemini only, never Anthropic. Same rule as the pollers.
+- No Slack post. The run logs `[VoiceLearning] Weekly run complete` and is
+  inspectable at `GET /admin/voice-learning/profiles`.
+
+Guard: `weekly Friday voice learning from approved, edited and manual replies`
+
+### Every week's voice profile is kept forever; updates stay automatic; revert is one command
+
+*"make sure you save the previous week's style so that if your updates suck
+i can revert back indefinitely"* — then, on the first draft of this which
+pinned a version and paused updates: *"no have it auto update but if i come
+back in here i should be able to easily revert"*
+
+Each Friday run **appends** a new `voice_profiles` row per scope; it never
+updates or replaces an earlier week. Deleting rows is blocked at the database
+(`DELETE` and `TRUNCATE` triggers), so the history is permanent regardless of
+what any script does.
+
+Drafts always read the **newest** row, so weekly updates apply on their own.
+Revert is a **restore, not a freeze**: `scripts/voice-profile-revert.js revert
+--previous` (or `revert <id>`, or `POST /admin/voice-learning/revert`) copies
+the chosen earlier week forward as a new current row with `restored_from`
+pointing back at it. Drafts switch to it, the next Friday refines from it, and
+the rejected week stays in the list. There is no pin and nothing to undo later
+— a pinned version was tried first and rejected because it would have stopped
+the auto-updates until someone remembered to unpin. Global and each client
+revert independently.
+
+Guard: `voice profile history is permanent, auto-updates continue, any earlier week can be restored`

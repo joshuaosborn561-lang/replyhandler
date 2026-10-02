@@ -74,7 +74,59 @@ to cold first-touch voice). For Josh-as-CEO clients, scrub "our CEO" /
 "our founder" handoffs to first person (`principal-draft-guard.js`). RAG
 prefers client-scoped examples (`match_replies_v2`), skips FOLLOW_UP /
 placeholder inbounds for learning, and can be seeded via
-`scripts/seed-josh-gold-reply-examples.js`.
+`scripts/seed-josh-gold-reply-examples.js`. Realtime learning on approve/edit
+covers both SmartLead and HeyReach; the Friday job below re-sweeps the week so
+a missed realtime write is caught up.
+
+## Weekly voice learning runs on Fridays
+
+`weekly-voice-learning.js`, scheduled in `cron.js` (`VOICE_LEARNING_CRON`,
+default Friday 4pm Central). It learns from every reply Josh actually sent in
+the last 8 days — Slack **approved**, Slack **edited** (the diff against
+`pending_replies.original_draft` is the strongest signal), and **manual**
+replies typed straight into SmartLead / HeyReach — then:
+
+1. upserts each prospect→Josh pair into `reply_examples` (RAG), idempotent on
+   `pending_reply_id` / `source_message_id`, both platforms;
+2. has Gemini re-synthesize a global voice profile and a per-client profile
+   with client-specific notes, **appended** as a new `voice_profiles` row;
+3. `voice-profile.js` injects the active profiles into the Claude and Gemini
+   draft prompts as a `LEARNED VOICE` block.
+
+**History is permanent, updates stay automatic, revert is a restore.** Every
+run adds a row; nothing is ever overwritten, and `DELETE` / `TRUNCATE` on
+`voice_profiles` are blocked by trigger. Drafts always read the **newest** row.
+When Josh says a week's update is worse, revert it — do not pin or freeze:
+
+```bash
+railway run node scripts/voice-profile-revert.js list                          # see every version
+railway run node scripts/voice-profile-revert.js revert --previous             # global, one week back
+railway run node scripts/voice-profile-revert.js revert --previous --client X  # one client
+railway run node scripts/voice-profile-revert.js revert <id>                   # a specific version
+```
+
+(HTTP equivalents: `GET /admin/voice-learning/history`,
+`POST /admin/voice-learning/revert?id=…` or `&client=…&previous=1`.) A revert
+copies the chosen week forward as the new current row (`restored_from` set);
+the next Friday refines from it and the rejected week stays in history. There
+is deliberately **no pin** — a pinned version was tried and rejected because
+it paused auto-updates. Do not add an upsert, a per-week unique index, a
+pin, or a cleanup job on this table.
+
+Rules that hold here: it is a bulk job, so **Gemini only — never Anthropic**;
+FOLLOW_UP bumps and placeholder inbounds are never learned; a manual SmartLead
+reply is identified **structurally** (a `SENT` directly after a prospect
+`REPLY`), never by phrase; the same outbound text in two different threads is
+treated as a template and dropped; anything we already sent from Slack is not
+double-learned. The learned block is style guidance only — the operational
+rules in the prompts (booking link, no sign-off, meeting modality, principal
+voice) still win, and the sanitizer drops any learned line carrying a URL.
+
+Every failure in the job is logged and skipped. A missing `voice_profiles`
+table (migration 027 not applied) means drafts simply run without the block.
+Trigger by hand with `scripts/run-weekly-voice-learning.js --dry` or
+`POST /admin/voice-learning/run?secret=…&dry=1`; inspect with
+`GET /admin/voice-learning/profiles?secret=…`.
 
 ## Draft provider order
 

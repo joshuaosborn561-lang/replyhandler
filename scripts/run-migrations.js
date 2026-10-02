@@ -33,6 +33,7 @@ const MIGRATION_FILES = [
   '019_suppressed_replies.sql',
   '025_client_claimed_leads.sql',
   '026_client_contact_email.sql',
+  '027_voice_profiles.sql',
 ];
 
 async function clientsTableExists(client) {

@@ -940,3 +940,109 @@ test('client notify email includes the full live thread', () => {
     )
   );
 });
+
+// ── Decision: weekly Friday voice learning ────────────────────────────
+// "set up a routine to automatically go in every friday, learn from the weeks
+// last replies, and continuously shape yourself to my voice, while also
+// acknowledging client specific information. this should be from approved
+// replies from slack as well as edited ones or manual replies from smartlead
+// and heyreach"
+test('weekly Friday voice learning from approved, edited and manual replies', () => {
+  process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://unit-test';
+  const cronSrc = read('src/cron.js');
+  const learning = read('src/services/weekly-voice-learning.js');
+  const profile = read('src/services/voice-profile.js');
+  const classifier = read('src/services/classifier.js');
+  const claude = read('src/services/claude-reply-draft.js');
+  const slackRoute = read('src/routes/slack.js');
+  const approved = read('src/services/approved-reply-learning.js');
+  const { VOICE_LEARNING_CRON } = require('../src/cron');
+
+  // Runs on Fridays, on a schedule, not by hand.
+  assert.ok(cronSrc.includes('runWeeklyVoiceLearning'),
+    reversal('weekly Friday voice learning', 'cron no longer runs the weekly voice learning job'));
+  assert.match(VOICE_LEARNING_CRON, /\s5$/,
+    reversal('weekly Friday voice learning', `default schedule is no longer Friday (got "${VOICE_LEARNING_CRON}")`));
+
+  // All four sources: Slack approved, Slack edited, manual SmartLead, manual HeyReach.
+  for (const source of ['slack_approved', 'slack_edited', 'manual_smartlead', 'manual_heyreach']) {
+    assert.ok(learning.includes(`'${source}'`),
+      reversal('weekly Friday voice learning', `the ${source} source was dropped`));
+  }
+  assert.ok(learning.includes('smartleadManualPairs') && learning.includes('heyreachManualPairs'),
+    reversal('weekly Friday voice learning', 'manual SmartLead / HeyReach replies are no longer collected'));
+  assert.ok(slackRoute.includes('original_draft'),
+    reversal('weekly Friday voice learning', 'Slack edits no longer keep the original AI draft — the edit diff is the strongest voice signal'));
+  assert.ok(approved.includes("'heyreach'"),
+    reversal('weekly Friday voice learning', 'HeyReach approvals are no longer learned in realtime'));
+
+  // Shapes the voice: profiles are synthesized and injected into both draft paths.
+  assert.ok(learning.includes('synthesizeProfile') && learning.includes('storeProfile'),
+    reversal('weekly Friday voice learning', 'voice profiles are no longer synthesized'));
+  assert.ok(profile.includes('client_notes') && learning.includes('client_notes'),
+    reversal('weekly Friday voice learning', 'client-specific notes were removed from the profile'));
+  assert.ok(classifier.includes('loadLearnedVoiceBlock') && classifier.includes('learnedVoiceBlock'),
+    reversal('weekly Friday voice learning', 'Gemini drafts no longer read the learned voice'));
+  assert.ok(claude.includes('learnedVoiceBlock'),
+    reversal('weekly Friday voice learning', 'Claude drafts no longer read the learned voice'));
+
+  // Bulk job: Gemini only. Claude is never used here (Aug 2026 burn).
+  assert.ok(!/anthropic/i.test(learning),
+    reversal('Claude never runs on bulk backfill', 'weekly voice learning touches Anthropic'));
+  // Never learns FOLLOW_UP bumps or placeholder inbounds.
+  assert.ok(learning.includes("'FOLLOW_UP'") && learning.includes('isFollowUpPlaceholder'),
+    reversal('weekly Friday voice learning', 'FOLLOW_UP / placeholder exclusion was removed from learning'));
+});
+
+// ── Decision: every week's voice profile is kept and revertable ──────
+// "make sure you save the previous week's style so that if your updates suck
+// i can revert back indefinitely" … "no have it auto update but if i come back
+// in here i should be able to easily revert"
+test('voice profile history is permanent, auto-updates continue, any earlier week can be restored', () => {
+  const learning = read('src/services/weekly-voice-learning.js');
+  const profile = read('src/services/voice-profile.js');
+  const route = read('src/routes/voice-learning.js');
+  const migration = read('migrations/027_voice_profiles.sql');
+  const schema = read('schema.sql');
+
+  // Each run appends; it never overwrites a previous week's row.
+  const storeFn = learning.slice(learning.indexOf('async function storeProfile'));
+  const storeBody = storeFn.slice(0, storeFn.indexOf('\n}\n'));
+  assert.ok(/INSERT INTO voice_profiles/.test(storeBody) && !/ON CONFLICT/i.test(storeBody),
+    reversal('voice history is permanent', 'storeProfile upserts/overwrites instead of appending a new version'));
+
+  // Nothing in the app deletes profiles, and the database refuses deletes too.
+  const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((d) =>
+    d.isDirectory() ? walk(`${dir}/${d.name}`) : d.name.endsWith('.js') ? [`${dir}/${d.name}`] : []);
+  for (const file of [...walk('src'), ...walk('scripts')]) {
+    assert.ok(!/DELETE\s+FROM\s+voice_profiles/i.test(read(file)),
+      reversal('voice history is permanent', `${file} deletes voice_profiles rows`));
+  }
+  for (const [name, sql] of [['migrations/027_voice_profiles.sql', migration], ['schema.sql', schema]]) {
+    assert.ok(sql.includes('prevent_voice_profiles_delete') && /BEFORE DELETE ON voice_profiles/i.test(sql),
+      reversal('voice history is permanent', `${name} no longer blocks DELETE on voice_profiles`));
+    assert.ok(/BEFORE TRUNCATE ON voice_profiles/i.test(sql),
+      reversal('voice history is permanent', `${name} no longer blocks TRUNCATE on voice_profiles`));
+    assert.ok(/restored_from/.test(sql),
+      reversal('voice history is permanent', `${name} lost the restored_from column — reverts would be untraceable`));
+    assert.ok(!/UNIQUE INDEX[^;]*week_ending/i.test(sql),
+      reversal('voice history is permanent', `${name} has a per-week unique index, so a re-run would overwrite that week`));
+  }
+
+  // Revert = copy an earlier version forward as the new current one. Drafts
+  // always read the newest row, so weekly auto-updates keep applying — there
+  // is no pin / freeze that Josh would have to remember to undo.
+  assert.ok(profile.includes('async function restoreProfile') && profile.includes('async function restorePreviousProfile'),
+    reversal('voice history is permanent', 'restore / revert helpers were removed from voice-profile.js'));
+  const restoreBody = profile.slice(profile.indexOf('async function restoreProfile'), profile.indexOf('async function restorePreviousProfile'));
+  assert.ok(/INSERT INTO voice_profiles/.test(restoreBody) && !/UPDATE voice_profiles/i.test(restoreBody),
+    reversal('voice updates stay automatic', 'revert no longer appends a new version — a pin/freeze would stop weekly updates from applying'));
+  assert.ok(!/pinned_at|function (pin|unpin)Profile/i.test(profile + learning + route),
+    reversal('voice updates stay automatic', 'a pin/freeze concept crept back in; Josh wants auto-update with easy revert, not a freeze'));
+  assert.ok(/ORDER BY created_at DESC\s+LIMIT 1/.test(profile.slice(profile.indexOf('async function activeProfileRow'))),
+    reversal('voice updates stay automatic', 'drafts no longer read the newest stored version'));
+  assert.ok(route.includes('/admin/voice-learning/revert') && route.includes('/admin/voice-learning/history'),
+    reversal('voice history is permanent', 'the revert / history admin endpoints were removed'));
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'scripts', 'voice-profile-revert.js')),
+    reversal('voice history is permanent', 'scripts/voice-profile-revert.js was removed'));
+});

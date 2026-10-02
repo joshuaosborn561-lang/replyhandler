@@ -7,6 +7,7 @@ const adminRoutes = require('./routes/admin');
 const clientActionRoutes = require('./routes/client-action');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
+const voiceLearningRoutes = require('./routes/voice-learning');
 const { startCron } = require('./cron');
 const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
 
@@ -48,6 +49,7 @@ app.use(adminRoutes);
 app.use(clientActionRoutes);
 app.use(authRoutes);
 app.use(testWebhookRoutes);
+app.use(voiceLearningRoutes);
 
 // ─── Start ──────────────────────────────────
 async function start() {

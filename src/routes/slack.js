@@ -256,6 +256,20 @@ async function handleEditModalSubmit(interaction) {
       ['sent', messageText, replyId]
     );
 
+    // Keep the AI draft Josh started from: the diff against what he sent is
+    // the strongest voice signal the Friday learning job has. Best-effort —
+    // the column arrives with migration 027 and a miss must not fail the send.
+    if (wasEdited && originalDraft) {
+      try {
+        await db.query(
+          'UPDATE pending_replies SET original_draft = COALESCE(original_draft, $1) WHERE id = $2',
+          [originalDraft, replyId]
+        );
+      } catch (err) {
+        console.warn('[Slack] Could not store original_draft (migration 027 not applied?)', { replyId, err: err.message });
+      }
+    }
+
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
     await learnFromApprovedReply({ reply, client, finalText: messageText });

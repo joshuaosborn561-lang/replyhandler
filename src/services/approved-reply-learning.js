@@ -11,19 +11,24 @@ function serializeThread(threadContext) {
   }
 }
 
+const LEARNABLE_PLATFORMS = new Set(['smartlead', 'heyreach']);
+
 /**
  * Store the final human-approved version as a retrieval example.
  *
- * A Slack-approved SmartLead send uses the inbox reply endpoint and therefore
- * has sequence_number = NULL by construction. Scheduled sequence sends never
- * pass through this handler and are never learned.
+ * A Slack-approved send (SmartLead inbox reply or HeyReach message) is a real
+ * human reply by construction — sequence_number = NULL. Scheduled sequence
+ * sends never pass through this handler and are never learned.
+ *
+ * The Friday job (`weekly-voice-learning.js`) re-sweeps the week and upserts
+ * on the same `pending_reply_id`, so a failure here is caught up later.
  *
  * Never learn FOLLOW_UP bumps or placeholder inbounds — they contaminate
  * first-reply voice retrieval.
  */
 async function learnFromApprovedReply({ reply, client, finalText }) {
   if (!replyExamples.isConfigured()) return { skipped: 'not_configured' };
-  if (!reply || reply.platform !== 'smartlead') return { skipped: 'not_smartlead' };
+  if (!reply || !LEARNABLE_PLATFORMS.has(reply.platform)) return { skipped: 'unsupported_platform' };
   if (!finalText || !reply.inbound_message) return { skipped: 'missing_pair' };
   if (reply.campaign_id === 'test-campaign') return { skipped: 'test_fixture' };
   if (String(reply.classification || '').toUpperCase() === 'FOLLOW_UP') {
