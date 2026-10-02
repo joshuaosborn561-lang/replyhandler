@@ -286,7 +286,8 @@ test('FOLLOW_UP cards show draft + last message; only after we have sent', () =>
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /Suggested follow-up/);
   assert.match(text, /Hey Pat, still interested/);
-  assert.match(text, /Last message \(you\)/);
+  assert.match(text, /Last message \(them\)/);
+  assert.match(text, /Tell me more/);
   assert.doesNotMatch(text, /Original message/);
   const last = lastThreadTurn({
     inboundMessage: 'Yes please.\nOn Monday Jane wrote: old',

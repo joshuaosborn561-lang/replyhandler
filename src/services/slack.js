@@ -196,18 +196,43 @@ const LAST_THREAD_DISPLAY_MAX = 800;
  * Latest turn on the thread — quoted email history stripped so the card
  * shows the actual last message, not the whole back-and-forth.
  */
-function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage } = {}) {
+function isPlaceholderInbound(text) {
+  const s = String(text || '').trim().toLowerCase();
+  return !s
+    || s.startsWith('(no new reply')
+    || s.includes('follow-up re-attempt');
+}
+
+function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage, preferThem = false } = {}) {
   const history = Array.isArray(threadMessages)
     ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
     : [];
-  if (history.length) {
-    const last = history[history.length - 1];
-    const raw = String(last.body || '');
-    const body = last.role === 'them' ? cleanInboundReply(raw) : plainTextForSlack(raw);
-    if (body) return { role: last.role === 'us' ? 'us' : 'them', body };
+
+  const fromHistory = (wantThem) => {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const last = history[i];
+      if (wantThem && last.role !== 'them') continue;
+      const raw = String(last.body || '');
+      if (last.role === 'them' && isPlaceholderInbound(raw)) continue;
+      const body = last.role === 'them' ? cleanInboundReply(raw) : plainTextForSlack(raw);
+      if (body && !isPlaceholderInbound(body)) {
+        return { role: last.role === 'us' ? 'us' : 'them', body };
+      }
+    }
+    return null;
+  };
+
+  if (preferThem) {
+    const theirs = fromHistory(true);
+    if (theirs) return theirs;
+    const inbound = cleanInboundReply(inboundMessage || '');
+    if (inbound && !isPlaceholderInbound(inbound)) return { role: 'them', body: inbound };
   }
+
+  const last = fromHistory(false);
+  if (last) return last;
   const inbound = cleanInboundReply(inboundMessage || '');
-  if (inbound) return { role: 'them', body: inbound };
+  if (inbound && !isPlaceholderInbound(inbound)) return { role: 'them', body: inbound };
   const ours = plainTextForSlack(lastOutboundMessage || '');
   if (ours) return { role: 'us', body: ours };
   return null;
@@ -240,17 +265,27 @@ function buildFollowUpConversationBlocks({
     );
   }
 
-  const last = lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage });
+  const last = lastThreadTurn({
+    threadMessages,
+    inboundMessage,
+    lastOutboundMessage,
+    preferThem: true,
+  });
   if (last) {
-    if (blocks.length) blocks.push(dividerBlock());
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: last.role === 'us' ? '📤' : '📥',
-        label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
-        body: last.body,
-        maxLen: LAST_THREAD_DISPLAY_MAX,
-      }),
-    );
+    const sendPlain = plainTextForSlack(sendBody || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const lastPlain = String(last.body || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const sameAsOutgoing = sendPlain && lastPlain && sendPlain === lastPlain;
+    if (!sameAsOutgoing) {
+      if (blocks.length) blocks.push(dividerBlock());
+      blocks.push(
+        ...conversationStepBlocks({
+          emoji: last.role === 'us' ? '📤' : '📥',
+          label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
+          body: last.body,
+          maxLen: LAST_THREAD_DISPLAY_MAX,
+        }),
+      );
+    }
   }
 
   return blocks;

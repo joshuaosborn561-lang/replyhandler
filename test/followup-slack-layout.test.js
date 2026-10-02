@@ -100,6 +100,7 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.match(texts, /still interested in meeting/);
     assert.match(texts, /\*Last message \(them\)\*/);
     assert.match(texts, /more interested in PowerGRYD/);
+    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
     assert.doesNotMatch(texts, /\*Original message\*/);
     assert.doesNotMatch(texts, /\*They replied/);
     assert.doesNotMatch(texts, /Rebecca White wrote/);
@@ -148,6 +149,26 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.doesNotMatch(texts, /\*Our reply\*/);
     assert.doesNotMatch(texts, /\*You sent \(2\)\*/);
     assert.ok(blocks.some((b) => b.type === 'actions'), 'buttons stay on the pending card');
+  });
+
+  it('does not repeat the outgoing bump as Last message (you)', () => {
+    const blocks = buildFollowUpConversationBlocks({
+      draft: 'Hey Patrick, still interested in meeting for this?',
+      inboundMessage: 'Would like to learn more.',
+      lastOutboundMessage: 'Hey Patrick, still interested in meeting for this?',
+      threadMessages: [
+        { role: 'them', body: 'Would like to learn more.' },
+        { role: 'us', body: 'Hey Patrick, still interested in meeting for this?' },
+      ],
+    });
+    const texts = blocks
+      .filter((b) => b.type === 'section')
+      .map((b) => b.text.text)
+      .join('\n');
+    assert.match(texts, /\*Suggested follow-up\*/);
+    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /Would like to learn more/);
+    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
   });
 
   it('strips Outlook CSS from the last-message line', () => {
