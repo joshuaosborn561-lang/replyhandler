@@ -4,6 +4,7 @@ const {
   normalizeContactEmail,
   buildProvisionPayload,
   extractLoginLink,
+  extractWarning,
   provisionClientToPortal,
 } = require('../src/services/portal-provision');
 
@@ -25,14 +26,35 @@ const sample = {
   active: true,
 };
 
+function withInviteEnv(value, fn) {
+  const prev = process.env.PORTAL_SKIP_INVITE;
+  if (value == null) delete process.env.PORTAL_SKIP_INVITE;
+  else process.env.PORTAL_SKIP_INVITE = value;
+  try {
+    return fn();
+  } finally {
+    if (prev == null) delete process.env.PORTAL_SKIP_INVITE;
+    else process.env.PORTAL_SKIP_INVITE = prev;
+  }
+}
+
 describe('portal provision payload', () => {
-  it('sends handler_client_id and skips invite when contact email is empty', () => {
-    const withEmail = buildProvisionPayload(sample);
-    assert.equal(withEmail.handler_client_id, 'client-uuid-1');
-    assert.equal(withEmail.contact_email, 'owner@acme.com');
-    assert.equal(withEmail.skip_invite, false);
-    assert.equal(withEmail.smartlead_api_key, 'sl_key');
-    assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'slack_bot_token'));
+  it('sends only the fields the portal stores', () => {
+    withInviteEnv('false', () => {
+      const withEmail = buildProvisionPayload(sample);
+      assert.equal(withEmail.handler_client_id, 'client-uuid-1');
+      assert.equal(withEmail.contact_email, 'owner@acme.com');
+      assert.equal(withEmail.skip_invite, false);
+      assert.equal(withEmail.smartlead_api_key, 'sl_key');
+      assert.equal(withEmail.booking_link, 'https://cal.com/acme');
+      assert.equal(withEmail.active, true);
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'slack_bot_token'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'calendly_personal_access_token'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'slack_channel_id'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'voice_prompt'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'digest_timezone'));
+      assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'cc_email'));
+    });
 
     const noEmail = buildProvisionPayload({ ...sample, contact_email: '' });
     assert.equal(noEmail.contact_email, null);
@@ -40,12 +62,28 @@ describe('portal provision payload', () => {
     assert.equal(normalizeContactEmail('not-an-email'), null);
   });
 
-  it('reads a login link from the portal response', () => {
+  it('keeps skip_invite true until PORTAL_SKIP_INVITE is false', () => {
+    withInviteEnv(undefined, () => {
+      assert.equal(buildProvisionPayload(sample).skip_invite, true);
+    });
+    withInviteEnv('true', () => {
+      assert.equal(buildProvisionPayload(sample).skip_invite, true);
+    });
+    withInviteEnv('false', () => {
+      assert.equal(buildProvisionPayload(sample).skip_invite, false);
+      assert.equal(buildProvisionPayload({ ...sample, contact_email: '' }).skip_invite, true);
+    });
+  });
+
+  it('reads a login link and warning from the portal response', () => {
     assert.equal(
       extractLoginLink({ login_link: 'https://portal.example/invite/abc' }),
       'https://portal.example/invite/abc',
     );
     assert.equal(extractLoginLink({ url: 'not-a-url' }), null);
+    assert.equal(extractWarning({ warning: 'email changed; not re-invited' }), 'email changed; not re-invited');
+    assert.equal(extractWarning({ warnings: ['one', 'two'] }), 'one; two');
+    assert.equal(extractWarning({}), null);
   });
 });
 

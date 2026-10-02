@@ -105,8 +105,17 @@ describe('client-action idempotency', () => {
       email: 'Pat@Example.com',
       campaign_id: '4005226',
       status: 'client_has_it',
+      handler_client_id: 'portal-client-uuid',
+      client_company: 'Acme',
+      name: 'Pat Lefler',
+      company: 'Acme Inc',
+      lead_id: 'sl-lead-1',
     });
     assert.equal(action.leadEmail, 'pat@example.com');
+    assert.equal(action.campaignId, '4005226');
+    assert.equal(action.status, 'client_has_it');
+    assert.ok(!Object.prototype.hasOwnProperty.call(action, 'handler_client_id'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(action, 'lead_id'));
 
     const first = await applyClientAction(action, deps);
     assert.equal(first.unchanged, false);
