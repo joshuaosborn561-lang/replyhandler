@@ -5,6 +5,10 @@ const {
   enrichPendingReplyPhone,
   shouldSkipEnrichment,
 } = require('./reply-phone-enrichment');
+const {
+  isPositivePortalClassification,
+  notifyPortalPositiveReply,
+} = require('./portal-positive-reply');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -155,6 +159,24 @@ async function postProspectSlackCard({
   let enrichedCard = card;
   // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
   // burn enrichment credits — those are not bookable follow-ups.
+  if (isPositivePortalClassification(card?.classification)) {
+    notifyPortalPositiveReply({
+      clientId,
+      platform,
+      email: card.leadEmail,
+      name: card.leadName,
+      company: card.leadCompany,
+      campaignId,
+      leadId,
+      snippet: card.inboundMessage,
+      repliedAt: card.repliedAt,
+      replyId,
+      classification: card.classification,
+    }, { db }).catch((err) => {
+      console.warn('[Portal] Positive-reply notify threw', { err: err.message });
+    });
+  }
+
   if (replyId && !shouldSkipEnrichment(card?.classification)) {
     const phone = await enrichPendingReplyPhone(replyId);
     enrichedCard = {

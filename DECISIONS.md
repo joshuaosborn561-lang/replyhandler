@@ -763,3 +763,13 @@ DNS is no longer the gate. A new client with a `contact_email` gets a real invit
 The portal still returns a one-time `login_link` for the dashboard. First create still needs a `contact_email`.
 
 Guard: `portal invite emails go out for new clients`
+
+### Portal fills itself from ReplyHandler — backfill clients and live positive replies
+
+*"Two things so the portal fills itself from ReplyHandler: 1. Backfill provision-client for every existing active client. 2. On every positive reply, POST new-positive-reply. Also: when a client's keys change, re-send provision-client."*
+
+`POST /admin/clients/sync-portal` now pushes **active** clients only (re-run is safe — the portal updates, never duplicates). The provision payload includes `allo_api_key` when the client has one. Create and update still re-POST provision-client, so a SmartLead / HeyReach / Allo key change follows to the portal.
+
+On every positive inbound that would Slack-card (`INTERESTED` / `MEETING_PROPOSED` / `QUESTION`), POST `PORTAL_URL/functions/v1/new-positive-reply` with `x-portal-secret`. Payload: `handler_client_id`, `email`, `name`, `company`, `campaign_id`, `lead_id`, `snippet`, `replied_at` (ISO, stable from `pending_replies.created_at` so Slack recovery does not duplicate), `channel` (`email` | `linkedin` | `call`). FOLLOW_UP cards do not fire this. Failures are logged only — Slack and the webhook still succeed. The portal is idempotent on client + channel + email + replied_at.
+
+Guard: `portal fills itself from ReplyHandler`

@@ -470,6 +470,8 @@ async function processConversation(client, conv, options) {
     inboundMessage: inbound.text,
     campaignDisplay: campaignDisplay(conv, cid),
     lastOutboundMessage: lastOut || undefined,
+    leadCompany: conv.company_name || conv.company || conv.organization || null,
+    repliedAt: reply.created_at,
   };
 
   try {

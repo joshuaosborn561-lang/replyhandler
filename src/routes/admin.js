@@ -43,7 +43,7 @@ function normalizeCcListField(value) {
 router.post('/admin/clients', async (req, res) => {
   try {
     const {
-      name, smartlead_api_key, heyreach_api_key, slack_bot_token,
+      name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token,
       slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
       cc_email, cc_emails, cc_round_robin_emails, contact_email,
     } = req.body;
@@ -60,15 +60,16 @@ router.post('/admin/clients', async (req, res) => {
 
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
-         name, smartlead_api_key, heyreach_api_key, slack_bot_token, slack_channel_id,
+         name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token, slack_channel_id,
          booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
          cc_email, cc_emails, cc_round_robin_emails, contact_email
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
         heyreach_api_key || null,
+        allo_api_key || null,
         slack_bot_token,
         slack_channel_id,
         booking_link || null,
@@ -110,7 +111,11 @@ router.get('/admin/clients', async (req, res) => {
 // One-time backfill: push every existing client to the portal.
 router.post('/admin/clients/sync-portal', async (_req, res) => {
   try {
-    const { rows } = await db.query('SELECT * FROM clients ORDER BY created_at ASC');
+    const { rows } = await db.query(
+      `SELECT * FROM clients
+        WHERE active IS DISTINCT FROM false
+        ORDER BY created_at ASC`
+    );
     const results = await provisionAllClients(rows);
     const ok = results.filter((r) => r.ok).length;
     console.log('[Admin] Portal sync-all finished', { total: results.length, ok });
@@ -127,7 +132,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const { clientId } = req.params;
     const fields = req.body;
     const allowedFields = [
-      'name', 'smartlead_api_key', 'heyreach_api_key', 'slack_bot_token',
+      'name', 'smartlead_api_key', 'heyreach_api_key', 'allo_api_key', 'slack_bot_token',
       'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
       'contact_email',

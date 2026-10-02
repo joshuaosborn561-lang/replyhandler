@@ -5,6 +5,7 @@ CREATE TABLE clients (
   name TEXT NOT NULL,
   smartlead_api_key TEXT,
   heyreach_api_key TEXT,
+  allo_api_key TEXT,
   slack_bot_token TEXT NOT NULL,
   slack_channel_id TEXT NOT NULL,
   booking_link TEXT,

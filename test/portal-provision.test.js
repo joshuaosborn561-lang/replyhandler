@@ -14,6 +14,7 @@ const sample = {
   contact_email: 'Owner@Acme.com',
   smartlead_api_key: 'sl_key',
   heyreach_api_key: 'hr_key',
+  allo_api_key: 'allo_key',
   slack_bot_token: 'xoxb-secret',
   slack_channel_id: 'C123',
   booking_link: 'https://cal.com/acme',
@@ -46,6 +47,7 @@ describe('portal provision payload', () => {
       assert.equal(withEmail.contact_email, 'owner@acme.com');
       assert.equal(withEmail.skip_invite, false);
       assert.equal(withEmail.smartlead_api_key, 'sl_key');
+      assert.equal(withEmail.allo_api_key, 'allo_key');
       assert.equal(withEmail.booking_link, 'https://cal.com/acme');
       assert.equal(withEmail.active, true);
       assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'slack_bot_token'));
