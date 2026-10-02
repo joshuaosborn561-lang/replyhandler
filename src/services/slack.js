@@ -1,5 +1,5 @@
 const { WebClient } = require('@slack/web-api');
-const { cleanInboundReply } = require('../utils/smartlead-webhook-helpers');
+const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 
 // Cache WebClient instances per token
 const clientCache = new Map();
@@ -31,12 +31,14 @@ function plainTextForSlack(raw) {
   let s = String(raw || '');
   if (!s.trim()) return '';
   s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
   s = s.replace(/<br\s*\/?>/gi, '\n');
   s = s.replace(/<\/p>/gi, '\n');
   s = s.replace(/<\/div>/gi, '\n');
   s = s.replace(/<li[^>]*>/gi, '\n• ');
   s = s.replace(/<[^>]+>/g, '');
   s = decodeHtmlEntities(s);
+  s = stripOutlookCss(s);
   s = s.replace(/[ \t]+\n/g, '\n');
   s = s.replace(/\n{3,}/g, '\n\n');
   s = s.replace(/[ \t]{2,}/g, ' ');
@@ -194,18 +196,43 @@ const LAST_THREAD_DISPLAY_MAX = 800;
  * Latest turn on the thread — quoted email history stripped so the card
  * shows the actual last message, not the whole back-and-forth.
  */
-function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage } = {}) {
+function isPlaceholderInbound(text) {
+  const s = String(text || '').trim().toLowerCase();
+  return !s
+    || s.startsWith('(no new reply')
+    || s.includes('follow-up re-attempt');
+}
+
+function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage, preferThem = false } = {}) {
   const history = Array.isArray(threadMessages)
     ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
     : [];
-  if (history.length) {
-    const last = history[history.length - 1];
-    const raw = String(last.body || '');
-    const body = last.role === 'them' ? cleanInboundReply(raw) : plainTextForSlack(raw);
-    if (body) return { role: last.role === 'us' ? 'us' : 'them', body };
+
+  const fromHistory = (wantThem) => {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const last = history[i];
+      if (wantThem && last.role !== 'them') continue;
+      const raw = String(last.body || '');
+      if (last.role === 'them' && isPlaceholderInbound(raw)) continue;
+      const body = last.role === 'them' ? cleanInboundReply(raw) : plainTextForSlack(raw);
+      if (body && !isPlaceholderInbound(body)) {
+        return { role: last.role === 'us' ? 'us' : 'them', body };
+      }
+    }
+    return null;
+  };
+
+  if (preferThem) {
+    const theirs = fromHistory(true);
+    if (theirs) return theirs;
+    const inbound = cleanInboundReply(inboundMessage || '');
+    if (inbound && !isPlaceholderInbound(inbound)) return { role: 'them', body: inbound };
   }
+
+  const last = fromHistory(false);
+  if (last) return last;
   const inbound = cleanInboundReply(inboundMessage || '');
-  if (inbound) return { role: 'them', body: inbound };
+  if (inbound && !isPlaceholderInbound(inbound)) return { role: 'them', body: inbound };
   const ours = plainTextForSlack(lastOutboundMessage || '');
   if (ours) return { role: 'us', body: ours };
   return null;
@@ -238,17 +265,27 @@ function buildFollowUpConversationBlocks({
     );
   }
 
-  const last = lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage });
+  const last = lastThreadTurn({
+    threadMessages,
+    inboundMessage,
+    lastOutboundMessage,
+    preferThem: true,
+  });
   if (last) {
-    if (blocks.length) blocks.push(dividerBlock());
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: last.role === 'us' ? '📤' : '📥',
-        label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
-        body: last.body,
-        maxLen: LAST_THREAD_DISPLAY_MAX,
-      }),
-    );
+    const sendPlain = plainTextForSlack(sendBody || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const lastPlain = String(last.body || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const sameAsOutgoing = sendPlain && lastPlain && sendPlain === lastPlain;
+    if (!sameAsOutgoing) {
+      if (blocks.length) blocks.push(dividerBlock());
+      blocks.push(
+        ...conversationStepBlocks({
+          emoji: last.role === 'us' ? '📤' : '📥',
+          label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
+          body: last.body,
+          maxLen: LAST_THREAD_DISPLAY_MAX,
+        }),
+      );
+    }
   }
 
   return blocks;
@@ -492,13 +529,12 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   });
 }
 
-async function postDraftApproval(token, channelId, {
+function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
-  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread, ccEmail, ccOnSend,
+  campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages,
 }) {
-  const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine =
     `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
@@ -574,11 +610,29 @@ async function postDraftApproval(token, channelId, {
   }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
+  const text = `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`;
+  return { blocks, text };
+}
 
+async function postDraftApproval(token, channelId, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildDraftApprovalCard(opts);
   return slack.chat.postMessage({
     channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`,
+    ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+    text,
+    blocks,
+  });
+}
+
+/** Rewrite an already-posted approval card in place (compact FOLLOW_UP layout). */
+async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildDraftApprovalCard(opts);
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text,
     blocks,
   });
 }
@@ -838,6 +892,8 @@ async function getPermalink(token, channelId, messageTs) {
 
 module.exports = {
   postDraftApproval,
+  updateDraftApprovalCard,
+  buildDraftApprovalCard,
   postAlert,
   postError,
   postClientActionNotice,

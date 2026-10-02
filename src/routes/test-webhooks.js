@@ -4,6 +4,7 @@ const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { logIntegrationStatus, getIntegrationStatus } = require('../services/integration-check');
 const { sweepInterested } = require('../services/interested-sweep');
+const { refreshFollowUpSlackCards } = require('../services/refresh-followup-cards');
 
 const router = Router();
 
@@ -227,6 +228,23 @@ router.get('/admin/test/interested', async (req, res) => {
     return res.json({ ok: true, ...result });
   } catch (err) {
     console.error('[TestWebhook] interested sweep error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Rewrite already-posted FOLLOW_UP Slack cards to the compact layout.
+ * POST /admin/refresh-followup-cards?secret=...&days=21&limit=80
+ */
+router.post('/admin/refresh-followup-cards', async (req, res) => {
+  if (!assertSecret(req, res)) return;
+  const days = parseInt(req.query.days || req.body?.days, 10) || 21;
+  const limit = parseInt(req.query.limit || req.body?.limit, 10) || 80;
+  try {
+    const result = await refreshFollowUpSlackCards({ days, limit });
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Admin] refresh-followup-cards failed', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });

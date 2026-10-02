@@ -286,7 +286,8 @@ test('FOLLOW_UP cards show draft + last message; only after we have sent', () =>
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /Suggested follow-up/);
   assert.match(text, /Hey Pat, still interested/);
-  assert.match(text, /Last message \(you\)/);
+  assert.match(text, /Last message \(them\)/);
+  assert.match(text, /Tell me more/);
   assert.doesNotMatch(text, /Original message/);
   const last = lastThreadTurn({
     inboundMessage: 'Yes please.\nOn Monday Jane wrote: old',
@@ -407,10 +408,12 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
   ), reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP cards still post to the client inbox channel'));
   assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Last message'),
     reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the last-message block'));
+  assert.ok(slackSrc.includes('updateDraftApprovalCard') && slackSrc.includes('buildDraftApprovalCard'),
+    reversal('FOLLOW_UP cards show draft + last message', 'pending FOLLOW_UP cards can no longer be rewritten compact'));
   assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
     reversal('FOLLOW_UP dedicated Slack channel', 'shared approval actions helper missing'));
   // Suggested send must appear on the card (not only after Slack "See more").
-  const postFn = slackSrc.slice(slackSrc.indexOf('async function postDraftApproval'));
+  const postFn = slackSrc.slice(slackSrc.indexOf('function buildDraftApprovalCard'));
   const followUpBranch = postFn.slice(postFn.indexOf('const blocks = isFollowUp'), postFn.indexOf('if (!isFollowUp && platform'));
   assert.ok(
     followUpBranch.includes('...conversation') && followUpBranch.includes('draftApprovalActionsBlock'),
