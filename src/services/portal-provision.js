@@ -24,23 +24,25 @@ function provisionUrl() {
   return `${base}${PORTAL_PATH}`;
 }
 
+/**
+ * Invite emails stay off until salesglider.ai points at the new portal.
+ * Set PORTAL_SKIP_INVITE=false to send them when contact_email is present.
+ */
+function invitesDisabled() {
+  const raw = String(process.env.PORTAL_SKIP_INVITE ?? 'true').trim().toLowerCase();
+  return !(raw === 'false' || raw === '0' || raw === 'no');
+}
+
 function buildProvisionPayload(client) {
   const contactEmail = normalizeContactEmail(client?.contact_email);
   return {
     handler_client_id: client.id,
     name: client.name || null,
     contact_email: contactEmail,
-    skip_invite: !contactEmail,
+    skip_invite: !contactEmail || invitesDisabled(),
     smartlead_api_key: client.smartlead_api_key || null,
     heyreach_api_key: client.heyreach_api_key || null,
-    slack_channel_id: client.slack_channel_id || null,
     booking_link: client.booking_link || null,
-    calendly_personal_access_token: client.calendly_personal_access_token || null,
-    voice_prompt: client.voice_prompt || '',
-    digest_timezone: client.digest_timezone || null,
-    cc_email: client.cc_email || null,
-    cc_emails: client.cc_emails || null,
-    cc_round_robin_emails: client.cc_round_robin_emails || null,
     active: client.active !== false,
   };
 }
@@ -61,6 +63,17 @@ function extractLoginLink(body) {
     if (/^https?:\/\//i.test(s)) return s;
   }
   return null;
+}
+
+function extractWarning(body) {
+  if (!body || typeof body !== 'object') return null;
+  const raw = body.warning != null ? body.warning : body.warnings;
+  if (Array.isArray(raw)) {
+    const parts = raw.map((w) => String(w || '').trim()).filter(Boolean);
+    return parts.length ? parts.join('; ') : null;
+  }
+  const s = String(raw || '').trim();
+  return s || null;
 }
 
 function sleep(ms) {
@@ -121,14 +134,16 @@ async function provisionClientToPortal(client, deps = {}) {
     try {
       const body = await postOnce(url, payload, secret, fetchFn, timeoutMs);
       const loginLink = extractLoginLink(body);
+      const warning = extractWarning(body);
       console.log('[Portal] Provisioned client', {
         clientId: client.id,
         name: client.name,
         skipInvite: payload.skip_invite,
         hasLoginLink: !!loginLink,
+        warning: warning || undefined,
         attempt,
       });
-      return { ok: true, loginLink, skipInvite: payload.skip_invite, body };
+      return { ok: true, loginLink, warning, skipInvite: payload.skip_invite, body };
     } catch (err) {
       lastErr = err;
       console.warn('[Portal] Provision attempt failed', {
@@ -158,6 +173,7 @@ async function provisionAllClients(clients, deps = {}) {
       skipped: !!r.skipped,
       skipInvite: r.skipInvite,
       loginLink: r.loginLink || null,
+      warning: r.warning || null,
       error: r.error || null,
     });
   }
@@ -172,6 +188,8 @@ module.exports = {
   portalConfigured,
   buildProvisionPayload,
   extractLoginLink,
+  extractWarning,
+  invitesDisabled,
   provisionClientToPortal,
   provisionAllClients,
 };

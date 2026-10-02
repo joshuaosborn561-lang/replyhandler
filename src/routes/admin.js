@@ -87,6 +87,7 @@ router.post('/admin/clients', async (req, res) => {
     res.status(201).json({
       ...formatClient(client),
       portal_login_link: portal.loginLink || null,
+      portal_warning: portal.warning || null,
       portal_synced: !!portal.ok,
     });
   } catch (err) {
@@ -179,6 +180,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     res.json({
       ...formatClient(client),
       portal_login_link: portal.loginLink || null,
+      portal_warning: portal.warning || null,
       portal_synced: !!portal.ok,
     });
   } catch (err) {
