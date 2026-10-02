@@ -969,6 +969,23 @@ test('portal create works without contact_email; invite waits for one', () => {
     reversal('portal create works without contact_email', 'setting contact_email later no longer re-sends provision-client'));
 });
 
+// ── Decision: portal contact email is the always-notify address ───────
+// "the contact email is always the always notify email for positive replies"
+test('portal contact email is the always-notify address', () => {
+  const provision = read('src/services/portal-provision.js');
+  const admin = read('src/routes/admin.js');
+  const dash = read('src/public/index.html');
+
+  assert.ok(provision.includes('portalContactEmail') && provision.includes('alwaysCcEmails'),
+    reversal('portal contact email is the always-notify address', 'provision no longer derives login from Always-notify'));
+  assert.ok(/contactEmail = portalContactEmail/.test(provision) || /portalContactEmail\(client\)/.test(provision),
+    reversal('portal contact email is the always-notify address', 'buildProvisionPayload still reads the leftover contact_email column'));
+  assert.ok(admin.includes('portalContactEmail'),
+    reversal('portal contact email is the always-notify address', 'create/update/sync no longer keep contact_email on Always-notify'));
+  assert.ok(dash.includes('syncPortalEmailFromAlwaysNotify') && dash.includes('Always notify'),
+    reversal('portal contact email is the always-notify address', 'dashboard lets portal email drift from Always-notify'));
+});
+
 // ── Decision: client notify includes the full live thread ─────────────
 test('client notify email includes the full live thread', () => {
   const send = read('src/services/reply-send.js');

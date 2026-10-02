@@ -2,6 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   normalizeContactEmail,
+  portalContactEmail,
   buildProvisionPayload,
   extractLoginLink,
   extractWarning,
@@ -44,7 +45,7 @@ describe('portal provision payload', () => {
     withInviteEnv('false', () => {
       const withEmail = buildProvisionPayload(sample);
       assert.equal(withEmail.handler_client_id, 'client-uuid-1');
-      assert.equal(withEmail.contact_email, 'owner@acme.com');
+      assert.equal(withEmail.contact_email, 'ae@acme.com');
       assert.equal(withEmail.skip_invite, false);
       assert.equal(withEmail.smartlead_api_key, 'sl_key');
       assert.equal(withEmail.allo_api_key, 'allo_key');
@@ -58,19 +59,24 @@ describe('portal provision payload', () => {
       assert.ok(!Object.prototype.hasOwnProperty.call(withEmail, 'cc_email'));
     });
 
-    const noEmail = buildProvisionPayload({ ...sample, contact_email: '' });
+    const noEmail = buildProvisionPayload({
+      ...sample, contact_email: 'leftover@old.com', cc_emails: '', cc_email: '',
+    });
     assert.equal(noEmail.contact_email, null);
     assert.equal(noEmail.skip_invite, true);
     assert.equal(normalizeContactEmail('not-an-email'), null);
+    assert.equal(portalContactEmail(sample), 'ae@acme.com');
   });
 
-  it('sends an invite when contact email is present', () => {
+  it('sends an invite when the always-notify email is present', () => {
     withInviteEnv(undefined, () => {
       assert.equal(buildProvisionPayload(sample).skip_invite, false);
     });
     withInviteEnv('false', () => {
       assert.equal(buildProvisionPayload(sample).skip_invite, false);
-      assert.equal(buildProvisionPayload({ ...sample, contact_email: '' }).skip_invite, true);
+      assert.equal(buildProvisionPayload({
+        ...sample, contact_email: '', cc_emails: '', cc_email: '',
+      }).skip_invite, true);
     });
     withInviteEnv('true', () => {
       assert.equal(buildProvisionPayload(sample).skip_invite, true);

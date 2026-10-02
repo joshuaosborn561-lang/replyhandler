@@ -781,3 +781,11 @@ Guard: `portal fills itself from ReplyHandler`
 First create may omit `contact_email`. We still send `skip_invite: true` when the email is empty, so they get no invite and no portal login until an address is saved. Setting `contact_email` later re-POSTs provision-client (same as any create/update) and the invite goes out.
 
 Guard: `portal create works without contact_email; invite waits for one`
+
+### Portal contact email is the Always-notify address
+
+*"the contact email is always the always notify email for positive replies"*
+
+Portal `contact_email` is not a separate address. It is the first Always-notify / Always-forward email (`cc_emails`, else legacy `cc_email`). Provision, create, update, and sync-all derive it from that list. A leftover `contact_email` column is ignored when Always-notify is empty. Changing Always-notify re-POSTs provision-client so the invite follows.
+
+Guard: `portal contact email is the always-notify address`

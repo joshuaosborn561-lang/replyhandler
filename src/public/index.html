@@ -709,9 +709,9 @@
       </div>
 
       <div class="form-group">
-        <label>Portal contact email (optional)</label>
-        <input type="email" id="f_contact_email" placeholder="owner@client.com">
-        <div class="hint">Portal login email. A client with this address gets an invite email. Leave empty to provision without an invite; add one later and we re-send provision so the invite goes out.</div>
+        <label>Portal contact email</label>
+        <input type="email" id="f_contact_email" placeholder="Same as Always notify" readonly>
+        <div class="hint">Same as Always notify (first address). A client with this address gets an invite email. Leave Always notify empty to provision without an invite.</div>
       </div>
 
       <div class="form-group">
@@ -722,8 +722,8 @@
 
       <div class="form-group">
         <label>Always forward (optional)</label>
-        <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com"></textarea>
-        <div class="hint">Comma or newline separated. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → AI Ark → LeadMagic).</div>
+        <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com" oninput="syncPortalEmailFromAlwaysNotify()"></textarea>
+        <div class="hint">Comma or newline separated. The first address is the portal login and gets an invite email. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → AI Ark → LeadMagic).</div>
       </div>
 
       <div class="form-group">
@@ -1098,7 +1098,7 @@ function openDetail(id) {
       </div>
       <div class="detail-row">
         <span class="label">Portal contact email</span>
-        <span class="value">${c.contact_email ? esc(c.contact_email) : '—'}</span>
+        <span class="value">${c.contact_email ? esc(c.contact_email) : '—'} <span class="hint" style="display:inline">= Always notify</span></span>
       </div>
       <div class="detail-row">
         <span class="label">Booking Link</span>
@@ -1193,9 +1193,9 @@ function openEditFromDetail() {
   document.getElementById('f_allo_api_key').value = c.allo_api_key || '';
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
-  document.getElementById('f_contact_email').value = c.contact_email || '';
   document.getElementById('f_booking_link').value = c.booking_link || '';
   document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
+  syncPortalEmailFromAlwaysNotify();
   document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
   document.getElementById('f_calendly_personal_access_token').value = c.calendly_personal_access_token || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
@@ -1212,7 +1212,6 @@ async function submitForm() {
     allo_api_key: document.getElementById('f_allo_api_key').value.trim() || null,
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
-    contact_email: document.getElementById('f_contact_email').value.trim() || null,
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
     cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
     cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
@@ -1262,6 +1261,12 @@ function toggleGuide() {
   document.getElementById('guideToggleBtn').classList.toggle('active', isOpen);
   document.getElementById('detailGuideToggleBtn').classList.toggle('active', isOpen);
   document.body.classList.toggle('guide-open', isOpen);
+}
+
+function syncPortalEmailFromAlwaysNotify() {
+  const raw = document.getElementById('f_cc_emails').value || '';
+  const first = raw.split(/[\n,;]+/).map((s) => s.trim().toLowerCase()).find((s) => s.includes('@')) || '';
+  document.getElementById('f_contact_email').value = first;
 }
 
 function clearForm() {
