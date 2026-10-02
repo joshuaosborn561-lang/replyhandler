@@ -108,10 +108,10 @@ eight days and learns from every reply Josh actually sent:
 Each pair is upserted into `reply_examples` (RAG) and then Gemini synthesizes
 a **global voice profile** plus a **per-client profile** that also carries
 client-specific notes (offer, who takes the meeting, in-person vs call, named
-teammates). Profiles live in `voice_profiles`; the latest row is injected into
-both the Claude and Gemini draft prompts as a `LEARNED VOICE` block under the
-client's `voice_prompt`. Operational rules (booking link, no sign-off,
-meeting modality) still win over anything learned.
+teammates). Every run saves a **new version** in `voice_profiles`; the active
+version is injected into both the Claude and Gemini draft prompts as a
+`LEARNED VOICE` block under the client's `voice_prompt`. Operational rules
+(booking link, no sign-off, meeting modality) still win over anything learned.
 
 Run `migrations/025_voice_profiles.sql` once on an existing database (it is
 also in the tracked migration list). Run it by hand or inspect the result:
@@ -124,6 +124,26 @@ curl "$HOST/admin/voice-learning/profiles?secret=$WEBHOOK_TEST_SECRET&client=Sal
 ```
 
 This is a bulk job: it never calls Anthropic.
+
+**Reverting to an earlier week.** Nothing is ever overwritten or deleted
+(deletes are blocked in the database), so every week's style stays available.
+Drafts always use the newest version, so updates keep applying on their own. A
+revert copies an earlier week forward as the new current version; the next
+Friday learns from that one, and the week you rejected stays in the list in
+case you want it back. Global and each client revert independently.
+
+```bash
+railway run node scripts/voice-profile-revert.js list                     # every version, CURRENT marked
+railway run node scripts/voice-profile-revert.js revert --previous        # global: one week back
+railway run node scripts/voice-profile-revert.js revert --previous --client SalesGlider
+railway run node scripts/voice-profile-revert.js revert <id> --note "Oct 2 version was too salesy"
+
+curl "$HOST/admin/voice-learning/history?secret=$WEBHOOK_TEST_SECRET&client=SalesGlider"
+curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&client=global&previous=1"
+curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&id=<profile id>"
+```
+
+Drafts pick up a revert within 10 minutes (`LEARNED_VOICE_CACHE_MINUTES`).
 
 **If the dashboard PATCH fails with `column "booking_link" does not exist`:** your Postgres was never migrated from Cal.com. Run `migrations/005_booking_link_safe.sql` once (adds `booking_link` if missing; renames `calcom_event_type_id` only when that column still exists). From a machine with Node: `railway run -s Postgres sh -c 'export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${RAILWAY_TCP_PROXY_DOMAIN}:${RAILWAY_TCP_PROXY_PORT}/${POSTGRES_DB}" && cd /path/to/repo && npm ci && node scripts/run-sql-file.js migrations/005_booking_link_safe.sql'` or run the SQL in Railway’s Postgres query UI.
 

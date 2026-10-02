@@ -89,9 +89,29 @@ replies typed straight into SmartLead / HeyReach — then:
 1. upserts each prospect→Josh pair into `reply_examples` (RAG), idempotent on
    `pending_reply_id` / `source_message_id`, both platforms;
 2. has Gemini re-synthesize a global voice profile and a per-client profile
-   with client-specific notes, stored in `voice_profiles`;
-3. `voice-profile.js` injects the latest profiles into the Claude and Gemini
+   with client-specific notes, **appended** as a new `voice_profiles` row;
+3. `voice-profile.js` injects the active profiles into the Claude and Gemini
    draft prompts as a `LEARNED VOICE` block.
+
+**History is permanent, updates stay automatic, revert is a restore.** Every
+run adds a row; nothing is ever overwritten, and `DELETE` / `TRUNCATE` on
+`voice_profiles` are blocked by trigger. Drafts always read the **newest** row.
+When Josh says a week's update is worse, revert it — do not pin or freeze:
+
+```bash
+railway run node scripts/voice-profile-revert.js list                          # see every version
+railway run node scripts/voice-profile-revert.js revert --previous             # global, one week back
+railway run node scripts/voice-profile-revert.js revert --previous --client X  # one client
+railway run node scripts/voice-profile-revert.js revert <id>                   # a specific version
+```
+
+(HTTP equivalents: `GET /admin/voice-learning/history`,
+`POST /admin/voice-learning/revert?id=…` or `&client=…&previous=1`.) A revert
+copies the chosen week forward as the new current row (`restored_from` set);
+the next Friday refines from it and the rejected week stays in history. There
+is deliberately **no pin** — a pinned version was tried and rejected because
+it paused auto-updates. Do not add an upsert, a per-week unique index, a
+pin, or a cleanup job on this table.
 
 Rules that hold here: it is a bulk job, so **Gemini only — never Anthropic**;
 FOLLOW_UP bumps and placeholder inbounds are never learned; a manual SmartLead

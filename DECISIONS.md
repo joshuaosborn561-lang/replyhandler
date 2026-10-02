@@ -691,3 +691,27 @@ Choices made along the way:
   inspectable at `GET /admin/voice-learning/profiles`.
 
 Guard: `weekly Friday voice learning from approved, edited and manual replies`
+
+### Every week's voice profile is kept forever; updates stay automatic; revert is one command
+
+*"make sure you save the previous week's style so that if your updates suck
+i can revert back indefinitely"* — then, on the first draft of this which
+pinned a version and paused updates: *"no have it auto update but if i come
+back in here i should be able to easily revert"*
+
+Each Friday run **appends** a new `voice_profiles` row per scope; it never
+updates or replaces an earlier week. Deleting rows is blocked at the database
+(`DELETE` and `TRUNCATE` triggers), so the history is permanent regardless of
+what any script does.
+
+Drafts always read the **newest** row, so weekly updates apply on their own.
+Revert is a **restore, not a freeze**: `scripts/voice-profile-revert.js revert
+--previous` (or `revert <id>`, or `POST /admin/voice-learning/revert`) copies
+the chosen earlier week forward as a new current row with `restored_from`
+pointing back at it. Drafts switch to it, the next Friday refines from it, and
+the rejected week stays in the list. There is no pin and nothing to undo later
+— a pinned version was tried first and rejected because it would have stopped
+the auto-updates until someone remembered to unpin. Global and each client
+revert independently.
+
+Guard: `voice profile history is permanent, auto-updates continue, any earlier week can be restored`
