@@ -773,3 +773,11 @@ Guard: `portal invite emails go out for new clients`
 On every positive inbound that would Slack-card (`INTERESTED` / `MEETING_PROPOSED` / `QUESTION`), POST `PORTAL_URL/functions/v1/new-positive-reply` with `x-portal-secret`. Payload: `handler_client_id`, `email`, `name`, `company`, `campaign_id`, `lead_id`, `snippet`, `replied_at` (ISO, stable from `pending_replies.created_at` so Slack recovery does not duplicate), `channel` (`email` | `linkedin` | `call`). FOLLOW_UP cards do not fire this. Failures are logged only — Slack and the webhook still succeed. The portal is idempotent on client + channel + email + replied_at.
 
 Guard: `portal fills itself from ReplyHandler`
+
+### Portal create no longer requires contact_email
+
+*"Re-run sync for all 11 active clients. The portal no longer requires contact_email on first create. Clients provisioned without an email get no invite until one is sent; re-send provision-client with contact_email when it is set."*
+
+First create may omit `contact_email`. We still send `skip_invite: true` when the email is empty, so they get no invite and no portal login until an address is saved. Setting `contact_email` later re-POSTs provision-client (same as any create/update) and the invite goes out.
+
+Guard: `portal create works without contact_email; invite waits for one`
