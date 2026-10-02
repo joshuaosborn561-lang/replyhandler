@@ -670,6 +670,12 @@ Guard: `portal takeover stops sends and follow-ups`
 
 After a successful create or update on this dashboard, POST the client fields plus `handler_client_id` (this service's UUID) to `PORTAL_URL/functions/v1/provision-client` with `x-portal-secret` = `PORTAL_WEBHOOK_SECRET`. 10s timeout, one retry after 5s. Failures are logged only — the save here is never rolled back.
 
-If the portal returns a login link, the confirmation screen shows it so Josh can copy it. `contact_email` is optional; empty means `skip_invite: true`. "Sync all clients to portal" pushes every existing client the same way.
+`PORTAL_URL` is the Supabase project URL (`https://scvrsmfzyvmmbnaolcrg.supabase.co`), not salesglider.ai. The portal only stores `name`, `contact_email`, SmartLead/HeyReach keys, `booking_link`, and `active`. Do not send Slack tokens, Calendly PATs, voice, timezone, or CC lists.
+
+Invite emails stay off until DNS points salesglider.ai at the new portal. `skip_invite` is true when `contact_email` is empty **or** `PORTAL_SKIP_INVITE` is unset/true. Set `PORTAL_SKIP_INVITE=false` to send invites. The portal still returns a one-time `login_link`; if it also returns a warning (email change, no re-invite), show that on the dashboard. First create still needs a `contact_email` — the live function returns 400 without one. Empty email only works on a later update of an existing `handler_client_id`.
+
+Portal claim/release/note POSTs may include extra fields (`handler_client_id`, `client_company`, `name`, `company`, `lead_id`). Ignore them. `/client-action` still keys on email + campaign_id.
+
+If the portal returns a login link, the confirmation screen shows it so Josh can copy it. "Sync all clients to portal" pushes every existing client the same way.
 
 Guard: `onboarding mirrors to the client portal`
