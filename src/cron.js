@@ -7,12 +7,23 @@ const { logIntegrationStatus } = require('./services/integration-check');
 const { logInterestedSweep } = require('./services/interested-sweep');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
+const { runWeeklyVoiceLearning } = require('./services/weekly-voice-learning');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
 const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '5', 10);
 const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
 const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
+
+// Friday 4pm Central: after the Friday noon follow-up cutoff and late enough to
+// catch the afternoon's approvals. The job looks back 8 days so anything sent
+// after it runs is picked up the following week. Upserts are idempotent.
+const VOICE_LEARNING_CRON = process.env.VOICE_LEARNING_CRON || '0 16 * * 5';
+const VOICE_LEARNING_TZ = process.env.VOICE_LEARNING_TIMEZONE || 'America/Chicago';
+
+function voiceLearningEnabled() {
+  return !/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_VOICE_LEARNING || '').trim());
+}
 
 function attentionDigestsEnabled() {
   const v = process.env.ATTENTION_DIGESTS_ENABLED;
@@ -136,6 +147,27 @@ function startCron() {
     });
   }
 
+  // ─── Weekly voice learning — Fridays ──────────────────────────────
+  // Learns from the week's Slack-approved / edited sends and manual
+  // SmartLead / HeyReach replies, refreshes RAG, re-synthesizes the voice
+  // profiles drafts read from. Gemini only (bulk job — never Claude).
+  if (voiceLearningEnabled()) {
+    if (!cron.validate(VOICE_LEARNING_CRON)) {
+      console.error('[Cron] Invalid VOICE_LEARNING_CRON — weekly voice learning not scheduled', { expr: VOICE_LEARNING_CRON });
+    } else {
+      cron.schedule(VOICE_LEARNING_CRON, async () => {
+        try {
+          const result = await runWeeklyVoiceLearning({ trigger: 'cron' });
+          console.log('[Cron] Weekly voice learning complete', {
+            rag: result.rag, profiles: result.profiles, errors: result.errors?.length || 0,
+          });
+        } catch (err) {
+          console.error('[Cron] Weekly voice learning failed', { err: err.message });
+        }
+      }, { timezone: VOICE_LEARNING_TZ });
+    }
+  }
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
@@ -240,7 +272,10 @@ function startCron() {
   const digestNote = attentionDigestsEnabled()
     ? 'morning + 3pm attention digests enabled'
     : 'morning + 3pm attention digests disabled (set ATTENTION_DIGESTS_ENABLED=1 to enable)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${digestNote}`);
+  const voiceNote = voiceLearningEnabled()
+    ? `weekly voice learning (${VOICE_LEARNING_CRON} ${VOICE_LEARNING_TZ})`
+    : 'weekly voice learning disabled (DISABLE_VOICE_LEARNING)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {
@@ -452,4 +487,11 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   });
 }
 
-module.exports = { startCron, attentionDigestWindowDays, PENDING_DIGEST_LIMIT };
+module.exports = {
+  startCron,
+  attentionDigestWindowDays,
+  PENDING_DIGEST_LIMIT,
+  VOICE_LEARNING_CRON,
+  VOICE_LEARNING_TZ,
+  voiceLearningEnabled,
+};
