@@ -41,3 +41,36 @@ function reversal(decision, detail) {
     '',
   ].join('\n');
 }
+
+// ── Decision: AI reply channels are interested-only ───────────────────
+// "i only want interested replies to come through there. no OOO and no
+// not interested" — supersedes the older "NOT_INTERESTED reaches Slack".
+test('Slack channels are interested-only — OOO and NOT_INTERESTED suppressed', () => {
+  const {
+    slackChannelSuppressionReason,
+    SLACK_CHANNEL_CLASSIFICATIONS,
+  } = require('../src/utils/slack-channel-policy');
+  const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
+
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('INTERESTED'));
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('MEETING_PROPOSED'));
+  assert.ok(SLACK_CHANNEL_CLASSIFICATIONS.has('QUESTION'));
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'OOO', inboundMessage: 'out of office' }),
+    'ooo',
+    reversal('Slack channels are interested-only', 'OOO is posting again'),
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'NOT_INTERESTED', inboundMessage: 'not interested' }),
+    'not_interested',
+    reversal('Slack channels are interested-only', 'NOT_INTERESTED is posting again'),
+  );
+  assert.strictEqual(
+    slackChannelSuppressionReason({ classification: 'INTERESTED', inboundMessage: 'Sure' }),
+    null,
+  );
+  assert.ok(!DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
+    reversal('Slack channels are interested-only', 'NOT_INTERESTED is drafting again'));
+  assert.ok(!DRAFT_CLASSIFICATIONS.includes('OOO'));
+  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort());
+});
