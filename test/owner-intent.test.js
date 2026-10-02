@@ -921,6 +921,35 @@ test('portal invite emails go out for new clients', () => {
   );
 });
 
+// ── Decision: portal fills itself from ReplyHandler ───────────────────
+// "Backfill provision-client for every existing active client."
+// "On every positive reply, POST new-positive-reply."
+// "when a client's keys change in ReplyHandler, re-send provision-client"
+test('portal fills itself from ReplyHandler', () => {
+  const provision = read('src/services/portal-provision.js');
+  const positive = read('src/services/portal-positive-reply.js');
+  const slackPost = read('src/services/slack-reply-post.js');
+  const admin = read('src/routes/admin.js');
+  const schema = read('schema.sql');
+
+  assert.ok(provision.includes('allo_api_key'),
+    reversal('portal fills itself from ReplyHandler', 'provision no longer sends allo_api_key'));
+  assert.ok(admin.includes('active IS DISTINCT FROM false') && admin.includes('sync-portal'),
+    reversal('portal fills itself from ReplyHandler', 'sync-portal no longer backfills active clients only'));
+  assert.ok(admin.includes('provisionClientToPortal') && admin.includes('allo_api_key'),
+    reversal('portal fills itself from ReplyHandler', 'create/update no longer re-provisions when keys change'));
+  assert.ok(positive.includes('/functions/v1/new-positive-reply'),
+    reversal('portal fills itself from ReplyHandler', 'new-positive-reply path was removed'));
+  assert.ok(positive.includes("'email'") && positive.includes("'linkedin'") && positive.includes("'call'"),
+    reversal('portal fills itself from ReplyHandler', 'channel mapping lost email/linkedin/call'));
+  assert.ok(slackPost.includes('notifyPortalPositiveReply'),
+    reversal('portal fills itself from ReplyHandler', 'Slack-carded positives no longer notify the portal'));
+  assert.ok(positive.includes('FOLLOW_UP') || /not_positive/.test(positive),
+    reversal('portal fills itself from ReplyHandler', 'FOLLOW_UP bumps can now alert the client as a new reply'));
+  assert.ok(schema.includes('allo_api_key'),
+    reversal('portal fills itself from ReplyHandler', 'clients.allo_api_key was dropped'));
+});
+
 // ── Decision: client notify includes the full live thread ─────────────
 test('client notify email includes the full live thread', () => {
   const send = read('src/services/reply-send.js');

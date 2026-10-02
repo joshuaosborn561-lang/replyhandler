@@ -198,6 +198,7 @@ function normalizeHeyreachPayload(payload) {
     linkedinAccountId,
     senderId,
     threadContext,
+    company: fromProspect?.company_name || fromProspect?.company || p.company_name || p.company || null,
   };
 }
 
@@ -583,6 +584,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       replyId: reply.id,
       leadName,
       leadEmail,
+      leadCompany: leadData.company_name || leadData.company || payload.company_name || payload.company || null,
       platform: 'smartlead',
       classification,
       draft,
@@ -590,6 +592,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       inboundMessage: inboundEffective,
       campaignDisplay: campaignDisplaySl,
       lastOutboundMessage: lastOutboundSl,
+      repliedAt: reply.created_at,
     };
 
     await postProspectSlackCard({
@@ -842,6 +845,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           replyId: reply.id,
           leadName: resolvedLeadName,
           leadEmail: null,
+          leadCompany: hr.company || payload.company_name || payload.company || null,
           platform: 'heyreach',
           classification,
           draft,
@@ -849,6 +853,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           inboundMessage,
           campaignDisplay: campaignDisplayHr,
           lastOutboundMessage: lastOutboundHr,
+          repliedAt: reply.created_at,
         };
 
         await postProspectSlackCard({

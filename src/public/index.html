@@ -691,6 +691,12 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label>Allo API Key (optional)</label>
+        <input type="text" id="f_allo_api_key" placeholder="allo_...">
+        <div class="hint">Mirrored to the portal when set. Leave empty if this client has no Allo key.</div>
+      </div>
+
       <div class="form-row">
         <div class="form-group">
           <label>Slack Bot Token *</label>
@@ -1079,6 +1085,10 @@ function openDetail(id) {
         <span class="value masked" onclick="toggleMask(this, '${esc(c.heyreach_api_key || '')}')">${mask(c.heyreach_api_key)}</span>
       </div>
       <div class="detail-row">
+        <span class="label">Allo API Key</span>
+        <span class="value masked" onclick="toggleMask(this, '${esc(c.allo_api_key || '')}')">${mask(c.allo_api_key)}</span>
+      </div>
+      <div class="detail-row">
         <span class="label">Slack Bot Token</span>
         <span class="value masked" onclick="toggleMask(this, '${esc(c.slack_bot_token || '')}')">${mask(c.slack_bot_token)}</span>
       </div>
@@ -1180,6 +1190,7 @@ function openEditFromDetail() {
   document.getElementById('f_name').value = c.name || '';
   document.getElementById('f_smartlead_api_key').value = c.smartlead_api_key || '';
   document.getElementById('f_heyreach_api_key').value = c.heyreach_api_key || '';
+  document.getElementById('f_allo_api_key').value = c.allo_api_key || '';
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
   document.getElementById('f_contact_email').value = c.contact_email || '';
@@ -1198,6 +1209,7 @@ async function submitForm() {
     name: document.getElementById('f_name').value.trim(),
     smartlead_api_key: document.getElementById('f_smartlead_api_key').value.trim() || null,
     heyreach_api_key: document.getElementById('f_heyreach_api_key').value.trim() || null,
+    allo_api_key: document.getElementById('f_allo_api_key').value.trim() || null,
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     contact_email: document.getElementById('f_contact_email').value.trim() || null,
@@ -1253,7 +1265,7 @@ function toggleGuide() {
 }
 
 function clearForm() {
-  ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_slack_bot_token',
+  ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_allo_api_key', 'f_slack_bot_token',
    'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
@@ -1330,7 +1342,7 @@ function copyPortalLoginLink() {
 }
 
 async function syncAllToPortal() {
-  if (!confirm('Push every existing client to the portal? Invite emails go out when a contact email is set. Set PORTAL_SKIP_INVITE=true to suppress them.')) {
+  if (!confirm('Push every active client to the portal? Invite emails go out when a contact email is set. Set PORTAL_SKIP_INVITE=true to suppress them.')) {
     return;
   }
   try {

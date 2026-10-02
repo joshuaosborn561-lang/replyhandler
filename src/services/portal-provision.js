@@ -42,6 +42,7 @@ function buildProvisionPayload(client) {
     skip_invite: !contactEmail || invitesDisabled(),
     smartlead_api_key: client.smartlead_api_key || null,
     heyreach_api_key: client.heyreach_api_key || null,
+    allo_api_key: client.allo_api_key || null,
     booking_link: client.booking_link || null,
     active: client.active !== false,
   };

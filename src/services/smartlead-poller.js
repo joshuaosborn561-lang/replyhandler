@@ -367,6 +367,8 @@ async function processInboxRow(client, row, options) {
     inboundMessage: inbound,
     campaignDisplay,
     lastOutboundMessage: lastOutbound || undefined,
+    leadCompany: row.company_name || row.company || row.lead_company || null,
+    repliedAt: reply.created_at,
   };
 
   try {
