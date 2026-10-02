@@ -3,7 +3,7 @@ const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
-  normalizeContactEmail,
+  portalContactEmail,
   provisionClientToPortal,
   provisionAllClients,
 } = require('../services/portal-provision');
@@ -56,7 +56,7 @@ router.post('/admin/clients', async (req, res) => {
     const rr = normalizeCcListField(cc_round_robin_emails);
     const legacyCc = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
 
-    const contactEmail = normalizeContactEmail(contact_email);
+    const contactEmail = portalContactEmail({ cc_emails: alwaysCc, cc_email: legacyCc });
 
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
@@ -116,6 +116,16 @@ router.post('/admin/clients/sync-portal', async (_req, res) => {
         WHERE active IS DISTINCT FROM false
         ORDER BY created_at ASC`
     );
+    for (const client of rows) {
+      const derived = portalContactEmail(client);
+      if (derived !== (client.contact_email || null)) {
+        await db.query(
+          `UPDATE clients SET contact_email = $1, updated_at = now() WHERE id = $2`,
+          [derived, client.id]
+        );
+        client.contact_email = derived;
+      }
+    }
     const results = await provisionAllClients(rows);
     const ok = results.filter((r) => r.ok).length;
     console.log('[Admin] Portal sync-all finished', { total: results.length, ok });
@@ -148,12 +158,16 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
       const alwaysCc = normalizeCcListField(fields.cc_emails != null ? fields.cc_emails : fields.cc_email);
       fields.cc_emails = alwaysCc;
       fields.cc_email = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
+      fields.contact_email = portalContactEmail({ cc_emails: alwaysCc, cc_email: fields.cc_email });
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'cc_round_robin_emails')) {
       fields.cc_round_robin_emails = normalizeCcListField(fields.cc_round_robin_emails);
     }
-    if (Object.prototype.hasOwnProperty.call(fields, 'contact_email')) {
-      fields.contact_email = normalizeContactEmail(fields.contact_email);
+    if (Object.prototype.hasOwnProperty.call(fields, 'contact_email')
+      && !Object.prototype.hasOwnProperty.call(fields, 'cc_emails')
+      && !Object.prototype.hasOwnProperty.call(fields, 'cc_email')) {
+      // Always-notify is the source of truth. A lone contact_email write is ignored.
+      delete fields.contact_email;
     }
 
     for (const [key, value] of Object.entries(fields)) {

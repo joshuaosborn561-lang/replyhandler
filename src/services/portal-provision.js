@@ -3,6 +3,8 @@
  * Failures never roll back onboarding here.
  */
 
+const { alwaysCcEmails } = require('./client-cc');
+
 const PORTAL_PATH = '/functions/v1/provision-client';
 const TIMEOUT_MS = 10_000;
 const RETRY_WAIT_MS = 5_000;
@@ -10,6 +12,14 @@ const RETRY_WAIT_MS = 5_000;
 function normalizeContactEmail(value) {
   const s = String(value || '').trim().toLowerCase();
   return s.includes('@') ? s : null;
+}
+
+/**
+ * Portal login is the Always-notify address (first always-forward email).
+ * A leftover contact_email column is not a second source of truth.
+ */
+function portalContactEmail(client) {
+  return normalizeContactEmail(alwaysCcEmails(client)[0] || null);
 }
 
 function portalConfigured() {
@@ -34,7 +44,7 @@ function invitesDisabled() {
 }
 
 function buildProvisionPayload(client) {
-  const contactEmail = normalizeContactEmail(client?.contact_email);
+  const contactEmail = portalContactEmail(client);
   return {
     handler_client_id: client.id,
     name: client.name || null,
@@ -186,6 +196,7 @@ module.exports = {
   TIMEOUT_MS,
   RETRY_WAIT_MS,
   normalizeContactEmail,
+  portalContactEmail,
   portalConfigured,
   buildProvisionPayload,
   extractLoginLink,
