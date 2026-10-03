@@ -159,6 +159,21 @@ async function postProspectSlackCard({
   let enrichedCard = card;
   // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
   // burn enrichment credits — those are not bookable follow-ups.
+  let enrichment = null;
+  if (replyId && !shouldSkipEnrichment(card?.classification)) {
+    const phone = await enrichPendingReplyPhone(replyId);
+    enrichment = phone;
+    enrichedCard = {
+      ...card,
+      leadPhone: phone.phone || undefined,
+      phoneProvider: phone.provider || undefined,
+      phoneEnrichmentStatus: phone.status || undefined,
+    };
+  }
+
+  // After enrichment, not before: the portal gets the same phone, LinkedIn and
+  // website the client sees on this card. Still fire and forget, and still below
+  // the only await Slack waits on, so nothing here delays the card.
   if (isPositivePortalClassification(card?.classification)) {
     notifyPortalPositiveReply({
       clientId,
@@ -172,19 +187,13 @@ async function postProspectSlackCard({
       repliedAt: card.repliedAt,
       replyId,
       classification: card.classification,
+      phone: enrichment?.phone || null,
+      phoneProvider: enrichment?.provider || null,
+      linkedinUrl: enrichment?.linkedinUrl || null,
+      website: enrichment?.website || null,
     }, { db }).catch((err) => {
       console.warn('[Portal] Positive-reply notify threw', { err: err.message });
     });
-  }
-
-  if (replyId && !shouldSkipEnrichment(card?.classification)) {
-    const phone = await enrichPendingReplyPhone(replyId);
-    enrichedCard = {
-      ...card,
-      leadPhone: phone.phone || undefined,
-      phoneProvider: phone.provider || undefined,
-      phoneEnrichmentStatus: phone.status || undefined,
-    };
   }
 
   const threadTs = postInThread

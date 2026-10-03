@@ -83,6 +83,10 @@ function buildPositiveReplyPayload({
   leadId,
   snippet,
   repliedAt,
+  phone,
+  phoneProvider,
+  linkedinUrl,
+  website,
 } = {}) {
   const normalizedEmail = normalizeEmail(email);
   return {
@@ -95,6 +99,11 @@ function buildPositiveReplyPayload({
     snippet: snippetFromInbound(snippet),
     replied_at: isoRepliedAt(repliedAt),
     channel: channelFromPlatform(platform),
+    // Enrichment we have already paid for, so the portal never buys it again.
+    phone: String(phone || '').trim() || null,
+    phone_provider: String(phoneProvider || '').trim() || null,
+    linkedin_url: String(linkedinUrl || '').trim() || null,
+    website: String(website || '').trim() || null,
   };
 }
 
