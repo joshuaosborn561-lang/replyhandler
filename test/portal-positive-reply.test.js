@@ -39,7 +39,39 @@ describe('portal positive-reply payload', () => {
       snippet: 'Sounds good, Thursday works.',
       replied_at: '2026-10-02T15:00:00.000Z',
       channel: 'email',
+      phone: null,
+      phone_provider: null,
+      linkedin_url: null,
+      website: null,
     });
+  });
+
+  it('carries enrichment the waterfall already paid for', () => {
+    const payload = buildPositiveReplyPayload({
+      clientId: 'client-1',
+      platform: 'smartlead',
+      email: 'pat@acmeroofing.com',
+      phone: '+15125550143',
+      phoneProvider: 'getleads',
+      linkedinUrl: 'https://www.linkedin.com/in/pat',
+      website: 'https://acmeroofing.com',
+    });
+    assert.equal(payload.phone, '+15125550143');
+    assert.equal(payload.phone_provider, 'getleads');
+    assert.equal(payload.linkedin_url, 'https://www.linkedin.com/in/pat');
+    assert.equal(payload.website, 'https://acmeroofing.com');
+  });
+
+  it('sends null rather than an empty string when enrichment found nothing', () => {
+    const payload = buildPositiveReplyPayload({
+      clientId: 'client-1',
+      platform: 'smartlead',
+      email: 'pat@acmeroofing.com',
+      phone: '   ',
+      linkedinUrl: '',
+    });
+    assert.equal(payload.phone, null);
+    assert.equal(payload.linkedin_url, null);
   });
 
   it('falls back to the email domain when company is missing', () => {
