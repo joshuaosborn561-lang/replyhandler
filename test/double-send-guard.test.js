@@ -83,6 +83,40 @@ test('send path refuses a second copy of the same outbound', () => {
   assert.match(slack, /if \(!skippedDuplicate\)/);
 });
 
+test('Slack post claims the row before the HTTP so recover cannot double-card', () => {
+  const dedupe = read('src/services/reply-dedupe.js');
+  const post = read('src/services/slack-reply-post.js');
+  const claim = dedupe.slice(
+    dedupe.indexOf('async function claimSlackCard'),
+    dedupe.indexOf('async function releaseSlackCardClaim')
+  );
+
+  assert.match(post, /claimSlackCard\(/);
+  assert.ok(
+    post.indexOf('claimSlackCard') < post.indexOf('slack.postDraftApproval'),
+    'claim must run before the Slack HTTP — Philip Walker was recover + webhook'
+  );
+  assert.match(post, /releaseSlackCardClaim/);
+  assert.match(claim, /already_posted|lost_race|sibling_posted/);
+  assert.match(claim, /FOLLOW_UP/,
+    'FOLLOW_UP cadence cards skip the sibling check so they still post');
+  assert.match(claim, /SLACK_CLAIM_PREFIX/);
+  assert.match(dedupe, /const SLACK_CLAIM_PREFIX = 'claiming:'/);
+
+  const recover = dedupe.slice(dedupe.indexOf('async function recoverUnpostedSlackCards'));
+  assert.match(recover, /claiming:%/,
+    'a crashed claim must become recoverable after it goes stale');
+});
+
+test('claim sentinels are not real Slack timestamps', () => {
+  const { isPostedSlackTs, isClaimedSlackTs, SLACK_CLAIM_PREFIX } = require('../src/services/reply-dedupe');
+  assert.ok(isClaimedSlackTs(`${SLACK_CLAIM_PREFIX}abc`));
+  assert.ok(!isPostedSlackTs(`${SLACK_CLAIM_PREFIX}abc`));
+  assert.ok(isPostedSlackTs('1791212760.527909'));
+  assert.ok(!isClaimedSlackTs('1791212760.527909'));
+  assert.ok(!isPostedSlackTs(null));
+});
+
 test('dedupe prefix helper is still the 120-char window', () => {
   const long = `${'word '.repeat(50)}tail that diverges`;
   assert.strictEqual(inboundPrefix(long).length, 120);

@@ -125,6 +125,7 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId) {
         AND COALESCE(campaign_id, '') = COALESCE($3::text, '')
         AND COALESCE(lead_id, '') = COALESCE($4::text, '')
         AND slack_message_ts IS NOT NULL
+        AND slack_message_ts NOT LIKE 'claiming:%'
       ORDER BY created_at ASC
       LIMIT 1`,
     [
@@ -156,92 +157,126 @@ async function postProspectSlackCard({
   replyId,
   postInThread = true,
 }) {
-  let enrichedCard = card;
-  // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
-  // burn enrichment credits — those are not bookable follow-ups.
-  let enrichment = null;
-  if (replyId && !shouldSkipEnrichment(card?.classification)) {
-    const phone = await enrichPendingReplyPhone(replyId);
-    enrichment = phone;
-    enrichedCard = {
-      ...card,
-      leadPhone: phone.phone || undefined,
-      phoneProvider: phone.provider || undefined,
-      phoneEnrichmentStatus: phone.status || undefined,
-    };
-  }
-
-  // After enrichment, not before: the portal gets the same phone, LinkedIn and
-  // website the client sees on this card. Still fire and forget, and still below
-  // the only await Slack waits on, so nothing here delays the card.
-  if (isPositivePortalClassification(card?.classification)) {
-    notifyPortalPositiveReply({
+  if (replyId) {
+    // Lazy require — reply-dedupe loads this file at the top level.
+    const { claimSlackCard } = require('./reply-dedupe');
+    const claim = await claimSlackCard({
+      replyId,
       clientId,
       platform,
-      email: card.leadEmail,
-      name: card.leadName,
-      company: card.leadCompany,
-      campaignId,
       leadId,
-      snippet: card.inboundMessage,
-      repliedAt: card.repliedAt,
-      replyId,
-      classification: card.classification,
-      phone: enrichment?.phone || null,
-      phoneProvider: enrichment?.provider || null,
-      linkedinUrl: enrichment?.linkedinUrl || null,
-      website: enrichment?.website || null,
-    }, { db }).catch((err) => {
-      console.warn('[Portal] Positive-reply notify threw', { err: err.message });
+      leadEmail: card?.leadEmail,
+      inboundMessage: card?.inboundMessage,
+      classification: card?.classification,
     });
-  }
-
-  const threadTs = postInThread
-    ? await findSlackThreadRootTs(clientId, platform, campaignId, leadId)
-    : null;
-  const contextMessage = resolveSlackContextMessage({
-    platform,
-    threadContext,
-    lastOutboundMessage: enrichedCard.lastOutboundMessage,
-    inboundMessage: enrichedCard.inboundMessage,
-  });
-
-  const payload = {
-    ...enrichedCard,
-    lastOutboundMessage: contextMessage.body || undefined,
-    contextLabel: contextMessage.label,
-    threadTs: threadTs || undefined,
-    inThread: !!threadTs,
-  };
-
-  if (isDraft && replyId && platform === 'smartlead') {
-    const { rows: [ccRow] } = await db.query(
-      `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, pr.cc_on_send
-         FROM pending_replies pr
-         JOIN clients c ON c.id = pr.client_id
-        WHERE pr.id = $1`,
-      [replyId]
-    );
-    if (ccRow) {
-      payload.ccEmail = ccRow.cc_email;
-      payload.ccEmails = ccRow.cc_emails || ccRow.cc_email;
-      payload.ccRoundRobinEmails = ccRow.cc_round_robin_emails;
-      payload.ccOnSend = !!ccRow.cc_on_send;
+    if (!claim.claimed) {
+      console.log('[Slack] Skip card — already claimed or posted', {
+        replyId, reason: claim.reason,
+      });
+      return { skipped: true, reason: claim.reason, ts: null };
     }
   }
 
-  const result = isDraft
-    ? await slack.postDraftApproval(token, channelId, payload)
-    : await slack.postAlert(token, channelId, payload);
+  let postedTs = null;
+  try {
+    let enrichedCard = card;
+    // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
+    // burn enrichment credits — those are not bookable follow-ups.
+    let enrichment = null;
+    if (replyId && !shouldSkipEnrichment(card?.classification)) {
+      const phone = await enrichPendingReplyPhone(replyId);
+      enrichment = phone;
+      enrichedCard = {
+        ...card,
+        leadPhone: phone.phone || undefined,
+        phoneProvider: phone.provider || undefined,
+        phoneEnrichmentStatus: phone.status || undefined,
+      };
+    }
 
-  if (replyId) {
-    await db.query(
-      'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
-      [result.ts, replyId]
-    );
+    // After enrichment, not before: the portal gets the same phone, LinkedIn and
+    // website the client sees on this card. Still fire and forget, and still below
+    // the only await Slack waits on, so nothing here delays the card.
+    if (isPositivePortalClassification(card?.classification)) {
+      notifyPortalPositiveReply({
+        clientId,
+        platform,
+        email: card.leadEmail,
+        name: card.leadName,
+        company: card.leadCompany,
+        campaignId,
+        leadId,
+        snippet: card.inboundMessage,
+        repliedAt: card.repliedAt,
+        replyId,
+        classification: card.classification,
+        phone: enrichment?.phone || null,
+        phoneProvider: enrichment?.provider || null,
+        linkedinUrl: enrichment?.linkedinUrl || null,
+        website: enrichment?.website || null,
+      }, { db }).catch((err) => {
+        console.warn('[Portal] Positive-reply notify threw', { err: err.message });
+      });
+    }
+
+    const threadTs = postInThread
+      ? await findSlackThreadRootTs(clientId, platform, campaignId, leadId)
+      : null;
+    const contextMessage = resolveSlackContextMessage({
+      platform,
+      threadContext,
+      lastOutboundMessage: enrichedCard.lastOutboundMessage,
+      inboundMessage: enrichedCard.inboundMessage,
+    });
+
+    const payload = {
+      ...enrichedCard,
+      lastOutboundMessage: contextMessage.body || undefined,
+      contextLabel: contextMessage.label,
+      threadTs: threadTs || undefined,
+      inThread: !!threadTs,
+    };
+
+    if (isDraft && replyId && platform === 'smartlead') {
+      const { rows: [ccRow] } = await db.query(
+        `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, pr.cc_on_send
+           FROM pending_replies pr
+           JOIN clients c ON c.id = pr.client_id
+          WHERE pr.id = $1`,
+        [replyId]
+      );
+      if (ccRow) {
+        payload.ccEmail = ccRow.cc_email;
+        payload.ccEmails = ccRow.cc_emails || ccRow.cc_email;
+        payload.ccRoundRobinEmails = ccRow.cc_round_robin_emails;
+        payload.ccOnSend = !!ccRow.cc_on_send;
+      }
+    }
+
+    const result = isDraft
+      ? await slack.postDraftApproval(token, channelId, payload)
+      : await slack.postAlert(token, channelId, payload);
+
+    postedTs = result.ts;
+    if (replyId) {
+      await db.query(
+        'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
+        [result.ts, replyId]
+      );
+    }
+
+    return { ...result, threadRootTs: threadTs || result.ts };
+  } catch (err) {
+    if (replyId && !postedTs) {
+      const { releaseSlackCardClaim } = require('./reply-dedupe');
+      await releaseSlackCardClaim(replyId).catch((releaseErr) => {
+        console.warn('[Slack] Failed to release card claim', {
+          replyId, err: releaseErr.message,
+        });
+      });
+    }
+    throw err;
   }
-
-  return { ...result, threadRootTs: threadTs || result.ts };
 }
 
 module.exports = {

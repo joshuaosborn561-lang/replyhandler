@@ -683,6 +683,25 @@ test('the same inbound cannot be carded or sent twice', () => {
   assert.match(slack, /skippedDuplicate/,
     reversal('stop sending the same thing twice',
       'Slack no longer surfaces / short-circuits a skipped duplicate send'));
+
+  // Philip Walker: recoverUnposted and the webhook both posted the same row.
+  const post = read('src/services/slack-reply-post.js');
+  assert.match(dedupe, /async function claimSlackCard/,
+    reversal('stop sending the same thing twice',
+      'claimSlackCard was removed — recover and webhook can both post the same inbound'));
+  assert.match(post, /claimSlackCard\(/,
+    reversal('stop sending the same thing twice',
+      'postProspectSlackCard no longer claims the row before the Slack HTTP'));
+  assert.match(post, /releaseSlackCardClaim/,
+    reversal('stop sending the same thing twice',
+      'a failed Slack post no longer releases the claim, so the card stays stuck'));
+  const slackClaim = dedupe.slice(
+    dedupe.indexOf('async function claimSlackCard'),
+    dedupe.indexOf('async function releaseSlackCardClaim')
+  );
+  assert.match(slackClaim, /FOLLOW_UP/,
+    reversal('stop sending the same thing twice',
+      'Slack claim lost the FOLLOW_UP sibling skip — cadence cards would be suppressed'));
 });
 
 // No time-based suppression may exist on the posting path: a prospect who

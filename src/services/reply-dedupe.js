@@ -286,6 +286,128 @@ async function alreadySentSameOutbound({
   return rows.some((r) => sameOutboundText(r.sent_reply, replyText));
 }
 
+const SLACK_CLAIM_PREFIX = 'claiming:';
+const SLACK_CLAIM_STALE_MINUTES = 2;
+
+function slackClaimToken(replyId) {
+  return `${SLACK_CLAIM_PREFIX}${replyId}`;
+}
+
+function isClaimedSlackTs(ts) {
+  return String(ts || '').startsWith(SLACK_CLAIM_PREFIX);
+}
+
+function isPostedSlackTs(ts) {
+  return Boolean(ts) && !isClaimedSlackTs(ts);
+}
+
+/**
+ * Recover + webhook can both call postProspectSlackCard for the same row
+ * (Philip Walker, 2026-10-05 — recover at :00, webhook at :04). Claim the
+ * row before the Slack HTTP so only one path posts.
+ *
+ * FOLLOW_UP cadence cards reuse the original inbound text, so they skip the
+ * sibling check. The row itself is still claimed so the same follow-up card
+ * cannot post twice.
+ */
+async function siblingHasSlackCard({
+  clientId,
+  platform,
+  leadId,
+  leadEmail,
+  inboundMessage,
+  exceptReplyId,
+}) {
+  const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
+  const lid = leadId != null ? String(leadId) : '';
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  if (!normalized) return null;
+  if (!lid && !email) return null;
+
+  const { rows } = await db.query(
+    `SELECT id, slack_message_ts
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND id <> $3
+        AND slack_message_ts IS NOT NULL
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND ${sameReplySql('$4', '$5')}
+        AND ${samePersonSql('$6', '$7')}
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [clientId, platform, exceptReplyId, normalized, fullNorm, lid, email]
+  );
+  return rows[0] || null;
+}
+
+async function claimSlackCard({
+  replyId,
+  clientId,
+  platform,
+  leadId,
+  leadEmail,
+  inboundMessage,
+  classification,
+}) {
+  if (!replyId) return { claimed: true };
+  const token = slackClaimToken(replyId);
+
+  const { rows: [row] } = await db.query(
+    'SELECT slack_message_ts FROM pending_replies WHERE id = $1',
+    [replyId]
+  );
+  if (!row) return { claimed: false, reason: 'missing_row' };
+  if (isPostedSlackTs(row.slack_message_ts)) {
+    return { claimed: false, reason: 'already_posted' };
+  }
+  if (isClaimedSlackTs(row.slack_message_ts) && row.slack_message_ts !== token) {
+    return { claimed: false, reason: 'already_claimed' };
+  }
+  if (row.slack_message_ts === token) {
+    return { claimed: true };
+  }
+
+  if (String(classification || '').toUpperCase() !== 'FOLLOW_UP') {
+    const sibling = await siblingHasSlackCard({
+      clientId, platform, leadId, leadEmail, inboundMessage, exceptReplyId: replyId,
+    });
+    if (sibling) {
+      return { claimed: false, reason: 'sibling_posted' };
+    }
+  }
+
+  const { rows: claimed } = await db.query(
+    `UPDATE pending_replies
+        SET slack_message_ts = $1, updated_at = now()
+      WHERE id = $2
+        AND (
+          slack_message_ts IS NULL
+          OR (
+            slack_message_ts LIKE $3
+            AND updated_at < now() - interval '${SLACK_CLAIM_STALE_MINUTES} minutes'
+          )
+        )
+      RETURNING id`,
+    [token, replyId, `${SLACK_CLAIM_PREFIX}%`]
+  );
+  if (!claimed[0]) {
+    return { claimed: false, reason: 'lost_race' };
+  }
+  return { claimed: true };
+}
+
+async function releaseSlackCardClaim(replyId) {
+  if (!replyId) return;
+  await db.query(
+    `UPDATE pending_replies
+        SET slack_message_ts = NULL, updated_at = now()
+      WHERE id = $1 AND slack_message_ts = $2`,
+    [replyId, slackClaimToken(replyId)]
+  );
+}
+
 async function findUnpostedReply({
   clientId,
   platform,
@@ -411,7 +533,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     lastOutboundMessage: lastOutboundFromThreadContext(reply) || undefined,
   };
 
-  await postProspectSlackCard({
+  const posted = await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: client.slack_channel_id,
     clientId: client.id,
@@ -423,7 +545,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     replyId: reply.id,
     card,
   });
-  return true;
+  return !posted?.skipped;
 }
 
 /** Retry any DB rows that never made it to Slack (e.g. Slack API error after insert). */
@@ -432,7 +554,13 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
     `SELECT pr.*, c.slack_bot_token, c.slack_channel_id, c.name AS client_name
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
-      WHERE pr.slack_message_ts IS NULL
+      WHERE (
+          pr.slack_message_ts IS NULL
+          OR (
+            pr.slack_message_ts LIKE 'claiming:%'
+            AND pr.updated_at < now() - interval '2 minutes'
+          )
+        )
         AND pr.status IN ('pending', 'alert_only')
         AND pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
         AND c.active IS DISTINCT FROM false
@@ -451,9 +579,15 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
       slack_channel_id: row.slack_channel_id,
     };
     try {
-      await repostReplyRowToSlack(client, row, {
+      const posted = await repostReplyRowToSlack(client, row, {
         reasoningExtra: 'Recovered: reply was saved but never posted to Slack.',
       });
+      if (!posted) {
+        console.log('[ReplyDedupe] Slack recovery skipped — already claimed or posted', {
+          replyId: row.id, lead: row.lead_name,
+        });
+        continue;
+      }
       recovered++;
       console.log('[ReplyDedupe] Recovered unposted Slack card', {
         replyId: row.id, client: client.name, lead: row.lead_name,
@@ -481,8 +615,13 @@ module.exports = {
   inboundAlreadyRecorded,
   alreadyPostedToSlack,
   claimNewInbound,
+  claimSlackCard,
+  releaseSlackCardClaim,
   alreadySentSameOutbound,
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  SLACK_CLAIM_PREFIX,
+  isPostedSlackTs,
+  isClaimedSlackTs,
 };
