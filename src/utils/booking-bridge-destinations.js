@@ -1,0 +1,116 @@
+/**
+ * Booking-bridge wrap → the real calendar behind it.
+ *
+ * book.gosalesglider.com/{slug} only captures email and redirects. It does
+ * not expose open slots. Availability has to be read from the destination
+ * (Calendly when we have a PAT; HubSpot / MS Bookings / PowerPSA cannot).
+ *
+ * Static map matches booking-bridge `site/clients.js`. A live refresh of
+ * that file overlays newer destinations so a Calendly URL change there
+ * does not leave us offering stale times.
+ */
+
+const { BOOKING_BRIDGE_ORIGIN } = require('./public-booking-link');
+const { slugFromClientName } = require('../services/booking-bridge');
+
+const BOOKING_BRIDGE_HOSTS = new Set([
+  'book.gosalesglider.com',
+  'book.salesglidergrowth.com',
+]);
+
+/** Last known destinations from booking-bridge site/clients.js */
+const FALLBACK_DESTINATIONS = Object.freeze({
+  goliath: 'https://meetings.hubspot.com/dave-ackley',
+  parlay: 'https://calendly.com/randyhaba/30min',
+  techevo: 'https://calendly.com/ctapper/meeting',
+  culturefits:
+    'https://bookings.cloud.microsoft/bookwithme/user/7faa90d1324a4bc6a511427c5b9a1488%40culture-fits.com/meetingtype/vkqrp6uGEUq_wrB0u0dyhA2?anonymous&ismsaljsauthenabled',
+  bolder: 'https://calendly.com/mike-boldercyberpartners/30min',
+  salesglider: 'https://calendly.com/joshua-salesglidergrowth/30min',
+  powergryd: 'https://meet.powerpsa.com/jesse/powergryd-strategy-call-2026',
+});
+
+const LIVE_TTL_MS = 15 * 60 * 1000;
+let liveDestinations = null;
+let liveFetchedAt = 0;
+
+function parseClientsJs(text) {
+  const out = {};
+  const re = /"([a-z0-9_-]+)"\s*:\s*\{[\s\S]*?bookingUrl\s*:\s*"([^"]+)"/g;
+  let m;
+  while ((m = re.exec(String(text || '')))) {
+    if (m[1] && m[2]) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+function destinationMap() {
+  return { ...FALLBACK_DESTINATIONS, ...(liveDestinations || {}) };
+}
+
+function slugFromWrapUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (!BOOKING_BRIDGE_HOSTS.has(host)) return '';
+    return (u.pathname.split('/').filter(Boolean)[0] || '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isBookingBridgeWrap(url) {
+  return Boolean(slugFromWrapUrl(url));
+}
+
+/**
+ * Calendar URL to query for open times. Never paste this into a draft when
+ * the prospect-facing link is the public wrap.
+ */
+function resolveAvailabilityBookingUrl(client, destMap = destinationMap()) {
+  const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
+  const wrapSlug = slugFromWrapUrl(stored);
+  if (wrapSlug && destMap[wrapSlug]) return String(destMap[wrapSlug]).trim();
+  if (stored) return stored;
+  const nameSlug = slugFromClientName(client && client.name);
+  return nameSlug && destMap[nameSlug] ? String(destMap[nameSlug]).trim() : '';
+}
+
+async function refreshDestinations({ fetchImpl = fetch, now = Date.now() } = {}) {
+  if (liveDestinations && now - liveFetchedAt < LIVE_TTL_MS) {
+    return destinationMap();
+  }
+  try {
+    const res = await fetchImpl(`${BOOKING_BRIDGE_ORIGIN}/clients.js`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res && res.ok) {
+      const text = typeof res.text === 'function' ? await res.text() : '';
+      const parsed = parseClientsJs(text);
+      if (Object.keys(parsed).length) {
+        liveDestinations = parsed;
+        liveFetchedAt = now;
+      }
+    }
+  } catch {
+    // Keep the baked-in map — a stale destination is better than none.
+  }
+  return destinationMap();
+}
+
+function _resetLiveDestinationsForTests() {
+  liveDestinations = null;
+  liveFetchedAt = 0;
+}
+
+module.exports = {
+  FALLBACK_DESTINATIONS,
+  BOOKING_BRIDGE_HOSTS,
+  parseClientsJs,
+  destinationMap,
+  slugFromWrapUrl,
+  isBookingBridgeWrap,
+  resolveAvailabilityBookingUrl,
+  refreshDestinations,
+  _resetLiveDestinationsForTests,
+};

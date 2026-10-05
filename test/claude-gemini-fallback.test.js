@@ -31,14 +31,16 @@ describe('Claude fail falls through to Gemini', () => {
     assert.doesNotMatch(draft, /mid-morning or .+ early afternoon/i);
   });
 
-  it('bare INTERESTED still uses times-first last-resort template', () => {
+  it('bare INTERESTED last-resort template offers two times and the booking link', () => {
     const draft = fallbackDraftText({
       leadName: 'Dean',
       inboundMessage: 'Sure',
       classification: 'INTERESTED',
       digestTimezone: 'America/Chicago',
       voicePrompt: '',
+      bookingLink: 'https://calendly.com/example/30min',
     });
     assert.match(draft, /quick call/i);
+    assert.match(draft, /calendly.com\/example\/30min/);
   });
 });

@@ -13,6 +13,8 @@ const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-web
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { prospectBookingLink } = require('../utils/public-booking-link');
+const { resolveVerifiedSchedulingSlots, slotOffsetForFollowUpStep } = require('./scheduling-slots');
+const { prefersInPersonMeeting } = require('../utils/meeting-modality');
 const { isLeadClaimed, cancelClaimedLeadWork } = require('./client-claimed');
 
 /** Shared Slack channel for all FOLLOW_UP bumps (not per-client inbox channels). */
@@ -167,19 +169,38 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   }
   const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
   const inboundForCard = originalInbound || '(no new reply from prospect)';
+  const inPerson = prefersInPersonMeeting(client.voice_prompt);
+  const bookingLink = inPerson
+    ? ''
+    : prospectBookingLink({
+      clientName: client.name,
+      bookingLink: client.booking_link,
+    });
+
+  let slots = [];
+  const step = Number(fu.step) || 1;
+  if (step >= 2) {
+    try {
+      const resolved = await resolveVerifiedSchedulingSlots(client, {
+        offset: slotOffsetForFollowUpStep(step),
+        count: 2,
+      });
+      slots = resolved.slots || [];
+    } catch (err) {
+      console.warn('[FollowUp] scheduling slots failed', { err: err.message, step });
+    }
+  }
 
   const draft = await draftReattemptToBook({
     leadName: fu.lead_name,
     platform: fu.platform,
     voicePrompt: client.voice_prompt,
-    bookingLink: prospectBookingLink({
-      clientName: client.name,
-      bookingLink: client.booking_link,
-    }),
+    bookingLink,
     lastInboundMessage: originalInbound || null,
     lastOutboundMessage: lastOutbound || null,
     digestTimezone: client.digest_timezone,
-    step: fu.step,
+    step,
+    slots,
   });
 
   const sentExtras = await priorSentMessages(client.id, fu);

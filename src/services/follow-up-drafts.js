@@ -1,12 +1,15 @@
 const { firstNameFromLead } = require('./classifier');
 
 /**
- * Offer-first FOLLOW_UP bumps — mirror the human-edited nudges that actually
- * get approved (Scott / Max / Hilary / Dean), not the first-reply times-first
- * template. Never open with "thanks for getting back to me" (they didn't).
+ * FOLLOW_UP bumps.
+ *
+ * Same-day step 1 stays a short offer-first nudge (they just got times).
+ * Next-day step 2+ says those times were taken, offers two new times, and
+ * includes the booking link (except in-person / Vasco).
  *
  * Every bump reframes the value prop from the original outbound ("still
  * interested in meeting for X"). Step 3+ never uses dashes — use "..." instead.
+ * Never open with "thanks for getting back to me" (they didn't).
  */
 
 function norm(s) {
@@ -150,6 +153,54 @@ function bumpForOffer({ name, offer, step, inPerson = false, lastOutboundMessage
   return n >= 3 ? scrubDashes(text) : text;
 }
 
+function slotLabelsFrom(slots, digestTimezone) {
+  const labels = (slots || [])
+    .map((s) => (s && typeof s === 'object' ? s.label : s))
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+  if (labels.length >= 2) return labels.slice(0, 2);
+  const { nextTwoBusinessDayLabels } = require('./classifier');
+  const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone);
+  return [labels[0] || `${d1} mid-morning`, labels[1] || `${d2} early afternoon`];
+}
+
+/**
+ * Next-day (step 2+) refresh: those times were taken, here are two more,
+ * plus the booking link (except in-person).
+ */
+function timesTakenBump({
+  name,
+  offer,
+  step,
+  inPerson = false,
+  lastOutboundMessage = '',
+  slots,
+  bookingLink,
+  digestTimezone,
+} = {}) {
+  const n = Number(step) || 2;
+  const x = valuePropPhrase(offer, lastOutboundMessage);
+  const [a, b] = slotLabelsFrom(slots, digestTimezone);
+  const link = String(bookingLink || '').trim();
+
+  let text;
+  if (inPerson) {
+    if (n === 2) {
+      text = `Hey ${name}, those times got taken...does ${a} or ${b} work for me to stop by in person about ${x}?`;
+    } else {
+      text = `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work to stop by for ${x}?`;
+    }
+  } else {
+    const linkBit = link ? ` Or grab a time here: ${link}` : '';
+    if (n === 2) {
+      text = `Hey ${name}, those times got taken...does ${a} or ${b} work instead to chat about ${x}?${linkBit}`;
+    } else {
+      text = `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work for ${x}?${linkBit}`;
+    }
+  }
+  return n >= 3 ? scrubDashes(text) : text;
+}
+
 function fallbackReattempt({
   leadName,
   platform,
@@ -158,25 +209,38 @@ function fallbackReattempt({
   voicePrompt,
   lastOutboundMessage,
   step,
-}) {
+  slots,
+} = {}) {
   void platform;
-  void bookingLink;
-  void digestTimezone;
   const { prefersInPersonMeeting } = require('../utils/meeting-modality');
   const name = firstNameFromLead(leadName);
   const offer = detectOffer(lastOutboundMessage);
+  const inPerson = prefersInPersonMeeting(voicePrompt);
+  const n = Number(step) || 1;
+  if (n >= 2) {
+    return timesTakenBump({
+      name,
+      offer,
+      step: n,
+      inPerson,
+      lastOutboundMessage,
+      slots,
+      bookingLink: inPerson ? '' : bookingLink,
+      digestTimezone,
+    });
+  }
   return bumpForOffer({
     name,
     offer,
     step,
-    inPerson: prefersInPersonMeeting(voicePrompt),
+    inPerson,
     lastOutboundMessage,
   });
 }
 
 /**
- * Draft a short, offer-first follow-up bump (not a copy of the first reply).
- * Never throws; always returns plain text usable in Slack.
+ * Draft the next cadence bump. Never throws; always returns plain text
+ * usable in Slack.
  */
 async function draftReattemptToBook({
   leadName,
@@ -187,6 +251,7 @@ async function draftReattemptToBook({
   lastOutboundMessage,
   digestTimezone,
   step,
+  slots,
 }) {
   void lastInboundMessage;
   return fallbackReattempt({
@@ -197,6 +262,7 @@ async function draftReattemptToBook({
     voicePrompt,
     lastOutboundMessage,
     step,
+    slots,
   });
 }
 
@@ -205,6 +271,7 @@ module.exports = {
   fallbackReattempt,
   detectOffer,
   bumpForOffer,
+  timesTakenBump,
   valuePropPhrase,
   scrubDashes,
 };

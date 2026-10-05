@@ -207,12 +207,16 @@ async function generateClaudeReply({
     clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
     preferAckExamples: true,
   });
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
   const link = String(bookingLink || '').trim();
-  const bookingPolicy = includeBookingLink
-    ? `The prospect asked for or accepted the booking link. Include this exact link once: ${link || '(no link configured)'}.`
-    : mode === 'CONTINUATION'
-      ? `Continue the thread. Suggest a next step or times only after acknowledging their latest point. Offer to send a booking link if needed. Do not include any URL unless they asked for the link.`
-      : `This is a times-first reply after acknowledging their point. Suggest concrete times from the scheduling guidance, and offer to send a booking link if neither works. Do not include any URL in this reply.`;
+  const bookingPolicy = inPerson
+    ? 'IN-PERSON: Suggest two concrete times to stop by. Do not include any booking URL, Zoom, or phone CTA.'
+    : includeBookingLink
+      ? `Suggest two concrete times from the scheduling guidance, then include this exact booking link once: ${link || '(no link configured)'}.`
+      : mode === 'CONTINUATION'
+        ? `Continue the thread. Suggest a next step or times only after acknowledging their latest point. Do not include any URL unless they asked for the link.`
+        : `This is a times-first reply after acknowledging their point. Suggest concrete times from the scheduling guidance. Do not include any URL in this reply.`;
 
   const teammateRule = asPrincipal
     ? '- You are the CEO. Never say "our CEO", "our founder", or hand off to a CEO/founder. Suggest a quick call with you ("with me").'
@@ -244,7 +248,7 @@ async function generateClaudeReply({
     learnedVoice,
     'OPERATIONAL RULES:',
     `- ${bookingPolicy}`,
-    '- The operational booking rule overrides any older retrieved example that pasted a link too early.',
+    '- The operational booking rule overrides any older retrieved example that withheld the booking link or invented times.',
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
     '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply, the scheduling guidance, or the CLIENT NOTES above. If it appears only in a retrieved example, remove it.',
     teammateRule,

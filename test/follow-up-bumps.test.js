@@ -58,28 +58,46 @@ describe('offer-first FOLLOW_UP bumps', () => {
 
   it('every step reframes the original value prop', () => {
     const outbound = 'Happy to send you some Rangers tix just for the convo.';
+    const slots = [
+      { label: 'Tue, Oct 7, 10:00 AM CDT' },
+      { label: 'Wed, Oct 8, 2:00 PM CDT' },
+    ];
     for (const step of [1, 2, 3, 4]) {
       const draft = fallbackReattempt({
         leadName: 'Todd',
         lastOutboundMessage: outbound,
+        bookingLink: 'https://calendly.com/example/30min',
+        slots,
         step,
       });
       assert.match(draft, /Rangers tickets|Rangers tix|tickets/i, `step ${step} lost the value prop`);
-      assert.match(draft, /meeting for|chat about/i, `step ${step} missing meeting reframe`);
+      assert.match(draft, /meeting for|chat about|work for/i, `step ${step} missing meeting reframe`);
+      if (step >= 2) {
+        assert.match(draft, /those times got taken/i, `step ${step} is not a times-taken refresh`);
+        assert.match(draft, /calendly.com\/example\/30min/, `step ${step} dropped the booking link`);
+      }
     }
   });
 
   it('3rd bump never uses dashes — ellipsis only', () => {
+    const slots = [
+      { label: 'Tue, Oct 7, 10:00 AM CDT' },
+      { label: 'Wed, Oct 8, 2:00 PM CDT' },
+    ];
     const drafts = [
       fallbackReattempt({
         leadName: 'Scott',
         lastOutboundMessage: 'Free campaign to 10k leads on me.',
         step: 3,
+        bookingLink: 'https://calendly.com/example/30min',
+        slots,
       }),
       fallbackReattempt({
         leadName: 'Max',
         lastOutboundMessage: 'Some Marlins tix for the convo.',
         step: 3,
+        bookingLink: 'https://calendly.com/example/30min',
+        slots,
       }),
       bumpForOffer({
         name: 'Don',
@@ -93,8 +111,26 @@ describe('offer-first FOLLOW_UP bumps', () => {
       assert.doesNotMatch(draft, /[—–]/, `dash found: ${draft}`);
       assert.doesNotMatch(draft, /\s-\s/, `spaced hyphen dash found: ${draft}`);
       assert.match(draft, /\.\.\./, `expected ellipsis: ${draft}`);
-      assert.match(draft, /still interested in meeting for|meet in person for/i);
+      assert.match(draft, /still interested in meeting for|meet in person for|those times got taken|stop by for/i);
     }
+  });
+
+  it('next-day bump says the first times were taken and offers two new ones plus the link', () => {
+    const draft = fallbackReattempt({
+      leadName: 'Dean',
+      lastOutboundMessage: 'Does Tuesday mid-morning or Wednesday early afternoon work?',
+      step: 2,
+      bookingLink: 'https://calendly.com/example/30min',
+      slots: [
+        { label: 'Thu, Oct 9, 10:00 AM CDT' },
+        { label: 'Fri, Oct 10, 2:00 PM CDT' },
+      ],
+    });
+    assert.match(draft, /those times got taken/i);
+    assert.match(draft, /Thu, Oct 9/);
+    assert.match(draft, /Fri, Oct 10/);
+    assert.match(draft, /calendly.com\/example\/30min/);
+    assert.doesNotMatch(draft, /thanks for getting back to me/i);
   });
 
   it('scrubDashes turns em dashes into ellipsis', () => {

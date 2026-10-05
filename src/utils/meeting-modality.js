@@ -2,9 +2,13 @@
  * How a client prefers to meet after a positive reply.
  *
  * Driven by voice_prompt so one client (e.g. Vasco / Carlos) can offer
- * in-person stop-bys without changing the global times-first + booking-link
- * default used by everyone else.
+ * in-person stop-bys without changing the global default: two calendar
+ * times plus the booking link.
  */
+
+function shouldIncludeBookingLink(voicePrompt) {
+  return !prefersInPersonMeeting(voicePrompt);
+}
 
 function prefersInPersonMeeting(voicePrompt) {
   const s = String(voicePrompt || '').toLowerCase();
@@ -45,5 +49,6 @@ function meetingCta({ voicePrompt, day1, day2 } = {}) {
 
 module.exports = {
   prefersInPersonMeeting,
+  shouldIncludeBookingLink,
   meetingCta,
 };

@@ -31,9 +31,10 @@ assert.ok(sanitizeDraft('Sounds good.', { bookingLink: link, includeBookingLink:
 
 const timesBlock = buildTimeSuggestionBlock({ includeBookingLink: false, digestTimezone: 'America/Chicago' });
 assert.ok(/TIMES-FIRST/i.test(timesBlock));
-assert.ok(!/include it once/i.test(timesBlock));
+assert.ok(!/include the booking URL once/i.test(timesBlock));
 
-const linkBlock = buildTimeSuggestionBlock({ includeBookingLink: true });
-assert.ok(/booking link/i.test(linkBlock));
+const linkBlock = buildTimeSuggestionBlock({ includeBookingLink: true, digestTimezone: 'America/Chicago' });
+assert.ok(/TIMES \+ BOOKING LINK/i.test(linkBlock));
+assert.ok(/include the booking URL once/i.test(linkBlock));
 
 console.log('ok — booking-link intent + sanitizeDraft');
