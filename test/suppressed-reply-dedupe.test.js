@@ -19,32 +19,31 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-function alreadyPostedQuery() {
+function inboundAlreadyRecordedQuery() {
   const src = read('src/services/reply-dedupe.js');
-  const start = src.indexOf('async function alreadyPostedToSlack');
-  assert.ok(start > -1, 'alreadyPostedToSlack must exist');
-  const end = src.indexOf('async function findUnpostedReply');
+  const start = src.indexOf('async function inboundAlreadyRecorded');
+  assert.ok(start > -1, 'inboundAlreadyRecorded must exist');
+  const end = src.indexOf('async function alreadyPostedToSlack');
   return src.slice(start, end);
 }
 
 test('suppressed replies satisfy the already-handled check', () => {
-  const q = alreadyPostedQuery();
+  const q = inboundAlreadyRecordedQuery();
 
-  assert.match(
-    q,
-    /status = 'suppressed'/,
-    'a suppressed reply is terminal — it must match dedupe, or the poller '
-    + 'reprocesses it on every cycle forever'
-  );
-  assert.match(
-    q,
-    /slack_message_ts IS NOT NULL\s*[\r\n]/,
-    'genuinely posted cards must still match'
-  );
-  // The two conditions have to be alternatives, not both required.
+  // Any non-FOLLOW_UP row counts — pending, sent, suppressed, alert_only.
+  // Requiring slack_message_ts missed webhook rows that had not posted yet
+  // (Casey Buckstaff double-card, 2026-10-05) and also missed suppressed
+  // rows that never post (88k amplification, 2026-08-19).
+  assert.match(q, /FROM pending_replies/, 'must query pending_replies');
   assert.ok(
-    /slack_message_ts IS NOT NULL[\s\S]{0,600}?OR status = 'suppressed'/.test(q),
-    "the suppressed check must be OR'd with slack_message_ts, not AND'd"
+    !/slack_message_ts/.test(q),
+    'do not require slack_message_ts — suppressed rows never have one, and '
+    + 'a just-inserted webhook row does not have one yet'
+  );
+  assert.ok(
+    !/status\s*=/.test(q) && !/status\s+IN/.test(q),
+    'any recorded row counts, including suppressed. A status filter would '
+    + 're-open the 88k amplification'
   );
 });
 

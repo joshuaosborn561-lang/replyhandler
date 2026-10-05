@@ -8,6 +8,7 @@ const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
+const { alreadySentSameOutbound } = require('./reply-dedupe');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -112,6 +113,22 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
   // Portal takeover: do not send if the client already claimed this lead.
   await clientClaimed.assertNotClaimedOrThrow(reply);
+
+  // Two Slack cards for one inbound (webhook + poller race) can both be
+  // approved. Do not deliver the same outbound twice (Casey Buckstaff).
+  if (await alreadySentSameOutbound({
+    clientId: reply.client_id,
+    platform: reply.platform,
+    leadId: reply.lead_id,
+    leadEmail: reply.lead_email,
+    replyText,
+    exceptReplyId: reply.id,
+  })) {
+    console.warn('[ReplySend] Skipping outbound — same text already sent to this person', {
+      replyId: reply.id, lead: reply.lead_name, platform: reply.platform,
+    });
+    return { skippedDuplicate: true };
+  }
 
   if (reply.platform === 'smartlead') {
     // Primary: the stats_id captured at webhook ingestion.

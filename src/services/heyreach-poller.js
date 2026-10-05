@@ -10,6 +10,7 @@ const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
+  claimNewInbound,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
   normalizeInboundText,
@@ -439,25 +440,41 @@ async function processConversation(client, conv, options) {
     },
   };
 
-  const { rows: [reply] } = await db.query(
-    `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-     VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING *`,
-    [
-      client.id,
-      cid == null ? null : String(cid),
-      hrCampaignName || null,
-      String(leadKey),
-      leadName(conv),
-      linkedinUrl(conv),
-      inbound.text,
-      JSON.stringify(meta),
-      classification,
-      draft,
-      status,
-    ]
-  );
+  const claimed = await claimNewInbound({
+    clientId: client.id,
+    platform: 'heyreach',
+    leadId: leadKey,
+    leadEmail: null,
+    inboundMessage: inbound.text,
+  }, async (conn) => {
+    const { rows: [inserted] } = await conn.query(
+      `INSERT INTO pending_replies
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+       VALUES ($1, 'heyreach', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        client.id,
+        cid == null ? null : String(cid),
+        hrCampaignName || null,
+        String(leadKey),
+        leadName(conv),
+        linkedinUrl(conv),
+        inbound.text,
+        JSON.stringify(meta),
+        classification,
+        draft,
+        status,
+      ]
+    );
+    return inserted;
+  });
+  if (claimed.duplicate) {
+    console.log('[HeyReachPoll] Duplicate after classify — another path already recorded it', {
+      client: client.name, leadKey, existingId: claimed.existing?.id,
+    });
+    return { skipped: 'already_posted', existingId: claimed.existing?.id };
+  }
+  const reply = claimed.reply;
 
   const card = {
     replyId: reply.id,

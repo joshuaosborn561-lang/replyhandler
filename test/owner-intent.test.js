@@ -643,6 +643,48 @@ test('the same reply never repeats, a new reply always shows', () => {
   }
 });
 
+// Same inbound must not produce two Slack cards / two outbound sends.
+// Casey Buckstaff 2026-10-05: webhook inserted, poller inserted 2s later
+// because alreadyPosted required slack_message_ts.
+test('the same inbound cannot be carded or sent twice', () => {
+  const dedupe = read('src/services/reply-dedupe.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const heyreach = read('src/services/heyreach-poller.js');
+  const webhook = read('src/routes/webhooks.js');
+  const send = read('src/services/reply-send.js');
+  const slack = read('src/routes/slack.js');
+
+  assert.match(dedupe, /async function claimNewInbound/,
+    reversal('stop sending the same thing twice', 'claimNewInbound was removed — webhook and poller can both insert'));
+  assert.match(dedupe, /pg_advisory_xact_lock/,
+    reversal('stop sending the same thing twice', 'the insert lock is gone'));
+  const recorded = dedupe.slice(
+    dedupe.indexOf('async function inboundAlreadyRecorded'),
+    dedupe.indexOf('async function alreadyPostedToSlack')
+  );
+  assert.ok(recorded.includes('FROM pending_replies'),
+    reversal('stop sending the same thing twice', 'inboundAlreadyRecorded no longer queries pending_replies'));
+  assert.ok(!/slack_message_ts/.test(recorded),
+    reversal('stop sending the same thing twice',
+      'dedupe again requires slack_message_ts — that is the Casey race'));
+  assert.match(dedupe, /lower\(COALESCE\(lead_email, ''\)\)/,
+    reversal('stop sending the same thing twice', 'same person is no longer matched by email as well as lead_id'));
+
+  assert.match(poller, /claimNewInbound\(/,
+    reversal('stop sending the same thing twice', 'SmartLead poller inserts without the claim lock'));
+  assert.match(heyreach, /claimNewInbound\(/,
+    reversal('stop sending the same thing twice', 'HeyReach poller inserts without the claim lock'));
+  assert.match(webhook, /claimNewInbound\(/,
+    reversal('stop sending the same thing twice', 'webhook inserts without the claim lock'));
+
+  assert.match(send, /alreadySentSameOutbound/,
+    reversal('stop sending the same thing twice',
+      'approve can send the same outbound twice if two cards already exist'));
+  assert.match(slack, /skippedDuplicate/,
+    reversal('stop sending the same thing twice',
+      'Slack no longer surfaces / short-circuits a skipped duplicate send'));
+});
+
 // No time-based suppression may exist on the posting path: a prospect who
 // replies twice in an hour must produce two cards.
 test('no time window can swallow a reply', () => {

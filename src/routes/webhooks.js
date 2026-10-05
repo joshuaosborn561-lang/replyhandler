@@ -6,7 +6,11 @@ const { classifyAndDraft } = require('../services/classifier');
 const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
-const { inboundPrefix, normalizeInboundText, sameReplySql } = require('../services/reply-dedupe');
+const {
+  inboundPrefix,
+  inboundAlreadyRecorded,
+  claimNewInbound,
+} = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
@@ -238,26 +242,24 @@ function isHeyreachDuplicate(key) {
 }
 
 async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversationId, inboundMessage }) {
-  const normalized = inboundPrefix(inboundMessage);
-  const fullNorm = normalizeInboundText(inboundMessage);
-  if (!normalized) return false;
-  const threadKey = conversationId != null && String(conversationId).trim() !== ''
-    ? String(conversationId).trim()
-    : leadId == null
-      ? ''
-      : String(leadId);
-  const { rows } = await db.query(
-    `SELECT 1
-       FROM pending_replies
-      WHERE client_id = $1
-        AND platform = 'heyreach'
-        AND campaign_id = $2
-        AND COALESCE(lead_id, '') = $3
-        AND ${sameReplySql('$4', '$5')}
-      LIMIT 1`,
-    [clientId, String(campaignId || ''), threadKey, normalized, fullNorm]
-  );
-  return rows.length > 0;
+  void campaignId;
+  const ids = [...new Set([
+    conversationId != null && String(conversationId).trim() !== '' ? String(conversationId).trim() : null,
+    leadId == null ? null : String(leadId),
+  ].filter(Boolean))];
+  if (!ids.length) {
+    return Boolean(await inboundAlreadyRecorded(db, {
+      clientId, platform: 'heyreach', leadId: '', leadEmail: '', inboundMessage,
+    }));
+  }
+  for (const id of ids) {
+    if (await inboundAlreadyRecorded(db, {
+      clientId, platform: 'heyreach', leadId: id, leadEmail: '', inboundMessage,
+    })) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -275,21 +277,15 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * no pending_replies row was ever created). Per DECISIONS.md: "dedupe on text
  * only, never on time" — same text = duplicate, different text always shows.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage }) {
-  const normalized = inboundPrefix(inboundMessage);
-  const fullNorm = normalizeInboundText(inboundMessage);
-  if (!normalized) return false;
-  const { rows } = await db.query(
-    `SELECT 1
-       FROM pending_replies
-      WHERE client_id = $1
-        AND platform = 'smartlead'
-        AND COALESCE(lead_id, '') = $3
-        AND ${sameReplySql('$4', '$5')}
-      LIMIT 1`,
-    [clientId, String(campaignId || ''), leadId == null ? '' : String(leadId), normalized, fullNorm]
-  );
-  return rows.length > 0;
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail }) {
+  void campaignId;
+  return Boolean(await inboundAlreadyRecorded(db, {
+    clientId,
+    platform: 'smartlead',
+    leadId,
+    leadEmail,
+    inboundMessage,
+  }));
 }
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
@@ -485,7 +481,13 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         ? lastOutboundBodyFromSmartleadHistory(threadContext)
         : '');
 
-    if (await smartleadDuplicateInDb({ clientId, campaignId: resolvedCampaignId, leadId, inboundMessage: inboundEffective })) {
+    if (await smartleadDuplicateInDb({
+      clientId,
+      campaignId: resolvedCampaignId,
+      leadId,
+      leadEmail,
+      inboundMessage: inboundEffective,
+    })) {
       console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
     }
@@ -565,12 +567,28 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
     }
 
-    const { rows: [reply] } = await db.query(
-      `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-      [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
-    );
+    const claimed = await claimNewInbound({
+      clientId,
+      platform: 'smartlead',
+      leadId,
+      leadEmail,
+      inboundMessage: inboundEffective,
+    }, async (conn) => {
+      const { rows: [inserted] } = await conn.query(
+        `INSERT INTO pending_replies
+          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+        [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+      );
+      return inserted;
+    });
+    if (claimed.duplicate) {
+      console.log('[Webhook] SmartLead duplicate suppressed (insert race)', {
+        clientId, leadId, leadEmail, existingId: claimed.existing?.id,
+      });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
+    }
+    const reply = claimed.reply;
 
     if (isDraft && classification === 'MEETING_PROPOSED') {
       await db.query(
@@ -834,12 +852,28 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
 
         const leadIdForRow = leadId || hrConversationId;
 
-        const { rows: [reply] } = await db.query(
-          `INSERT INTO pending_replies
-            (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-          [clientId, 'heyreach', campaignId, resolvedHrCampaignName || null, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
-        );
+        const claimed = await claimNewInbound({
+          clientId,
+          platform: 'heyreach',
+          leadId: leadIdForRow,
+          leadEmail: null,
+          inboundMessage,
+        }, async (conn) => {
+          const { rows: [inserted] } = await conn.query(
+            `INSERT INTO pending_replies
+              (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, linkedin_url, inbound_message, thread_context, classification, draft_reply, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+            [clientId, 'heyreach', campaignId, resolvedHrCampaignName || null, leadIdForRow, resolvedLeadName, resolvedLinkedinUrl, inboundMessage, JSON.stringify(contextWithMeta), classification, draft, status]
+          );
+          return inserted;
+        });
+        if (claimed.duplicate) {
+          console.log('[Webhook] HeyReach duplicate suppressed (insert race)', {
+            clientId, leadId: leadIdForRow, existingId: claimed.existing?.id,
+          });
+          return;
+        }
+        const reply = claimed.reply;
 
         const slackCard = {
           replyId: reply.id,

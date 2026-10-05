@@ -127,11 +127,57 @@ function sameReplySql(prefixParam, fullParam) {
   )`;
 }
 
+function samePersonSql(leadIdParam, leadEmailParam) {
+  return `(
+    (${leadIdParam}::text <> '' AND COALESCE(lead_id, '') = ${leadIdParam})
+    OR (${leadEmailParam}::text <> '' AND lower(COALESCE(lead_email, '')) = ${leadEmailParam})
+  )`;
+}
+
+/**
+ * Any non-FOLLOW_UP row for this person + this inbound text.
+ *
+ * Do not require slack_message_ts. The webhook inserts first and posts Slack
+ * second; if the poller only counted posted cards, it inserted a second row
+ * during that window and we double-carded / double-sent (Casey Buckstaff,
+ * 2026-10-05 — webhook card + "polling backstop" card 2 seconds later).
+ */
+async function inboundAlreadyRecorded(queryable, {
+  clientId,
+  platform,
+  leadId,
+  leadEmail,
+  inboundMessage,
+}) {
+  const q = queryable && typeof queryable.query === 'function' ? queryable : db;
+  const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
+  if (!normalized) return null;
+  const lid = leadId != null ? String(leadId) : '';
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  if (!lid && !email) return null;
+
+  const { rows } = await q.query(
+    `SELECT id, status, slack_message_ts
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND ${sameReplySql('$3', '$4')}
+        AND ${samePersonSql('$5', '$6')}
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [clientId, platform, normalized, fullNorm, lid, email]
+  );
+  return rows[0] || null;
+}
+
 async function alreadyPostedToSlack({
   clientId,
   platform,
   campaignId,
   leadId,
+  leadEmail,
   inboundMessage,
   emailStatsId,
 }) {
@@ -142,42 +188,102 @@ async function alreadyPostedToSlack({
   // callers; unused for matching.
   void emailStatsId;
   void campaignId;
-  const normalized = inboundPrefix(inboundMessage);
-  const fullNorm = normalizeInboundText(inboundMessage);
-  if (!normalized) return false;
+  const row = await inboundAlreadyRecorded(db, {
+    clientId, platform, leadId, leadEmail, inboundMessage,
+  });
+  return Boolean(row);
+}
+
+/**
+ * Serialize webhook + poller inserts for the same inbound so both cannot
+ * pass "not yet recorded" and create two pending_replies rows.
+ */
+function personLockKeys({ clientId, platform, leadId, leadEmail }) {
+  const lid = leadId != null ? String(leadId) : '';
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  const keys = [];
+  if (lid) keys.push(`${clientId}|${platform}|id|${lid}`);
+  if (email) keys.push(`${clientId}|${platform}|email|${email}`);
+  if (!keys.length) keys.push(`${clientId}|${platform}|unknown`);
+  keys.sort();
+  return keys;
+}
+
+async function claimNewInbound({
+  clientId,
+  platform,
+  leadId,
+  leadEmail,
+  inboundMessage,
+}, insertFn) {
+  const lockKeys = personLockKeys({ clientId, platform, leadId, leadEmail });
+  const conn = await db.connect();
+  try {
+    await conn.query('BEGIN');
+    for (const key of lockKeys) {
+      await conn.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        [key, 'inbound-claim']
+      );
+    }
+    const existing = await inboundAlreadyRecorded(conn, {
+      clientId, platform, leadId, leadEmail, inboundMessage,
+    });
+    if (existing) {
+      await conn.query('COMMIT');
+      return { duplicate: true, existing };
+    }
+    const reply = await insertFn(conn);
+    await conn.query('COMMIT');
+    return { duplicate: false, reply };
+  } catch (err) {
+    try { await conn.query('ROLLBACK'); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+function sameOutboundText(a, b) {
+  const left = inboundPrefix(a);
+  const right = inboundPrefix(b);
+  if (left && left === right) return true;
+  const fullA = normalizeInboundText(a);
+  const fullB = normalizeInboundText(b);
+  return fullA.length >= MIN_CONTAINMENT_LEN
+    && fullB.length >= MIN_CONTAINMENT_LEN
+    && (fullA.startsWith(fullB) || fullB.startsWith(fullA));
+}
+
+/** True when we already sent this same outbound text to this person. */
+async function alreadySentSameOutbound({
+  clientId,
+  platform,
+  leadId,
+  leadEmail,
+  replyText,
+  exceptReplyId,
+}) {
+  const lid = leadId != null ? String(leadId) : '';
+  const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
+  if (!lid && !email) return false;
+  if (!String(replyText || '').trim()) return false;
 
   const { rows } = await db.query(
-    `SELECT id
+    `SELECT id, sent_reply
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
-        AND ${sameReplySql('$3', '$5')}
-        AND (
-          $4::text = ''
-          OR COALESCE(lead_id, '') = $4
-        )
-        AND (
-          slack_message_ts IS NOT NULL
-          -- A suppressed reply is a decided reply: it reached a terminal state
-          -- on purpose and must never be reprocessed. It has no
-          -- slack_message_ts by definition, so requiring one here meant every
-          -- poll cycle re-classified and re-inserted the same suppressed reply
-          -- forever. Measured 2026-08-19: 88,769 suppressed rows over 3 days
-          -- for 193 distinct replies (~460x), worst offenders at 863 copies of
-          -- a single reply, each copy having burned a classifier call.
-          OR status = 'suppressed'
-        )
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [
-      clientId,
-      platform,
-      normalized,
-      leadId != null ? String(leadId) : '',
-      fullNorm,
-    ]
+        AND status = 'sent'
+        AND id <> $3
+        AND sent_reply IS NOT NULL
+        AND trim(sent_reply) <> ''
+        AND ${samePersonSql('$4', '$5')}
+      ORDER BY updated_at DESC
+      LIMIT 20`,
+    [clientId, platform, exceptReplyId || '00000000-0000-0000-0000-000000000000', lid, email]
   );
-  return rows.length > 0;
+  return rows.some((r) => sameOutboundText(r.sent_reply, replyText));
 }
 
 async function findUnpostedReply({
@@ -185,6 +291,7 @@ async function findUnpostedReply({
   platform,
   campaignId,
   leadId,
+  leadEmail,
   inboundMessage,
   emailStatsId,
 }) {
@@ -212,6 +319,7 @@ async function findUnpostedReply({
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
+          OR ($6::text <> '' AND lower(COALESCE(lead_email, '')) = $6)
         )
       ORDER BY created_at ASC
       LIMIT 1`,
@@ -221,6 +329,7 @@ async function findUnpostedReply({
       normalized,
       leadId != null ? String(leadId) : '',
       fullNorm,
+      leadEmail ? String(leadEmail).trim().toLowerCase() : '',
     ]
   );
   return rows[0] || null;
@@ -363,11 +472,16 @@ module.exports = {
   normalizeInboundText,
   stripEmbeddedBinaries,
   sameReplySql,
+  samePersonSql,
+  sameOutboundText,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
   STORED_NORM_SQL,
   UNICODE_SPACE_CODEPOINTS,
+  inboundAlreadyRecorded,
   alreadyPostedToSlack,
+  claimNewInbound,
+  alreadySentSameOutbound,
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
