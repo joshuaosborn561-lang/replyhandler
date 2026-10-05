@@ -1,9 +1,5 @@
 const calendar = require('./calendar');
 const { prospectBookingLink } = require('../utils/public-booking-link');
-const {
-  resolveAvailabilityBookingUrl,
-  refreshDestinations,
-} = require('../utils/booking-bridge-destinations');
 
 const CALENDLY_API = 'https://api.calendly.com';
 
@@ -209,14 +205,62 @@ function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
     return `NO verified free slots were retrieved. Suggest two rough times in the next few business days to stop by in person. ${linkRule}`;
   }
   return link
-    ? `NO verified free slots were retrieved (add a Calendly PAT for the calendar behind this booking-bridge wrap, or connect Google/Outlook). Suggest two rough times in the next few business days. ${linkRule}`
+    ? `NO verified free slots were retrieved (connect Google/Outlook on this client). Suggest two rough times in the next few business days. ${linkRule}`
     : 'NO verified free slots were retrieved. Suggest two rough times in the next few business days. Do not invent a fake booking URL.';
 }
 
+function isLocalBusinessSlot(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timeZone || 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    hour12: false,
+  }).formatToParts(date);
+  const weekday = parts.find((p) => p.type === 'weekday')?.value;
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value);
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  return hour >= 9 && hour < 16;
+}
+
+async function withTimeout(promise, ms, fallback) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`calendar check timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } catch (err) {
+    if (fallback !== undefined) {
+      console.warn('[SchedulingSlots] Using empty slots', { err: err.message });
+      return fallback;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const calendarStartsCache = new Map();
+
+function cachedCalendarStarts(clientId, fromDate, toDate, limit) {
+  const key = `${clientId}|${fromDate.toISOString()}|${toDate.toISOString()}|${limit}`;
+  const hit = calendarStartsCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.starts;
+  return null;
+}
+
+function rememberCalendarStarts(clientId, fromDate, toDate, limit, starts) {
+  const key = `${clientId}|${fromDate.toISOString()}|${toDate.toISOString()}|${limit}`;
+  calendarStartsCache.set(key, { at: Date.now(), starts });
+}
+
 /**
- * Open 30-minute UTC slots with no overlap on the connected calendar.
+ * Open 30-minute slots with no overlap on the connected Google/Outlook calendar.
+ * One free/busy window — no Calendly PAT.
  */
-async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8 } = {}) {
+async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8, timeZone } = {}) {
   const conn = await calendar.getConnection(clientId);
   if (!conn) return [];
 
@@ -234,13 +278,13 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8 }
   const minStart = new Date(Math.max(fromDate.getTime(), Date.now() + 2 * 60 * 60 * 1000));
   const gridStart = new Date(Math.ceil(minStart.getTime() / SLOT_MS) * SLOT_MS);
   const max = Math.max(2, Number(limit) || 8);
+  const tz = timeZone || process.env.DEFAULT_BOOKING_TIMEZONE || 'America/New_York';
 
   const found = [];
   for (let t = gridStart.getTime(); t < toDate.getTime() && found.length < max; t += SLOT_MS) {
     const slotStart = new Date(t);
     const slotEnd = new Date(t + SLOT_MS);
-    const dow = slotStart.getUTCDay();
-    if (dow === 0 || dow === 6) continue;
+    if (!isLocalBusinessSlot(slotStart, tz)) continue;
 
     const clash = busyIntervals.some((iv) => overlaps(slotStart, slotEnd, iv.start, iv.end));
     if (!clash) found.push(slotStart);
@@ -280,9 +324,6 @@ function schedulingPromptBookingLinkOnly(client) {
  * @param {{ skipExternalFetch?: boolean, offset?: number, count?: number, excludeStarts?: Array<string|Date> }} [options]
  */
 async function resolveVerifiedSchedulingSlots(client, options = {}) {
-  if (options.skipExternalFetch) {
-    return schedulingPromptBookingLinkOnly(client);
-  }
   const { prefersInPersonMeeting } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(client && client.voice_prompt);
   const link = prospectBookingLink({
@@ -293,45 +334,30 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   const count = Math.max(1, Number(options.count) || 2);
   const needed = offset + count;
   const timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/New_York';
+  // skipExternalFetch = poller / LinkedIn webhook: one short calendar
+  // free/busy, no Calendly PAT. Josh: check first, quickly, no PAT.
+  const quick = Boolean(options.skipExternalFetch);
   const fromDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
-  const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const toDate = new Date(Date.now() + (quick ? 7 : 14) * 24 * 60 * 60 * 1000);
+  const limit = Math.max(8, needed);
 
-  let starts = [];
-  const destMap = await refreshDestinations();
-  const availabilityUrl = resolveAvailabilityBookingUrl(client, destMap);
-
-  try {
-    // Query the calendar behind the booking-bridge wrap (or a raw Calendly
-    // booking_link). The prospect-facing URL stays the public wrap.
-    if (client.calendly_personal_access_token && availabilityUrl && isCalendlyUrl(availabilityUrl)) {
-      const etUri = await resolveCalendlyEventTypeUri(availabilityUrl, client.calendly_personal_access_token);
-      starts = await fetchCalendlyAvailableStarts(
-        etUri,
-        client.calendly_personal_access_token,
-        fromDate,
-        toDate
-      );
-    }
-  } catch (err) {
-    console.warn('[SchedulingSlots] Calendly resolution failed, trying calendar', {
-      err: err.message,
-      availabilityUrl,
-    });
-    starts = [];
-  }
-
-  if (starts.length < needed) {
+  let starts = cachedCalendarStarts(client.id, fromDate, toDate, limit) || [];
+  if (!starts.length) {
     try {
-      const calStarts = await fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit: Math.max(8, needed) });
-      const merged = [...starts];
-      for (const s of calStarts) {
-        if (!merged.some((x) => sameStart(x, s))) merged.push(s);
-      }
-      merged.sort((a, b) => a - b);
-      starts = merged;
+      starts = await withTimeout(
+        fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit, timeZone }),
+        quick ? 2500 : 8000,
+        []
+      );
+      if (starts.length) rememberCalendarStarts(client.id, fromDate, toDate, limit, starts);
     } catch (err) {
       console.warn('[SchedulingSlots] Calendar free slots failed', { err: err.message });
+      starts = [];
     }
+  }
+
+  if (!starts.length && quick) {
+    return schedulingPromptBookingLinkOnly(client);
   }
 
   const picked = pickOpenStarts(starts, {
@@ -357,6 +383,7 @@ module.exports = {
   slotOffsetForFollowUpStep,
   formatSlotLabel,
   timesPlusLinkPromptBlock,
+  isLocalBusinessSlot,
   normalizeBookingUrl,
   isCalendlyUrl,
 };

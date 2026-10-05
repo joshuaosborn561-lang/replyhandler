@@ -76,4 +76,52 @@ describe('scheduling slot picks', () => {
     assert.match(promptBlock, /TIMES \+ BOOKING LINK/);
     assert.match(promptBlock, /calendly.com\/example\/30min/);
   });
+
+  it('weekday mid-morning is a business slot; Saturday is not', () => {
+    const { isLocalBusinessSlot } = require('../src/services/scheduling-slots');
+    assert.equal(
+      isLocalBusinessSlot(new Date('2026-10-06T15:00:00.000Z'), 'America/New_York'),
+      true
+    );
+    assert.equal(
+      isLocalBusinessSlot(new Date('2026-10-10T15:00:00.000Z'), 'America/New_York'),
+      false
+    );
+  });
+
+  it('no-slots copy does not ask for a Calendly PAT', () => {
+    const block = timesPlusLinkPromptBlock({
+      slots: [],
+      link: 'https://book.gosalesglider.com/parlay',
+      inPerson: false,
+    });
+    assert.match(block, /connect Google\/Outlook/);
+    assert.doesNotMatch(block, /PAT/);
+  });
+});
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+describe('calendar is checked first — no PAT', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/services/scheduling-slots.js'), 'utf8');
+
+  it('skipExternalFetch still hits the connected calendar', () => {
+    const resolve = src.slice(src.indexOf('async function resolveVerifiedSchedulingSlots'));
+    assert.match(resolve, /skipExternalFetch/);
+    assert.match(resolve, /fetchCalendarFreeStarts/);
+    assert.ok(
+      resolve.indexOf('fetchCalendarFreeStarts') < resolve.indexOf('schedulingPromptBookingLinkOnly'),
+      'calendar check must run before the no-lookup fallback'
+    );
+    assert.doesNotMatch(
+      resolve.slice(0, resolve.indexOf('fetchCalendarFreeStarts')),
+      /if \(options\.skipExternalFetch\) \{\s*return schedulingPromptBookingLinkOnly/
+    );
+  });
+
+  it('does not require a Calendly PAT to pick times', () => {
+    const resolve = src.slice(src.indexOf('async function resolveVerifiedSchedulingSlots'));
+    assert.doesNotMatch(resolve, /calendly_personal_access_token/);
+  });
 });

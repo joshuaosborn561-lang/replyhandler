@@ -240,6 +240,23 @@ test('positive replies include two times and the booking link', () => {
   assert.ok(!forcedOff.includes(link), 'explicit includeBookingLink=false must still strip');
 });
 
+// ── Decision: no Calendly PAT — check the connected calendar first ──
+// "ok and for PAT i dont need that. is there a way grokbot can just check first quickly?"
+test('open times come from the connected calendar, not a Calendly PAT', () => {
+  const slots = read('src/services/scheduling-slots.js');
+  const resolve = slots.slice(slots.indexOf('async function resolveVerifiedSchedulingSlots'));
+  assert.match(resolve, /fetchCalendarFreeStarts/,
+    reversal('check calendar first, no PAT', 'the live slot lookup no longer reads the connected calendar'));
+  assert.doesNotMatch(resolve, /calendly_personal_access_token/,
+    reversal('check calendar first, no PAT', 'slot lookup still requires a Calendly PAT'));
+  assert.match(resolve, /2500/,
+    reversal('check calendar first, no PAT', 'the poller/webhook quick path lost its short timeout'));
+  assert.ok(
+    resolve.includes('skipExternalFetch') && resolve.includes('fetchCalendarFreeStarts'),
+    reversal('check calendar first, no PAT', 'skipExternalFetch no longer does a quick calendar check')
+  );
+});
+
 // ── Decision: follow-ups after any positive reply; first step 3:30pm CT ─
 // Soft positives get the cadence. First step is 3:30pm CT the inbound day
 // (next day if after 2pm CT), then 24h/48h/1w after our send.

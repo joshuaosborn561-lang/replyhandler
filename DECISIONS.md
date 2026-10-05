@@ -804,3 +804,11 @@ The next-day FOLLOW_UP (cadence step 2 / 24h) does not reuse the first two times
 
 Guard: `positive replies include two times and the booking link`
 Guard: `FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button`
+
+### No Calendly PAT — check the connected calendar first
+
+*"ok and for PAT i dont need that. is there a way grokbot can just check first quickly?"*
+
+Do not ask for a Calendly personal access token. Booking-bridge still has no availability API. Open times come from the Google/Outlook calendar already connected on the client: one free/busy call, weekday 9–4 in the booking timezone, 2.5s timeout on pollers and LinkedIn so the check stays quick. If the calendar is not connected or the check times out, fall back to two rough times plus the booking link.
+
+Guard: `open times come from the connected calendar, not a Calendly PAT`
