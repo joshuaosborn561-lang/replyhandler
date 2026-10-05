@@ -1,5 +1,9 @@
 const calendar = require('./calendar');
 const { prospectBookingLink } = require('../utils/public-booking-link');
+const {
+  resolveAvailabilityBookingUrl,
+  refreshDestinations,
+} = require('../utils/booking-bridge-destinations');
 
 const CALENDLY_API = 'https://api.calendly.com';
 
@@ -205,7 +209,7 @@ function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
     return `NO verified free slots were retrieved. Suggest two rough times in the next few business days to stop by in person. ${linkRule}`;
   }
   return link
-    ? `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Suggest two rough times in the next few business days. ${linkRule}`
+    ? `NO verified free slots were retrieved (add a Calendly PAT for the calendar behind this booking-bridge wrap, or connect Google/Outlook). Suggest two rough times in the next few business days. ${linkRule}`
     : 'NO verified free slots were retrieved. Suggest two rough times in the next few business days. Do not invent a fake booking URL.';
 }
 
@@ -293,10 +297,14 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
   let starts = [];
+  const destMap = await refreshDestinations();
+  const availabilityUrl = resolveAvailabilityBookingUrl(client, destMap);
 
   try {
-    if (client.calendly_personal_access_token && client.booking_link && isCalendlyUrl(client.booking_link)) {
-      const etUri = await resolveCalendlyEventTypeUri(client.booking_link, client.calendly_personal_access_token);
+    // Query the calendar behind the booking-bridge wrap (or a raw Calendly
+    // booking_link). The prospect-facing URL stays the public wrap.
+    if (client.calendly_personal_access_token && availabilityUrl && isCalendlyUrl(availabilityUrl)) {
+      const etUri = await resolveCalendlyEventTypeUri(availabilityUrl, client.calendly_personal_access_token);
       starts = await fetchCalendlyAvailableStarts(
         etUri,
         client.calendly_personal_access_token,
@@ -305,7 +313,10 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
       );
     }
   } catch (err) {
-    console.warn('[SchedulingSlots] Calendly resolution failed, trying calendar', { err: err.message });
+    console.warn('[SchedulingSlots] Calendly resolution failed, trying calendar', {
+      err: err.message,
+      availabilityUrl,
+    });
     starts = [];
   }
 

@@ -151,7 +151,9 @@ Carlos stops by the dealership in person; drafts and FOLLOW_UP bumps then
 omit Zoom / phone / "our CEO" / booking links. Other clients get two
 verified calendar times **and** the booking link on the first positive
 reply; the next-day FOLLOW_UP says those times were taken and offers two
-new times plus the link.
+new times plus the link. Booking-bridge wraps do not expose open slots —
+`scheduling-slots.js` unwraps `book.gosalesglider.com/{slug}` to the
+destination Calendly and reads live times from there when a PAT is set.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 
