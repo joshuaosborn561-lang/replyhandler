@@ -812,3 +812,22 @@ Guard: `FOLLOW_UP next-day bump refreshes times with booking link and Meeting bo
 Do not ask for a Calendly personal access token. Booking-bridge still has no availability API. Open times come from the Google/Outlook calendar already connected on the client: one free/busy call, weekday 9–4 in the booking timezone, 2.5s timeout on pollers and LinkedIn so the check stays quick. If the calendar is not connected or the check times out, fall back to two rough times plus the booking link.
 
 Guard: `open times come from the connected calendar, not a Calendly PAT`
+
+### Same inbound cannot be carded or sent twice
+
+*"hey apparently you are sending us the same thing 2 times. casey buckstaff is one."*
+
+The webhook and the SmartLead poller both passed "not posted yet," both classified, and both inserted. Casey Buckstaff got two Slack cards two seconds apart — the second footer said "Recovered by SmartLead inbox polling backstop," which is the *new insert* path, not Slack-post recovery. Philip Walker the same morning was the other path: recoverUnposted posted a card, then the webhook posted the same inbound four seconds later. Cayden approved "the second copy."
+
+`alreadyPostedToSlack` required `slack_message_ts IS NOT NULL OR status = 'suppressed'`. The webhook inserts first and posts Slack second, so a just-inserted row without a ts did not count. Matching on `lead_id` only also missed when the two paths resolved different ids for the same person.
+
+Fix:
+- any non-FOLLOW_UP recorded row counts — do not wait for Slack ts
+- same person is `lead_id` **or** email
+- `claimNewInbound` takes an advisory lock, rechecks, then inserts (webhook + both pollers)
+- Slack post claims the row so recover + webhook cannot both card the same inbound
+- `sendReplyToPlatform` skips if the same outbound text already went to that person, so two leftover cards cannot both send
+
+Pollers stay on. A genuinely different reply from the same person still gets its own card.
+
+Guard: `the same inbound cannot be carded or sent twice`

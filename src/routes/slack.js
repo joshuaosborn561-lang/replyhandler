@@ -250,6 +250,7 @@ async function handleEditModalSubmit(interaction) {
 
   try {
     const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
+    const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, draft_reply = $2, updated_at = now() WHERE id = $3',
@@ -271,16 +272,22 @@ async function handleEditModalSubmit(interaction) {
     }
 
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
-    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
-    await learnFromApprovedReply({ reply, client, finalText: messageText });
+    if (!skippedDuplicate) {
+      if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+      await learnFromApprovedReply({ reply, client, finalText: messageText });
+    }
 
     let extraFooter = '';
-    if (isSlackTestFixtureReply(reply)) {
-      extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
-    }
-    extraFooter += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
-    if (sendResult.clientCcWarning) {
-      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    if (skippedDuplicate) {
+      extraFooter = 'Already sent this reply — skipped the duplicate.';
+    } else {
+      if (isSlackTestFixtureReply(reply)) {
+        extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
+      }
+      extraFooter += await maybeBookMeetingAfterSend({ ...reply, draft_reply: messageText, lead_email: reply.lead_email }, client);
+      if (sendResult.clientCcWarning) {
+        extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+      }
     }
 
     if (channelId && messageTs) {
@@ -329,6 +336,7 @@ async function handleApprove(replyId, interaction) {
 
   try {
     const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
+    const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 
     await db.query(
       'UPDATE pending_replies SET status = $1, sent_reply = $2, updated_at = now() WHERE id = $3',
@@ -336,16 +344,22 @@ async function handleApprove(replyId, interaction) {
     );
 
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
-    if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
-    await learnFromApprovedReply({ reply, client, finalText: reply.draft_reply });
+    if (!skippedDuplicate) {
+      if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+      await learnFromApprovedReply({ reply, client, finalText: reply.draft_reply });
+    }
 
     let extraFooter = '';
-    if (isSlackTestFixtureReply(reply)) {
-      extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
-    }
-    extraFooter += await maybeBookMeetingAfterSend(reply, client);
-    if (sendResult.clientCcWarning) {
-      extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+    if (skippedDuplicate) {
+      extraFooter = 'Already sent this reply — skipped the duplicate.';
+    } else {
+      if (isSlackTestFixtureReply(reply)) {
+        extraFooter = 'Test card — no SmartLead/HeyReach message sent.';
+      }
+      extraFooter += await maybeBookMeetingAfterSend(reply, client);
+      if (sendResult.clientCcWarning) {
+        extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+      }
     }
 
     await slackService.updateSentConfirmationCard(

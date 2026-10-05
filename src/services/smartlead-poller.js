@@ -11,6 +11,7 @@ const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
   findUnpostedReply,
+  claimNewInbound,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
 } = require('./reply-dedupe');
@@ -200,6 +201,7 @@ async function processInboxRow(client, row, options) {
         platform: 'smartlead',
         campaignId,
         leadId,
+        leadEmail: row.lead_email || null,
         inboundMessage: inbound,
         emailStatsId: null,
       })
@@ -244,6 +246,7 @@ async function processInboxRow(client, row, options) {
     platform: 'smartlead',
     campaignId,
     leadId,
+    leadEmail: row.lead_email || null,
     inboundMessage: inbound,
     emailStatsId: smartleadEmailStatsId,
   });
@@ -259,6 +262,7 @@ async function processInboxRow(client, row, options) {
     platform: 'smartlead',
     campaignId,
     leadId,
+    leadEmail: row.lead_email || null,
     inboundMessage: inbound,
     emailStatsId: smartleadEmailStatsId,
   })) {
@@ -346,15 +350,31 @@ async function processInboxRow(client, row, options) {
     });
   }
 
-  const { rows: [reply] } = await db.query(
-    `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-     VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-    [
-      client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
-      JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
-    ]
-  );
+  const claimed = await claimNewInbound({
+    clientId: client.id,
+    platform: 'smartlead',
+    leadId,
+    leadEmail,
+    inboundMessage: inbound,
+  }, async (conn) => {
+    const { rows: [inserted] } = await conn.query(
+      `INSERT INTO pending_replies
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [
+        client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
+        JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
+      ]
+    );
+    return inserted;
+  });
+  if (claimed.duplicate) {
+    console.log('[SmartLeadPoll] Duplicate after classify — another path already recorded it', {
+      client: client.name, leadName, leadEmail, existingId: claimed.existing?.id,
+    });
+    return { skipped: 'already_posted', existingId: claimed.existing?.id };
+  }
+  const reply = claimed.reply;
 
   const card = {
     replyId: reply.id,
