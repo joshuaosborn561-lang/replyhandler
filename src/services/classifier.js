@@ -169,7 +169,7 @@ function sanitizeDraft(text, { bookingLink, includeBookingLink, clientName } = {
   s = rewriteRawCtapperCalendly(s, { includeBookingLink });
 
   if (includeBookingLink) {
-    // Prospect asked for / accepted the booking link — guarantee it is present.
+    // Times + link drafts (and explicit asks) must include the URL.
     if (link && !s.includes(link)) {
       s = `${s.trim()}\n\n${link}`;
     }
@@ -198,23 +198,22 @@ function fallbackDraftText({
   includeBookingLink,
   voicePrompt,
   clientName,
+  slotLabels,
 } = {}) {
+  void threadContext;
   const name = firstNameFromLead(leadName);
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
   const link = prospectBookingLink({ clientName, bookingLink });
   const msg = String(inboundMessage || '').trim();
+  const labels = Array.isArray(slotLabels) ? slotLabels.filter(Boolean) : [];
+  const time1 = labels[0] || `${d1} mid-morning`;
+  const time2 = labels[1] || `${d2} early afternoon`;
+
+  const { prefersInPersonMeeting, shouldIncludeBookingLink, meetingCta } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
   const wantLink = typeof includeBookingLink === 'boolean'
     ? includeBookingLink
-    : looksLikeBookingLinkRequest(msg, threadContext || '');
-
-  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
-  const inPerson = prefersInPersonMeeting(voicePrompt);
-
-  if (wantLink && !inPerson) {
-    return link
-      ? `Hey ${name}, sounds good — here's the booking link: ${link}`
-      : `Hey ${name}, sounds good — want me to send a couple of times instead?`;
-  }
+    : shouldIncludeBookingLink(voicePrompt);
 
   if (DECLINE_CLASSIFICATIONS.has(classification)) {
     return (
@@ -229,6 +228,13 @@ function fallbackDraftText({
       ? 'Would love to see if this is a fit.'
       : 'Happy to stop by and walk through it in person.';
     const cta = meetingCta({ voicePrompt, day1: d1, day2: d2 });
+    if (labels.length >= 2) {
+      return (
+        `Hey ${name}, thanks for getting back to me. ${ack} ` +
+        `Does ${time1} or ${time2} work for me to stop by in person? ` +
+        `${cta.neitherLine}`
+      );
+    }
     return (
       `Hey ${name}, thanks for getting back to me. ${ack} ` +
       `${cta.suggestLine} ${cta.neitherLine}`
@@ -237,6 +243,7 @@ function fallbackDraftText({
 
   const { callWithWhom } = require('../utils/principal-voice');
   const whom = callWithWhom(voicePrompt);
+  const linkBit = wantLink && link ? ` Here's the booking link if easier: ${link}` : '';
 
   // They already threw times — confirm those instead of inventing mid-morning defaults.
   if (classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(msg)) {
@@ -244,13 +251,15 @@ function fallbackDraftText({
     if (theirTimes) {
       return (
         `Hey ${name}, appreciate you throwing times over — ${theirTimes} works on my end. ` +
-        `I'll send something over shortly. If that window shifted, just say the word.`
+        `I'll send something over shortly. If that window shifted, just say the word.` +
+        `${linkBit}`
       );
     }
     return (
       `Hey ${name}, appreciate you throwing times over. ` +
       `That window works on my end — I'll send something over shortly. ` +
-      `If you need to shift it, just say the word.`
+      `If you need to shift it, just say the word.` +
+      `${linkBit}`
     );
   }
 
@@ -260,8 +269,8 @@ function fallbackDraftText({
     : 'Happy to jump on a quick call and walk through it.';
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
-    `Does ${d1} mid-morning or ${d2} early afternoon work for a quick call with ${whom}? ` +
-    `If neither works I can send a booking link.`
+    `Does ${time1} or ${time2} work for a quick call with ${whom}?` +
+    `${linkBit}`
   );
 }
 
@@ -431,21 +440,25 @@ function buildTimeSuggestionBlock({
     const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
     return meetingCta({ voicePrompt, day1: d1, day2: d2 }).timeRule;
   }
-  if (includeBookingLink) {
-    return 'The prospect wants the booking link — include it once. Keep the reply short.';
-  }
   if (schedulingPromptBlock && /VERIFIED OPEN START TIMES/i.test(schedulingPromptBlock)) {
     return (
       `${schedulingPromptBlock}\n\n` +
-      'TIMES-FIRST RULE: Suggest those two verified times in plain language. ' +
-      'Say if neither works you can send a booking link. Do NOT paste any booking/Calendly URL in this reply.'
+      (includeBookingLink
+        ? 'TIMES + BOOKING LINK: Suggest those two verified times in plain language, then include the booking URL once.'
+        : 'TIMES-FIRST RULE: Suggest those two verified times in plain language. Do NOT paste any booking/Calendly URL in this reply.')
     );
   }
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
+  if (includeBookingLink) {
+    return (
+      `TIMES + BOOKING LINK: Suggest two concrete options in the next few business days ` +
+      `(e.g. ${d1} mid-morning or ${d2} early afternoon), then include the booking URL once.`
+    );
+  }
   return (
     `TIMES-FIRST RULE: Suggest two concrete options in the next few business days ` +
     `(e.g. ${d1} mid-morning or ${d2} early afternoon). ` +
-    `Offer to send a booking link if neither works. Do NOT include any booking/Calendly URL or http link in this reply.`
+    `Do NOT include any booking/Calendly URL or http link in this reply.`
   );
 }
 
@@ -480,13 +493,11 @@ function buildSdrVoicePrompt({
       `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
       `- Close by offering to work around their schedule if neither time works.`
     : includeBookingLink
-    ? `- BOOKING LINK MODE: The prospect asked for the booking link or accepted our offer to send it.\n` +
-      `- Include this exact URL once near the end: ${link}\n` +
-      `- Keep it casual ("here's the link if easier"). Do not dump a long calendar pitch.`
+    ? `- TIMES + BOOKING LINK: After acknowledging their point, suggest 2 concrete times in the next few business days.\n` +
+      `- Then include this exact URL once near the end: ${link}\n` +
+      `- Casual close is fine ("or grab a time here if easier").`
     : `- AFTER ACK: Do NOT include any booking URL, Calendly link, or http link.\n` +
-      `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
-      `- Close by offering to send a booking link if neither time works.\n` +
-      `- Booking link exists for later follow-up only: ${link} — do not paste it now.`;
+      `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).`;
 
   const roleLine = asPrincipal
     ? 'You ghostwrite replies as Joshua Osborn, founder/CEO (first person). You ARE the CEO — never say "our CEO" or "our founder", never hand off. Suggest a quick call with you ("with me").'
@@ -509,12 +520,12 @@ Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value
 
   const exampleB = asPrincipal
     ? `Prospect: "Sure."
-Reply: "Hey Dean, thanks for getting back to me, sounds good! I have some time to connect before 11 CST to see if this makes sense? Or I can send my calendar link if that is better."`
+Reply: "Hey Dean, thanks for getting back to me, sounds good! I have some time to connect before 11 CST to see if this makes sense? Or grab a time here if easier: ${link}"`
     : inPerson
     ? `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! Are you free Thursday mid-morning or Friday early afternoon for me to stop by in person? Happy to work around your schedule if neither works."`
     : `Prospect: "Sure."
-Reply: "Hey Dean, thanks for getting back to me, sounds good! Happy to jump on a quick call — Thursday mid-morning or Friday early afternoon?"`;
+Reply: "Hey Dean, thanks for getting back to me, sounds good! Happy to jump on a quick call — Thursday mid-morning or Friday early afternoon? Or grab a time here if easier: ${link}"`;
 
   const exampleC = inPerson
     ? `Prospect: "Can we do next week?"
@@ -676,11 +687,12 @@ async function draftOnly({
     ? 'CONTINUATION'
     : 'FIRST_TOUCH';
 
-  // Include Calendly only when the prospect asks for / accepts a booking link.
-  // Otherwise suggest concrete times and offer to send a link later.
+  // Two times + booking link on every positive reply, except in-person clients.
+  const { prefersInPersonMeeting, shouldIncludeBookingLink } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(voicePrompt);
   const includeBookingLink = typeof includeBookingLinkOverride === 'boolean'
     ? includeBookingLinkOverride
-    : looksLikeBookingLinkRequest(inboundMessage, threadContext);
+    : shouldIncludeBookingLink(voicePrompt);
 
   // Weekly-learned voice (global + this client). Best-effort; empty when the
   // Friday job has not run yet or the table is not migrated.
@@ -698,9 +710,6 @@ async function draftOnly({
     learnedVoiceBlock,
   });
 
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
-  const inPerson = prefersInPersonMeeting(voicePrompt);
-
   const timeBlock = buildTimeSuggestionBlock({
     digestTimezone,
     schedulingPromptBlock,
@@ -717,7 +726,7 @@ async function draftOnly({
   const modeNote = inPerson
     ? `${mode} MODE: Acknowledge their latest point first, then offer to stop by in person. No Zoom/phone/CEO call/booking URL.`
     : includeBookingLink
-    ? 'BOOKING LINK MODE: Include the booking URL once. Keep it short.'
+    ? `${mode} MODE: Acknowledge their latest point first, then suggest two times AND include the booking URL once.`
     : `${mode} MODE: Acknowledge their latest point first, then suggest next step/times. Do NOT include any booking URL.`;
 
   const prompt =
@@ -870,9 +879,8 @@ async function classifyAndDraft(
   });
 
   const needsDraft = assertDraftableClassification(classification);
-  const includeBookingLink = needsDraft
-    ? looksLikeBookingLinkRequest(inboundMessage, threadContext)
-    : false;
+  const { shouldIncludeBookingLink } = require('../utils/meeting-modality');
+  const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt);
 
   const draft = needsDraft
     ? await draftOnly({
@@ -917,6 +925,7 @@ module.exports = {
   draftOnly,
   firstNameFromLead,
   nextBusinessDayLabel,
+  nextTwoBusinessDayLabels,
   fallbackDraftText,
   looksLikeClearInterest,
   looksTruncatedDraft,

@@ -148,8 +148,10 @@ Anthropic quota first, then confirm this fallthrough is still wired.
 Some clients meet in person. That is driven by `clients.voice_prompt` via
 `src/utils/meeting-modality.js` — not a global default. Vasco's prompt says
 Carlos stops by the dealership in person; drafts and FOLLOW_UP bumps then
-omit Zoom / phone / "our CEO" / booking links. Leave other clients on
-times-first + booking-link.
+omit Zoom / phone / "our CEO" / booking links. Other clients get two
+verified calendar times **and** the booking link on the first positive
+reply; the next-day FOLLOW_UP says those times were taken and offers two
+new times plus the link.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 
@@ -195,10 +197,11 @@ self-recover and needs a manual sweep.
 hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
 
 `follow-up-runner.js` posts the next due step as a **top-level** Slack channel
-card (not threaded under the original reply). Drafts are **offer-first bumps**
-(different from the first times-first reply). The card shows the **full**
-back-and-forth, a permalink to the original card, and a **Meeting booked**
-button that cancels the cadence.
+card (not threaded under the original reply). Same-day step 1 stays a short
+offer-first bump. Next-day step 2+ says the first times were taken and
+offers two new calendar slots plus the booking link (except Vasco). The
+card shows the last prospect turn, a permalink to the original card, and a
+**Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —
 a `meetings` row, a later reply proposing a time or confirming, a calendar
 event with them as attendee, or a call transcript (Allo / Cube ACR). Any one

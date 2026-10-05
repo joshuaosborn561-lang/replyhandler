@@ -158,10 +158,61 @@ function normalizeBusyIntervals(rawBusy, provider) {
   return out;
 }
 
+function sameStart(a, b) {
+  return Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 60 * 1000;
+}
+
+/** Skip already-offered starts, then take `count` after `offset`. */
+function pickOpenStarts(starts, { offset = 0, count = 2, excludeStarts = [] } = {}) {
+  const excluded = (excludeStarts || [])
+    .map((s) => new Date(s))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  const filtered = (starts || []).filter((s) => !excluded.some((ex) => sameStart(s, ex)));
+  const off = Math.max(0, Number(offset) || 0);
+  const n = Math.max(1, Number(count) || 2);
+  return filtered.slice(off, off + n);
+}
+
+function slotOffsetForFollowUpStep(step) {
+  const n = Number(step) || 1;
+  return Math.max(0, (n - 1) * 2);
+}
+
+function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
+  const list = slots || [];
+  const lines = list.map((s) => `- ${s.label} (${s.start})`);
+  const linkRule = inPerson
+    ? 'IN-PERSON: Do NOT paste any booking/Calendly URL, Zoom, or phone CTA.'
+    : link
+      ? `Then include this exact booking URL once: ${link}`
+      : 'Do not invent a fake booking URL.';
+
+  if (list.length >= 2) {
+    return (
+      `VERIFIED OPEN START TIMES (use exactly these two in the draft wording; do not invent other times):\n` +
+      `${lines.join('\n')}\n\n` +
+      (inPerson
+        ? `IN-PERSON: Suggest those two times to stop by. ${linkRule}`
+        : `TIMES + BOOKING LINK: Suggest those two times in plain language. ${linkRule}`)
+    );
+  }
+  if (list.length === 1) {
+    return (
+      `ONE verified open time: ${lines[0]}. Suggest that time plus one nearby alternative daypart. ${linkRule}`
+    );
+  }
+  if (inPerson) {
+    return `NO verified free slots were retrieved. Suggest two rough times in the next few business days to stop by in person. ${linkRule}`;
+  }
+  return link
+    ? `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Suggest two rough times in the next few business days. ${linkRule}`
+    : 'NO verified free slots were retrieved. Suggest two rough times in the next few business days. Do not invent a fake booking URL.';
+}
+
 /**
- * First two 30-minute UTC slots with no overlap on connected calendar.
+ * Open 30-minute UTC slots with no overlap on the connected calendar.
  */
-async function fetchCalendarFreeStarts(clientId, fromDate, toDate) {
+async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8 } = {}) {
   const conn = await calendar.getConnection(clientId);
   if (!conn) return [];
 
@@ -178,9 +229,10 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate) {
   const SLOT_MS = 30 * 60 * 1000;
   const minStart = new Date(Math.max(fromDate.getTime(), Date.now() + 2 * 60 * 60 * 1000));
   const gridStart = new Date(Math.ceil(minStart.getTime() / SLOT_MS) * SLOT_MS);
+  const max = Math.max(2, Number(limit) || 8);
 
   const found = [];
-  for (let t = gridStart.getTime(); t < toDate.getTime() && found.length < 2; t += SLOT_MS) {
+  for (let t = gridStart.getTime(); t < toDate.getTime() && found.length < max; t += SLOT_MS) {
     const slotStart = new Date(t);
     const slotEnd = new Date(t + SLOT_MS);
     const dow = slotStart.getUTCDay();
@@ -193,33 +245,49 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate) {
 }
 
 /**
- * Booking-link-only prompt (no Calendly/calendar HTTP). Keeps webhooks fast — HeyReach docs
+ * Booking-link prompt (no Calendly/calendar HTTP). Keeps webhooks fast — HeyReach docs
  * note webhook delivery can lag; blocking on multi-hop Calendly + calendar scans adds seconds–minutes.
  */
 function schedulingPromptBookingLinkOnly(client) {
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(client && client.voice_prompt);
   const link = prospectBookingLink({
     clientName: client && client.name,
     bookingLink: client && client.booking_link,
   });
+  if (inPerson) {
+    return {
+      slots: [],
+      promptBlock:
+        'IN-PERSON (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days to stop by in person. Do NOT paste a booking URL, Zoom, or phone CTA.',
+    };
+  }
   return {
     slots: [],
-    // Times-first by default: suggest next-few-days windows; booking URL is for
-    // a later follow-up only when the prospect asks for / accepts a link.
     promptBlock: link
-      ? `TIMES-FIRST (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days. Offer to send a booking link if neither works. Do NOT paste the booking URL (${link}) unless the prospect explicitly asked for the link or accepted an offer to send it.`
+      ? `TIMES + BOOKING LINK (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days, then include this exact booking URL once: ${link}`
       : 'No booking link on this client and no live availability lookup was run. Suggest two rough times in the next few business days; do not invent a fake booking URL.',
   };
 }
 
 /**
- * Returns up to two verified open times + human labels for Gemini.
- * @param {object} client - DB client row (booking_link, calendly_personal_access_token, id)
- * @param {{ skipExternalFetch?: boolean }} [options] - If true, skip Calendly/calendar calls (instant).
+ * Returns verified open times + human labels for Gemini.
+ * @param {object} client - DB client row (booking_link, calendly_personal_access_token, id, voice_prompt)
+ * @param {{ skipExternalFetch?: boolean, offset?: number, count?: number, excludeStarts?: Array<string|Date> }} [options]
  */
 async function resolveVerifiedSchedulingSlots(client, options = {}) {
   if (options.skipExternalFetch) {
     return schedulingPromptBookingLinkOnly(client);
   }
+  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const inPerson = prefersInPersonMeeting(client && client.voice_prompt);
+  const link = prospectBookingLink({
+    clientName: client && client.name,
+    bookingLink: client && client.booking_link,
+  });
+  const offset = Math.max(0, Number(options.offset) || 0);
+  const count = Math.max(1, Number(options.count) || 2);
+  const needed = offset + count;
   const timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/New_York';
   const fromDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
   const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
@@ -241,12 +309,12 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     starts = [];
   }
 
-  if (starts.length < 2) {
+  if (starts.length < needed) {
     try {
-      const calStarts = await fetchCalendarFreeStarts(client.id, fromDate, toDate);
+      const calStarts = await fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit: Math.max(8, needed) });
       const merged = [...starts];
       for (const s of calStarts) {
-        if (!merged.some((x) => Math.abs(x.getTime() - s.getTime()) < 60 * 1000)) merged.push(s);
+        if (!merged.some((x) => sameStart(x, s))) merged.push(s);
       }
       merged.sort((a, b) => a - b);
       starts = merged;
@@ -255,22 +323,29 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     }
   }
 
-  const two = starts.slice(0, 2);
-  const lines = two.map((d) => `- ${formatSlotLabel(d, timeZone)} (${d.toISOString()})`);
+  const picked = pickOpenStarts(starts, {
+    offset,
+    count,
+    excludeStarts: options.excludeStarts,
+  });
+  const slots = picked.map((start) => ({
+    start: start.toISOString(),
+    label: formatSlotLabel(start, timeZone),
+  }));
 
   return {
-    slots: two.map((start) => ({ start: start.toISOString(), label: formatSlotLabel(start, timeZone) })),
-    promptBlock: two.length >= 2
-      ? `VERIFIED OPEN START TIMES (use exactly these two in the draft wording; do not invent other times):\n${lines.join('\n')}\n\nTIMES-FIRST: Suggest those two times. Say if neither works you can send a booking link. Do NOT paste any booking/Calendly URL unless the prospect asked for the link.`
-      : two.length === 1
-        ? `ONE verified open time: ${lines[0]}. Suggest that time plus one nearby alternative daypart. Offer to send a booking link if neither works. Do NOT paste a booking URL unless the prospect asked for the link.`
-        : `NO verified free slots were retrieved (add Calendly PAT + Calendly link, or connect Google/Outlook on this client). Suggest two rough times in the next few business days. Offer to send a booking link if neither works. Do NOT paste a booking URL unless the prospect asked for the link.`,
+    slots,
+    promptBlock: timesPlusLinkPromptBlock({ slots, link, inPerson }),
   };
 }
 
 module.exports = {
   resolveVerifiedSchedulingSlots,
   schedulingPromptBookingLinkOnly,
+  pickOpenStarts,
+  slotOffsetForFollowUpStep,
+  formatSlotLabel,
+  timesPlusLinkPromptBlock,
   normalizeBookingUrl,
   isCalendlyUrl,
 };

@@ -789,3 +789,18 @@ Guard: `portal create works without contact_email; invite waits for one`
 Portal `contact_email` is not a separate address. It is the first Always-notify / Always-forward email (`cc_emails`, else legacy `cc_email`). Provision, create, update, and sync-all derive it from that list. A leftover `contact_email` column is ignored when Always-notify is empty. Changing Always-notify re-POSTs provision-client so the invite follows.
 
 Guard: `portal contact email is the always-notify address`
+
+## 2026-10-05
+
+### First positive reply: two calendar times AND the booking link
+
+*"when we reply to a positive reply. offer two times from the prospects calendar, and then also give the booking link. then on the next days follow up, say those times were taken, here are two more times and the booking link"*
+
+Supersedes **Times-first — the booking link waits until asked** and the next-day half of **FOLLOW_UP bumps are offer-first**.
+
+The first approved reply to `INTERESTED` / `MEETING_PROPOSED` / `QUESTION` offers two verified open times (Calendly / connected calendar) **and** the booking URL in the same email. If they already proposed times, confirm those and still include the link. Vasco / in-person clients still get two stop-by times and never a booking link, Zoom, or phone CTA.
+
+The next-day FOLLOW_UP (cadence step 2 / 24h) does not reuse the first two times. It says those were taken, offers the next two open slots, and includes the booking link again (except Vasco). Same-day step 1 stays a short offer-first bump. Later steps keep the value-prop reframe and no-dashes rule, and also refresh times.
+
+Guard: `positive replies include two times and the booking link`
+Guard: `FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button`

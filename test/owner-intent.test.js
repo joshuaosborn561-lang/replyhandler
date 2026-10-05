@@ -184,23 +184,60 @@ test('our drafts add no sign-off, mailbox signature only', () => {
   assert.match(read('src/services/smartlead.js'), /add_signature:\s*true/, 'SmartLead must keep appending the real signature');
 });
 
-// ── Decision: times-first, link only on request ───────────────────────
-// Offered to always include the booking link; he chose to keep times-first.
-test('booking link is withheld until the prospect asks', () => {
-  const { sanitizeDraft, looksLikeBookingLinkRequest } = require('../src/services/classifier');
+// ── Decision: two calendar times + booking link on positive replies ──
+// Supersedes "times-first, link only on request". Vasco stays link-free.
+test('positive replies include two times and the booking link', () => {
+  const { fallbackDraftText, sanitizeDraft } = require('../src/services/classifier');
+  const { fallbackReattempt } = require('../src/services/follow-up-drafts');
+  const { shouldIncludeBookingLink } = require('../src/utils/meeting-modality');
   const link = 'https://calendly.com/joshua-salesglidergrowth/30min';
+  const vasco =
+    'Carlos meets prospects IN PERSON at the dealership — never suggest Zoom or booking links.';
 
-  // Model leaked a link on a times-first reply — it must be stripped.
-  const stripped = sanitizeDraft(`Does Tuesday work? ${link}`, { bookingLink: link, includeBookingLink: false });
-  assert.ok(!stripped.includes(link),
-    reversal('times-first — the link waits until asked', 'a booking link is leaking into an unasked-for draft'));
+  const first = fallbackDraftText({
+    leadName: 'Dean',
+    inboundMessage: 'Sure',
+    classification: 'INTERESTED',
+    digestTimezone: 'America/Chicago',
+    bookingLink: link,
+  });
+  assert.match(first, /mid-morning|afternoon/i,
+    reversal('two times + booking link', 'first positive reply dropped the two times'));
+  assert.ok(first.includes(link),
+    reversal('two times + booking link', 'first positive reply dropped the booking link'));
 
-  // Asked for it — it must be present.
-  const withLink = sanitizeDraft('Sure, here you go.', { bookingLink: link, includeBookingLink: true });
-  assert.ok(withLink.includes(link), 'a requested link must be included');
+  const nextDay = fallbackReattempt({
+    leadName: 'Dean',
+    lastOutboundMessage: first,
+    step: 2,
+    bookingLink: link,
+    slots: [
+      { label: 'Thu, Oct 9, 10:00 AM CDT' },
+      { label: 'Fri, Oct 10, 2:00 PM CDT' },
+    ],
+  });
+  assert.match(nextDay, /those times got taken/i,
+    reversal('two times + booking link', 'next-day follow-up no longer says the first times were taken'));
+  assert.match(nextDay, /Thu, Oct 9/);
+  assert.match(nextDay, /Fri, Oct 10/);
+  assert.ok(nextDay.includes(link),
+    reversal('two times + booking link', 'next-day follow-up dropped the booking link'));
 
-  assert.ok(looksLikeBookingLinkRequest('send me the link', ''), 'an explicit ask must be detected');
-  assert.ok(!looksLikeBookingLinkRequest('what does pricing look like?', ''), 'a question is not a link request');
+  assert.equal(shouldIncludeBookingLink(vasco), false);
+  const inPerson = fallbackDraftText({
+    leadName: 'Don',
+    inboundMessage: 'Be happy to talk',
+    classification: 'INTERESTED',
+    digestTimezone: 'America/New_York',
+    voicePrompt: vasco,
+    bookingLink: link,
+  });
+  assert.match(inPerson, /in person|stop by/i);
+  assert.doesNotMatch(inPerson, /calendly|https?:\/\//i,
+    reversal('two times + booking link', 'Vasco leaked a booking link'));
+
+  const forcedOff = sanitizeDraft(`Does Tuesday work? ${link}`, { bookingLink: link, includeBookingLink: false });
+  assert.ok(!forcedOff.includes(link), 'explicit includeBookingLink=false must still strip');
 });
 
 // ── Decision: follow-ups after any positive reply; first step 3:30pm CT ─
@@ -421,25 +458,43 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
   );
 });
 
-// ── Decision: FOLLOW_UP bumps are offer-first, full thread, Meeting booked ──
-test('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', () => {
+// ── Decision: next-day FOLLOW_UP refreshes times + link; Meeting booked stays ──
+test('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', () => {
   const drafts = read('src/services/follow-up-drafts.js');
   const runner = read('src/services/follow-up-runner.js');
   const slackSrc = read('src/services/slack.js');
   const routes = read('src/routes/slack.js');
   const booked = read('src/services/meeting-booked.js');
-  assert.ok(drafts.includes('detectOffer') && drafts.includes('bumpForOffer'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'offer-first bump helpers were removed'));
+  const { fallbackReattempt } = require('../src/services/follow-up-drafts');
+  const link = 'https://calendly.com/joshua-salesglidergrowth/30min';
+  assert.ok(drafts.includes('timesTakenBump') && drafts.includes('bumpForOffer'),
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'times-taken / offer-first helpers were removed'));
   assert.ok(!/return\s*\(?\s*`Hey \$\{name\}, thanks for getting back to me/.test(drafts),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'FOLLOW_UP drafts reused the first-reply opener'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'FOLLOW_UP drafts reused the first-reply opener'));
+  const bump = fallbackReattempt({
+    leadName: 'Scott',
+    lastOutboundMessage: 'Happy to send you some Rangers tix just for the convo.',
+    step: 2,
+    bookingLink: link,
+    slots: [
+      { label: 'Tue, Oct 7, 10:00 AM CDT' },
+      { label: 'Wed, Oct 8, 2:00 PM CDT' },
+    ],
+  });
+  assert.match(bump, /those times got taken/i,
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'next-day bump is not a times-taken refresh'));
+  assert.ok(bump.includes(link),
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'next-day bump dropped the booking link'));
   assert.ok(runner.includes('threadMessages') && runner.includes('extractThreadMessages'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'thread history is no longer loaded for the last-message line'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'thread history is no longer loaded for the last-message line'));
+  assert.ok(runner.includes('resolveVerifiedSchedulingSlots') && runner.includes('slotOffsetForFollowUpStep'),
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'FOLLOW_UP runner no longer fetches later calendar slots'));
   assert.ok(slackSrc.includes("action_id: 'meeting_booked'") || slackSrc.includes('action_id: "meeting_booked"'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked button missing from Slack cards'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'Meeting booked button missing from Slack cards'));
   assert.ok(routes.includes('handleMeetingBooked') && routes.includes('meeting_booked'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked Slack handler missing'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'Meeting booked Slack handler missing'));
   assert.ok(booked.includes("status = 'booked'") && booked.includes('cancelPendingForThread'),
-    reversal('FOLLOW_UP bumps are offer-first with full thread and Meeting booked button', 'Meeting booked no longer records meeting + cancels cadence'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'Meeting booked no longer records meeting + cancels cadence'));
 });
 
 // ── Decision: FOLLOW_UP bumps reframe value prop; 3rd bump no dashes ──
@@ -452,9 +507,16 @@ test('FOLLOW_UP bumps reframe value prop and 3rd bump has no dashes', () => {
     leadName: 'Scott',
     lastOutboundMessage: 'Free campaign to 10k leads on me for more business clients.',
     step: 3,
+    bookingLink: 'https://calendly.com/joshua-salesglidergrowth/30min',
+    slots: [
+      { label: 'Tue, Oct 7, 10:00 AM CDT' },
+      { label: 'Wed, Oct 8, 2:00 PM CDT' },
+    ],
   });
-  assert.match(step3, /still interested in meeting for/i,
+  assert.match(step3, /more business clients/i,
     reversal('FOLLOW_UP value-prop bumps', '3rd bump dropped the value-prop reframe'));
+  assert.match(step3, /those times got taken/i,
+    reversal('FOLLOW_UP value-prop bumps', '3rd bump is no longer a times refresh'));
   assert.doesNotMatch(step3, /[—–]/,
     reversal('FOLLOW_UP value-prop bumps', '3rd bump has dashes again'));
   assert.match(step3, /\.\.\./,

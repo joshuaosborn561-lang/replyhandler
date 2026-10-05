@@ -32,7 +32,7 @@ describe('meeting modality — in person', () => {
     assert.doesNotMatch(draft, /our CEO|quick call|booking link|calendly|https?:\/\//i);
   });
 
-  it('other clients still get times-first call drafts', () => {
+  it('other clients get two times and the booking link', () => {
     const draft = fallbackDraftText({
       leadName: 'Dean',
       inboundMessage: 'Sure',
@@ -42,7 +42,8 @@ describe('meeting modality — in person', () => {
       bookingLink: 'https://calendly.com/example/30min',
     });
     assert.match(draft, /quick call/i);
-    assert.match(draft, /booking link/i);
+    assert.match(draft, /mid-morning|afternoon/i);
+    assert.match(draft, /calendly.com\/example\/30min/);
   });
 
   it('Vasco FOLLOW_UP bumps stay in-person', () => {
@@ -54,6 +55,24 @@ describe('meeting modality — in person', () => {
     });
     assert.match(bump, /in person|stop by/i);
     assert.doesNotMatch(bump, /quick video|quick call/i);
+  });
+
+  it('Vasco next-day bump refreshes in-person times and never includes a booking link', () => {
+    const bump = fallbackReattempt({
+      leadName: 'Don Chittum',
+      voicePrompt: VASCO_VOICE,
+      step: 2,
+      lastOutboundMessage: 'Does Tuesday mid-morning or Wednesday early afternoon work for me to stop by?',
+      bookingLink: 'https://calendly.com/example/30min',
+      slots: [
+        { label: 'Thu, Oct 9, 10:00 AM EDT' },
+        { label: 'Fri, Oct 10, 2:00 PM EDT' },
+      ],
+    });
+    assert.match(bump, /those times got taken/i);
+    assert.match(bump, /stop by in person/i);
+    assert.match(bump, /Thu, Oct 9/);
+    assert.doesNotMatch(bump, /calendly|https?:\/\//i);
   });
 
   it('meetingCta exposes in-person time rule', () => {
