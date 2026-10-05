@@ -158,7 +158,7 @@ async function inboundAlreadyRecorded(queryable, {
   if (!lid && !email) return null;
 
   const { rows } = await q.query(
-    `SELECT id, status, slack_message_ts
+    `SELECT id, status
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
