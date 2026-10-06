@@ -68,7 +68,65 @@ function isBookingBridgeWrap(url) {
  * Calendar URL to query for open times. Never paste this into a draft when
  * the prospect-facing link is the public wrap.
  */
+function rememberLiveDestination(slug, url) {
+  const key = String(slug || '').trim().toLowerCase();
+  const dest = String(url || '').trim();
+  if (!key || !dest) return;
+  liveDestinations = { ...(liveDestinations || {}), [key]: dest };
+}
+
+/**
+ * Josh pastes the regular calendar URL. We keep that for open times and
+ * store the BookingBridge wrap as the prospect-facing booking_link.
+ */
+function normalizeClientBooking(client = {}) {
+  const name = client && client.name ? String(client.name) : '';
+  const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
+  const destCol = client && client.booking_destination_url
+    ? String(client.booking_destination_url).trim()
+    : '';
+  const nameSlug = slugFromClientName(name);
+
+  if (isBookingBridgeWrap(stored)) {
+    const slug = slugFromWrapUrl(stored);
+    const dest = destCol && !isBookingBridgeWrap(destCol)
+      ? destCol
+      : (destinationMap()[slug] || '');
+    if (slug && dest) rememberLiveDestination(slug, dest);
+    return {
+      slug,
+      booking_link: stored,
+      booking_destination_url: dest || destCol || '',
+    };
+  }
+
+  if (/^https?:\/\//i.test(stored)) {
+    const slug = nameSlug;
+    if (slug) {
+      rememberLiveDestination(slug, stored);
+      return {
+        slug,
+        booking_link: `${BOOKING_BRIDGE_ORIGIN}/${slug}`,
+        booking_destination_url: stored,
+      };
+    }
+    return { slug: '', booking_link: stored, booking_destination_url: stored };
+  }
+
+  return {
+    slug: nameSlug,
+    booking_link: stored,
+    booking_destination_url: destCol,
+  };
+}
+
 function resolveAvailabilityBookingUrl(client, destMap = destinationMap()) {
+  const destCol = client && client.booking_destination_url
+    ? String(client.booking_destination_url).trim()
+    : '';
+  if (destCol && !isBookingBridgeWrap(destCol) && /^https?:\/\//i.test(destCol)) {
+    return destCol;
+  }
   const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
   const wrapSlug = slugFromWrapUrl(stored);
   if (wrapSlug) {
@@ -133,6 +191,8 @@ module.exports = {
   destinationMap,
   slugFromWrapUrl,
   isBookingBridgeWrap,
+  rememberLiveDestination,
+  normalizeClientBooking,
   resolveAvailabilityBookingUrl,
   resolveLiveAvailabilityBookingUrl,
   refreshDestinations,

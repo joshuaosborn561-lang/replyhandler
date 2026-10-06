@@ -76,7 +76,8 @@ describe('scheduling slot picks', () => {
       booking_link: 'https://calendly.com/example/30min',
     });
     assert.match(promptBlock, /TIMES \+ BOOKING LINK/);
-    assert.match(promptBlock, /calendly.com\/example\/30min/);
+    assert.match(promptBlock, /book\.gosalesglider\.com\/salesglider/);
+    assert.doesNotMatch(promptBlock, /calendly.com\/example\/30min/);
   });
 
   it('weekday mid-morning is a business slot; Saturday is not', () => {

@@ -26,10 +26,19 @@ function looksLikeCtapperCalendly(url) {
   return /https?:\/\/(?:www\.)?calendly\.com\/ctapper\//i.test(String(url || ''));
 }
 
+function looksLikeBookingBridgeWrap(url) {
+  try {
+    const host = new URL(String(url || '').trim()).hostname.replace(/^www\./, '').toLowerCase();
+    return host === 'book.gosalesglider.com' || host === 'book.salesglidergrowth.com';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Booking URL to put in prospect-facing drafts / prompts.
- * Tech Evolution is pinned to the public wrap. Everyone else keeps
- * `booking_link` as stored (including Bolder → /bolder, untouched).
+ * Tech Evolution is pinned to the public wrap. A regular calendar URL is
+ * wrapped to book.gosalesglider.com/{slug}; already-wrapped links stay.
  */
 function prospectBookingLink({ clientName, bookingLink } = {}) {
   const raw = bookingLink && String(bookingLink).trim().startsWith('http')
@@ -37,6 +46,11 @@ function prospectBookingLink({ clientName, bookingLink } = {}) {
     : '';
   if (isTechEvolutionClient(clientName) || looksLikeCtapperCalendly(raw)) {
     return TECHEVO_PUBLIC_BOOKING_URL;
+  }
+  if (raw && !looksLikeBookingBridgeWrap(raw)) {
+    const { slugFromClientName } = require('../services/booking-bridge');
+    const slug = slugFromClientName(clientName);
+    if (slug) return `${BOOKING_BRIDGE_ORIGIN}/${slug}`;
   }
   return raw;
 }
@@ -62,4 +76,5 @@ module.exports = {
   looksLikeCtapperCalendly,
   prospectBookingLink,
   rewriteRawCtapperCalendly,
+  looksLikeBookingBridgeWrap,
 };

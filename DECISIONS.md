@@ -830,6 +830,14 @@ Offer one time tomorrow and one the next business day — skip today, Saturday, 
 
 Guard: `open times come from the public booking page, not a client OAuth secret`
 
+### Paste the regular calendar link — we wrap it
+
+*"if I put a regular link in my reply handler stuff… automatically do BookingBridge from there… wrap it and update it in your backend… then you know exactly what link is the regular link"*
+
+Josh pastes Calendly / HubSpot / Teams / SavvyCal in the client Booking Link field. ReplyHandler stores that as `booking_destination_url`, rewrites `booking_link` to `book.gosalesglider.com/{slug}`, and publishes the destination on `GET /public/booking-clients` so BookingBridge can wrap a brand-new slug without editing `site/clients.js`. Drafts paste the wrap. Open times are read from the regular destination. No second step in BookingBridge.
+
+Guard: `regular booking links are wrapped and the destination is kept`
+
 ### Same inbound cannot be carded or sent twice
 
 *"hey apparently you are sending us the same thing 2 times. casey buckstaff is one."*

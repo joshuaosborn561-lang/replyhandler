@@ -35,6 +35,7 @@ const MIGRATION_FILES = [
   '026_client_contact_email.sql',
   '027_voice_profiles.sql',
   '028_client_allo_api_key.sql',
+  '029_booking_destination_url.sql',
 ];
 
 async function clientsTableExists(client) {

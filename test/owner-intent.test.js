@@ -266,6 +266,23 @@ test('open times come from the public booking page, not a client OAuth secret', 
     reversal('public booking page, no client OAuth', 'the poller/webhook quick path lost its short timeout'));
 });
 
+test('regular booking links are wrapped and the destination is kept', () => {
+  const dest = read('src/utils/booking-bridge-destinations.js');
+  const admin = read('src/routes/admin.js');
+  const catalog = read('src/routes/public-booking-catalog.js');
+  const link = read('src/utils/public-booking-link.js');
+  assert.match(dest, /normalizeClientBooking/,
+    reversal('regular booking links are wrapped', 'we no longer wrap a pasted Calendly/HubSpot URL'));
+  assert.match(dest, /booking_destination_url/,
+    reversal('regular booking links are wrapped', 'we no longer keep the regular calendar URL'));
+  assert.match(admin, /normalizeClientBooking/,
+    reversal('regular booking links are wrapped', 'saving a client no longer wraps the booking link'));
+  assert.match(catalog, /\/public\/booking-clients/,
+    reversal('regular booking links are wrapped', 'BookingBridge lost the live catalog of regular links'));
+  assert.match(link, /looksLikeBookingBridgeWrap/,
+    reversal('regular booking links are wrapped', 'drafts no longer wrap a regular calendar URL'));
+});
+
 // ── Decision: follow-ups after any positive reply; first step 3:30pm CT ─
 // Soft positives get the cadence. First step is 3:30pm CT the inbound day
 // (next day if after 2pm CT), then 24h/48h/1w after our send.

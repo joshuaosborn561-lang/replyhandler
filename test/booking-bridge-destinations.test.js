@@ -6,6 +6,7 @@ const {
   isBookingBridgeWrap,
   resolveAvailabilityBookingUrl,
   resolveLiveAvailabilityBookingUrl,
+  normalizeClientBooking,
   refreshDestinations,
   FALLBACK_DESTINATIONS,
   _resetLiveDestinationsForTests,
@@ -35,6 +36,24 @@ describe('booking-bridge destinations', () => {
     assert.equal(
       resolveAvailabilityBookingUrl({ name: 'SalesGlider' }),
       'https://calendly.com/joshua-salesglidergrowth/30min'
+    );
+  });
+
+  it('wraps a regular calendar URL and keeps it as the destination', () => {
+    const n = normalizeClientBooking({
+      name: 'New Shop',
+      booking_link: 'https://calendly.com/new-shop/30min',
+    });
+    assert.equal(n.slug, 'newshop');
+    assert.equal(n.booking_link, 'https://book.gosalesglider.com/newshop');
+    assert.equal(n.booking_destination_url, 'https://calendly.com/new-shop/30min');
+    assert.equal(
+      resolveAvailabilityBookingUrl({
+        name: 'New Shop',
+        booking_link: n.booking_link,
+        booking_destination_url: n.booking_destination_url,
+      }),
+      'https://calendly.com/new-shop/30min'
     );
   });
 
