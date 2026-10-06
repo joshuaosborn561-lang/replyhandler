@@ -108,6 +108,35 @@ describe('scheduling slot picks', () => {
     );
   });
 
+  it('parses HubSpot Meetings and MS Bookings public URLs', () => {
+    const {
+      parseHubSpotPublicUrl,
+      parseMsBookingsPublicUrl,
+    } = require('../src/services/scheduling-slots');
+    assert.deepEqual(
+      parseHubSpotPublicUrl('https://meetings.hubspot.com/dave-ackley'),
+      { host: 'meetings.hubspot.com', slug: 'dave-ackley' }
+    );
+    const ms = parseMsBookingsPublicUrl(
+      'https://bookings.cloud.microsoft/bookwithme/user/7faa90d1324a4bc6a511427c5b9a1488%40culture-fits.com/meetingtype/vkqrp6uGEUq_wrB0u0dyhA2?anonymous'
+    );
+    assert.equal(ms.user, '7faa90d1324a4bc6a511427c5b9a1488@culture-fits.com');
+    assert.equal(ms.meetingType, 'vkqrp6uGEUq_wrB0u0dyhA2');
+  });
+
+  it('reads SavvyCal linkId from the public inertia page', () => {
+    const { parseSavvyCalInertiaPage } = require('../src/services/scheduling-slots');
+    const html = `
+      <script data-page="app" type="application/json">
+        {"props":{"linkId":"link_01ABC","organizer":{"user":{"id":"user_01XYZ"}}}}
+      </script>
+    `;
+    assert.deepEqual(parseSavvyCalInertiaPage(html), {
+      linkId: 'link_01ABC',
+      organizerId: 'user_01XYZ',
+    });
+  });
+
   it('picks tomorrow and the next business day, never the same day', () => {
     const tz = 'America/Chicago';
     const now = new Date('2026-10-05T23:00:00.000Z'); // Mon evening CT
@@ -145,12 +174,13 @@ const path = require('node:path');
 describe('public booking page is checked — no PAT, no client OAuth', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/services/scheduling-slots.js'), 'utf8');
 
-  it('skipExternalFetch still hits the public Calendly page', () => {
+  it('skipExternalFetch still hits the public booking page', () => {
     const resolve = src.slice(src.indexOf('async function resolveVerifiedSchedulingSlots'));
     assert.match(resolve, /skipExternalFetch/);
-    assert.match(resolve, /fetchPublicCalendlyStarts/);
+    assert.match(resolve, /fetchPublicBookingStarts/);
+    assert.match(resolve, /resolveLiveAvailabilityBookingUrl/);
     assert.ok(
-      resolve.indexOf('fetchPublicCalendlyStarts') < resolve.indexOf('schedulingPromptBookingLinkOnly'),
+      resolve.indexOf('fetchPublicBookingStarts') < resolve.indexOf('schedulingPromptBookingLinkOnly'),
       'public page check must run before the no-lookup fallback'
     );
   });
@@ -158,5 +188,90 @@ describe('public booking page is checked — no PAT, no client OAuth', () => {
   it('does not require a Calendly PAT to pick times', () => {
     const resolve = src.slice(src.indexOf('async function resolveVerifiedSchedulingSlots'));
     assert.doesNotMatch(resolve, /calendly_personal_access_token/);
+  });
+});
+
+describe('public booking dispatch', () => {
+  it('reads HubSpot availability-page startMillisUtc', async () => {
+    const { fetchPublicHubSpotStarts } = require('../src/services/scheduling-slots');
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      assert.match(String(url), /meetings-public\/v3\/book\/availability-page/);
+      return {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({
+          linkAvailability: {
+            hasMore: false,
+            linkAvailabilityByDuration: {
+              1800000: {
+                meetingDurationMillis: 1800000,
+                availabilities: [
+                  { startMillisUtc: Date.parse('2026-10-07T15:00:00.000Z') },
+                  { startMillisUtc: Date.parse('2026-10-08T15:00:00.000Z') },
+                ],
+              },
+            },
+          },
+        }),
+      };
+    };
+    try {
+      const pub = await fetchPublicHubSpotStarts('https://meetings.hubspot.com/dave-ackley');
+      assert.equal(pub.starts.length, 2);
+      assert.equal(pub.starts[0].toISOString(), '2026-10-07T15:00:00.000Z');
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('dispatches HubSpot and Calendly from the destination host', async () => {
+    const { fetchPublicBookingStarts } = require('../src/services/scheduling-slots');
+    const originalFetch = global.fetch;
+    const seen = [];
+    global.fetch = async (url) => {
+      seen.push(String(url));
+      if (String(url).includes('calendly.com/api/booking/event_types/lookup')) {
+        return {
+          ok: true,
+          json: async () => ({ uuid: 'et-1', availability_timezone: 'America/Chicago' }),
+        };
+      }
+      if (String(url).includes('calendar/range')) {
+        return {
+          ok: true,
+          json: async () => ({
+            days: [{ spots: [{ status: 'available', start_time: '2026-10-07T15:30:00.000Z' }] }],
+          }),
+        };
+      }
+      if (String(url).includes('availability-page')) {
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({
+            linkAvailability: {
+              hasMore: false,
+              linkAvailabilityByDuration: {
+                1800000: {
+                  availabilities: [{ startMillisUtc: Date.parse('2026-10-07T16:00:00.000Z') }],
+                },
+              },
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    try {
+      const cal = await fetchPublicBookingStarts('https://calendly.com/joshua-salesglidergrowth/30min');
+      const hs = await fetchPublicBookingStarts('https://meetings.hubspot.com/dave-ackley');
+      assert.equal(cal.starts[0].toISOString(), '2026-10-07T15:30:00.000Z');
+      assert.equal(hs.starts[0].toISOString(), '2026-10-07T16:00:00.000Z');
+    } finally {
+      global.fetch = originalFetch;
+    }
+    assert.ok(seen.some((u) => u.includes('calendly.com')));
+    assert.ok(seen.some((u) => u.includes('hubspot.com')));
   });
 });

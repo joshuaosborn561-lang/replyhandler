@@ -246,15 +246,23 @@ test('positive replies include two times and the booking link', () => {
 test('open times come from the public booking page, not a client OAuth secret', () => {
   const slots = read('src/services/scheduling-slots.js');
   const resolve = slots.slice(slots.indexOf('async function resolveVerifiedSchedulingSlots'));
-  assert.match(resolve, /fetchPublicCalendlyStarts/,
+  assert.match(slots, /fetchPublicCalendlyStarts/,
     reversal('public booking page, no client OAuth', 'we no longer read the public Calendly page'));
-  assert.match(resolve, /resolveAvailabilityBookingUrl/,
-    reversal('public booking page, no client OAuth', 'the wrap is no longer unwrapped to the destination calendar'));
+  assert.match(slots, /fetchPublicHubSpotStarts/,
+    reversal('public booking page, no client OAuth', 'we no longer read the public HubSpot Meetings page'));
+  assert.match(slots, /fetchPublicSavvyCalStarts/,
+    reversal('public booking page, no client OAuth', 'we no longer read SavvyCal / PowerPSA public pages'));
+  assert.match(resolve, /fetchPublicBookingStarts/,
+    reversal('public booking page, no client OAuth', 'we no longer dispatch HubSpot / SavvyCal / Bookings from the public destination'));
+  assert.match(resolve, /resolveLiveAvailabilityBookingUrl/,
+    reversal('public booking page, no client OAuth', 'the wrap is no longer unwrapped from live BookingBridge clients.js'));
   assert.match(resolve, /pickTwoBusinessDayStarts/,
     reversal('public booking page, no client OAuth', 'times can be same-day again instead of tomorrow + next business day'));
   assert.doesNotMatch(resolve, /calendly_personal_access_token/,
     reversal('public booking page, no client OAuth', 'slot lookup still requires a Calendly PAT'));
-  assert.match(resolve, /2500/,
+  assert.doesNotMatch(resolve, /fetchCalendarFreeStarts/,
+    reversal('public booking page, no client OAuth', 'we fell back to client calendar OAuth instead of the public page'));
+  assert.match(resolve, /4000/,
     reversal('public booking page, no client OAuth', 'the poller/webhook quick path lost its short timeout'));
 });
 

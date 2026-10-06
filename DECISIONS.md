@@ -819,7 +819,14 @@ Guard: `open times come from the connected calendar, not a Calendly PAT`
 
 Supersedes **No Calendly PAT — check the connected calendar first** for how we get times. Still no PAT, still no client OAuth / client-id / client-secret.
 
-Unwrap `book.gosalesglider.com/{slug}` to the destination calendar. If that destination is Calendly, read the same public booking JSON the scheduling page loads (`/api/booking/event_types/lookup` + `/calendar/range`). Offer one time tomorrow and one the next business day — skip today, Saturday, Sunday; Friday rolls to Monday/Tuesday. The draft still pastes the public wrap, never the raw Calendly. HubSpot / Microsoft Bookings / PowerPSA have no shared public slot JSON; those stay on rough times plus the wrap. Vasco stays in-person with no link.
+Unwrap `book.gosalesglider.com/{slug}` to the destination calendar Josh stored in BookingBridge. That file (`https://book.gosalesglider.com/clients.js`) is the catalog — Calendly, HubSpot, Teams/MS Bookings, SavvyCal/PowerPSA, whatever he pasted. Read the same public slot JSON each scheduling page loads. A newly added slug is picked up from the live file; do not require a code change or a client OAuth secret.
+
+- Calendly: `/api/booking/event_types/lookup` + `/calendar/range`
+- HubSpot Meetings: `/meetings-public/v3/book/availability-page`
+- SavvyCal (including custom domains like meet.powerpsa.com): public page `linkId` + `POST /api/links/{id}/intervals`
+- MS Bookings / bookwithme: public availability URL when the host answers (some datacenter IPs get 417)
+
+Offer one time tomorrow and one the next business day — skip today, Saturday, Sunday; Friday rolls to Monday/Tuesday. The draft still pastes the public wrap, never the raw destination. Vasco stays in-person with no link.
 
 Guard: `open times come from the public booking page, not a client OAuth secret`
 

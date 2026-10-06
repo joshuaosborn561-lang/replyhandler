@@ -2,13 +2,13 @@
  * Booking-bridge wrap → the real calendar behind it.
  *
  * book.gosalesglider.com/{slug} only captures email and redirects. It does
- * not expose open slots. Availability is read from the destination public
- * page (Calendly booking JSON). HubSpot / MS Bookings / PowerPSA have no
- * shared public slot feed.
+ * not expose open slots. Josh puts the public Calendly / HubSpot / Teams /
+ * SavvyCal / PowerPSA URL in booking-bridge `site/clients.js`; we unwrap
+ * the wrap and read that destination page.
  *
- * Static map matches booking-bridge `site/clients.js`. A live refresh of
- * that file overlays newer destinations so a Calendly URL change there
- * does not leave us offering stale times.
+ * Always prefer a live fetch of https://book.gosalesglider.com/clients.js
+ * so a newly added slug works without a code change. The static map is
+ * only a cache for when that file is unreachable.
  */
 
 const { BOOKING_BRIDGE_ORIGIN } = require('./public-booking-link');
@@ -31,7 +31,7 @@ const FALLBACK_DESTINATIONS = Object.freeze({
   powergryd: 'https://meet.powerpsa.com/jesse/powergryd-strategy-call-2026',
 });
 
-const LIVE_TTL_MS = 15 * 60 * 1000;
+const LIVE_TTL_MS = 60 * 1000;
 let liveDestinations = null;
 let liveFetchedAt = 0;
 
@@ -71,19 +71,26 @@ function isBookingBridgeWrap(url) {
 function resolveAvailabilityBookingUrl(client, destMap = destinationMap()) {
   const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
   const wrapSlug = slugFromWrapUrl(stored);
-  if (wrapSlug && destMap[wrapSlug]) return String(destMap[wrapSlug]).trim();
+  if (wrapSlug) {
+    return destMap[wrapSlug] ? String(destMap[wrapSlug]).trim() : '';
+  }
   if (stored) return stored;
   const nameSlug = slugFromClientName(client && client.name);
   return nameSlug && destMap[nameSlug] ? String(destMap[nameSlug]).trim() : '';
 }
 
-async function refreshDestinations({ fetchImpl = fetch, now = Date.now() } = {}) {
-  if (liveDestinations && now - liveFetchedAt < LIVE_TTL_MS) {
+async function refreshDestinations({
+  fetchImpl = fetch,
+  now = Date.now(),
+  timeoutMs = 1500,
+  force = false,
+} = {}) {
+  if (!force && liveDestinations && now - liveFetchedAt < LIVE_TTL_MS) {
     return destinationMap();
   }
   try {
     const res = await fetchImpl(`${BOOKING_BRIDGE_ORIGIN}/clients.js`, {
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(Math.max(250, Number(timeoutMs) || 1500)),
     });
     if (res && res.ok) {
       const text = typeof res.text === 'function' ? await res.text() : '';
@@ -94,9 +101,24 @@ async function refreshDestinations({ fetchImpl = fetch, now = Date.now() } = {})
       }
     }
   } catch {
-    // Keep the baked-in map — a stale destination is better than none.
+    // Keep the baked-in / last-good map — a stale destination is better than none.
   }
   return destinationMap();
+}
+
+/**
+ * Unwrap the client's wrap (or name) to the live public calendar URL.
+ * Forces a clients.js refresh when the slug is not in the cached map so a
+ * client Josh just added is found without waiting out the TTL.
+ */
+async function resolveLiveAvailabilityBookingUrl(client, opts = {}) {
+  let map = await refreshDestinations(opts);
+  let url = resolveAvailabilityBookingUrl(client, map);
+  if (!url) {
+    map = await refreshDestinations({ ...opts, force: true });
+    url = resolveAvailabilityBookingUrl(client, map);
+  }
+  return url;
 }
 
 function _resetLiveDestinationsForTests() {
@@ -112,6 +134,7 @@ module.exports = {
   slugFromWrapUrl,
   isBookingBridgeWrap,
   resolveAvailabilityBookingUrl,
+  resolveLiveAvailabilityBookingUrl,
   refreshDestinations,
   _resetLiveDestinationsForTests,
 };
