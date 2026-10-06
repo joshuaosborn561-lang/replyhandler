@@ -5,6 +5,8 @@ const {
   slugFromWrapUrl,
   isBookingBridgeWrap,
   resolveAvailabilityBookingUrl,
+  resolveLiveAvailabilityBookingUrl,
+  normalizeClientBooking,
   refreshDestinations,
   FALLBACK_DESTINATIONS,
   _resetLiveDestinationsForTests,
@@ -34,6 +36,24 @@ describe('booking-bridge destinations', () => {
     assert.equal(
       resolveAvailabilityBookingUrl({ name: 'SalesGlider' }),
       'https://calendly.com/joshua-salesglidergrowth/30min'
+    );
+  });
+
+  it('wraps a regular calendar URL and keeps it as the destination', () => {
+    const n = normalizeClientBooking({
+      name: 'New Shop',
+      booking_link: 'https://calendly.com/new-shop/30min',
+    });
+    assert.equal(n.slug, 'newshop');
+    assert.equal(n.booking_link, 'https://book.gosalesglider.com/newshop');
+    assert.equal(n.booking_destination_url, 'https://calendly.com/new-shop/30min');
+    assert.equal(
+      resolveAvailabilityBookingUrl({
+        name: 'New Shop',
+        booking_link: n.booking_link,
+        booking_destination_url: n.booking_destination_url,
+      }),
+      'https://calendly.com/new-shop/30min'
     );
   });
 
@@ -94,6 +114,36 @@ window.BOOKING_CLIENTS = {
       }, map),
       'https://calendly.com/ctapper/new-destination'
     );
+  });
+
+  it('force-refreshes clients.js when a new slug is missing from the cache', async () => {
+    const stale = `
+window.BOOKING_CLIENTS = {
+  "techevo": { name: "TechEvolution", bookingUrl: "https://calendly.com/ctapper/meeting" },
+};
+`;
+    const fresh = `
+window.BOOKING_CLIENTS = {
+  "techevo": { name: "TechEvolution", bookingUrl: "https://calendly.com/ctapper/meeting" },
+  "newclient": { name: "New Client", bookingUrl: "https://calendly.com/new-client/30min" },
+};
+`;
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      return { ok: true, text: async () => (calls === 1 ? stale : fresh) };
+    };
+    await refreshDestinations({ now: 1_000, fetchImpl });
+    assert.equal(
+      resolveAvailabilityBookingUrl({ booking_link: 'https://book.gosalesglider.com/newclient' }),
+      ''
+    );
+    const url = await resolveLiveAvailabilityBookingUrl(
+      { booking_link: 'https://book.gosalesglider.com/newclient' },
+      { now: 1_100, fetchImpl }
+    );
+    assert.equal(url, 'https://calendly.com/new-client/30min');
+    assert.ok(calls >= 2, 'missing slug must refetch live clients.js');
   });
 
   it('recognizes both public wrap hosts', () => {

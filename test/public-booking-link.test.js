@@ -57,7 +57,7 @@ describe('public booking-link wrap', () => {
         clientName: 'Parlay Tech',
         bookingLink: 'https://calendly.com/parlay/30min',
       }),
-      'https://calendly.com/parlay/30min'
+      'https://book.gosalesglider.com/parlay'
     );
   });
 

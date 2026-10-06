@@ -1,8 +1,7 @@
 const calendar = require('./calendar');
 const { prospectBookingLink } = require('../utils/public-booking-link');
 const {
-  resolveAvailabilityBookingUrl,
-  refreshDestinations,
+  resolveLiveAvailabilityBookingUrl,
 } = require('../utils/booking-bridge-destinations');
 
 const CALENDLY_API = 'https://api.calendly.com';
@@ -18,14 +17,34 @@ function normalizeBookingUrl(url) {
   }
 }
 
-function isCalendlyUrl(url) {
-  if (!url) return false;
+function hostnameOf(url) {
   try {
-    const h = new URL(url).hostname.replace(/^www\./, '');
-    return h === 'calendly.com';
+    return new URL(String(url || '').trim()).hostname.replace(/^www\./, '').toLowerCase();
   } catch {
-    return false;
+    return '';
   }
+}
+
+function isCalendlyUrl(url) {
+  return hostnameOf(url) === 'calendly.com';
+}
+
+function isHubSpotMeetingsUrl(url) {
+  const h = hostnameOf(url);
+  return h === 'meetings.hubspot.com' || /^meetings-[a-z0-9]+\.hubspot\.com$/.test(h);
+}
+
+function isMsBookingsUrl(url) {
+  const h = hostnameOf(url);
+  if (h === 'bookings.cloud.microsoft' || h === 'outlook.office.com' || h === 'outlook.office365.com') {
+    return true;
+  }
+  return /\/bookwithme\//i.test(String(url || ''));
+}
+
+function isSavvyCalHost(url) {
+  const h = hostnameOf(url);
+  return h === 'savvycal.com' || h.endsWith('.savvycal.com');
 }
 
 /** Public Calendly path: /{profile}/{event} or /d/{shareUid}/... */
@@ -152,6 +171,238 @@ async function fetchPublicCalendlyStarts(bookingUrl, { fromDate, toDate } = {}) 
   }
   starts.sort((a, b) => a - b);
   return { starts, timeZone };
+}
+
+function parseHubSpotPublicUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (host !== 'meetings.hubspot.com' && !/^meetings-[a-z0-9]+\.hubspot\.com$/.test(host)) {
+      return null;
+    }
+    let path = u.pathname.replace(/\/$/, '');
+    if (path.startsWith('/meetings/')) path = path.slice('/meetings'.length);
+    if (path.startsWith('/temp-v2/')) path = path.slice('/temp-v2'.length);
+    const slug = path.replace(/^\//, '');
+    if (!slug) return null;
+    return { host, slug };
+  } catch {
+    return null;
+  }
+}
+
+function parseMsBookingsPublicUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    const parts = u.pathname.split('/').filter(Boolean);
+    const userIdx = parts.findIndex((p) => p.toLowerCase() === 'user');
+    const typeIdx = parts.findIndex((p) => p.toLowerCase() === 'meetingtype');
+    if (userIdx < 0 || typeIdx < 0 || !parts[userIdx + 1] || !parts[typeIdx + 1]) return null;
+    return {
+      user: decodeURIComponent(parts[userIdx + 1]),
+      meetingType: decodeURIComponent(parts[typeIdx + 1]),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSavvyCalInertiaPage(html) {
+  const text = String(html || '');
+  const script = text.match(/<script[^>]*data-page="app"[^>]*>([\s\S]*?)<\/script>/i);
+  if (script) {
+    try {
+      const page = JSON.parse(script[1].trim());
+      const props = page && page.props ? page.props : {};
+      if (props.linkId) {
+        return {
+          linkId: String(props.linkId),
+          organizerId: props.organizer && props.organizer.user && props.organizer.user.id
+            ? String(props.organizer.user.id)
+            : '',
+        };
+      }
+    } catch {
+      // Fall through to regex.
+    }
+  }
+  const linkId = text.match(/"linkId"\s*:\s*"(link_[A-Za-z0-9]+)"/);
+  const organizerId = text.match(/"organizer"\s*:\s*\{[^}]*"id"\s*:\s*"(user_[A-Za-z0-9]+)"/);
+  if (!linkId) return null;
+  return { linkId: linkId[1], organizerId: organizerId ? organizerId[1] : '' };
+}
+
+async function publicJsonFetch(url, { method = 'GET', body, origin, referer } = {}) {
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'Mozilla/5.0 ReplyHandlerAvailability/1.0',
+  };
+  if (origin) headers.Origin = origin;
+  if (referer) headers.Referer = referer;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Public booking ${res.status}: ${t.slice(0, 160)}`);
+  }
+  const ct = String(res.headers.get('content-type') || '');
+  if (!ct.includes('json')) {
+    throw new Error(`Public booking expected JSON, got ${ct || 'no content-type'}`);
+  }
+  return res.json();
+}
+
+function preferredHubSpotDurationBucket(byDuration) {
+  const by = byDuration && typeof byDuration === 'object' ? byDuration : {};
+  return by['1800000'] || by['3600000'] || by[Object.keys(by)[0]] || null;
+}
+
+/**
+ * Same JSON the public HubSpot Meetings page loads. No portal token.
+ */
+async function fetchPublicHubSpotStarts(bookingUrl, { fromDate, toDate } = {}) {
+  const parsed = parseHubSpotPublicUrl(bookingUrl);
+  if (!parsed) return { starts: [], timeZone: null };
+  const timeZone = 'America/Chicago';
+  const origin = `https://${parsed.host}`;
+  const qs = (monthOffset) => new URLSearchParams({
+    slug: parsed.slug,
+    monthOffset: String(monthOffset),
+    timezone: timeZone,
+  });
+  const first = await publicJsonFetch(
+    `https://api.hubspot.com/meetings-public/v3/book/availability-page?${qs(0)}`,
+    { origin, referer: String(bookingUrl) }
+  );
+  const pages = [first];
+  if (first && first.linkAvailability && first.linkAvailability.hasMore) {
+    pages.push(await publicJsonFetch(
+      `https://api.hubspot.com/meetings-public/v3/book/availability-page?${qs(1)}`,
+      { origin, referer: String(bookingUrl) }
+    ));
+  }
+  const starts = [];
+  for (const page of pages) {
+    const bucket = preferredHubSpotDurationBucket(
+      page && page.linkAvailability && page.linkAvailability.linkAvailabilityByDuration
+    );
+    for (const spot of (bucket && bucket.availabilities) || []) {
+      const ms = Number(spot && spot.startMillisUtc);
+      if (Number.isFinite(ms)) starts.push(new Date(ms));
+    }
+  }
+  const fromMs = fromDate ? new Date(fromDate).getTime() : 0;
+  const toMs = toDate ? new Date(toDate).getTime() : Infinity;
+  const filtered = starts.filter((d) => {
+    const t = d.getTime();
+    return t >= fromMs && t <= toMs;
+  });
+  filtered.sort((a, b) => a - b);
+  return { starts: filtered, timeZone };
+}
+
+/**
+ * SavvyCal (including custom domains like meet.powerpsa.com).
+ * Read linkId from the public page, then POST /api/links/{id}/intervals.
+ */
+async function fetchPublicSavvyCalStarts(bookingUrl, { fromDate, toDate } = {}) {
+  const pageUrl = String(bookingUrl || '').trim();
+  if (!pageUrl) return { starts: [], timeZone: null };
+  let origin;
+  try {
+    origin = new URL(pageUrl).origin;
+  } catch {
+    return { starts: [], timeZone: null };
+  }
+  const htmlRes = await fetch(pageUrl, {
+    headers: {
+      Accept: 'text/html,application/xhtml+xml',
+      'User-Agent': 'Mozilla/5.0 ReplyHandlerAvailability/1.0',
+    },
+  });
+  if (!htmlRes.ok) {
+    throw new Error(`SavvyCal page ${htmlRes.status}`);
+  }
+  const parsed = parseSavvyCalInertiaPage(await htmlRes.text());
+  if (!parsed || !parsed.linkId) return { starts: [], timeZone: null };
+
+  const from = fromDate || new Date();
+  const to = toDate || new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  const body = {
+    from: new Date(from).toISOString(),
+    until: new Date(to).toISOString(),
+  };
+  if (parsed.organizerId) body.organizer = parsed.organizerId;
+  const data = await publicJsonFetch(`${origin}/api/links/${encodeURIComponent(parsed.linkId)}/intervals`, {
+    method: 'POST',
+    body,
+    origin,
+    referer: pageUrl,
+  });
+  const starts = [];
+  for (const slot of data.slots || []) {
+    if (slot.allowance && slot.allowance !== 'open') continue;
+    if (slot.startAt) starts.push(new Date(slot.startAt));
+  }
+  starts.sort((a, b) => a - b);
+  return { starts, timeZone: 'America/Chicago' };
+}
+
+/**
+ * Microsoft Bookings / bookwithme. The public SPA is often blocked from
+ * datacenter IPs (417); when the JSON feed answers, use it.
+ */
+async function fetchPublicMsBookingsStarts(bookingUrl, { fromDate, toDate } = {}) {
+  const parsed = parseMsBookingsPublicUrl(bookingUrl);
+  if (!parsed) return { starts: [], timeZone: null };
+  const from = fromDate || new Date();
+  const to = toDate || new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  const qs = new URLSearchParams({
+    startdt: new Date(from).toISOString(),
+    enddt: new Date(to).toISOString(),
+  });
+  const candidates = [
+    `https://outlook.office.com/bookwithme/api/v1.0/users/${encodeURIComponent(parsed.user)}/meetingtypes/${encodeURIComponent(parsed.meetingType)}/availability?${qs}`,
+    `https://bookings.cloud.microsoft/bookwithme/api/v1.0/users/${encodeURIComponent(parsed.user)}/meetingtypes/${encodeURIComponent(parsed.meetingType)}/availability?${qs}`,
+  ];
+  for (const url of candidates) {
+    try {
+      const data = await publicJsonFetch(url, {
+        origin: 'https://bookings.cloud.microsoft',
+        referer: String(bookingUrl),
+      });
+      const starts = [];
+      const rows = data.availability || data.value || data.slots || [];
+      for (const row of rows) {
+        const raw = row.start || row.startDateTime || row.start_time;
+        if (raw) starts.push(new Date(raw));
+      }
+      if (starts.length) {
+        starts.sort((a, b) => a - b);
+        return { starts, timeZone: 'America/Chicago' };
+      }
+    } catch {
+      // Try the next known public host.
+    }
+  }
+  return { starts: [], timeZone: null };
+}
+
+/**
+ * Dispatch by the public destination URL Josh stored in BookingBridge.
+ * Unknown hosts are treated as SavvyCal custom domains (PowerPSA, etc.).
+ */
+async function fetchPublicBookingStarts(bookingUrl, range) {
+  if (!bookingUrl) return { starts: [], timeZone: null };
+  if (isCalendlyUrl(bookingUrl)) return fetchPublicCalendlyStarts(bookingUrl, range);
+  if (isHubSpotMeetingsUrl(bookingUrl)) return fetchPublicHubSpotStarts(bookingUrl, range);
+  if (isMsBookingsUrl(bookingUrl)) return fetchPublicMsBookingsStarts(bookingUrl, range);
+  if (isSavvyCalHost(bookingUrl)) return fetchPublicSavvyCalStarts(bookingUrl, range);
+  return fetchPublicSavvyCalStarts(bookingUrl, range);
 }
 
 async function calendlyFetch(pathWithQuery, token) {
@@ -471,25 +722,17 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   const toDate = new Date(Date.now() + (quick ? 10 : 14) * 24 * 60 * 60 * 1000);
   const limit = Math.max(8, needed);
 
-  if (!quick) {
-    await refreshDestinations().catch(() => {});
-  }
-  const availabilityUrl = resolveAvailabilityBookingUrl(client);
+  const availabilityUrl = await resolveLiveAvailabilityBookingUrl(client).catch(() => '');
 
   let starts = cachedCalendarStarts(client.id, fromDate, toDate, limit) || [];
   if (!starts.length) {
     try {
       const lookup = async () => {
-        if (isCalendlyUrl(availabilityUrl)) {
-          const pub = await fetchPublicCalendlyStarts(availabilityUrl, { fromDate, toDate });
-          if (pub.timeZone) timeZone = pub.timeZone;
-          return pub.starts || [];
-        }
-        // Non-Calendly public pages (HubSpot / Bookings / PowerPSA) have
-        // no shared availability JSON. Connected calendar is a last resort.
-        return fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit, timeZone });
+        const pub = await fetchPublicBookingStarts(availabilityUrl, { fromDate, toDate });
+        if (pub.timeZone) timeZone = pub.timeZone;
+        return pub.starts || [];
       };
-      starts = await withTimeout(lookup(), quick ? 2500 : 8000, []);
+      starts = await withTimeout(lookup(), quick ? 4000 : 8000, []);
       if (starts.length) rememberCalendarStarts(client.id, fromDate, toDate, limit, starts);
     } catch (err) {
       console.warn('[SchedulingSlots] Public booking slots failed', { err: err.message });
@@ -524,7 +767,15 @@ module.exports = {
   pickOpenStarts,
   pickTwoBusinessDayStarts,
   parseCalendlyPublicUrl,
+  parseHubSpotPublicUrl,
+  parseMsBookingsPublicUrl,
+  parseSavvyCalInertiaPage,
   fetchPublicCalendlyStarts,
+  fetchPublicHubSpotStarts,
+  fetchPublicSavvyCalStarts,
+  fetchPublicBookingStarts,
+  isHubSpotMeetingsUrl,
+  isMsBookingsUrl,
   slotOffsetForFollowUpStep,
   formatSlotLabel,
   timesPlusLinkPromptBlock,

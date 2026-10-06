@@ -8,6 +8,7 @@ const clientActionRoutes = require('./routes/client-action');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const voiceLearningRoutes = require('./routes/voice-learning');
+const publicBookingCatalogRoutes = require('./routes/public-booking-catalog');
 const { startCron } = require('./cron');
 const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
 
@@ -50,6 +51,7 @@ app.use(clientActionRoutes);
 app.use(authRoutes);
 app.use(testWebhookRoutes);
 app.use(voiceLearningRoutes);
+app.use(publicBookingCatalogRoutes);
 
 // ─── Start ──────────────────────────────────
 async function start() {

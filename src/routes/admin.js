@@ -7,6 +7,7 @@ const {
   provisionClientToPortal,
   provisionAllClients,
 } = require('../services/portal-provision');
+const { normalizeClientBooking } = require('../utils/booking-bridge-destinations');
 
 const router = Router();
 
@@ -57,14 +58,15 @@ router.post('/admin/clients', async (req, res) => {
     const legacyCc = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
 
     const contactEmail = portalContactEmail({ cc_emails: alwaysCc, cc_email: legacyCc });
+    const booked = normalizeClientBooking({ name, booking_link });
 
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
          name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token, slack_channel_id,
-         booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
+         booking_link, booking_destination_url, calendly_personal_access_token, voice_prompt, digest_timezone,
          cc_email, cc_emails, cc_round_robin_emails, contact_email
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -72,7 +74,8 @@ router.post('/admin/clients', async (req, res) => {
         allo_api_key || null,
         slack_bot_token,
         slack_channel_id,
-        booking_link || null,
+        booked.booking_link || null,
+        booked.booking_destination_url || null,
         calendly_personal_access_token || null,
         voice_prompt || '',
         digest_timezone || null,
@@ -143,7 +146,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const fields = req.body;
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'allo_api_key', 'slack_bot_token',
-      'slack_channel_id', 'booking_link', 'calendly_personal_access_token', 'voice_prompt',
+      'slack_channel_id', 'booking_link', 'booking_destination_url', 'calendly_personal_access_token', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
       'contact_email',
     ];
@@ -168,6 +171,20 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
       && !Object.prototype.hasOwnProperty.call(fields, 'cc_email')) {
       // Always-notify is the source of truth. A lone contact_email write is ignored.
       delete fields.contact_email;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(fields, 'booking_link')
+      || Object.prototype.hasOwnProperty.call(fields, 'name')) {
+      const { rows: [existing] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+      if (existing) {
+        const booked = normalizeClientBooking({
+          name: fields.name != null ? fields.name : existing.name,
+          booking_link: fields.booking_link != null ? fields.booking_link : existing.booking_link,
+          booking_destination_url: existing.booking_destination_url,
+        });
+        fields.booking_link = booked.booking_link || null;
+        fields.booking_destination_url = booked.booking_destination_url || null;
+      }
     }
 
     for (const [key, value] of Object.entries(fields)) {

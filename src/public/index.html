@@ -716,8 +716,8 @@
 
       <div class="form-group">
         <label>Booking Link</label>
-        <input type="text" id="f_booking_link" placeholder="https://cal.com/acme/30min">
-        <div class="hint">Client's scheduling page URL (Calendly, Cal.com, SavvyCal, etc). First replies suggest times; this link is included only when the prospect asks for / accepts a booking link.</div>
+        <input type="text" id="f_booking_link" placeholder="https://calendly.com/acme/30min">
+        <div class="hint">Paste the regular calendar link (Calendly, HubSpot, Teams, SavvyCal). We wrap it to book.gosalesglider.com and keep the regular link to read open times.</div>
       </div>
 
       <div class="form-group">
@@ -1105,6 +1105,10 @@ function openDetail(id) {
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
       <div class="detail-row">
+        <span class="label">Regular calendar</span>
+        <span class="value">${c.booking_destination_url ? '<a href="' + esc(c.booking_destination_url) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_destination_url) + '</a>' : '—'}</span>
+      </div>
+      <div class="detail-row">
         <span class="label">Always forward</span>
         <span class="value">${(c.cc_emails || c.cc_email) ? esc(c.cc_emails || c.cc_email) : '—'}</span>
       </div>
@@ -1193,7 +1197,7 @@ function openEditFromDetail() {
   document.getElementById('f_allo_api_key').value = c.allo_api_key || '';
   document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
-  document.getElementById('f_booking_link').value = c.booking_link || '';
+  document.getElementById('f_booking_link').value = c.booking_destination_url || c.booking_link || '';
   document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
   syncPortalEmailFromAlwaysNotify();
   document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
