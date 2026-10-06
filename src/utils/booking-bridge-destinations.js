@@ -2,8 +2,9 @@
  * Booking-bridge wrap → the real calendar behind it.
  *
  * book.gosalesglider.com/{slug} only captures email and redirects. It does
- * not expose open slots. Availability has to be read from the destination
- * (Calendly when we have a PAT; HubSpot / MS Bookings / PowerPSA cannot).
+ * not expose open slots. Availability is read from the destination public
+ * page (Calendly booking JSON). HubSpot / MS Bookings / PowerPSA have no
+ * shared public slot feed.
  *
  * Static map matches booking-bridge `site/clients.js`. A live refresh of
  * that file overlays newer destinations so a Calendly URL change there

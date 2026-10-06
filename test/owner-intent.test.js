@@ -240,21 +240,22 @@ test('positive replies include two times and the booking link', () => {
   assert.ok(!forcedOff.includes(link), 'explicit includeBookingLink=false must still strip');
 });
 
-// ── Decision: no Calendly PAT — check the connected calendar first ──
-// "ok and for PAT i dont need that. is there a way grokbot can just check first quickly?"
-test('open times come from the connected calendar, not a Calendly PAT', () => {
+// ── Decision: public booking page, not client OAuth ──
+// "here's the main calendar link before we wrap it… find two times in
+// the next two days… I'm never going to get anything from the client."
+test('open times come from the public booking page, not a client OAuth secret', () => {
   const slots = read('src/services/scheduling-slots.js');
   const resolve = slots.slice(slots.indexOf('async function resolveVerifiedSchedulingSlots'));
-  assert.match(resolve, /fetchCalendarFreeStarts/,
-    reversal('check calendar first, no PAT', 'the live slot lookup no longer reads the connected calendar'));
+  assert.match(resolve, /fetchPublicCalendlyStarts/,
+    reversal('public booking page, no client OAuth', 'we no longer read the public Calendly page'));
+  assert.match(resolve, /resolveAvailabilityBookingUrl/,
+    reversal('public booking page, no client OAuth', 'the wrap is no longer unwrapped to the destination calendar'));
+  assert.match(resolve, /pickTwoBusinessDayStarts/,
+    reversal('public booking page, no client OAuth', 'times can be same-day again instead of tomorrow + next business day'));
   assert.doesNotMatch(resolve, /calendly_personal_access_token/,
-    reversal('check calendar first, no PAT', 'slot lookup still requires a Calendly PAT'));
+    reversal('public booking page, no client OAuth', 'slot lookup still requires a Calendly PAT'));
   assert.match(resolve, /2500/,
-    reversal('check calendar first, no PAT', 'the poller/webhook quick path lost its short timeout'));
-  assert.ok(
-    resolve.includes('skipExternalFetch') && resolve.includes('fetchCalendarFreeStarts'),
-    reversal('check calendar first, no PAT', 'skipExternalFetch no longer does a quick calendar check')
-  );
+    reversal('public booking page, no client OAuth', 'the poller/webhook quick path lost its short timeout'));
 });
 
 // ── Decision: follow-ups after any positive reply; first step 3:30pm CT ─

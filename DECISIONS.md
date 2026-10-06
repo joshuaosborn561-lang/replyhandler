@@ -813,6 +813,16 @@ Do not ask for a Calendly personal access token. Booking-bridge still has no ava
 
 Guard: `open times come from the connected calendar, not a Calendly PAT`
 
+### Open times come from the public booking page
+
+*"GrokBot's an agent… here's the main calendar link before we wrap it… find two times in the next two days… not same day… tomorrow and the day after… accounting for Fridays and weekends. I'm never going to get anything from the client. This is a public website."*
+
+Supersedes **No Calendly PAT — check the connected calendar first** for how we get times. Still no PAT, still no client OAuth / client-id / client-secret.
+
+Unwrap `book.gosalesglider.com/{slug}` to the destination calendar. If that destination is Calendly, read the same public booking JSON the scheduling page loads (`/api/booking/event_types/lookup` + `/calendar/range`). Offer one time tomorrow and one the next business day — skip today, Saturday, Sunday; Friday rolls to Monday/Tuesday. The draft still pastes the public wrap, never the raw Calendly. HubSpot / Microsoft Bookings / PowerPSA have no shared public slot JSON; those stay on rough times plus the wrap. Vasco stays in-person with no link.
+
+Guard: `open times come from the public booking page, not a client OAuth secret`
+
 ### Same inbound cannot be carded or sent twice
 
 *"hey apparently you are sending us the same thing 2 times. casey buckstaff is one."*

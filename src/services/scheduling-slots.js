@@ -1,5 +1,9 @@
 const calendar = require('./calendar');
 const { prospectBookingLink } = require('../utils/public-booking-link');
+const {
+  resolveAvailabilityBookingUrl,
+  refreshDestinations,
+} = require('../utils/booking-bridge-destinations');
 
 const CALENDLY_API = 'https://api.calendly.com';
 
@@ -22,6 +26,132 @@ function isCalendlyUrl(url) {
   } catch {
     return false;
   }
+}
+
+/** Public Calendly path: /{profile}/{event} or /d/{shareUid}/... */
+function parseCalendlyPublicUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    if (u.hostname.replace(/^www\./, '').toLowerCase() !== 'calendly.com') return null;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'd' && parts[1]) {
+      return { shareUuid: parts[1] };
+    }
+    if (parts.length >= 2 && parts[0] !== 'd') {
+      return { profileSlug: parts[0], eventTypeSlug: parts[1] };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function ymdInZone(date, timeZone) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timeZone || 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function weekdayInZone(date, timeZone) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timeZone || 'America/Chicago',
+    weekday: 'short',
+  }).format(date);
+}
+
+function isWeekendInZone(date, timeZone) {
+  const w = weekdayInZone(date, timeZone);
+  return w === 'Sat' || w === 'Sun';
+}
+
+/**
+ * One slot on the next business day, one on the business day after.
+ * Skips today, weekends, and Friday→Sat/Sun (lands on Mon/Tue).
+ */
+function pickTwoBusinessDayStarts(starts, {
+  timeZone = 'America/Chicago',
+  offset = 0,
+  count = 2,
+  excludeStarts = [],
+  now = new Date(),
+} = {}) {
+  const excluded = (excludeStarts || [])
+    .map((s) => new Date(s))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  const todayYmd = ymdInZone(now, timeZone);
+  const byDay = new Map();
+  for (const raw of starts || []) {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) continue;
+    if (excluded.some((ex) => sameStart(d, ex))) continue;
+    if (isWeekendInZone(d, timeZone)) continue;
+    const ymd = ymdInZone(d, timeZone);
+    if (ymd <= todayYmd) continue;
+    if (!byDay.has(ymd)) byDay.set(ymd, []);
+    byDay.get(ymd).push(d);
+  }
+  for (const list of byDay.values()) list.sort((a, b) => a - b);
+  const days = [...byDay.keys()].sort();
+  const off = Math.max(0, Number(offset) || 0);
+  const n = Math.max(1, Number(count) || 2);
+  return days.slice(off, off + n).map((ymd) => byDay.get(ymd)[0]);
+}
+
+async function calendlyPublicFetch(url) {
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0 ReplyHandlerAvailability/1.0',
+    },
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Calendly public ${res.status}: ${t.slice(0, 160)}`);
+  }
+  return res.json();
+}
+
+/**
+ * Same JSON the public Calendly page loads. No PAT, no client OAuth.
+ */
+async function fetchPublicCalendlyStarts(bookingUrl, { fromDate, toDate } = {}) {
+  const parsed = parseCalendlyPublicUrl(bookingUrl);
+  if (!parsed) return { starts: [], timeZone: null };
+
+  const lookupQs = new URLSearchParams();
+  if (parsed.profileSlug) lookupQs.set('profile_slug', parsed.profileSlug);
+  if (parsed.eventTypeSlug) lookupQs.set('event_type_slug', parsed.eventTypeSlug);
+  if (parsed.shareUuid) lookupQs.set('share_uuid', parsed.shareUuid);
+
+  const eventType = await calendlyPublicFetch(
+    `https://calendly.com/api/booking/event_types/lookup?${lookupQs}`
+  );
+  const uuid = eventType && eventType.uuid;
+  if (!uuid) return { starts: [], timeZone: eventType?.availability_timezone || null };
+  const timeZone = eventType.availability_timezone || eventType.profile?.timezone || 'America/Chicago';
+
+  const from = fromDate || new Date();
+  const to = toDate || new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  const rangeQs = new URLSearchParams({
+    timezone: timeZone,
+    range_start: ymdInZone(from, timeZone),
+    range_end: ymdInZone(to, timeZone),
+  });
+  const range = await calendlyPublicFetch(
+    `https://calendly.com/api/booking/event_types/${encodeURIComponent(uuid)}/calendar/range?${rangeQs}`
+  );
+  const starts = [];
+  for (const day of range.days || []) {
+    for (const spot of day.spots || []) {
+      if (spot.status && spot.status !== 'available') continue;
+      if (spot.start_time) starts.push(new Date(spot.start_time));
+    }
+  }
+  starts.sort((a, b) => a - b);
+  return { starts, timeZone };
 }
 
 async function calendlyFetch(pathWithQuery, token) {
@@ -205,8 +335,8 @@ function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
     return `NO verified free slots were retrieved. Suggest two rough times in the next few business days to stop by in person. ${linkRule}`;
   }
   return link
-    ? `NO verified free slots were retrieved (connect Google/Outlook on this client). Suggest two rough times in the next few business days. ${linkRule}`
-    : 'NO verified free slots were retrieved. Suggest two rough times in the next few business days. Do not invent a fake booking URL.';
+    ? `NO verified free slots were retrieved from the public booking page. Suggest two rough times on the next two business days (skip weekends). ${linkRule}`
+    : 'NO verified free slots were retrieved from the public booking page. Suggest two rough times on the next two business days (skip weekends). Do not invent a fake booking URL.';
 }
 
 function isLocalBusinessSlot(date, timeZone) {
@@ -333,25 +463,36 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   const offset = Math.max(0, Number(options.offset) || 0);
   const count = Math.max(1, Number(options.count) || 2);
   const needed = offset + count;
-  const timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/New_York';
-  // skipExternalFetch = poller / LinkedIn webhook: one short calendar
-  // free/busy, no Calendly PAT. Josh: check first, quickly, no PAT.
+  let timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/Chicago';
+  // skipExternalFetch = poller / LinkedIn: still look at the public
+  // booking page, just with a short timeout. No PAT, no client OAuth.
   const quick = Boolean(options.skipExternalFetch);
-  const fromDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
-  const toDate = new Date(Date.now() + (quick ? 7 : 14) * 24 * 60 * 60 * 1000);
+  const fromDate = new Date();
+  const toDate = new Date(Date.now() + (quick ? 10 : 14) * 24 * 60 * 60 * 1000);
   const limit = Math.max(8, needed);
+
+  if (!quick) {
+    await refreshDestinations().catch(() => {});
+  }
+  const availabilityUrl = resolveAvailabilityBookingUrl(client);
 
   let starts = cachedCalendarStarts(client.id, fromDate, toDate, limit) || [];
   if (!starts.length) {
     try {
-      starts = await withTimeout(
-        fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit, timeZone }),
-        quick ? 2500 : 8000,
-        []
-      );
+      const lookup = async () => {
+        if (isCalendlyUrl(availabilityUrl)) {
+          const pub = await fetchPublicCalendlyStarts(availabilityUrl, { fromDate, toDate });
+          if (pub.timeZone) timeZone = pub.timeZone;
+          return pub.starts || [];
+        }
+        // Non-Calendly public pages (HubSpot / Bookings / PowerPSA) have
+        // no shared availability JSON. Connected calendar is a last resort.
+        return fetchCalendarFreeStarts(client.id, fromDate, toDate, { limit, timeZone });
+      };
+      starts = await withTimeout(lookup(), quick ? 2500 : 8000, []);
       if (starts.length) rememberCalendarStarts(client.id, fromDate, toDate, limit, starts);
     } catch (err) {
-      console.warn('[SchedulingSlots] Calendar free slots failed', { err: err.message });
+      console.warn('[SchedulingSlots] Public booking slots failed', { err: err.message });
       starts = [];
     }
   }
@@ -360,7 +501,8 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     return schedulingPromptBookingLinkOnly(client);
   }
 
-  const picked = pickOpenStarts(starts, {
+  const picked = pickTwoBusinessDayStarts(starts, {
+    timeZone,
     offset,
     count,
     excludeStarts: options.excludeStarts,
@@ -380,6 +522,9 @@ module.exports = {
   resolveVerifiedSchedulingSlots,
   schedulingPromptBookingLinkOnly,
   pickOpenStarts,
+  pickTwoBusinessDayStarts,
+  parseCalendlyPublicUrl,
+  fetchPublicCalendlyStarts,
   slotOffsetForFollowUpStep,
   formatSlotLabel,
   timesPlusLinkPromptBlock,

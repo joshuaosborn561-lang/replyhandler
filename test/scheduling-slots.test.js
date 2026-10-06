@@ -2,6 +2,8 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   pickOpenStarts,
+  pickTwoBusinessDayStarts,
+  parseCalendlyPublicUrl,
   slotOffsetForFollowUpStep,
   timesPlusLinkPromptBlock,
   schedulingPromptBookingLinkOnly,
@@ -89,34 +91,67 @@ describe('scheduling slot picks', () => {
     );
   });
 
-  it('no-slots copy does not ask for a Calendly PAT', () => {
+  it('no-slots copy does not ask for a Calendly PAT or client OAuth', () => {
     const block = timesPlusLinkPromptBlock({
       slots: [],
       link: 'https://book.gosalesglider.com/parlay',
       inPerson: false,
     });
-    assert.match(block, /connect Google\/Outlook/);
-    assert.doesNotMatch(block, /PAT/);
+    assert.match(block, /public booking page/);
+    assert.doesNotMatch(block, /PAT|Google\/Outlook/);
+  });
+
+  it('parses a public Calendly /profile/event URL', () => {
+    assert.deepEqual(
+      parseCalendlyPublicUrl('https://calendly.com/joshua-salesglidergrowth/30min'),
+      { profileSlug: 'joshua-salesglidergrowth', eventTypeSlug: '30min' }
+    );
+  });
+
+  it('picks tomorrow and the next business day, never the same day', () => {
+    const tz = 'America/Chicago';
+    const now = new Date('2026-10-05T23:00:00.000Z'); // Mon evening CT
+    const tue = new Date('2026-10-06T15:30:00.000Z'); // Tue 10:30 CT
+    const tueLater = new Date('2026-10-06T16:30:00.000Z');
+    const wed = new Date('2026-10-07T15:30:00.000Z');
+    const thu = new Date('2026-10-08T15:30:00.000Z');
+    const picked = pickTwoBusinessDayStarts([tue, tueLater, wed, thu], {
+      timeZone: tz, offset: 0, count: 2, now,
+    });
+    assert.equal(picked.length, 2);
+    assert.equal(picked[0].toISOString(), tue.toISOString());
+    assert.equal(picked[1].toISOString(), wed.toISOString());
+  });
+
+  it('Friday rolls across the weekend to Monday and Tuesday', () => {
+    const tz = 'America/Chicago';
+    const now = new Date('2026-10-09T22:00:00.000Z'); // Friday evening CT
+    const fri = new Date('2026-10-09T15:30:00.000Z');
+    const sat = new Date('2026-10-10T15:30:00.000Z');
+    const sun = new Date('2026-10-11T15:30:00.000Z');
+    const mon = new Date('2026-10-12T15:30:00.000Z');
+    const tue = new Date('2026-10-13T15:30:00.000Z');
+    const picked = pickTwoBusinessDayStarts([fri, sat, sun, mon, tue], { timeZone: tz, now });
+    assert.deepEqual(
+      picked.map((d) => d.toISOString()),
+      [mon.toISOString(), tue.toISOString()]
+    );
   });
 });
 
 const fs = require('node:fs');
 const path = require('node:path');
 
-describe('calendar is checked first — no PAT', () => {
+describe('public booking page is checked — no PAT, no client OAuth', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/services/scheduling-slots.js'), 'utf8');
 
-  it('skipExternalFetch still hits the connected calendar', () => {
+  it('skipExternalFetch still hits the public Calendly page', () => {
     const resolve = src.slice(src.indexOf('async function resolveVerifiedSchedulingSlots'));
     assert.match(resolve, /skipExternalFetch/);
-    assert.match(resolve, /fetchCalendarFreeStarts/);
+    assert.match(resolve, /fetchPublicCalendlyStarts/);
     assert.ok(
-      resolve.indexOf('fetchCalendarFreeStarts') < resolve.indexOf('schedulingPromptBookingLinkOnly'),
-      'calendar check must run before the no-lookup fallback'
-    );
-    assert.doesNotMatch(
-      resolve.slice(0, resolve.indexOf('fetchCalendarFreeStarts')),
-      /if \(options\.skipExternalFetch\) \{\s*return schedulingPromptBookingLinkOnly/
+      resolve.indexOf('fetchPublicCalendlyStarts') < resolve.indexOf('schedulingPromptBookingLinkOnly'),
+      'public page check must run before the no-lookup fallback'
     );
   });
 
