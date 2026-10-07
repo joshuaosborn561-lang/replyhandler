@@ -41,6 +41,8 @@ function looksLikeBookingBridgeWrap(url) {
  * wrapped to book.gosalesglider.com/{slug}; already-wrapped links stay.
  */
 function prospectBookingLink({ clientName, bookingLink } = {}) {
+  const { isDeepRootsClient } = require('./meeting-modality');
+  if (isDeepRootsClient(clientName)) return '';
   const raw = bookingLink && String(bookingLink).trim().startsWith('http')
     ? String(bookingLink).trim()
     : '';

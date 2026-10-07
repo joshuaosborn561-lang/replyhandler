@@ -209,16 +209,44 @@ function fallbackDraftText({
   const time1 = labels[0] || `${d1} mid-morning`;
   const time2 = labels[1] || `${d2} early afternoon`;
 
-  const { prefersInPersonMeeting, shouldIncludeBookingLink, meetingCta } = require('../utils/meeting-modality');
+  const {
+    prefersInPersonMeeting, prefersCallbackCall, shouldIncludeBookingLink, meetingCta,
+    DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER,
+  } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
   const wantLink = typeof includeBookingLink === 'boolean'
     ? includeBookingLink
-    : shouldIncludeBookingLink(voicePrompt);
+    : shouldIncludeBookingLink(voicePrompt, clientName);
 
   if (DECLINE_CLASSIFICATIONS.has(classification)) {
     return (
       `Hey ${name}, thanks for getting back to me. Understood, no problem at all. ` +
       `Can I check back in a few months, or would you rather I take you off the list?`
+    );
+  }
+
+  if (callback) {
+    const cta = meetingCta({ voicePrompt, clientName, day1: d1, day2: d2 });
+    if (classification === 'MEETING_PROPOSED' || looksLikeTheyProposedTimes(msg)) {
+      const theirTimes = summarizeProposedTimes(msg);
+      if (theirTimes) {
+        return (
+          `Hey ${name}, appreciate you throwing times over — ${theirTimes} works. ` +
+          `${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}.`
+        );
+      }
+      return (
+        `Hey ${name}, appreciate you throwing times over. That window works. ` +
+        `${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}.`
+      );
+    }
+    const clearInterest = classification === 'INTERESTED' && looksLikeClearInterest(msg);
+    const ack = clearInterest
+      ? 'Would love to see if this is a fit.'
+      : `Happy to have ${DEEP_ROOTS_CALLER} give you a call and walk through it.`;
+    return (
+      `Hey ${name}, thanks for getting back to me. ${ack} ${cta.suggestLine}`
     );
   }
 
@@ -433,9 +461,12 @@ function nextTwoBusinessDayLabels(timeZone = DEFAULT_DRAFT_TZ) {
 }
 
 function buildTimeSuggestionBlock({
-  digestTimezone, schedulingPromptBlock, includeBookingLink, voicePrompt,
+  digestTimezone, schedulingPromptBlock, includeBookingLink, voicePrompt, clientName,
 }) {
-  const { prefersInPersonMeeting, meetingCta } = require('../utils/meeting-modality');
+  const { prefersInPersonMeeting, prefersCallbackCall, meetingCta } = require('../utils/meeting-modality');
+  if (prefersCallbackCall(voicePrompt, clientName)) {
+    return meetingCta({ voicePrompt, clientName }).timeRule;
+  }
   if (prefersInPersonMeeting(voicePrompt)) {
     const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
     return meetingCta({ voicePrompt, day1: d1, day2: d2 }).timeRule;
@@ -466,11 +497,15 @@ function buildSdrVoicePrompt({
   name, booking, classification, channel, includeBookingLink, voicePrompt,
   replyMode = 'FIRST_TOUCH',
   learnedVoiceBlock = '',
+  clientName,
 }) {
   const { speaksAsPrincipal } = require('../utils/principal-voice');
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const {
+    prefersInPersonMeeting, prefersCallbackCall, DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER,
+  } = require('../utils/meeting-modality');
   const asPrincipal = speaksAsPrincipal(voicePrompt);
   const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
   const isDecline = DECLINE_CLASSIFICATIONS.has(classification);
   const mode = String(replyMode || 'FIRST_TOUCH').toUpperCase() === 'CONTINUATION'
     ? 'CONTINUATION'
@@ -488,6 +523,10 @@ function buildSdrVoicePrompt({
 
   const bookingRules = isDecline
     ? declineRules
+    : callback
+    ? `- CALLBACK MODE: Ask what time works best. ${DEEP_ROOTS_CALLER} will call them from ${DEEP_ROOTS_FROM_NUMBER}.\n` +
+      `- Do NOT suggest two calendar slots, Zoom, Calendly, or any booking URL.\n` +
+      `- If they already named a time, confirm it and say ${DEEP_ROOTS_CALLER} will call from ${DEEP_ROOTS_FROM_NUMBER}.`
     : inPerson
     ? `- IN-PERSON MODE: Offer to stop by / meet in person. Never Zoom, phone, "quick call", "our CEO", Calendly, or any booking URL.\n` +
       `- Suggest 2 concrete times in the next few business days (only after acknowledging their point).\n` +
@@ -501,6 +540,8 @@ function buildSdrVoicePrompt({
 
   const roleLine = asPrincipal
     ? 'You ghostwrite replies as Joshua Osborn, founder/CEO (first person). You ARE the CEO — never say "our CEO" or "our founder", never hand off. Suggest a quick call with you ("with me").'
+    : callback
+    ? `You ghostwrite replies for a B2B seller. ${DEEP_ROOTS_CALLER} will call the prospect from ${DEEP_ROOTS_FROM_NUMBER}. Output PLAIN TEXT only. No markdown. No quotes around the message.`
     : inPerson
     ? 'You ghostwrite replies for a B2B seller who meets prospects in person. Output PLAIN TEXT only. No markdown. No quotes around the message.'
     : 'You ghostwrite replies for a B2B SDR. Output PLAIN TEXT only. No markdown. No quotes around the message.';
@@ -512,6 +553,9 @@ function buildSdrVoicePrompt({
   const exampleA = asPrincipal
     ? `Prospect: "What's the catch?"
 Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value on the front end for you. I know your inbox is full of this kind of stuff...time Monday morning or Tuesday to connect?"`
+    : callback
+    ? `Prospect: "What's the catch?"
+Reply: "Hey Scott, no catch...just trying to see if this is a fit. What time works best for you? ${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}."`
     : inPerson
     ? `Prospect: "What's the catch?"
 Reply: "Hey Scott, no catch — happy to show you in person. Are you free mid-morning Tuesday or early afternoon Wednesday for me to stop by?"`
@@ -521,13 +565,19 @@ Reply: "Hey Scott, just gave you a ring. No catch...trying to provide some value
   const exampleB = asPrincipal
     ? `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! I have some time to connect before 11 CST to see if this makes sense? Or grab a time here if easier: ${link}"`
+    : callback
+    ? `Prospect: "Sure."
+Reply: "Hey Dean, thanks for getting back to me, sounds good! What time works best for you? ${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}."`
     : inPerson
     ? `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! Are you free Thursday mid-morning or Friday early afternoon for me to stop by in person? Happy to work around your schedule if neither works."`
     : `Prospect: "Sure."
 Reply: "Hey Dean, thanks for getting back to me, sounds good! Happy to jump on a quick call — Thursday mid-morning or Friday early afternoon? Or grab a time here if easier: ${link}"`;
 
-  const exampleC = inPerson
+  const exampleC = callback
+    ? `Prospect: "Can we do next week?"
+Reply: "Absolutely...what time next week works best? ${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}."`
+    : inPerson
     ? `Prospect: "Can we do next week?"
 Reply: "Absolutely — want me to stop by Monday or Tuesday afternoon? Whatever is easiest on your end."`
     : `Prospect: "Sure, send the link."
@@ -535,6 +585,8 @@ Reply: "Sounds good — here's the booking link: ${link}"`;
 
   const logisticalRule = asPrincipal
     ? '- If they ask a logistical question: answer briefly FIRST, then suggest a quick call with you'
+    : callback
+    ? `- If they ask a logistical question: answer briefly FIRST, then ask what time works so ${DEEP_ROOTS_CALLER} can call from ${DEEP_ROOTS_FROM_NUMBER}`
     : inPerson
     ? '- If they ask a logistical question: answer briefly FIRST, then offer to stop by in person'
     : '- If they ask a logistical question: answer briefly FIRST, then suggest times';
@@ -559,7 +611,7 @@ ${exampleA}
 EXAMPLE B (soft yes — first touch):
 ${exampleB}
 
-EXAMPLE C (${inPerson ? 'they floated timing' : 'they asked for the link'}):
+EXAMPLE C (${callback || inPerson ? 'they floated timing' : 'they asked for the link'}):
 ${exampleC}
 
 EXAMPLE D (continuation / second inbound on cost):
@@ -687,12 +739,13 @@ async function draftOnly({
     ? 'CONTINUATION'
     : 'FIRST_TOUCH';
 
-  // Two times + booking link on every positive reply, except in-person clients.
-  const { prefersInPersonMeeting, shouldIncludeBookingLink } = require('../utils/meeting-modality');
+  // Two times + booking link on every positive reply, except in-person / callback clients.
+  const { prefersInPersonMeeting, prefersCallbackCall, shouldIncludeBookingLink } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
   const includeBookingLink = typeof includeBookingLinkOverride === 'boolean'
     ? includeBookingLinkOverride
-    : shouldIncludeBookingLink(voicePrompt);
+    : shouldIncludeBookingLink(voicePrompt, clientName);
 
   // Weekly-learned voice (global + this client). Best-effort; empty when the
   // Friday job has not run yet or the table is not migrated.
@@ -708,6 +761,7 @@ async function draftOnly({
     voicePrompt,
     replyMode: mode,
     learnedVoiceBlock,
+    clientName,
   });
 
   const timeBlock = buildTimeSuggestionBlock({
@@ -715,6 +769,7 @@ async function draftOnly({
     schedulingPromptBlock,
     includeBookingLink,
     voicePrompt,
+    clientName,
   });
 
   const proposedTimesNote = (
@@ -723,7 +778,9 @@ async function draftOnly({
     ? 'They already proposed times — confirm or lightly counter those times. Do NOT invent unrelated mid-morning / early afternoon slots.'
     : null;
 
-  const modeNote = inPerson
+  const modeNote = callback
+    ? `${mode} MODE: Acknowledge their latest point first, then ask what time works best. Tyler will call from 218-469-3457. No booking URL or two calendar slots.`
+    : inPerson
     ? `${mode} MODE: Acknowledge their latest point first, then offer to stop by in person. No Zoom/phone/CEO call/booking URL.`
     : includeBookingLink
     ? `${mode} MODE: Acknowledge their latest point first, then suggest two times AND include the booking URL once.`
@@ -880,7 +937,7 @@ async function classifyAndDraft(
 
   const needsDraft = assertDraftableClassification(classification);
   const { shouldIncludeBookingLink } = require('../utils/meeting-modality');
-  const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt);
+  const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt, clientName);
 
   const draft = needsDraft
     ? await draftOnly({

@@ -207,10 +207,15 @@ async function generateClaudeReply({
     clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
     preferAckExamples: true,
   });
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const {
+    prefersInPersonMeeting, prefersCallbackCall, DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER,
+  } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
   const link = String(bookingLink || '').trim();
-  const bookingPolicy = inPerson
+  const bookingPolicy = callback
+    ? `CALLBACK: Ask what time works best. ${DEEP_ROOTS_CALLER} will call from ${DEEP_ROOTS_FROM_NUMBER}. Do not include any booking URL, two calendar slots, or Zoom.`
+    : inPerson
     ? 'IN-PERSON: Suggest two concrete times to stop by. Do not include any booking URL, Zoom, or phone CTA.'
     : includeBookingLink
       ? `Suggest two concrete times from the scheduling guidance, then include this exact booking link once: ${link || '(no link configured)'}.`
