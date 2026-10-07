@@ -1,19 +1,20 @@
 /**
- * Prospect enrichment — same vendor order as joshuaosborn561-lang/email-waterfall:
- *   GetLeads → Smartlead (email only, skipped here) → AI Ark → LeadMagic → Prospeo → FullEnrich
+ * Prospect enrichment — call joshuaosborn561-lang/email-waterfall.
  *
- * Slack cards need a cellphone. Default max_tier is fullenrich so Prospeo
- * mobile runs after LeadMagic, matching "use my waterfall … max tier fullenrich".
- * FullEnrich is email-only (HeyReach / missing work email).
+ * Do not walk vendors here. ReplyHandler posts Slack cards; the MCP/HTTP
+ * service owns GetLeads → Smartlead → AI Ark → LeadMagic → Prospeo →
+ * FullEnrich. FullEnrich is last-tier email AND cellphone.
+ *
+ * Slack cards need the compact hit back immediately, so this POSTs
+ * /enrich-one (same as the enrich_person MCP tool). enrich_waterfall
+ * returns counts only and cannot feed a card.
  */
 
-const getleads = require('./getleads');
-const aiark = require('./aiark');
-const leadmagic = require('./leadmagic');
-const prospeo = require('./prospeo');
-const fullenrich = require('./fullenrich');
-
 const TIER_ORDER = ['getleads', 'smartlead', 'aiark', 'leadmagic', 'prospeo', 'fullenrich'];
+
+const CONSUMER_DOMAINS = /gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com/i;
+
+const ENRICH_TIMEOUT_MS = 120_000;
 
 function normalizeMaxTier(raw) {
   const s = String(raw || process.env.EMAIL_WATERFALL_MAX_TIER || 'fullenrich')
@@ -50,161 +51,125 @@ function splitLeadName(name) {
   return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
 }
 
-/**
- * @param {{ email?: string|null, linkedinUrl?: string|null, leadName?: string|null, companyName?: string|null, maxTier?: string }} input
- */
-async function enrichProspect({
-  email, linkedinUrl, leadName, companyName, maxTier,
+function waterfallBaseUrl() {
+  return String(process.env.EMAIL_WATERFALL_URL || '').trim().replace(/\/+$/, '');
+}
+
+function clientTagFor(raw) {
+  const tag = String(raw || process.env.EMAIL_WATERFALL_CLIENT_TAG || 'replyhandler')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return tag || 'replyhandler';
+}
+
+function websiteFrom(domainHint, hitWebsite) {
+  const fromHit = asWebsite(hitWebsite);
+  if (fromHit) return fromHit;
+  if (domainHint && !CONSUMER_DOMAINS.test(domainHint)) return `https://${domainHint}`;
+  return null;
+}
+
+function emptyResult({
+  email, linkedinUrl, maxTier, reason,
 } = {}) {
-  let workEmail = String(email || '').trim().toLowerCase() || null;
-  let li = String(linkedinUrl || '').trim() || null;
-  let phone = null;
-  let website = null;
-  const sources = {};
-  const cap = normalizeMaxTier(maxTier);
-
+  const workEmail = String(email || '').trim().toLowerCase() || null;
   const domainHint = domainFromEmail(workEmail);
-  const { firstName, lastName } = splitLeadName(leadName);
+  const website = websiteFrom(domainHint, null);
+  return {
+    email: workEmail,
+    phone: null,
+    linkedinUrl: String(linkedinUrl || '').trim() || null,
+    website,
+    sources: {
+      email: workEmail ? 'reply' : null,
+      website: website ? 'email_domain' : null,
+    },
+    maxTier: normalizeMaxTier(maxTier),
+    reason: reason || null,
+  };
+}
 
-  // ── 1) GetLeads ────────────────────────────────────────────────────
-  if (allowsTier(cap, 'getleads') && getleads.isConfigured() && workEmail) {
-    try {
-      const gl = await getleads.findPhoneByEmail(workEmail);
-      if (gl.phone && !phone) {
-        phone = gl.phone;
-        sources.phone = 'getleads';
-      }
-      if (gl.linkedinUrl && !li) {
-        li = gl.linkedinUrl;
-        sources.linkedin = 'getleads';
-      }
-      if (gl.website && !website) {
-        website = asWebsite(gl.website);
-        sources.website = 'getleads';
-      }
-      if (!li) {
-        const fromEmail = await getleads.linkedinFromEmail(workEmail);
-        if (fromEmail) {
-          li = fromEmail;
-          sources.linkedin = sources.linkedin || 'getleads';
-        }
-      }
-    } catch (err) {
-      console.warn('[ProspectEnrich] GetLeads failed', { err: err.message, email: workEmail });
-    }
-  }
-
-  // ── 2) AI Ark ──────────────────────────────────────────────────────
-  if (allowsTier(cap, 'aiark') && aiark.isConfigured()) {
-    try {
-      if (workEmail && (!li || !website)) {
-        const rev = await aiark.reverseLookupByEmail(workEmail);
-        if (rev.linkedinUrl && !li) {
-          li = rev.linkedinUrl;
-          sources.linkedin = 'aiark';
-        }
-        if (rev.website && !website) {
-          website = asWebsite(rev.website);
-          sources.website = 'aiark';
-        }
-      }
-      if (!phone) {
-        const mob = await aiark.findMobile({
-          linkedinUrl: li,
-          name: leadName,
-          domain: domainHint,
-        });
-        if (mob.phone) {
-          phone = mob.phone;
-          sources.phone = 'aiark';
-        }
-        if (mob.linkedinUrl && !li) {
-          li = mob.linkedinUrl;
-          sources.linkedin = sources.linkedin || 'aiark';
-        }
-      }
-    } catch (err) {
-      console.warn('[ProspectEnrich] AI Ark failed', { err: err.message, email: workEmail });
-    }
-  }
-
-  // ── 3) LeadMagic ───────────────────────────────────────────────────
-  if (allowsTier(cap, 'leadmagic') && leadmagic.isMobileFinderConfigured() && !phone) {
-    try {
-      const lm = await leadmagic.findMobile({
-        workEmail,
-        profileUrl: li,
-      });
-      if (lm.phone) {
-        phone = lm.phone;
-        sources.phone = 'leadmagic';
-      }
-    } catch (err) {
-      console.warn('[ProspectEnrich] LeadMagic failed', { err: err.message, email: workEmail });
-    }
-  }
-
-  // ── 4) Prospeo (unlocked when max_tier is prospeo / fullenrich) ─────
-  if (allowsTier(cap, 'prospeo') && prospeo.isConfigured() && !phone) {
-    try {
-      const pr = await prospeo.findMobile({
-        firstName,
-        lastName,
-        fullName: leadName,
-        domain: domainHint,
-        companyName,
-        linkedinUrl: li,
-      });
-      if (pr.phone) {
-        phone = pr.phone;
-        sources.phone = 'prospeo';
-      }
-      if (pr.linkedinUrl && !li) {
-        li = pr.linkedinUrl;
-        sources.linkedin = sources.linkedin || 'prospeo';
-      }
-      if (pr.email && !workEmail) {
-        workEmail = pr.email;
-        sources.email = 'prospeo';
-      }
-    } catch (err) {
-      console.warn('[ProspectEnrich] Prospeo failed', { err: err.message, email: workEmail });
-    }
-  }
-
-  // ── 5) FullEnrich — work email only (HeyReach / missing inbox email) ─
-  if (allowsTier(cap, 'fullenrich') && fullenrich.isConfigured() && !workEmail) {
-    try {
-      const fe = await fullenrich.findEmail({
-        firstName,
-        lastName,
-        domain: domainHint,
-        companyName,
-      });
-      if (fe.email) {
-        workEmail = fe.email;
-        sources.email = 'fullenrich';
-      }
-    } catch (err) {
-      console.warn('[ProspectEnrich] FullEnrich failed', { err: err.message });
-    }
-  }
-
-  if (!website && domainHint && !/gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com/i.test(domainHint)) {
-    website = `https://${domainHint}`;
-    sources.website = sources.website || 'email_domain';
-  }
-
-  if (workEmail) sources.email = sources.email || 'reply';
-
+function fromHit(hit, input) {
+  const workEmail = String(hit?.email || input.email || '').trim().toLowerCase() || null;
+  const domainHint = domainFromEmail(workEmail) || String(hit?.domain || '').trim() || null;
+  const phone = String(hit?.phone || '').trim() || null;
+  const linkedinUrl = String(hit?.linkedin_url || input.linkedinUrl || '').trim() || null;
+  const website = websiteFrom(domainHint, hit?.website);
+  const sources = {
+    email: hit?.sources?.email || hit?.email_tier || (workEmail ? 'reply' : null),
+    phone: hit?.sources?.phone || hit?.phone_tier || null,
+    linkedin: hit?.sources?.linkedin || hit?.dm_tier || null,
+    website: website && !hit?.website ? 'email_domain' : (hit?.website ? (hit?.sources?.linkedin || 'waterfall') : null),
+  };
   return {
     email: workEmail,
     phone,
-    linkedinUrl: li,
+    linkedinUrl,
     website,
     sources,
-    maxTier: cap,
+    maxTier: normalizeMaxTier(hit?.max_tier || input.maxTier),
+    reason: hit?.ok === false ? (hit?.reason || 'enrich_one_failed') : null,
   };
+}
+
+/**
+ * @param {{
+ *   email?: string|null,
+ *   linkedinUrl?: string|null,
+ *   leadName?: string|null,
+ *   companyName?: string|null,
+ *   maxTier?: string,
+ *   clientTag?: string|null,
+ * }} input
+ */
+async function enrichProspect({
+  email, linkedinUrl, leadName, companyName, maxTier, clientTag,
+} = {}) {
+  const cap = normalizeMaxTier(maxTier);
+  const base = waterfallBaseUrl();
+  if (!base) {
+    console.warn('[ProspectEnrich] EMAIL_WATERFALL_URL unset — not walking vendors here');
+    return emptyResult({ email, linkedinUrl, maxTier: cap, reason: 'waterfall_url_unset' });
+  }
+
+  const workEmail = String(email || '').trim().toLowerCase();
+  const { firstName, lastName } = splitLeadName(leadName);
+  const body = {
+    client_tag: clientTagFor(clientTag),
+    email: workEmail,
+    first_name: firstName,
+    last_name: lastName,
+    full_name: String(leadName || '').trim(),
+    linkedin_url: String(linkedinUrl || '').trim(),
+    company_name: String(companyName || '').trim(),
+    domain: domainFromEmail(workEmail) || '',
+    need: 'both',
+    max_tier: cap,
+    write_supabase: false,
+  };
+
+  const res = await fetch(`${base}/enrich-one`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(ENRICH_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  let hit = null;
+  try {
+    hit = text ? JSON.parse(text) : null;
+  } catch {
+    hit = null;
+  }
+  if (!res.ok) {
+    throw new Error(`email-waterfall ${res.status}: ${String(text || '').slice(0, 300)}`);
+  }
+  if (!hit || typeof hit !== 'object') {
+    throw new Error('email-waterfall returned a non-JSON enrich-one body');
+  }
+  return fromHit(hit, { email: workEmail, linkedinUrl, maxTier: cap });
 }
 
 /** @deprecated use enrichProspect — kept for older callers */
@@ -220,6 +185,8 @@ module.exports = {
   asWebsite,
   normalizeMaxTier,
   allowsTier,
+  clientTagFor,
+  waterfallBaseUrl,
   TIER_ORDER,
   splitLeadName,
 };

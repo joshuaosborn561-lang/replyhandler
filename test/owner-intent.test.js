@@ -940,12 +940,24 @@ test('phone enrichment walks the email-waterfall to FullEnrich', () => {
   assert.equal(allowsTier('fullenrich', 'prospeo'), true);
   assert.equal(allowsTier('leadmagic', 'prospeo'), false,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Prospeo runs even when max_tier is leadmagic'));
-  assert.match(enrich, /prospeo/,
-    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Prospeo was removed'));
+  assert.match(enrich, /EMAIL_WATERFALL_URL/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler no longer calls the email-waterfall MCP/HTTP service'));
+  assert.match(enrich, /\/enrich-one/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Slack cards no longer POST /enrich-one'));
+  assert.match(enrich, /need:\s*'both'/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'one-person lookup is no longer need=both (phone + email)'));
   assert.match(enrich, /fullenrich/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'FullEnrich was removed'));
-  assert.ok(require('../src/services/prospeo').isConfigured);
-  assert.ok(require('../src/services/fullenrich').isConfigured);
+  assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/prospeo.js')),
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler owns a local Prospeo client again — call the MCP'));
+  assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/fullenrich.js')),
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler owns a local FullEnrich client again — call the MCP'));
+  assert.doesNotMatch(enrich, /require\('\.\/prospeo'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich requires a local Prospeo client'));
+  assert.doesNotMatch(enrich, /require\('\.\/fullenrich'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich requires a local FullEnrich client'));
+  assert.doesNotMatch(enrich, /require\('\.\/getleads'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich walks GetLeads locally instead of calling the MCP'));
 });
 
 // ── Decision: Reject also marks Not Interested in SmartLead ───────────

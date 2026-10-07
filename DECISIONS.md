@@ -438,7 +438,7 @@ Guard: `Slack cards show the prospect LinkedIn URL`
 
 *"idk how you are enriching prhone number today but you should just use my waterfall in the other project max tier fullenrich"*
 
-Do not stop at GetLeads → AI Ark → LeadMagic. Same order as `joshuaosborn561-lang/email-waterfall`: GetLeads → AI Ark → LeadMagic → Prospeo → FullEnrich. Default `EMAIL_WATERFALL_MAX_TIER=fullenrich` so Prospeo mobile runs after LeadMagic. FullEnrich is email-only (fills a missing work email, e.g. HeyReach). Missing-phone Slack copy stays `phone number not found`.
+Do not stop at GetLeads → AI Ark → LeadMagic, and do not recreate those vendors in ReplyHandler. Call the existing `joshuaosborn561-lang/email-waterfall` MCP/HTTP service (`EMAIL_WATERFALL_URL` + `POST /enrich-one`, same as `enrich_person`) with `need=both` and default `max_tier=fullenrich`. FullEnrich is last-tier **email and cellphone** (`contact.phones`). Slack cards need the compact hit back immediately — `enrich_waterfall` returns counts only, so do not use it here. Missing-phone Slack copy stays `phone number not found`.
 
 Guard: `phone enrichment walks the email-waterfall to FullEnrich`
 

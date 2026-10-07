@@ -67,11 +67,10 @@ cp .env.example .env
 | `VOICE_LEARNING_MIN_EXAMPLES` | Optional. Fewer new replies than this for a client and its profile is left untouched that week (default `3`; global `VOICE_LEARNING_MIN_EXAMPLES_GLOBAL`, default `5`) |
 | `DISABLE_VOICE_LEARNING` | Optional. `1` stops the Friday job from being scheduled |
 | `DISABLE_LEARNED_VOICE` | Optional. `1` stops drafts from reading the learned profiles (job still runs) |
-| `GETLEADS_API_KEY` | GetLeads API key — first cellphone tier (email-waterfall) |
-| `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email + mobile-finder |
-| `PROSPEO_API_KEY` | Prospeo key — mobile after LeadMagic when max_tier is prospeo/fullenrich |
-| `FULLENRICH_API_KEY` | FullEnrich key — last-tier work email (HeyReach / missing inbox email) |
+| `EMAIL_WATERFALL_URL` | email-waterfall Railway origin (no path). Slack cards `POST {url}/enrich-one`. Unset = skip enrichment. |
+| `EMAIL_WATERFALL_CLIENT_TAG` | Optional. `client_tag` sent to `/enrich-one` (default `replyhandler`). |
 | `EMAIL_WATERFALL_MAX_TIER` | Optional. Same cap as email-waterfall (`getleads`…`fullenrich`). Default `fullenrich`. |
+| `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email on inbound HeyReach profiles (not the Slack phone walk) |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |

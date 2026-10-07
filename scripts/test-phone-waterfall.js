@@ -1,96 +1,68 @@
 #!/usr/bin/env node
 
 const assert = require('assert');
-const getleads = require('../src/services/getleads');
-const aiark = require('../src/services/aiark');
-const leadmagic = require('../src/services/leadmagic');
-const prospeo = require('../src/services/prospeo');
-const fullenrich = require('../src/services/fullenrich');
 const { enrichProspect } = require('../src/services/prospect-enrich');
 
-const originals = {
-  getleads: { ...getleads },
-  aiark: { ...aiark },
-  leadmagic: { ...leadmagic },
-  prospeo: { ...prospeo },
-  fullenrich: { ...fullenrich },
-};
-
 async function main() {
+  const prevUrl = process.env.EMAIL_WATERFALL_URL;
+  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+
   const calls = [];
-  getleads.isConfigured = () => true;
-  getleads.findPhoneByEmail = async () => {
-    calls.push('getleads');
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), body: JSON.parse(opts.body) });
     return {
-      phone: null,
-      linkedinUrl: 'https://linkedin.com/in/test',
-      website: 'example.com',
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          ok: true,
+          email: 'person@example.com',
+          phone: '+1 555-0100',
+          linkedin_url: 'https://linkedin.com/in/test',
+          website: 'https://example.com',
+          phone_tier: 'prospeo',
+          email_tier: 'input',
+          sources: { phone: 'prospeo', email: 'input' },
+          max_tier: 'fullenrich',
+        });
+      },
     };
   };
-  getleads.linkedinFromEmail = async () => {
-    calls.push('getleads-linkedin');
-    return null;
-  };
-  aiark.isConfigured = () => true;
-  aiark.reverseLookupByEmail = async () => {
-    calls.push('aiark-reverse');
-    return { linkedinUrl: null, website: null };
-  };
-  aiark.findMobile = async () => {
-    calls.push('aiark');
-    return { phone: null };
-  };
-  leadmagic.isMobileFinderConfigured = () => true;
-  leadmagic.findMobile = async () => {
-    calls.push('leadmagic');
-    return { phone: null };
-  };
-  prospeo.isConfigured = () => true;
-  prospeo.findMobile = async () => {
-    calls.push('prospeo');
-    return { phone: '+1 555-0100' };
-  };
-  fullenrich.isConfigured = () => true;
-  fullenrich.findEmail = async () => {
-    calls.push('fullenrich');
-    return { email: null };
-  };
 
-  const result = await enrichProspect({
-    email: 'person@example.com',
-    leadName: 'Test Person',
-  });
+  try {
+    delete process.env.EMAIL_WATERFALL_URL;
+    const unset = await enrichProspect({ email: 'skip@example.com' });
+    process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+    assert.strictEqual(unset.phone, null);
+    assert.strictEqual(unset.reason, 'waterfall_url_unset');
 
-  assert.deepStrictEqual(calls, ['getleads', 'aiark', 'leadmagic', 'prospeo']);
-  assert.strictEqual(result.phone, '+1 555-0100');
-  assert.strictEqual(result.sources.phone, 'prospeo');
-  assert.strictEqual(result.maxTier, 'fullenrich');
-  assert.strictEqual(result.linkedinUrl, 'https://linkedin.com/in/test');
-  assert.strictEqual(result.website, 'https://example.com');
+    const result = await enrichProspect({
+      email: 'person@example.com',
+      leadName: 'Test Person',
+    });
 
-  calls.length = 0;
-  getleads.findPhoneByEmail = async () => {
-    calls.push('getleads');
-    return { phone: '+1 555-0199', linkedinUrl: null, website: null };
-  };
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].url, 'https://waterfall.example.test/enrich-one');
+    assert.strictEqual(calls[0].body.need, 'both');
+    assert.strictEqual(calls[0].body.max_tier, 'fullenrich');
+    assert.strictEqual(calls[0].body.write_supabase, false);
+    assert.strictEqual(calls[0].body.client_tag, 'replyhandler');
+    assert.strictEqual(result.phone, '+1 555-0100');
+    assert.strictEqual(result.sources.phone, 'prospeo');
+    assert.strictEqual(result.maxTier, 'fullenrich');
+    assert.strictEqual(result.linkedinUrl, 'https://linkedin.com/in/test');
+    assert.strictEqual(result.website, 'https://example.com');
 
-  const firstHit = await enrichProspect({ email: 'first@example.com' });
-  assert.deepStrictEqual(calls, ['getleads', 'getleads-linkedin', 'aiark-reverse']);
-  assert.strictEqual(firstHit.phone, '+1 555-0199');
-  assert.strictEqual(firstHit.sources.phone, 'getleads');
-
-  console.log('ok — GetLeads → AI Ark → LeadMagic → Prospeo phone waterfall');
+    console.log('ok — ReplyHandler calls email-waterfall /enrich-one (need=both, max_tier=fullenrich)');
+  } finally {
+    global.fetch = originalFetch;
+    if (prevUrl == null) delete process.env.EMAIL_WATERFALL_URL;
+    else process.env.EMAIL_WATERFALL_URL = prevUrl;
+  }
 }
 
-main()
-  .finally(() => {
-    Object.assign(getleads, originals.getleads);
-    Object.assign(aiark, originals.aiark);
-    Object.assign(leadmagic, originals.leadmagic);
-    Object.assign(prospeo, originals.prospeo);
-    Object.assign(fullenrich, originals.fullenrich);
-  })
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

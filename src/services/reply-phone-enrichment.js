@@ -1,8 +1,8 @@
 /**
  * Enrich and persist the person who sent an inbound reply.
  *
- * Provider order is the email-waterfall stack (max_tier fullenrich):
- *   GetLeads → AI Ark → LeadMagic → Prospeo → FullEnrich
+ * Provider order is the email-waterfall MCP/HTTP service (max_tier fullenrich):
+ *   GetLeads → AI Ark → LeadMagic → Prospeo → FullEnrich (email + cellphone)
  *
  * OOO / REMOVE_ME never get enriched for client Slack channels — those cards
  * are informational only and burning waterfall credits on them is waste.
