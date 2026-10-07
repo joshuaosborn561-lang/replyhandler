@@ -524,6 +524,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     replyId: reply.id,
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
+    linkedinUrl: reply.linkedin_url || undefined,
     platform: reply.platform,
     classification: reply.classification,
     draft: policy.draft,

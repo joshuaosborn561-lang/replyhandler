@@ -179,7 +179,10 @@ async function postProspectSlackCard({
 
   let postedTs = null;
   try {
-    let enrichedCard = card;
+    let enrichedCard = {
+      ...card,
+      leadLinkedinUrl: card.leadLinkedinUrl || card.linkedinUrl || undefined,
+    };
     // OOO / REMOVE_ME cards still reach Slack as alerts in some paths, but never
     // burn enrichment credits — those are not bookable follow-ups.
     let enrichment = null;
@@ -191,6 +194,11 @@ async function postProspectSlackCard({
         leadPhone: phone.phone || undefined,
         phoneProvider: phone.provider || undefined,
         phoneEnrichmentStatus: phone.status || undefined,
+        leadLinkedinUrl:
+          phone.linkedinUrl
+          || card.leadLinkedinUrl
+          || card.linkedinUrl
+          || undefined,
       };
     }
 

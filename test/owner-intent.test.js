@@ -876,8 +876,88 @@ test('phone stays on Slack card after approve', () => {
   const confStart = slackService.indexOf('function buildSentConfirmationBlocks');
   const confEnd = slackService.indexOf('async function updateSentConfirmationCard');
   assert.ok(confStart >= 0 && confEnd > confStart);
-  assert.match(slackService.slice(confStart, confEnd), /phoneEnrichmentLine/,
+  assert.match(slackService.slice(confStart, confEnd), /leadFieldText/,
     reversal('phone stays on Slack card after approve', 'confirmation card no longer renders the phone'));
+  assert.match(slackService.slice(confStart, confEnd), /leadPhone/,
+    reversal('phone stays on Slack card after approve', 'confirmation card no longer passes leadPhone'));
+});
+
+// ── Decision: Slack cards show LinkedIn so we can qualify fast ────────
+test('Slack cards show the prospect LinkedIn URL', () => {
+  const { leadFieldText, buildDraftApprovalCard, buildSentConfirmationBlocks } = require('../src/services/slack');
+  const slackRoute = read('src/routes/slack.js');
+  const poster = read('src/services/slack-reply-post.js');
+  const url = 'https://www.linkedin.com/in/pat-riley';
+  const lead = leadFieldText({
+    leadName: 'Pat Riley',
+    leadEmail: 'pat@example.com',
+    leadLinkedinUrl: url,
+  });
+  assert.match(lead, /linkedin\.com\/in\/pat-riley/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'lead field dropped the LinkedIn URL'));
+  assert.match(lead, /<https:\/\/www\.linkedin\.com\/in\/pat-riley\|/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'LinkedIn is not a clickable Slack link'));
+
+  const draft = buildDraftApprovalCard({
+    replyId: '1',
+    leadName: 'Pat',
+    platform: 'heyreach',
+    classification: 'INTERESTED',
+    draft: 'Hey Pat',
+    inboundMessage: 'Sure',
+    leadLinkedinUrl: url,
+  });
+  const draftText = JSON.stringify(draft.blocks);
+  assert.match(draftText, /linkedin\.com\/in\/pat-riley/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'approval card no longer shows LinkedIn'));
+
+  const sent = buildSentConfirmationBlocks({
+    leadName: 'Pat',
+    platform: 'heyreach',
+    classification: 'INTERESTED',
+    inboundMessage: 'Sure',
+    sentReply: 'Hey Pat',
+    actionKind: 'approved',
+    leadLinkedinUrl: url,
+  });
+  assert.match(JSON.stringify(sent), /linkedin\.com\/in\/pat-riley/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'confirmation card dropped LinkedIn'));
+
+  assert.match(slackRoute, /leadLinkedinUrl:\s*reply\.linkedin_url/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'approve confirmation no longer passes linkedin_url'));
+  assert.match(poster, /leadLinkedinUrl/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'Slack poster no longer attaches LinkedIn after enrich'));
+});
+
+// ── Decision: phone waterfall is email-waterfall, max_tier FullEnrich ─
+test('phone enrichment walks the email-waterfall to FullEnrich', () => {
+  const enrich = read('src/services/prospect-enrich.js');
+  const { normalizeMaxTier, allowsTier, TIER_ORDER } = require('../src/services/prospect-enrich');
+  assert.deepEqual(TIER_ORDER, ['getleads', 'smartlead', 'aiark', 'leadmagic', 'prospeo', 'fullenrich'],
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'vendor order changed'));
+  assert.equal(normalizeMaxTier(''), 'fullenrich',
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'default max_tier is no longer fullenrich'));
+  assert.equal(allowsTier('fullenrich', 'prospeo'), true);
+  assert.equal(allowsTier('leadmagic', 'prospeo'), false,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Prospeo runs even when max_tier is leadmagic'));
+  assert.match(enrich, /EMAIL_WATERFALL_URL/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler no longer calls the email-waterfall MCP/HTTP service'));
+  assert.match(enrich, /\/enrich-one/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Slack cards no longer POST /enrich-one'));
+  assert.match(enrich, /need:\s*'both'/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'one-person lookup is no longer need=both (phone + email)'));
+  assert.match(enrich, /fullenrich/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'FullEnrich was removed'));
+  assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/prospeo.js')),
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler owns a local Prospeo client again — call the MCP'));
+  assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/fullenrich.js')),
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler owns a local FullEnrich client again — call the MCP'));
+  assert.doesNotMatch(enrich, /require\('\.\/prospeo'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich requires a local Prospeo client'));
+  assert.doesNotMatch(enrich, /require\('\.\/fullenrich'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich requires a local FullEnrich client'));
+  assert.doesNotMatch(enrich, /require\('\.\/getleads'\)/,
+    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich walks GetLeads locally instead of calling the MCP'));
 });
 
 // ── Decision: Reject also marks Not Interested in SmartLead ───────────

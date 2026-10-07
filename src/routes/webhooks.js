@@ -879,6 +879,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           replyId: reply.id,
           leadName: resolvedLeadName,
           leadEmail: null,
+          linkedinUrl: resolvedLinkedinUrl || undefined,
           leadCompany: hr.company || payload.company_name || payload.company || null,
           platform: 'heyreach',
           classification,

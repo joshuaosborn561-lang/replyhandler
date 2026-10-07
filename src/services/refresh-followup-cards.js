@@ -121,6 +121,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
       leadPhone: reply.lead_phone || undefined,
       phoneProvider: reply.lead_phone_provider || undefined,
       phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
+      leadLinkedinUrl: reply.linkedin_url || undefined,
       platform: reply.platform,
       classification: 'FOLLOW_UP',
       draft: reply.draft_reply,
