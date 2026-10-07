@@ -169,8 +169,10 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   }
   const lastOutbound = ourLastSend || lastOutboundFor(fu.platform, threadContext) || '';
   const inboundForCard = originalInbound || '(no new reply from prospect)';
+  const { prefersCallbackCall } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(client.voice_prompt);
-  const bookingLink = inPerson
+  const callback = prefersCallbackCall(client.voice_prompt, client.name);
+  const bookingLink = (inPerson || callback)
     ? ''
     : prospectBookingLink({
       clientName: client.name,
@@ -179,7 +181,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   let slots = [];
   const step = Number(fu.step) || 1;
-  if (step >= 2) {
+  if (step >= 2 && !callback) {
     try {
       const resolved = await resolveVerifiedSchedulingSlots(client, {
         offset: slotOffsetForFollowUpStep(step),
@@ -201,6 +203,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     digestTimezone: client.digest_timezone,
     step,
     slots,
+    clientName: client.name,
   });
 
   const sentExtras = await priorSentMessages(client.id, fu);

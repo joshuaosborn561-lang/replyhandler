@@ -134,6 +134,61 @@ test('Vasco / Carlos drafts offer in-person meetings only', () => {
     reversal('Vasco in-person meetings', 'FOLLOW_UP bumps ignore in-person voice'));
 });
 
+// ── Decision: Deep Roots — Tyler calls, ask what time works, no link ──
+test('Deep Roots asks what time works — Tyler calls, no booking link', () => {
+  const { fallbackDraftText, sanitizeDraft } = require('../src/services/classifier');
+  const { fallbackReattempt } = require('../src/services/follow-up-drafts');
+  const {
+    prefersCallbackCall, shouldIncludeBookingLink, DEEP_ROOTS_FROM_NUMBER,
+  } = require('../src/utils/meeting-modality');
+  const { prospectBookingLink } = require('../src/utils/public-booking-link');
+  const link = 'https://calendly.com/example/30min';
+
+  assert.equal(prefersCallbackCall('', 'Deep Roots'), true,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'Deep Roots is no longer a callback client by name'));
+  assert.equal(shouldIncludeBookingLink('', 'Deep Roots'), false,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'Deep Roots would send a booking link'));
+  assert.equal(prospectBookingLink({ clientName: 'Deep Roots', bookingLink: link }), '',
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'Deep Roots booking URL is no longer suppressed'));
+
+  const first = fallbackDraftText({
+    leadName: 'Pat',
+    inboundMessage: 'Sure',
+    classification: 'INTERESTED',
+    digestTimezone: 'America/Chicago',
+    clientName: 'Deep Roots',
+    bookingLink: link,
+  });
+  assert.match(first, /what time works best/i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'first draft no longer asks what time works'));
+  assert.match(first, /Tyler/i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'first draft dropped Tyler'));
+  assert.match(first, new RegExp(DEEP_ROOTS_FROM_NUMBER.replace(/-/g, '[-\\s]?')));
+  assert.doesNotMatch(first, /calendly|https?:\/\//i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'Deep Roots leaked a booking link'));
+
+  const bump = fallbackReattempt({
+    leadName: 'Pat',
+    clientName: 'Deep Roots',
+    step: 2,
+    lastOutboundMessage: first,
+    bookingLink: link,
+  });
+  assert.match(bump, /what time works best/i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'FOLLOW_UP no longer asks what time works'));
+  assert.doesNotMatch(bump, /those times got taken/i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'FOLLOW_UP said times were taken'));
+  assert.doesNotMatch(bump, /calendly|https?:\/\//i,
+    reversal('Deep Roots asks what time works — Tyler calls, no booking link', 'FOLLOW_UP leaked a booking link'));
+
+  const leaked = sanitizeDraft(`Does Tuesday work? ${link}`, {
+    bookingLink: link,
+    includeBookingLink: false,
+    clientName: 'Deep Roots',
+  });
+  assert.ok(!leaked.includes(link), 'Deep Roots must strip a leaked booking URL');
+});
+
 // ── Decision: declines get a graceful draft, never a pitch ────────────
 // "still draft for not interested replies" — but the default times-first
 // prompt would have pushed meeting slots at someone who just said no.

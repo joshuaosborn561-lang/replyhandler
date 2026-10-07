@@ -678,12 +678,22 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8, 
  * note webhook delivery can lag; blocking on multi-hop Calendly + calendar scans adds seconds–minutes.
  */
 function schedulingPromptBookingLinkOnly(client) {
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const { prefersInPersonMeeting, prefersCallbackCall, meetingCta } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(client && client.voice_prompt);
+  const callback = prefersCallbackCall(client && client.voice_prompt, client && client.name);
   const link = prospectBookingLink({
     clientName: client && client.name,
     bookingLink: client && client.booking_link,
   });
+  if (callback) {
+    return {
+      slots: [],
+      promptBlock: meetingCta({
+        voicePrompt: client && client.voice_prompt,
+        clientName: client && client.name,
+      }).timeRule,
+    };
+  }
   if (inPerson) {
     return {
       slots: [],
@@ -705,8 +715,18 @@ function schedulingPromptBookingLinkOnly(client) {
  * @param {{ skipExternalFetch?: boolean, offset?: number, count?: number, excludeStarts?: Array<string|Date> }} [options]
  */
 async function resolveVerifiedSchedulingSlots(client, options = {}) {
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const { prefersInPersonMeeting, prefersCallbackCall, meetingCta } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(client && client.voice_prompt);
+  const callback = prefersCallbackCall(client && client.voice_prompt, client && client.name);
+  if (callback) {
+    return {
+      slots: [],
+      promptBlock: meetingCta({
+        voicePrompt: client && client.voice_prompt,
+        clientName: client && client.name,
+      }).timeRule,
+    };
+  }
   const link = prospectBookingLink({
     clientName: client && client.name,
     bookingLink: client && client.booking_link,

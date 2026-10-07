@@ -856,3 +856,17 @@ Fix:
 Pollers stay on. A genuinely different reply from the same person still gets its own card.
 
 Guard: `the same inbound cannot be carded or sent twice`
+
+## 2026-10-07
+
+### Deep Roots: Tyler calls — ask what time works, no booking link
+
+*"for deep roots i am just going to have tyler call them, it will be from 218 469 3457, ask them what time works best for them instead of offering a booking link"*
+
+Exception to **First positive reply: two calendar times AND the booking link**. Deep Roots does not book on a calendar page. Tyler calls the prospect from 218-469-3457. Positive drafts acknowledge first, then ask what time works best, and name that number so they know who is calling. If they already proposed a time, confirm it and say Tyler will call from that number.
+
+No booking URL, no two invented calendar slots, no Zoom/Calendly. FOLLOW_UP bumps ask again what time works — they do not say "those times got taken" (we never offered times) and they never paste a link.
+
+Pinned by client name (`Deep Roots`) so it holds even if `voice_prompt` is still empty. Voice prompt can also say "Tyler will call" / the 218 number.
+
+Guard: `Deep Roots asks what time works — Tyler calls, no booking link`

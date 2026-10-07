@@ -143,17 +143,24 @@ never used there — no env opt-in. Only `INTERESTED` / `MEETING_PROPOSED` /
 If drafts suddenly all look like "Happy to jump on a quick call…", check
 Anthropic quota first, then confirm this fallthrough is still wired.
 
-## Client meeting modality (Vasco / Carlos)
+## Client meeting modality (Vasco / Carlos / Deep Roots)
 
-Some clients meet in person. That is driven by `clients.voice_prompt` via
-`src/utils/meeting-modality.js` — not a global default. Vasco's prompt says
-Carlos stops by the dealership in person; drafts and FOLLOW_UP bumps then
-omit Zoom / phone / "our CEO" / booking links. Other clients get two
-verified calendar times **and** the booking link on the first positive
-reply; the next-day FOLLOW_UP says those times were taken and offers two
-new times plus the link. Booking-bridge wraps do not expose open slots —
-`scheduling-slots.js` unwraps `book.gosalesglider.com/{slug}` to the
-destination Calendly and reads live times from there when a PAT is set.
+Some clients do not use the default two-times + booking-link CTA. That is
+driven by `clients.voice_prompt` (and, for Deep Roots, client name) via
+`src/utils/meeting-modality.js` — not a global default.
+
+- Vasco: Carlos stops by the dealership in person. Drafts and FOLLOW_UP
+  bumps omit Zoom / phone / "our CEO" / booking links.
+- Deep Roots: Tyler calls from 218-469-3457. Ask what time works best.
+  No booking link, no two calendar slots. Pinned by client name so a
+  missing `voice_prompt` update cannot leak a Calendly URL.
+- Other clients: two verified calendar times **and** the booking link on
+  the first positive reply; the next-day FOLLOW_UP says those times were
+  taken and offers two new times plus the link.
+
+Booking-bridge wraps do not expose open slots — `scheduling-slots.js`
+unwraps `book.gosalesglider.com/{slug}` to the destination Calendly and
+reads live times from there when a PAT is set.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 

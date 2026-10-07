@@ -5,7 +5,7 @@ const { firstNameFromLead } = require('./classifier');
  *
  * Same-day step 1 stays a short offer-first nudge (they just got times).
  * Next-day step 2+ says those times were taken, offers two new times, and
- * includes the booking link (except in-person / Vasco).
+ * includes the booking link (except in-person / Vasco / Deep Roots callback).
  *
  * Every bump reframes the value prop from the original outbound ("still
  * interested in meeting for X"). Step 3+ never uses dashes — use "..." instead.
@@ -94,14 +94,25 @@ function scrubDashes(text) {
  * later steps rotate phrasing so we don't spam the same line.
  * Every step reframes the original value prop.
  */
-function bumpForOffer({ name, offer, step, inPerson = false, lastOutboundMessage = '' } = {}) {
+function bumpForOffer({
+  name, offer, step, inPerson = false, callback = false, lastOutboundMessage = '',
+} = {}) {
   const n = Number(step) || 1;
   const kind = offer.kind || 'generic';
   const x = valuePropPhrase(offer, lastOutboundMessage);
+  const { DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER } = require('../utils/meeting-modality');
 
   let text;
 
-  if (inPerson) {
+  if (callback) {
+    if (n <= 1) {
+      text = `Hey ${name}, still interested in ${x}? What time works best? ${DEEP_ROOTS_CALLER} will give you a call from ${DEEP_ROOTS_FROM_NUMBER}.`;
+    } else if (n === 2) {
+      text = `Hey ${name}, bumping this...still happy to have ${DEEP_ROOTS_CALLER} call about ${x}. What time works best? He'll call from ${DEEP_ROOTS_FROM_NUMBER}.`;
+    } else {
+      text = `Hey ${name}, last nudge from me...${DEEP_ROOTS_CALLER} can still call about ${x} whenever works. What time is best? He'll be at ${DEEP_ROOTS_FROM_NUMBER}.`;
+    }
+  } else if (inPerson) {
     if (n <= 1) {
       text = `Hey ${name}, still interested in me stopping by in person for ${x}?`;
     } else if (n === 2) {
@@ -173,6 +184,7 @@ function timesTakenBump({
   offer,
   step,
   inPerson = false,
+  callback = false,
   lastOutboundMessage = '',
   slots,
   bookingLink,
@@ -180,6 +192,9 @@ function timesTakenBump({
 } = {}) {
   const n = Number(step) || 2;
   const x = valuePropPhrase(offer, lastOutboundMessage);
+  if (callback) {
+    return bumpForOffer({ name, offer, step: n, callback: true, lastOutboundMessage });
+  }
   const [a, b] = slotLabelsFrom(slots, digestTimezone);
   const link = String(bookingLink || '').trim();
 
@@ -210,13 +225,24 @@ function fallbackReattempt({
   lastOutboundMessage,
   step,
   slots,
+  clientName,
 } = {}) {
   void platform;
-  const { prefersInPersonMeeting } = require('../utils/meeting-modality');
+  const { prefersInPersonMeeting, prefersCallbackCall } = require('../utils/meeting-modality');
   const name = firstNameFromLead(leadName);
   const offer = detectOffer(lastOutboundMessage);
   const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
   const n = Number(step) || 1;
+  if (callback) {
+    return bumpForOffer({
+      name,
+      offer,
+      step: n,
+      callback: true,
+      lastOutboundMessage,
+    });
+  }
   if (n >= 2) {
     return timesTakenBump({
       name,
@@ -252,6 +278,7 @@ async function draftReattemptToBook({
   digestTimezone,
   step,
   slots,
+  clientName,
 }) {
   void lastInboundMessage;
   return fallbackReattempt({
@@ -263,6 +290,7 @@ async function draftReattemptToBook({
     lastOutboundMessage,
     step,
     slots,
+    clientName,
   });
 }
 
