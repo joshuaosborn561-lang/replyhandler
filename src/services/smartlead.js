@@ -1,4 +1,5 @@
 const { categoryIdForClassification } = require('./smartlead-category');
+const { extractLinkedinUrl } = require('../utils/linkedin-url');
 
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
 
@@ -500,6 +501,47 @@ async function markLeadNotInterested(apiKey, campaignId, leadId) {
   return { categoryId, result };
 }
 
+/**
+ * Fetch a SmartLead lead by work email (includes linkedin_profile when the
+ * list was uploaded with one). Webhook payloads often omit that field.
+ * @see GET /leads/?email=
+ */
+async function getLeadByEmail(apiKey, email) {
+  const e = String(email || '').trim();
+  if (!apiKey || !e || !e.includes('@')) return null;
+  const url = `${BASE_URL}/leads/?api_key=${encodeURIComponent(apiKey)}&email=${encodeURIComponent(e)}`;
+  try {
+    const res = await fetch(url);
+    const body = await res.text();
+    if (!res.ok) {
+      console.warn('[SmartLead] getLeadByEmail failed', { email: e, status: res.status });
+      return null;
+    }
+    if (!body || !String(body).trim()) return null;
+    const parsed = JSON.parse(body);
+    if (Array.isArray(parsed)) return parsed[0] || null;
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.lead && typeof parsed.lead === 'object') return parsed.lead;
+      if (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) return parsed.data;
+      if (Array.isArray(parsed.data)) return parsed.data[0] || null;
+      return parsed;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[SmartLead] getLeadByEmail threw', { email: e, err: err.message });
+    return null;
+  }
+}
+
+/** Payload / inbox row first; fetch the lead when those omit linkedin_profile. */
+async function resolveLeadLinkedinUrl(apiKey, email, ...sources) {
+  const fromPayload = extractLinkedinUrl(...sources);
+  if (fromPayload) return fromPayload;
+  if (!apiKey || !email) return null;
+  const lead = await getLeadByEmail(apiKey, email);
+  return extractLinkedinUrl(lead);
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -516,4 +558,6 @@ module.exports = {
   fetchLeadCategories,
   updateLeadCategory,
   markLeadNotInterested,
+  getLeadByEmail,
+  resolveLeadLinkedinUrl,
 };

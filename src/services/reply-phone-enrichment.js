@@ -11,6 +11,9 @@
 const db = require('../db');
 const { enrichProspect } = require('./prospect-enrich');
 const { draftSkipReason } = require('../utils/client-draft-policy');
+const { extractLinkedinUrl } = require('../utils/linkedin-url');
+const getleads = require('./getleads');
+const smartlead = require('./smartlead');
 
 /** Classifications that must never trigger phone/waterfall enrichment. */
 const SKIP_ENRICH_CLASSIFICATIONS = new Set([
@@ -34,6 +37,67 @@ function storedResult(reply) {
     error: reply?.phone_enrichment_error || null,
     enrichedAt: reply?.phone_enriched_at || null,
   };
+}
+
+async function persistLinkedinUrl(replyId, linkedinUrl) {
+  const url = String(linkedinUrl || '').trim();
+  if (!replyId || !url) return null;
+  const { rows } = await db.query(
+    `UPDATE pending_replies
+        SET linkedin_url = COALESCE(linkedin_url, $2),
+            updated_at = now()
+      WHERE id = $1
+      RETURNING linkedin_url`,
+    [replyId, url]
+  );
+  return rows[0]?.linkedin_url || url;
+}
+
+/**
+ * LinkedIn-only fill when the waterfall host is unset / 401s / returns no URL.
+ * Uses the GetLeads contact search already in this repo — not a local vendor walk.
+ * Phone still comes only from email-waterfall /enrich-one.
+ */
+async function linkedinFromGetLeads(email) {
+  const workEmail = String(email || '').trim().toLowerCase();
+  if (!workEmail || !workEmail.includes('@') || !getleads.isConfigured()) return null;
+  try {
+    const hit = await getleads.findPhoneByEmail(workEmail);
+    return extractLinkedinUrl(hit) || hit?.linkedinUrl || null;
+  } catch (err) {
+    console.warn('[ReplyPhone] GetLeads LinkedIn lookup failed', { err: err.message });
+    return null;
+  }
+}
+
+async function linkedinFromSmartleadLead(reply) {
+  if (reply?.linkedin_url) return reply.linkedin_url;
+  const email = String(reply?.lead_email || '').trim();
+  if (!email || !reply?.client_id) return null;
+  try {
+    const { rows } = await db.query(
+      `SELECT smartlead_api_key FROM clients WHERE id = $1`,
+      [reply.client_id]
+    );
+    const apiKey = rows[0]?.smartlead_api_key;
+    if (!apiKey) return null;
+    const lead = await smartlead.getLeadByEmail(apiKey, email);
+    return extractLinkedinUrl(lead);
+  } catch (err) {
+    console.warn('[ReplyPhone] SmartLead LinkedIn lookup failed', { err: err.message });
+    return null;
+  }
+}
+
+async function fillMissingLinkedin(replyId, email, existing) {
+  let url = extractLinkedinUrl(existing) || existing?.linkedin_url || null;
+  if (!url) url = await linkedinFromSmartleadLead(existing);
+  if (!url) url = await linkedinFromGetLeads(email || existing?.lead_email);
+  if (url) {
+    const stored = await persistLinkedinUrl(replyId, url);
+    return stored || url;
+  }
+  return null;
 }
 
 async function getReply(replyId) {
@@ -101,6 +165,10 @@ async function enrichPendingReplyPhone(replyId) {
   if (existing.phone_enrichment_status === 'found' ||
       existing.phone_enrichment_status === 'not_found' ||
       existing.phone_enrichment_status === 'skipped') {
+    if (!existing.linkedin_url && existing.phone_enrichment_status !== 'skipped') {
+      const url = await fillMissingLinkedin(replyId, existing.lead_email, existing);
+      if (url) return { ...storedResult(existing), linkedinUrl: url };
+    }
     return storedResult(existing);
   }
   if (existing.phone_enrichment_status === 'processing') {
@@ -124,13 +192,25 @@ async function enrichPendingReplyPhone(replyId) {
   if (!claimed) return storedResult(await getReply(replyId));
 
   try {
+    let seedLinkedin = claimed.linkedin_url || null;
+    if (!seedLinkedin) {
+      seedLinkedin = await linkedinFromSmartleadLead({ ...existing, ...claimed });
+      if (seedLinkedin) await persistLinkedinUrl(replyId, seedLinkedin);
+    }
+
     const enriched = await enrichProspect({
       email: claimed.lead_email,
-      linkedinUrl: claimed.linkedin_url,
+      linkedinUrl: seedLinkedin,
       leadName: claimed.lead_name,
     });
     const provider = enriched.sources?.phone || null;
+    const waterfallSkipped = enriched.reason === 'waterfall_url_unset';
+    let linkedinUrl = enriched.linkedinUrl || seedLinkedin || null;
+    if (!linkedinUrl) {
+      linkedinUrl = await linkedinFromGetLeads(claimed.lead_email);
+    }
     const status = enriched.phone ? 'found' : 'not_found';
+    const error = waterfallSkipped ? 'waterfall_url_unset' : null;
 
     const { rows } = await db.query(
       `UPDATE pending_replies
@@ -139,19 +219,20 @@ async function enrichPendingReplyPhone(replyId) {
               linkedin_url = COALESCE(linkedin_url, $3),
               lead_website = $4,
               phone_enrichment_status = $5,
-              phone_enrichment_error = NULL,
+              phone_enrichment_error = $6,
               phone_enriched_at = now(),
               updated_at = now()
-        WHERE id = $6
+        WHERE id = $7
         RETURNING id, lead_name, lead_email, linkedin_url, lead_phone,
                   lead_phone_provider, lead_website, phone_enrichment_status,
                   phone_enrichment_error, phone_enriched_at`,
       [
         enriched.phone || null,
         provider,
-        enriched.linkedinUrl || null,
+        linkedinUrl || null,
         enriched.website || null,
         status,
+        error,
         replyId,
       ]
     );
@@ -160,21 +241,26 @@ async function enrichPendingReplyPhone(replyId) {
       status,
       provider,
       phone: enriched.phone || null,
+      linkedinUrl: rows[0]?.linkedin_url || linkedinUrl || null,
+      waterfallSkipped,
     });
     return storedResult(rows[0]);
   } catch (err) {
+    const linkedinUrl = await fillMissingLinkedin(replyId, existing.lead_email, existing);
     await db.query(
       `UPDATE pending_replies
           SET phone_enrichment_status = 'failed',
               phone_enrichment_error = $1,
+              linkedin_url = COALESCE(linkedin_url, $3),
               phone_enriched_at = now(),
               updated_at = now()
         WHERE id = $2`,
-      [String(err.message || err).slice(0, 1000), replyId]
+      [String(err.message || err).slice(0, 1000), replyId, linkedinUrl || null]
     );
     console.error('[ReplyPhone] Enrichment failed', { replyId, err: err.message });
     return {
       ...storedResult(existing),
+      linkedinUrl: linkedinUrl || existing.linkedin_url || null,
       status: 'failed',
       error: err.message,
     };
@@ -186,4 +272,6 @@ module.exports = {
   storedResult,
   shouldSkipEnrichment,
   SKIP_ENRICH_CLASSIFICATIONS,
+  linkedinFromGetLeads,
+  fillMissingLinkedin,
 };

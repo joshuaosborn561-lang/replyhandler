@@ -52,7 +52,38 @@ function splitLeadName(name) {
 }
 
 function waterfallBaseUrl() {
-  return String(process.env.EMAIL_WATERFALL_URL || '').trim().replace(/\/+$/, '');
+  const raw = String(process.env.EMAIL_WATERFALL_URL || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    u.username = '';
+    u.password = '';
+    return u.toString().replace(/\/+$/, '');
+  } catch {
+    return raw.replace(/\/+$/, '');
+  }
+}
+
+function waterfallAuthHeader() {
+  const raw = String(process.env.EMAIL_WATERFALL_URL || '').trim();
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) {
+      return `Basic ${Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString('base64')}`;
+    }
+  } catch {
+    // not a URL — fall through to dedicated env
+  }
+  const pair = String(process.env.EMAIL_WATERFALL_BASIC || '').trim();
+  if (pair.includes(':')) {
+    return `Basic ${Buffer.from(pair).toString('base64')}`;
+  }
+  const user = String(process.env.EMAIL_WATERFALL_BASIC_USER || '').trim();
+  const pass = String(process.env.EMAIL_WATERFALL_BASIC_PASSWORD || process.env.EMAIL_WATERFALL_BASIC_PASS || '').trim();
+  if (user || pass) {
+    return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+  }
+  return null;
 }
 
 function clientTagFor(raw) {
@@ -150,9 +181,13 @@ async function enrichProspect({
     write_supabase: false,
   };
 
+  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  const auth = waterfallAuthHeader();
+  if (auth) headers.Authorization = auth;
+
   const res = await fetch(`${base}/enrich-one`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(ENRICH_TIMEOUT_MS),
   });
@@ -187,6 +222,7 @@ module.exports = {
   allowsTier,
   clientTagFor,
   waterfallBaseUrl,
+  waterfallAuthHeader,
   TIER_ORDER,
   splitLeadName,
 };

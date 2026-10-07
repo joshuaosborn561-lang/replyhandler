@@ -333,7 +333,11 @@ async function processInboxRow(client, row, options) {
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'smartlead', campaignId, leadId,
-      leadName, leadEmail, inboundMessage: inbound,
+      leadName, leadEmail,
+      linkedinUrl: await smartlead.resolveLeadLinkedinUrl(
+        client.smartlead_api_key, leadEmail, row,
+      ),
+      inboundMessage: inbound,
       classification, reason: suppressed, emailStatsId: smartleadEmailStatsId,
     });
     return { skipped: suppressed };
@@ -350,6 +354,12 @@ async function processInboxRow(client, row, options) {
     });
   }
 
+  const leadLinkedinUrl = await smartlead.resolveLeadLinkedinUrl(
+    client.smartlead_api_key,
+    leadEmail,
+    row,
+  );
+
   const claimed = await claimNewInbound({
     clientId: client.id,
     platform: 'smartlead',
@@ -359,10 +369,11 @@ async function processInboxRow(client, row, options) {
   }, async (conn) => {
     const { rows: [inserted] } = await conn.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
-        client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
+        client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail,
+        leadLinkedinUrl, inbound,
         JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
       ]
     );
@@ -380,6 +391,7 @@ async function processInboxRow(client, row, options) {
     replyId: reply.id,
     leadName,
     leadEmail,
+    leadLinkedinUrl: leadLinkedinUrl || reply.linkedin_url || undefined,
     platform: 'smartlead',
     classification,
     draft,

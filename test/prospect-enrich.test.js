@@ -69,6 +69,38 @@ test('enrichProspect skips when EMAIL_WATERFALL_URL is unset', async () => {
   }
 });
 
+test('enrichProspect sends Basic auth from EMAIL_WATERFALL_BASIC', async () => {
+  const prevUrl = process.env.EMAIL_WATERFALL_URL;
+  const prevBasic = process.env.EMAIL_WATERFALL_BASIC;
+  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+  process.env.EMAIL_WATERFALL_BASIC = 'wfuser:wfpass';
+  const originalFetch = global.fetch;
+  let seen = null;
+  global.fetch = async (url, opts) => {
+    seen = { url: String(url), headers: opts.headers };
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ ok: true, email: 'jane@roofco.com', linkedin_url: '' });
+      },
+    };
+  };
+  try {
+    await enrichProspect({ email: 'jane@roofco.com' });
+    assert.ok(seen.headers.Authorization);
+    assert.match(seen.headers.Authorization, /^Basic /);
+    const decoded = Buffer.from(seen.headers.Authorization.replace(/^Basic /, ''), 'base64').toString();
+    assert.strictEqual(decoded, 'wfuser:wfpass');
+  } finally {
+    global.fetch = originalFetch;
+    if (prevUrl == null) delete process.env.EMAIL_WATERFALL_URL;
+    else process.env.EMAIL_WATERFALL_URL = prevUrl;
+    if (prevBasic == null) delete process.env.EMAIL_WATERFALL_BASIC;
+    else process.env.EMAIL_WATERFALL_BASIC = prevBasic;
+  }
+});
+
 test('clientTagFor and default max_tier stay fullenrich', () => {
   assert.strictEqual(normalizeMaxTier(''), 'fullenrich');
   assert.strictEqual(clientTagFor('Deep Roots'), 'deep_roots');

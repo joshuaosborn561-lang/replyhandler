@@ -551,7 +551,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
       await recordSuppressedReply({
         clientId, platform: 'smartlead', campaignId: resolvedCampaignId, leadId,
-        leadName, leadEmail, inboundMessage: inboundEffective,
+        leadName, leadEmail, linkedinUrl: await smartlead.resolveLeadLinkedinUrl(
+          client.smartlead_api_key, leadEmail, payload, leadData, payload.lead,
+        ),
+        inboundMessage: inboundEffective,
         classification, reason: suppressedReason, emailStatsId: smartleadEmailStatsId,
       });
       return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
@@ -567,6 +570,14 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
     }
 
+    const leadLinkedinUrl = await smartlead.resolveLeadLinkedinUrl(
+      client.smartlead_api_key,
+      leadEmail,
+      payload,
+      leadData,
+      payload.lead,
+    );
+
     const claimed = await claimNewInbound({
       clientId,
       platform: 'smartlead',
@@ -576,9 +587,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     }, async (conn) => {
       const { rows: [inserted] } = await conn.query(
         `INSERT INTO pending_replies
-          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-        [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+        [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, leadLinkedinUrl, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
       );
       return inserted;
     });
@@ -602,6 +613,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       replyId: reply.id,
       leadName,
       leadEmail,
+      leadLinkedinUrl: leadLinkedinUrl || reply.linkedin_url || undefined,
       leadCompany: leadData.company_name || leadData.company || payload.company_name || payload.company || null,
       platform: 'smartlead',
       classification,

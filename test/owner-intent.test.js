@@ -927,6 +927,18 @@ test('Slack cards show the prospect LinkedIn URL', () => {
     reversal('Slack cards show the prospect LinkedIn URL', 'approve confirmation no longer passes linkedin_url'));
   assert.match(poster, /leadLinkedinUrl/,
     reversal('Slack cards show the prospect LinkedIn URL', 'Slack poster no longer attaches LinkedIn after enrich'));
+
+  const webhook = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const phone = read('src/services/reply-phone-enrichment.js');
+  assert.match(webhook, /linkedin_url/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'SmartLead webhook insert dropped linkedin_url'));
+  assert.match(webhook, /leadLinkedinUrl/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'SmartLead webhook card no longer passes LinkedIn'));
+  assert.match(poller, /linkedin_url/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'SmartLead poller insert dropped linkedin_url'));
+  assert.match(phone, /linkedinFromGetLeads/,
+    reversal('Slack cards show the prospect LinkedIn URL', 'email cards no longer fill LinkedIn from GetLeads when waterfall misses'));
 });
 
 // ── Decision: phone waterfall is email-waterfall, max_tier FullEnrich ─
