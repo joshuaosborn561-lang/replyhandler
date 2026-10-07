@@ -4,12 +4,16 @@ const assert = require('assert');
 const getleads = require('../src/services/getleads');
 const aiark = require('../src/services/aiark');
 const leadmagic = require('../src/services/leadmagic');
+const prospeo = require('../src/services/prospeo');
+const fullenrich = require('../src/services/fullenrich');
 const { enrichProspect } = require('../src/services/prospect-enrich');
 
 const originals = {
   getleads: { ...getleads },
   aiark: { ...aiark },
   leadmagic: { ...leadmagic },
+  prospeo: { ...prospeo },
+  fullenrich: { ...fullenrich },
 };
 
 async function main() {
@@ -39,7 +43,17 @@ async function main() {
   leadmagic.isMobileFinderConfigured = () => true;
   leadmagic.findMobile = async () => {
     calls.push('leadmagic');
+    return { phone: null };
+  };
+  prospeo.isConfigured = () => true;
+  prospeo.findMobile = async () => {
+    calls.push('prospeo');
     return { phone: '+1 555-0100' };
+  };
+  fullenrich.isConfigured = () => true;
+  fullenrich.findEmail = async () => {
+    calls.push('fullenrich');
+    return { email: null };
   };
 
   const result = await enrichProspect({
@@ -47,9 +61,10 @@ async function main() {
     leadName: 'Test Person',
   });
 
-  assert.deepStrictEqual(calls, ['getleads', 'aiark', 'leadmagic']);
+  assert.deepStrictEqual(calls, ['getleads', 'aiark', 'leadmagic', 'prospeo']);
   assert.strictEqual(result.phone, '+1 555-0100');
-  assert.strictEqual(result.sources.phone, 'leadmagic');
+  assert.strictEqual(result.sources.phone, 'prospeo');
+  assert.strictEqual(result.maxTier, 'fullenrich');
   assert.strictEqual(result.linkedinUrl, 'https://linkedin.com/in/test');
   assert.strictEqual(result.website, 'https://example.com');
 
@@ -64,7 +79,7 @@ async function main() {
   assert.strictEqual(firstHit.phone, '+1 555-0199');
   assert.strictEqual(firstHit.sources.phone, 'getleads');
 
-  console.log('ok — GetLeads → AI Ark → LeadMagic phone waterfall');
+  console.log('ok — GetLeads → AI Ark → LeadMagic → Prospeo phone waterfall');
 }
 
 main()
@@ -72,6 +87,8 @@ main()
     Object.assign(getleads, originals.getleads);
     Object.assign(aiark, originals.aiark);
     Object.assign(leadmagic, originals.leadmagic);
+    Object.assign(prospeo, originals.prospeo);
+    Object.assign(fullenrich, originals.fullenrich);
   })
   .catch((err) => {
     console.error(err);

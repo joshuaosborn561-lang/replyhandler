@@ -480,6 +480,7 @@ async function processConversation(client, conv, options) {
     replyId: reply.id,
     leadName: reply.lead_name,
     leadEmail: null,
+    linkedinUrl: linkedinUrl(conv) || undefined,
     platform: 'heyreach',
     classification,
     draft,

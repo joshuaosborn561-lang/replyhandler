@@ -65,8 +65,11 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
   if (phone) {
     const providerLabel = {
       getleads: 'GetLeads',
+      smartlead: 'Smartlead',
       aiark: 'AI Ark',
       leadmagic: 'LeadMagic',
+      prospeo: 'Prospeo',
+      fullenrich: 'FullEnrich',
     }[provider.toLowerCase()] || provider;
     return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
   }
@@ -78,6 +81,39 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
     return '\n📱 _phone number not found_';
   }
   return '';
+}
+
+function normalizeLinkedinUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/linkedin\.com\//i.test(s)) return `https://${s.replace(/^\/+/, '')}`;
+  return '';
+}
+
+/** Clickable LinkedIn on the Lead field so we can qualify the prospect fast. */
+function linkedinUrlLine(leadLinkedinUrl) {
+  const url = normalizeLinkedinUrl(leadLinkedinUrl);
+  if (!url) return '';
+  let label = url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  if (label.length > 60) label = `${label.slice(0, 57)}…`;
+  return `\n🔗 <${url}|${escMrkdwn(label)}>`;
+}
+
+function leadFieldText({
+  leadName,
+  leadEmail,
+  leadPhone,
+  phoneProvider,
+  phoneEnrichmentStatus,
+  leadLinkedinUrl,
+} = {}) {
+  return (
+    `*${escMrkdwn(leadName || 'Unknown')}*` +
+    `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
+    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
+    linkedinUrlLine(leadLinkedinUrl)
+  );
 }
 
 /** Slack block-quote inset (grey bar): prefix each line with `>`. */
@@ -409,13 +445,14 @@ function buildSentConfirmationBlocks({
   extraFooter,
   ccUsed,
   threadMessages,
+  leadLinkedinUrl,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  // Keep the enriched cellphone on the Lead line after Approve/Reject/DQ —
-  // it used to vanish when the card flipped to the confirmation layout.
-  const leadLine =
-    `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
-    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  // Keep the enriched cellphone + LinkedIn on the Lead line after Approve/Reject/DQ —
+  // they used to vanish when the card flipped to the confirmation layout.
+  const leadLine = leadFieldText({
+    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+  });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
   const headers = {
@@ -533,12 +570,12 @@ function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  threadPermalink, threadMessages,
+  threadPermalink, threadMessages, leadLinkedinUrl,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  const leadLine =
-    `*${escMrkdwn(leadName || 'Unknown')}*${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
-    phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus });
+  const leadLine = leadFieldText({
+    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+  });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
     ? `↩️ ${platform.toUpperCase()} — ${classification}`
@@ -639,6 +676,7 @@ async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
 
 async function postAlert(token, channelId, {
   replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+  leadLinkedinUrl,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
@@ -659,9 +697,10 @@ async function postAlert(token, channelId, {
         {
           type: 'mrkdwn',
           text:
-            `*Lead*\n*${escMrkdwn(leadName || 'Unknown')}*` +
-            `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
-            phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }),
+            `*Lead*\n` +
+            leadFieldText({
+              leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+            }),
         },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
       ],
@@ -894,6 +933,9 @@ module.exports = {
   postDraftApproval,
   updateDraftApprovalCard,
   buildDraftApprovalCard,
+  leadFieldText,
+  linkedinUrlLine,
+  normalizeLinkedinUrl,
   postAlert,
   postError,
   postClientActionNotice,

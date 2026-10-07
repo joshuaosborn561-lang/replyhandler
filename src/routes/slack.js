@@ -99,6 +99,7 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     leadPhone: reply.lead_phone || undefined,
     phoneProvider: reply.lead_phone_provider || undefined,
     phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
+    leadLinkedinUrl: reply.linkedin_url || undefined,
     platform: reply.platform,
     classification: reply.classification,
     inboundMessage: reply.inbound_message,

@@ -1,12 +1,32 @@
 /**
- * Full prospect enrichment for client notify emails.
- * Waterfall: GetLeads → AI Ark → LeadMagic
- * Fields: email, cellphone, LinkedIn, website
+ * Prospect enrichment — same vendor order as joshuaosborn561-lang/email-waterfall:
+ *   GetLeads → Smartlead (email only, skipped here) → AI Ark → LeadMagic → Prospeo → FullEnrich
+ *
+ * Slack cards need a cellphone. Default max_tier is fullenrich so Prospeo
+ * mobile runs after LeadMagic, matching "use my waterfall … max tier fullenrich".
+ * FullEnrich is email-only (HeyReach / missing work email).
  */
 
 const getleads = require('./getleads');
 const aiark = require('./aiark');
 const leadmagic = require('./leadmagic');
+const prospeo = require('./prospeo');
+const fullenrich = require('./fullenrich');
+
+const TIER_ORDER = ['getleads', 'smartlead', 'aiark', 'leadmagic', 'prospeo', 'fullenrich'];
+
+function normalizeMaxTier(raw) {
+  const s = String(raw || process.env.EMAIL_WATERFALL_MAX_TIER || 'fullenrich')
+    .trim()
+    .toLowerCase();
+  if (s === 'lm') return 'leadmagic';
+  if (s === 'fe') return 'fullenrich';
+  return TIER_ORDER.includes(s) ? s : 'fullenrich';
+}
+
+function allowsTier(maxTier, tier) {
+  return TIER_ORDER.indexOf(tier) <= TIER_ORDER.indexOf(normalizeMaxTier(maxTier));
+}
 
 function domainFromEmail(email) {
   const e = String(email || '').trim().toLowerCase();
@@ -23,20 +43,31 @@ function asWebsite(raw) {
   return null;
 }
 
+function splitLeadName(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { firstName: '', lastName: '' };
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+}
+
 /**
- * @param {{ email?: string|null, linkedinUrl?: string|null, leadName?: string|null, companyName?: string|null }} input
+ * @param {{ email?: string|null, linkedinUrl?: string|null, leadName?: string|null, companyName?: string|null, maxTier?: string }} input
  */
-async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}) {
+async function enrichProspect({
+  email, linkedinUrl, leadName, companyName, maxTier,
+} = {}) {
   let workEmail = String(email || '').trim().toLowerCase() || null;
   let li = String(linkedinUrl || '').trim() || null;
   let phone = null;
   let website = null;
   const sources = {};
+  const cap = normalizeMaxTier(maxTier);
 
   const domainHint = domainFromEmail(workEmail);
+  const { firstName, lastName } = splitLeadName(leadName);
 
   // ── 1) GetLeads ────────────────────────────────────────────────────
-  if (getleads.isConfigured() && workEmail) {
+  if (allowsTier(cap, 'getleads') && getleads.isConfigured() && workEmail) {
     try {
       const gl = await getleads.findPhoneByEmail(workEmail);
       if (gl.phone && !phone) {
@@ -64,7 +95,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
   }
 
   // ── 2) AI Ark ──────────────────────────────────────────────────────
-  if (aiark.isConfigured()) {
+  if (allowsTier(cap, 'aiark') && aiark.isConfigured()) {
     try {
       if (workEmail && (!li || !website)) {
         const rev = await aiark.reverseLookupByEmail(workEmail);
@@ -81,7 +112,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
         const mob = await aiark.findMobile({
           linkedinUrl: li,
           name: leadName,
-          domain: domainHint || (companyName ? null : null),
+          domain: domainHint,
         });
         if (mob.phone) {
           phone = mob.phone;
@@ -98,7 +129,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
   }
 
   // ── 3) LeadMagic ───────────────────────────────────────────────────
-  if (leadmagic.isMobileFinderConfigured() && !phone) {
+  if (allowsTier(cap, 'leadmagic') && leadmagic.isMobileFinderConfigured() && !phone) {
     try {
       const lm = await leadmagic.findMobile({
         workEmail,
@@ -110,6 +141,52 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
       }
     } catch (err) {
       console.warn('[ProspectEnrich] LeadMagic failed', { err: err.message, email: workEmail });
+    }
+  }
+
+  // ── 4) Prospeo (unlocked when max_tier is prospeo / fullenrich) ─────
+  if (allowsTier(cap, 'prospeo') && prospeo.isConfigured() && !phone) {
+    try {
+      const pr = await prospeo.findMobile({
+        firstName,
+        lastName,
+        fullName: leadName,
+        domain: domainHint,
+        companyName,
+        linkedinUrl: li,
+      });
+      if (pr.phone) {
+        phone = pr.phone;
+        sources.phone = 'prospeo';
+      }
+      if (pr.linkedinUrl && !li) {
+        li = pr.linkedinUrl;
+        sources.linkedin = sources.linkedin || 'prospeo';
+      }
+      if (pr.email && !workEmail) {
+        workEmail = pr.email;
+        sources.email = 'prospeo';
+      }
+    } catch (err) {
+      console.warn('[ProspectEnrich] Prospeo failed', { err: err.message, email: workEmail });
+    }
+  }
+
+  // ── 5) FullEnrich — work email only (HeyReach / missing inbox email) ─
+  if (allowsTier(cap, 'fullenrich') && fullenrich.isConfigured() && !workEmail) {
+    try {
+      const fe = await fullenrich.findEmail({
+        firstName,
+        lastName,
+        domain: domainHint,
+        companyName,
+      });
+      if (fe.email) {
+        workEmail = fe.email;
+        sources.email = 'fullenrich';
+      }
+    } catch (err) {
+      console.warn('[ProspectEnrich] FullEnrich failed', { err: err.message });
     }
   }
 
@@ -126,6 +203,7 @@ async function enrichProspect({ email, linkedinUrl, leadName, companyName } = {}
     linkedinUrl: li,
     website,
     sources,
+    maxTier: cap,
   };
 }
 
@@ -135,4 +213,13 @@ async function enrichCellPhone(input) {
   return { phone: r.phone, provider: r.sources.phone || null, linkedinUrl: r.linkedinUrl };
 }
 
-module.exports = { enrichProspect, enrichCellPhone, domainFromEmail, asWebsite };
+module.exports = {
+  enrichProspect,
+  enrichCellPhone,
+  domainFromEmail,
+  asWebsite,
+  normalizeMaxTier,
+  allowsTier,
+  TIER_ORDER,
+  splitLeadName,
+};

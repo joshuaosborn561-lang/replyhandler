@@ -426,6 +426,22 @@ Confirmation cards now keep the same phone line as the draft/alert card.
 
 Guard: `phone stays on Slack card after approve`
 
+### Slack cards show the prospect LinkedIn URL
+
+*"somethign that would be nice is if you can post the linkedin url of the porspect int the slack cards so we can quickly qualify them"*
+
+Draft, alert, follow-up, and approve-confirmation cards put a clickable LinkedIn URL on the Lead field — HeyReach already has it; email replies get it from enrichment. Same URL stays after Approve / Reject / DQ.
+
+Guard: `Slack cards show the prospect LinkedIn URL`
+
+### Phone enrichment is the email-waterfall stack, max_tier FullEnrich
+
+*"idk how you are enriching prhone number today but you should just use my waterfall in the other project max tier fullenrich"*
+
+Do not stop at GetLeads → AI Ark → LeadMagic. Same order as `joshuaosborn561-lang/email-waterfall`: GetLeads → AI Ark → LeadMagic → Prospeo → FullEnrich. Default `EMAIL_WATERFALL_MAX_TIER=fullenrich` so Prospeo mobile runs after LeadMagic. FullEnrich is email-only (fills a missing work email, e.g. HeyReach). Missing-phone Slack copy stays `phone number not found`.
+
+Guard: `phone enrichment walks the email-waterfall to FullEnrich`
+
 ### Slack DQ button excludes follow-up nudges
 
 *"also add in a DQ button in slack that excludes form followup nudges"*
