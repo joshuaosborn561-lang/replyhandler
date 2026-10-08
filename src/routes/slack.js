@@ -117,6 +117,7 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
 
 function ccUsedLabel(reply, client, sendResult) {
   if (reply.platform !== 'smartlead') return undefined;
+  if (sendResult?.clientNotifySkipped) return undefined;
   if (sendResult?.clientCcWarning) return undefined;
   const email = String(sendResult?.clientCcEmails || '').trim()
     || String(client.cc_emails || client.cc_email || '').trim();
@@ -289,6 +290,9 @@ async function handleEditModalSubmit(interaction) {
       if (sendResult.clientCcWarning) {
         extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
       }
+      if (sendResult.clientNotifySkipped) {
+        extraFooter += `\nTyler notify skipped — ${sendResult.clientNotifySkipReason}`;
+      }
     }
 
     if (channelId && messageTs) {
@@ -360,6 +364,9 @@ async function handleApprove(replyId, interaction) {
       extraFooter += await maybeBookMeetingAfterSend(reply, client);
       if (sendResult.clientCcWarning) {
         extraFooter += `\n⚠️ ${sendResult.clientCcWarning}`;
+      }
+      if (sendResult.clientNotifySkipped) {
+        extraFooter += `\nTyler notify skipped — ${sendResult.clientNotifySkipReason}`;
       }
     }
 

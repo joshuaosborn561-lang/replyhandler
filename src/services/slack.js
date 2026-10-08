@@ -1,5 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
+const { isDeepRootsClient } = require('../utils/meeting-modality');
 
 // Cache WebClient instances per token
 const clientCache = new Map();
@@ -169,18 +170,25 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
 }
 
 /** Always-on client-notify notice — forward list + round-robin pool. */
-function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails }) {
+function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName }) {
   const always = String(ccEmails || '').trim();
   const rr = String(ccRoundRobinEmails || '').trim();
   if (!always && !rr) return null;
   const lines = [];
-  if (always) lines.push(`*Always notify:* ${escMrkdwn(always)}`);
+  if (always) {
+    lines.push(isDeepRootsClient(clientName)
+      ? `*Tyler notify (qualified + wants a call only):* ${escMrkdwn(always)}`
+      : `*Always notify:* ${escMrkdwn(always)}`);
+  }
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
+  const intro = isDeepRootsClient(clientName)
+    ? '📬 Tyler is emailed only when they look qualified (employees + $1–10M EBITDA) and want to schedule a call — not on every send'
+    : '📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)';
   return {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)\n${lines.join('\n')}`,
+      text: `${intro}\n${lines.join('\n')}`,
     }],
   };
 }
@@ -570,7 +578,7 @@ function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  threadPermalink, threadMessages, leadLinkedinUrl,
+  threadPermalink, threadMessages, leadLinkedinUrl, clientName,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -637,6 +645,7 @@ function buildDraftApprovalCard({
     const notice = ccAutoNoticeBlock({
       ccEmails: ccEmails || ccEmail,
       ccRoundRobinEmails,
+      clientName,
     });
     if (notice) blocks.push(notice);
   }
