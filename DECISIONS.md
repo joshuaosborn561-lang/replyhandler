@@ -430,7 +430,9 @@ Guard: `phone stays on Slack card after approve`
 
 *"somethign that would be nice is if you can post the linkedin url of the porspect int the slack cards so we can quickly qualify them"*
 
-Draft, alert, follow-up, and approve-confirmation cards put a clickable LinkedIn URL on the Lead field — HeyReach already has it; email replies get it from enrichment. Same URL stays after Approve / Reject / DQ.
+Draft, alert, follow-up, and approve-confirmation cards put a clickable LinkedIn URL on the Lead field — HeyReach already has it; email replies persist SmartLead `linkedin_profile` (webhook payloads often omit it, so we fetch `/leads/?email=`) and fill from GetLeads contact search when the waterfall host is unset, 401s, or returns no URL. Phone still comes only from email-waterfall `/enrich-one`. Same URL stays after Approve / Reject / DQ.
+
+*"doesnt look like new relpies are posting with the linkedin url for the person"* — the render path was live, but SmartLead inserts never stored `linkedin_url` and enrichment returned empty when `EMAIL_WATERFALL_URL` was unset or the host required Basic auth. Cards now persist the URL at insert and still show it when phone enrichment fails.
 
 Guard: `Slack cards show the prospect LinkedIn URL`
 
