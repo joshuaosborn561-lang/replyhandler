@@ -178,6 +178,11 @@ notify path. It anchors to a real thread message via
 and it adds lead name, email, and cell phone with the enrichment provider.
 Gmail is primary; SmartLead forward is the fallback.
 
+**Deep Roots exception:** Tyler is not emailed on every send. Gate is
+`deepRootsClientNotifySkipReason()` — only when the prospect confirmed
+$1M–$10M EBITDA, did not name an out-of-range headcount, and wants to
+schedule a call. Slack cards for Josh stay as they are.
+
 Do **not** add a second forward that fires on *inbound* receipt. That was tried
 (`3f97035`) and rejected for three reasons: it ran before classification so it
 emailed clients every OOO auto-reply and bounce; it keyed off `cc_emails`, which

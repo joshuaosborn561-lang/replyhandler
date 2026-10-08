@@ -886,3 +886,21 @@ No booking URL, no two invented calendar slots, no Zoom/Calendly. FOLLOW_UP bump
 Pinned by client name (`Deep Roots`) so it holds even if `voice_prompt` is still empty. Voice prompt can also say "Tyler will call" / the 218 number.
 
 Guard: `Deep Roots asks what time works — Tyler calls, no booking link`
+
+### Deep Roots: Tyler notify only when qualified + wants a call
+
+*"I don't need an alert every time you reply to someone, just when it looks like someone is qualified, meets the employee and EBITEDA standards, and is interested in scheduling a call."*
+
+Tyler (Always-notify `tleverington@deeprootscapital.com`) was getting a Gmail FYI on every approved Deep Roots send — Ken asking min EBITDA, Jason saying he was open, Neel dodging size then saying "Tomorrow works!". Josh told him we would scale the notifications back.
+
+Slack cards for the team are unchanged. Other clients still notify on every send. Deep Roots still *replies* on Approve; only the client email is gated.
+
+Notify Tyler only when all of these are true from **prospect** text (never our outbound "$1M to $10M" copy):
+
+1. They want to schedule a call (named a time / "tomorrow works" / MEETING_PROPOSED).
+2. EBITDA is confirmed in the **$1M–$10M** bar we ask in the emails — a stated number in range, or a yes to "does that sound like you?" after we asked. Skirted or missing = no email. Below $1M or above $10M = no email.
+3. If they name headcount, it has to be **10–500** employees. Silence on headcount does not block once EBITDA is confirmed (we do not ask employees on every first touch). A 3-person shop that wants a call still does not email Tyler.
+
+The Slack card says Tyler is notified only when qualified + wants a call. A skipped send footers `Tyler notify skipped — {reason}`.
+
+Guard: `Deep Roots Tyler notify is qualified-and-scheduling only`

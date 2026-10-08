@@ -9,6 +9,7 @@ const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-no
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
 const { alreadySentSameOutbound } = require('./reply-dedupe');
+const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -172,6 +173,24 @@ async function sendReplyToPlatform(client, reply, replyText) {
     );
 
     if (forwardEmails) {
+      const { threadContext, extraMessages } = await resolveClientNotifyThread(client, reply);
+      const notifySkip = deepRootsClientNotifySkipReason({
+        clientName: client.name,
+        inboundMessage: reply.inbound_message,
+        threadContext,
+        extraMessages,
+        classification: reply.classification,
+      });
+      if (notifySkip) {
+        console.log('[ReplySend] Deep Roots client notify skipped', {
+          replyId: reply.id, lead: reply.lead_name, reason: notifySkip,
+        });
+        return {
+          clientNotifySkipped: true,
+          clientNotifySkipReason: notifySkip,
+        };
+      }
+
       try {
         if (reply.phone_enrichment_status === 'found' ||
             reply.phone_enrichment_status === 'not_found') {
@@ -205,7 +224,6 @@ async function sendReplyToPlatform(client, reply, replyText) {
         };
       }
 
-      const { threadContext, extraMessages } = await resolveClientNotifyThread(client, reply);
       const notify = buildClientNotifyEmail({
         leadName: reply.lead_name,
         leadEmail: reply.lead_email,

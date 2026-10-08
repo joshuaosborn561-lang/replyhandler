@@ -189,6 +189,58 @@ test('Deep Roots asks what time works — Tyler calls, no booking link', () => {
   assert.ok(!leaked.includes(link), 'Deep Roots must strip a leaked booking URL');
 });
 
+// ── Decision: Deep Roots — Tyler notify only when qualified + wants a call
+test('Deep Roots Tyler notify is qualified-and-scheduling only', () => {
+  const {
+    deepRootsClientNotifySkipReason,
+  } = require('../src/utils/deep-roots-client-notify');
+  const send = read('src/services/reply-send.js');
+  const slack = read('src/services/slack.js');
+
+  assert.match(send, /deepRootsClientNotifySkipReason/,
+    reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'send path no longer gates Deep Roots notify'));
+  assert.match(slack, /qualified \+ wants a call only/,
+    reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'Slack card still says Always notify for Deep Roots'));
+
+  assert.equal(deepRootsClientNotifySkipReason({
+    clientName: 'Deep Roots',
+    inboundMessage: 'What is your minimum EBITA.',
+    classification: 'QUESTION',
+  }), 'not_scheduling',
+  reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'Ken-style questions would email Tyler again'));
+
+  assert.equal(deepRootsClientNotifySkipReason({
+    clientName: 'Deep Roots',
+    inboundMessage: 'Tomorrow works!',
+    classification: 'MEETING_PROPOSED',
+    threadContext: [
+      { type: 'SENT', email_body: "We're looking at businesses with $1M to $10M in EBITDA. Does sound like you?" },
+      { type: 'REPLY', email_body: 'What will you require ?' },
+      { type: 'SENT', email_body: 'What time works best for you?' },
+      { type: 'REPLY', email_body: 'Tomorrow works!' },
+    ],
+  }), 'ebitda_unconfirmed',
+  reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'Neel-style EBITDA dodge would email Tyler again'));
+
+  assert.equal(deepRootsClientNotifySkipReason({
+    clientName: 'Deep Roots',
+    inboundMessage: 'Yes that sounds like us. Tuesday 2pm works.',
+    classification: 'MEETING_PROPOSED',
+    threadContext: [
+      { type: 'SENT', email_body: '$1M to $10M in EBITDA. Does that sound like you?' },
+      { type: 'REPLY', email_body: 'Yes that sounds like us. Tuesday 2pm works.' },
+    ],
+  }), null,
+  reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'a confirmed in-range prospect who wants a time is no longer emailed to Tyler'));
+
+  assert.equal(deepRootsClientNotifySkipReason({
+    clientName: 'PowerGryd',
+    inboundMessage: 'How did you get my email?',
+    classification: 'QUESTION',
+  }), null,
+  reversal('Deep Roots Tyler notify is qualified-and-scheduling only', 'other clients are now gated the Deep Roots way'));
+});
+
 // ── Decision: declines get a graceful draft, never a pitch ────────────
 // "still draft for not interested replies" — but the default times-first
 // prompt would have pushed meeting slots at someone who just said no.
