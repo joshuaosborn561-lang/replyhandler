@@ -69,8 +69,9 @@ cp .env.example .env
 | `DISABLE_LEARNED_VOICE` | Optional. `1` stops drafts from reading the learned profiles (job still runs) |
 | `EMAIL_WATERFALL_URL` | email-waterfall Railway origin (no path). Slack cards `POST {url}/enrich-one`. Unset = skip enrichment. |
 | `EMAIL_WATERFALL_CLIENT_TAG` | Optional. `client_tag` sent to `/enrich-one` (default `replyhandler`). |
-| `EMAIL_WATERFALL_MAX_TIER` | Optional. Same cap as email-waterfall (`getleads`…`fullenrich`). Default `fullenrich`. |
-| `LEADMAGIC_API_KEY` | LeadMagic API key — LinkedIn→email on inbound HeyReach profiles (not the Slack phone walk) |
+| `EMAIL_WATERFALL_MAX_TIER` | Optional. Same cap as email-waterfall (`getleads`…`fullenrich`). Default `fullenrich`. Legacy `leadmagic`/`lm` aliases to `aiark`. |
+| `REPLY_ENRICH_CEILING_USD` | Optional. Per-reply spend cap (default `0.25`). |
+| `REPLY_ENRICH_CEILING_HOT_USD` | Optional. Cap for INTERESTED / MEETING_PROPOSED so FullEnrich mobile can run (default `1.00`). |
 | `CALCOM_API_KEY` | Cal.com API key (if required) |
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |

@@ -723,7 +723,7 @@
       <div class="form-group">
         <label>Always forward (optional)</label>
         <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com" oninput="syncPortalEmailFromAlwaysNotify()"></textarea>
-        <div class="hint">Comma or newline separated. The first address is the portal login and gets an invite email. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → AI Ark → LeadMagic).</div>
+        <div class="hint">Comma or newline separated. The first address is the portal login and gets an invite email. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → Smartlead → AI Ark → Prospeo → FullEnrich).</div>
       </div>
 
       <div class="form-group">
@@ -868,7 +868,7 @@
         <p><strong>Always forward</strong> — one or more addresses (owner, AE) that receive a <em>primary-domain Gmail notify</em> after every SmartLead Approve / Edit &amp; send. The prospect reply itself has <strong>no CC</strong> (better deliverability).</p>
         <p><strong>Round-robin reps</strong> — pool of sales reps. Each send notifies <em>exactly one</em> from the list, rotating evenly so load is dispersed.</p>
         <div class="guide-note">LinkedIn / HeyReach replies are not emailed (no email thread).</div>
-        <p><strong>Enrichment</strong> — notify includes LinkedIn, website, email, and cell via GetLeads → AI Ark → LeadMagic, plus thread history and the reply we just sent.</p>
+        <p><strong>Enrichment</strong> — notify includes LinkedIn, website, email, and cell via GetLeads → Smartlead → AI Ark → Prospeo → FullEnrich, plus thread history and the reply we just sent.</p>
         <p><strong>Primary Gmail</strong> — connect once at <code>/auth/gmail/connect</code> as <code>joshua@salesglidergrowth.com</code> (requires <code>GMAIL_CLIENT_ID</code> / <code>GMAIL_CLIENT_SECRET</code>).</p>
       </div>
     </details>
@@ -933,7 +933,7 @@
       <div class="guide-section-body">
         <ol>
           <li>Connect this repo; Railway sets <code>RAILWAY_PUBLIC_DOMAIN</code> automatically</li>
-          <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, optional <code>LEADMAGIC_API_KEY</code>, optional <code>WEBHOOK_TEST_SECRET</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
+          <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, optional <code>EMAIL_WATERFALL_URL</code>, optional <code>WEBHOOK_TEST_SECRET</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
           <li>Run SQL: <code>schema.sql</code> on a fresh DB, or apply <code>migrations/*.sql</code> in order on an existing one (includes <code>004_calendly_pat.sql</code> for the Calendly token column)</li>
           <li>Slack app &rarr; Interactivity URL = <code>https://&lt;your-domain&gt;/slack/actions</code></li>
         </ol>

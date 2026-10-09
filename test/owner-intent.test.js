@@ -981,25 +981,30 @@ test('Slack cards show the prospect LinkedIn URL', () => {
     reversal('Slack cards show the prospect LinkedIn URL', 'Slack poster no longer attaches LinkedIn after enrich'));
 });
 
-// ── Decision: phone waterfall is email-waterfall, max_tier FullEnrich ─
+// ── Decision: phone waterfall is email-waterfall (LeadMagic dropped 2026-10-08)
 test('phone enrichment walks the email-waterfall to FullEnrich', () => {
   const enrich = read('src/services/prospect-enrich.js');
   const { normalizeMaxTier, allowsTier, TIER_ORDER } = require('../src/services/prospect-enrich');
-  assert.deepEqual(TIER_ORDER, ['getleads', 'smartlead', 'aiark', 'leadmagic', 'prospeo', 'fullenrich'],
-    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'vendor order changed'));
+  assert.deepEqual(TIER_ORDER, ['getleads', 'smartlead', 'aiark', 'prospeo', 'fullenrich'],
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'vendor order changed'));
   assert.equal(normalizeMaxTier(''), 'fullenrich',
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'default max_tier is no longer fullenrich'));
+  assert.equal(normalizeMaxTier('leadmagic'), 'aiark',
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'legacy leadmagic max_tier must alias to aiark, not stay a vendor'));
+  assert.equal(normalizeMaxTier('lm'), 'aiark');
   assert.equal(allowsTier('fullenrich', 'prospeo'), true);
-  assert.equal(allowsTier('leadmagic', 'prospeo'), false,
-    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Prospeo runs even when max_tier is leadmagic'));
+  assert.equal(allowsTier('aiark', 'prospeo'), false,
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'legacy leadmagic ceiling must still stop before Prospeo'));
   assert.match(enrich, /EMAIL_WATERFALL_URL/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler no longer calls the email-waterfall MCP/HTTP service'));
   assert.match(enrich, /\/enrich-one/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Slack cards no longer POST /enrich-one'));
-  assert.match(enrich, /need:\s*'both'/,
-    reversal('phone enrichment walks the email-waterfall to FullEnrich', 'one-person lookup is no longer need=both (phone + email)'));
+  assert.match(enrich, /approve_cost_usd/,
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', '/enrich-one must pass approve_cost_usd'));
   assert.match(enrich, /fullenrich/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'FullEnrich was removed'));
+  assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/leadmagic.js')),
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'src/services/leadmagic.js is back'));
   assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/prospeo.js')),
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'ReplyHandler owns a local Prospeo client again — call the MCP'));
   assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/fullenrich.js')),
@@ -1010,6 +1015,8 @@ test('phone enrichment walks the email-waterfall to FullEnrich', () => {
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich requires a local FullEnrich client'));
   assert.doesNotMatch(enrich, /require\('\.\/getleads'\)/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'prospect-enrich walks GetLeads locally instead of calling the MCP'));
+  assert.doesNotMatch(enrich, /leadmagic\.io/,
+    reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'prospect-enrich still calls LeadMagic'));
 });
 
 // ── Decision: Reject also marks Not Interested in SmartLead ───────────

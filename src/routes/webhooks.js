@@ -3,8 +3,8 @@ const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
 const { classifyAndDraft } = require('../services/classifier');
-const { profileToEmail } = require('../services/leadmagic');
 const slack = require('../services/slack');
+const { enrichPendingReplyPhone } = require('../services/reply-phone-enrichment');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const {
   inboundPrefix,
@@ -835,7 +835,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
         draft = policy.draft;
         reasoning = policy.reasoning;
-        const isDraft = policy.isDraft;
+        let isDraft = policy.isDraft;
         const status = policy.status;
 
         const contextWithMeta = {
@@ -875,11 +875,27 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
         const reply = claimed.reply;
 
+        // Claimed once on phone_enrichment_status. Slack-card path is a no-op if
+        // this already finished — webhook retries never pay twice.
+        const enrichment = await enrichPendingReplyPhone(reply.id);
+        const leadEmail = enrichment.email || null;
+        if (leadEmail) {
+          const latePolicy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+          if (latePolicy.skippedDraft) {
+            draft = latePolicy.draft;
+            reasoning = latePolicy.reasoning;
+            isDraft = false;
+            console.log('[Webhook] HeyReach draft revoked by client policy after enrichment', {
+              replyId: reply.id, reason: latePolicy.skipReason,
+            });
+          }
+        }
+
         const slackCard = {
           replyId: reply.id,
           leadName: resolvedLeadName,
-          leadEmail: null,
-          linkedinUrl: resolvedLinkedinUrl || undefined,
+          leadEmail,
+          linkedinUrl: resolvedLinkedinUrl || enrichment.linkedinUrl || undefined,
           leadCompany: hr.company || payload.company_name || payload.company || null,
           platform: 'heyreach',
           classification,
@@ -904,34 +920,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           card: slackCard,
         });
 
-        if (isDraft && classification === 'MEETING_PROPOSED' && resolvedLinkedinUrl) {
-          let leadEmail = null;
-          try {
-            leadEmail = await profileToEmail(resolvedLinkedinUrl);
-            console.log('[LeadMagic] Email lookup result', { linkedinUrl: resolvedLinkedinUrl, email: leadEmail });
-            if (leadEmail) {
-              const latePolicy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
-              if (latePolicy.skippedDraft) {
-                await db.query(
-                  `UPDATE pending_replies
-                      SET lead_email = $1,
-                          draft_reply = NULL,
-                          status = 'alert_only',
-                          updated_at = now()
-                    WHERE id = $2`,
-                  [leadEmail, reply.id]
-                );
-                console.log('[Webhook] HeyReach draft revoked by client policy after email lookup', {
-                  leadName: resolvedLeadName, leadEmail, reason: latePolicy.skipReason,
-                });
-                return;
-              }
-              await db.query('UPDATE pending_replies SET lead_email = $1 WHERE id = $2', [leadEmail, reply.id]);
-            }
-          } catch (err) {
-            console.error('[LeadMagic] profileToEmail failed', { linkedinUrl: resolvedLinkedinUrl, err: err.message });
-          }
-
+        if (classification === 'MEETING_PROPOSED') {
           await db.query(
             `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, linkedin_url, proposed_time, status)
              VALUES ($1, $2, $3, $4, $5, $6, 'proposed')`,
@@ -939,7 +928,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           );
         }
 
-        console.log('[Webhook] HeyReach processed async', { clientId, classification, leadName: resolvedLeadName });
+        console.log('[Webhook] HeyReach processed async', { clientId, classification, replyId: reply.id });
       } catch (bgErr) {
         console.error('[Webhook] HeyReach async handler error', { clientId, err: bgErr.message, stack: bgErr.stack });
       }

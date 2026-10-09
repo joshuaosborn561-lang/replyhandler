@@ -60,6 +60,17 @@ function escMrkdwn(s) {
     .replace(/>/g, '&gt;');
 }
 
+function enrichmentReceiptLine(receipt) {
+  if (!receipt || typeof receipt !== 'object') return '';
+  const hit = receipt.emailTier || receipt.phoneTier || receipt.tier_hit || null;
+  const spend = Number(receipt.spentUsd ?? receipt.spent_usd);
+  const bits = [];
+  if (hit) bits.push(String(hit));
+  if (Number.isFinite(spend)) bits.push(`$${spend.toFixed(2)}`);
+  if (!bits.length) return '';
+  return `\n🧾 ${escMrkdwn(bits.join(' · '))}`;
+}
+
 function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus } = {}) {
   const phone = String(leadPhone || '').trim();
   const provider = String(phoneProvider || '').trim();
@@ -68,7 +79,6 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
       getleads: 'GetLeads',
       smartlead: 'Smartlead',
       aiark: 'AI Ark',
-      leadmagic: 'LeadMagic',
       prospeo: 'Prospeo',
       fullenrich: 'FullEnrich',
     }[provider.toLowerCase()] || provider;
@@ -108,12 +118,14 @@ function leadFieldText({
   phoneProvider,
   phoneEnrichmentStatus,
   leadLinkedinUrl,
+  enrichmentReceipt,
 } = {}) {
   return (
     `*${escMrkdwn(leadName || 'Unknown')}*` +
     `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
-    linkedinUrlLine(leadLinkedinUrl)
+    linkedinUrlLine(leadLinkedinUrl) +
+    enrichmentReceiptLine(enrichmentReceipt)
   );
 }
 
@@ -454,12 +466,14 @@ function buildSentConfirmationBlocks({
   ccUsed,
   threadMessages,
   leadLinkedinUrl,
+  enrichmentReceipt,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   // Keep the enriched cellphone + LinkedIn on the Lead line after Approve/Reject/DQ —
   // they used to vanish when the card flipped to the confirmation layout.
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+    enrichmentReceipt,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
@@ -578,11 +592,12 @@ function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  threadPermalink, threadMessages, leadLinkedinUrl, clientName,
+  threadPermalink, threadMessages, leadLinkedinUrl, clientName, enrichmentReceipt,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+    enrichmentReceipt,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
@@ -685,7 +700,7 @@ async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
 
 async function postAlert(token, channelId, {
   replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  leadLinkedinUrl,
+  leadLinkedinUrl, enrichmentReceipt,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
 }) {
@@ -709,6 +724,7 @@ async function postAlert(token, channelId, {
             `*Lead*\n` +
             leadFieldText({
               leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
+              enrichmentReceipt,
             }),
         },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },

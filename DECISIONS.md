@@ -904,3 +904,19 @@ Notify Tyler only when all of these are true from **prospect** text (never our o
 The Slack card says Tyler is notified only when qualified + wants a call. A skipped send footers `Tyler notify skipped — {reason}`.
 
 Guard: `Deep Roots Tyler notify is qualified-and-scheduling only`
+
+## 2026-10-08
+
+### Josh dropped LeadMagic — reply enrichment is the email-waterfall job
+
+Josh cancelled LeadMagic. The HeyReach `profile-to-email` call and `src/services/leadmagic.js` are gone. One claimed job per inbound reply owns email, cellphone, and LinkedIn:
+
+- Ack the HeyReach webhook immediately; run enrichment in the background.
+- Claim on `phone_enrichment_status` so a retry never pays twice.
+- Free cache first (`pending_replies`, `{tag}_wf_contacts`, `name_bank`) — read-only, never touch `dl_status` / `sg_exclude` / `skip_*`.
+- Then `EMAIL_WATERFALL_URL` `POST /enrich-one` with `linkedin_url` and `approve_cost_usd`. Email: getleads → smartlead → aiark → prospeo → fullenrich. Mobile: getleads → aiark → prospeo → FullEnrich. Accept a number only when Veriphone says valid + mobile.
+- Default ceiling `$0.25`. FullEnrich mobile only for `INTERESTED` / `MEETING_PROPOSED` under `$1.00`. Estimate before each paid call. Logs are ids / tiers / spend — no lead rows.
+- Legacy `leadmagic` / `lm` max_tier aliases to `aiark` (same old spend boundary).
+
+Guard: `phone enrichment walks the email-waterfall to FullEnrich`
+Guard: `reply enrichment is idempotent, ceiling-capped, Veriphone-gated`

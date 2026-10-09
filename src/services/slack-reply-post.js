@@ -191,9 +191,11 @@ async function postProspectSlackCard({
       enrichment = phone;
       enrichedCard = {
         ...card,
+        leadEmail: phone.email || card.leadEmail || undefined,
         leadPhone: phone.phone || undefined,
         phoneProvider: phone.provider || undefined,
         phoneEnrichmentStatus: phone.status || undefined,
+        enrichmentReceipt: phone.receipt || undefined,
         leadLinkedinUrl:
           phone.linkedinUrl
           || card.leadLinkedinUrl
