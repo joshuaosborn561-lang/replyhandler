@@ -17,6 +17,8 @@ CREATE TABLE clients (
   cc_emails TEXT,
   cc_round_robin_emails TEXT,
   contact_email TEXT,
+  reply_enrich_ceiling_usd NUMERIC,
+  reply_enrich_ceiling_hot_usd NUMERIC,
   cc_round_robin_index INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,10 +63,12 @@ CREATE TABLE pending_replies (
   linkedin_url TEXT,
   lead_phone TEXT,
   lead_phone_provider TEXT,
+  lead_phone_alt TEXT,
   lead_website TEXT,
+  enrichment_receipt JSONB,
   phone_enrichment_status TEXT CHECK (
     phone_enrichment_status IS NULL
-    OR phone_enrichment_status IN ('processing', 'found', 'not_found', 'failed')
+    OR phone_enrichment_status IN ('processing', 'found', 'not_found', 'failed', 'skipped')
   ),
   phone_enrichment_error TEXT,
   phone_enriched_at TIMESTAMPTZ,

@@ -32,7 +32,7 @@ test('enrichProspect POSTs /enrich-one on the email-waterfall MCP host', async (
       leadName: 'Jane Smith',
     });
     assert.strictEqual(seen.url, 'https://waterfall.example.test/enrich-one');
-    assert.strictEqual(seen.body.need, 'both');
+    assert.strictEqual(seen.body.need, 'email');
     assert.strictEqual(seen.body.max_tier, 'fullenrich');
     assert.strictEqual(seen.body.write_supabase, false);
     assert.strictEqual(seen.body.client_tag, 'replyhandler');

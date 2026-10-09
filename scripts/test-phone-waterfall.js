@@ -44,7 +44,7 @@ async function main() {
 
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].url, 'https://waterfall.example.test/enrich-one');
-    assert.strictEqual(calls[0].body.need, 'both');
+    assert.strictEqual(calls[0].body.need, 'email');
     assert.strictEqual(calls[0].body.max_tier, 'fullenrich');
     assert.strictEqual(calls[0].body.write_supabase, false);
     assert.strictEqual(calls[0].body.client_tag, 'replyhandler');
@@ -54,7 +54,7 @@ async function main() {
     assert.strictEqual(result.linkedinUrl, 'https://linkedin.com/in/test');
     assert.strictEqual(result.website, 'https://example.com');
 
-    console.log('ok — ReplyHandler calls email-waterfall /enrich-one (need=both, max_tier=fullenrich)');
+    console.log('ok — ReplyHandler calls email-waterfall /enrich-one (need=email, approve_cost_usd, max_tier=fullenrich)');
   } finally {
     global.fetch = originalFetch;
     if (prevUrl == null) delete process.env.EMAIL_WATERFALL_URL;
