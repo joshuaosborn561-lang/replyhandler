@@ -1001,7 +1001,7 @@ test('phone enrichment walks the email-waterfall to FullEnrich', () => {
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'Slack cards no longer POST /enrich-one'));
   assert.match(enrich, /approve_cost_usd/,
     reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', '/enrich-one must pass approve_cost_usd'));
-  assert.match(enrich, /fullenrich/,
+  assert.match(read('src/services/reply-enrich-policy.js'), /fullenrich/,
     reversal('phone enrichment walks the email-waterfall to FullEnrich', 'FullEnrich was removed'));
   assert.ok(!fs.existsSync(path.join(ROOT, 'src/services/leadmagic.js')),
     reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'src/services/leadmagic.js is back'));

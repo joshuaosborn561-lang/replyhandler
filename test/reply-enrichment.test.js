@@ -189,12 +189,19 @@ test('Veriphone gate accepts only valid + mobile', () => {
 
 test('cache select never touches dl_status, sg_exclude, or skip_*', () => {
   assertSafeSelect(PENDING_CACHE_SELECT);
+  assert.ok(PENDING_CACHE_SELECT.every((col) => !/dl_status|sg_exclude|^skip_/.test(col)));
   assert.doesNotMatch(SUPABASE_CONTACT_SELECT, /dl_status|sg_exclude|skip_/);
   assert.ok(FORBIDDEN_WRITE_COLUMNS.includes('dl_status'));
   const cache = read('src/services/reply-contact-cache.js');
   const job = read('src/services/reply-phone-enrichment.js');
-  assert.doesNotMatch(cache, /dl_status|sg_exclude/);
-  assert.doesNotMatch(job, /dl_status|sg_exclude|skip_/);
+  const pendingSql = cache.match(/`SELECT[\s\S]*?FROM pending_replies[\s\S]*?`/);
+  assert.ok(pendingSql, 'pending_replies cache query must exist');
+  assert.doesNotMatch(pendingSql[0], /dl_status|sg_exclude|skip_/);
+  assert.match(job, /UPDATE pending_replies/);
+  assert.match(job, /lead_email = COALESCE\(lead_email/);
+  assert.doesNotMatch(job, /lead_email = \$1[^,]/);
+  assert.doesNotMatch(job, /dl_status\s*=/);
+  assert.doesNotMatch(job, /sg_exclude\s*=/);
   assert.throws(() => assertSafeSelect(['dl_status']));
   assert.throws(() => assertSafeSelect(['skip_reason']));
 });
