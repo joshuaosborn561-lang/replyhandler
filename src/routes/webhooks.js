@@ -611,6 +611,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       campaignDisplay: campaignDisplaySl,
       lastOutboundMessage: lastOutboundSl,
       repliedAt: reply.created_at,
+      leadData,
+      payload,
+      linkedinUrl: leadData.linkedin_url || leadData.linkedinUrl || payload.linkedin_url || undefined,
+      leadWebsite: leadData.website || leadData.company_website || leadData.company_url || undefined,
     };
 
     await postProspectSlackCard({
@@ -896,6 +900,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           leadName: resolvedLeadName,
           leadEmail,
           linkedinUrl: resolvedLinkedinUrl || enrichment.linkedinUrl || undefined,
+          leadWebsite: enrichment.website || hr.website || hr.company_website || undefined,
           leadCompany: hr.company || payload.company_name || payload.company || null,
           platform: 'heyreach',
           classification,
@@ -905,6 +910,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           campaignDisplay: campaignDisplayHr,
           lastOutboundMessage: lastOutboundHr,
           repliedAt: reply.created_at,
+          leadData: hr,
+          payload,
         };
 
         await postProspectSlackCard({

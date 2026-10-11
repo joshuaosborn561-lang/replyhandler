@@ -224,6 +224,7 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
     const clientTag = clientTagFor(existing.client_name);
     const cache = await identityLookup(db, {
       linkedinUrl: claimed.linkedin_url,
+      email: claimed.lead_email,
       excludeReplyId: replyId,
       clientTag,
     });

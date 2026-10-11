@@ -268,6 +268,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       leadName: fu.lead_name,
       leadEmail: fu.lead_email,
       linkedinUrl: fu.linkedin_url || undefined,
+      leadWebsite: fu.lead_website || undefined,
       platform: fu.platform,
       classification: 'FOLLOW_UP',
       draft,

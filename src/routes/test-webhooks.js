@@ -127,6 +127,7 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
         replyId: reply.id,
         leadName,
         leadEmail: useHeyreach ? null : leadEmail,
+        linkedinUrl: useHeyreach ? linkedinUrl : undefined,
         platform: reply.platform,
         classification,
         draft,

@@ -481,6 +481,7 @@ async function processConversation(client, conv, options) {
     leadName: reply.lead_name,
     leadEmail: null,
     linkedinUrl: linkedinUrl(conv) || undefined,
+    leadWebsite: conv.website || conv.company_website || conv.company_url || undefined,
     platform: 'heyreach',
     classification,
     draft,
@@ -490,6 +491,7 @@ async function processConversation(client, conv, options) {
     lastOutboundMessage: lastOut || undefined,
     leadCompany: conv.company_name || conv.company || conv.organization || null,
     repliedAt: reply.created_at,
+    leadData: conv,
   };
 
   try {

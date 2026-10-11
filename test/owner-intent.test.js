@@ -981,6 +981,90 @@ test('Slack cards show the prospect LinkedIn URL', () => {
     reversal('Slack cards show the prospect LinkedIn URL', 'Slack poster no longer attaches LinkedIn after enrich'));
 });
 
+// ── Decision: every reply card shows LinkedIn AND the company website ─
+// "I've asked many times — every new reply card in every reply channel has
+// to show the prospect's LinkedIn as a clickable link and a clickable link
+// to their company website." Silent omit is the bug. "LinkedIn: not found"
+// when we do not have a URL. Post immediately, chat.update when late.
+test('every Slack reply card shows LinkedIn and the company website', () => {
+  const { leadFieldText, buildDraftApprovalCard, buildSentConfirmationBlocks, buildAlertCard } = require('../src/services/slack');
+  const slackRoute = read('src/routes/slack.js');
+  const poster = read('src/services/slack-reply-post.js');
+  const refresh = read('src/services/refresh-followup-cards.js');
+  const webhook = read('src/routes/webhooks.js');
+  const slPoller = read('src/services/smartlead-poller.js');
+  const hrPoller = read('src/services/heyreach-poller.js');
+  const followUp = read('src/services/follow-up-runner.js');
+  const recover = read('src/services/reply-dedupe.js');
+
+  const missing = leadFieldText({ leadName: 'Pat' });
+  assert.match(missing, /LinkedIn: not found/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'missing LinkedIn is omitted again instead of saying not found'));
+  assert.match(missing, /Website: not found/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'missing website is omitted again instead of saying not found'));
+
+  const url = 'https://www.linkedin.com/in/pat-riley';
+  const site = 'https://acme.com';
+  const draft = JSON.stringify(buildDraftApprovalCard({
+    replyId: '1', leadName: 'Pat', platform: 'smartlead', classification: 'INTERESTED',
+    draft: 'Hey', inboundMessage: 'Sure', leadLinkedinUrl: url, leadWebsite: site,
+  }).blocks);
+  assert.match(draft, /<https:\/\/www\.linkedin\.com\/in\/pat-riley\|/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'approval card LinkedIn is not clickable'));
+  assert.match(draft, /<https:\/\/acme\.com\|/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'approval card website is not clickable'));
+
+  const alert = JSON.stringify(buildAlertCard({
+    leadName: 'Pat', platform: 'heyreach', classification: 'QUESTION',
+    inboundMessage: 'When', leadLinkedinUrl: url, leadWebsite: site,
+  }).blocks);
+  assert.match(alert, /<https:\/\/acme\.com\|/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'alert card dropped the website'));
+
+  const sent = JSON.stringify(buildSentConfirmationBlocks({
+    leadName: 'Pat', platform: 'smartlead', classification: 'INTERESTED',
+    inboundMessage: 'Sure', sentReply: 'Hey', actionKind: 'approved',
+    leadLinkedinUrl: url, leadWebsite: site,
+  }));
+  assert.match(sent, /<https:\/\/acme\.com\|/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'confirmation card dropped the website'));
+
+  assert.match(slackRoute, /leadWebsite:\s*reply\.lead_website/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'approve confirmation no longer passes lead_website'));
+  assert.match(refresh, /lead_website/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'FOLLOW_UP refresh no longer reads lead_website'));
+  assert.match(poster, /completeCardLinks/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'poster no longer late-updates the same Slack message when links arrive'));
+  assert.match(poster, /updateAlertCard|updateDraftApprovalCard/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'late link arrival no longer chat.update the posted card'));
+  assert.match(poster, /linkedin_url = COALESCE/,
+    reversal('every Slack reply card shows LinkedIn and the company website',
+      'poster no longer persists LinkedIn/website with COALESCE'));
+
+  for (const [name, src] of [
+    ['Smartlead webhook', webhook],
+    ['HeyReach webhook', webhook],
+    ['Smartlead poller', slPoller],
+    ['HeyReach poller', hrPoller],
+    ['FOLLOW_UP runner', followUp],
+    ['recoverUnposted', recover],
+  ]) {
+    assert.match(src, /postProspectSlackCard/,
+      reversal('every Slack reply card shows LinkedIn and the company website',
+        `${name} posts a reply card outside the one builder`));
+  }
+});
+
 // ── Decision: phone waterfall is email-waterfall (LeadMagic dropped 2026-10-08)
 test('phone enrichment walks the email-waterfall to FullEnrich', () => {
   const enrich = read('src/services/prospect-enrich.js');

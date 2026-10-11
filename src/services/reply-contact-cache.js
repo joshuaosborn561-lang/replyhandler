@@ -85,6 +85,32 @@ async function lookupPendingRepliesCache(db, { linkedinUrl, excludeReplyId } = {
   });
 }
 
+async function lookupPendingRepliesByEmail(db, { email, excludeReplyId } = {}) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e || !db) return null;
+  assertSafeSelect(PENDING_CACHE_SELECT);
+  const { rows } = await db.query(
+    `SELECT lead_email, lead_phone, lead_phone_alt, lead_website, linkedin_url
+       FROM pending_replies
+      WHERE id IS DISTINCT FROM $2
+        AND lead_email IS NOT NULL
+        AND lower(lead_email) = $1
+        AND (linkedin_url IS NOT NULL OR lead_website IS NOT NULL)
+      ORDER BY phone_enriched_at DESC NULLS LAST, created_at DESC
+      LIMIT 1`,
+    [e, excludeReplyId || null]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return asHit({
+    email: row.lead_email || e,
+    phone: row.lead_phone,
+    website: row.lead_website,
+    linkedinUrl: row.linkedin_url,
+    source: 'pending_replies',
+  });
+}
+
 async function supabaseSelect(table, query) {
   try {
     const rows = await supabaseRequest(`/rest/v1/${table}?${query}`, { method: 'GET' });
@@ -109,15 +135,19 @@ function rowToHit(row, source) {
   });
 }
 
+function contactTables(clientTag) {
+  const tag = clientTagFor(clientTag);
+  return [`${tag}_wf_contacts`, `${tag}_contacts`, 'name_bank'];
+}
+
 async function lookupSupabaseContacts({ clientTag, linkedinUrl } = {}) {
   const li = String(linkedinUrl || '').trim();
   if (!li) return null;
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
 
-  const tag = clientTagFor(clientTag);
   const encoded = encodeURIComponent(li);
   const filter = `linkedin_url=eq.${encoded}&select=${SUPABASE_CONTACT_SELECT}&limit=1`;
-  const tables = [`${tag}_wf_contacts`, `${tag}_contacts`, 'name_bank'];
+  const tables = contactTables(clientTag);
 
   for (const table of tables) {
     const rows = await supabaseSelect(table, filter);
@@ -133,6 +163,20 @@ async function lookupSupabaseContacts({ clientTag, linkedinUrl } = {}) {
       const hit = rowToHit(rows[0], table);
       if (hit) return hit;
     }
+  }
+  return null;
+}
+
+async function lookupSupabaseContactsByEmail({ clientTag, email } = {}) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e) return null;
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
+
+  const filter = `email=eq.${encodeURIComponent(e)}&select=${SUPABASE_CONTACT_SELECT}&limit=1`;
+  for (const table of contactTables(clientTag)) {
+    const rows = await supabaseSelect(table, filter);
+    const hit = rowToHit(rows[0], table);
+    if (hit) return hit;
   }
   return null;
 }
@@ -173,11 +217,13 @@ function mergeCacheHits(...hits) {
 }
 
 async function lookupReplyIdentity(db, {
-  linkedinUrl, excludeReplyId, clientTag,
+  linkedinUrl, email, excludeReplyId, clientTag,
 } = {}) {
   const pending = await lookupPendingRepliesCache(db, { linkedinUrl, excludeReplyId });
   const remote = await lookupSupabaseContacts({ clientTag, linkedinUrl });
-  return mergeCacheHits(pending, remote);
+  const pendingEmail = await lookupPendingRepliesByEmail(db, { email, excludeReplyId });
+  const remoteEmail = await lookupSupabaseContactsByEmail({ clientTag, email });
+  return mergeCacheHits(pending, remote, pendingEmail, remoteEmail);
 }
 
 module.exports = {
@@ -187,7 +233,9 @@ module.exports = {
   SUPABASE_CONTACT_SELECT,
   assertSafeSelect,
   lookupPendingRepliesCache,
+  lookupPendingRepliesByEmail,
   lookupSupabaseContacts,
+  lookupSupabaseContactsByEmail,
   lookupReplyIdentity,
   mergeCacheHits,
   normalizeLinkedin,
