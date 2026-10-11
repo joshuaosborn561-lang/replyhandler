@@ -920,3 +920,22 @@ Josh cancelled LeadMagic. The HeyReach `profile-to-email` call and `src/services
 
 Guard: `phone enrichment walks the email-waterfall to FullEnrich`
 Guard: `reply enrichment is idempotent, ceiling-capped, Veriphone-gated`
+
+## 2026-10-11
+
+### Every Slack reply card shows LinkedIn and the company website
+
+*"I've asked many times — every new reply card in every reply channel has to show the prospect's LinkedIn as a clickable link and a clickable link to their company website."*
+
+Earlier passes did not stick for three reasons, all in the card builders rather than the data:
+
+1. `leadFieldText` / `linkedinUrlLine` omitted LinkedIn when the URL was empty (silent drop). Website was never rendered at all.
+2. `postProspectSlackCard` copied `phone.linkedinUrl` onto the card but dropped `phone.website`. Smartlead webhook/poller cards never passed either field. Confirmation (`sentCardPayload`) and FOLLOW_UP refresh did not SELECT / pass `lead_website`.
+3. The poster awaited the 120s phone enrich before `chat.postMessage`, so a slow enrich looked like a missing card — and there was no `chat.update` when the link arrived later.
+
+Fix at the root: every path that posts a reply card (Smartlead webhook, HeyReach webhook, both pollers, FOLLOW_UP runner, recoverUnposted, admin/test fixtures) goes through `postProspectSlackCard`. Draft / alert / sent-confirmation / refresh all render through `leadFieldText`, which always prints LinkedIn (clickable or `LinkedIn: not found`) and website (clickable or `Website: not found`).
+
+Cheap sources first: fields already on the lead (Smartlead custom fields, HeyReach profile URL), then `{tag}_wf_contacts` / `name_bank` / `pending_replies` (by LinkedIn or email), then the work-email domain for the website (never gmail/outlook/…). If LinkedIn is still missing, `EMAIL_WATERFALL_URL` `/enrich-one` with a `$0.05` ceiling (getleads → AI Ark → Prospeo; estimate first; not FullEnrich). Post the card immediately; `chat.update` the same message when the links arrive. Persist with `COALESCE` on `linkedin_url` / `lead_website`. Never write `dl_status` / `sg_exclude` / `skip_*`.
+
+Guard: `every Slack reply card shows LinkedIn and the company website`
+Guard: `Slack cards show the prospect LinkedIn URL` (kept — clickable when present)

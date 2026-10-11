@@ -93,7 +93,7 @@ test('Slack post claims the row before the HTTP so recover cannot double-card', 
 
   assert.match(post, /claimSlackCard\(/);
   assert.ok(
-    post.indexOf('claimSlackCard') < post.indexOf('slack.postDraftApproval'),
+    post.indexOf('claimSlackCard') < post.indexOf('postDraftApproval'),
     'claim must run before the Slack HTTP — Philip Walker was recover + webhook'
   );
   assert.match(post, /releaseSlackCardClaim/);

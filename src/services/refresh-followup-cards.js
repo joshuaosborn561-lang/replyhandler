@@ -86,7 +86,8 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
     `SELECT pr.id, pr.status, pr.classification, pr.draft_reply, pr.sent_reply,
             pr.inbound_message, pr.thread_context, pr.slack_message_ts,
             pr.lead_name, pr.lead_email, pr.lead_phone, pr.lead_phone_provider,
-            pr.phone_enrichment_status, pr.platform, pr.campaign_id, pr.campaign_name,
+            pr.phone_enrichment_status, pr.linkedin_url, pr.lead_website,
+            pr.platform, pr.campaign_id, pr.campaign_name,
             c.slack_bot_token,
             c.slack_channel_id AS client_slack_channel_id
        FROM pending_replies pr
@@ -122,6 +123,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
       phoneProvider: reply.lead_phone_provider || undefined,
       phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
       leadLinkedinUrl: reply.linkedin_url || undefined,
+      leadWebsite: reply.lead_website || undefined,
       platform: reply.platform,
       classification: 'FOLLOW_UP',
       draft: reply.draft_reply,

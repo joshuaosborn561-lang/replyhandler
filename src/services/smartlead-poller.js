@@ -389,6 +389,9 @@ async function processInboxRow(client, row, options) {
     lastOutboundMessage: lastOutbound || undefined,
     leadCompany: row.company_name || row.company || row.lead_company || null,
     repliedAt: reply.created_at,
+    leadData: row,
+    linkedinUrl: row.linkedin_url || row.linkedinUrl || row.profile_url || undefined,
+    leadWebsite: row.website || row.company_website || row.company_url || undefined,
   };
 
   try {

@@ -221,6 +221,8 @@ module.exports = {
   enrichCellPhone,
   domainFromEmail,
   asWebsite,
+  websiteFrom,
+  CONSUMER_DOMAINS,
   normalizeMaxTier,
   allowsTier,
   clientTagFor,

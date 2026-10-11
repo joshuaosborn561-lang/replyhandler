@@ -102,13 +102,36 @@ function normalizeLinkedinUrl(raw) {
   return '';
 }
 
-/** Clickable LinkedIn on the Lead field so we can qualify the prospect fast. */
-function linkedinUrlLine(leadLinkedinUrl) {
-  const url = normalizeLinkedinUrl(leadLinkedinUrl);
+const CONSUMER_WEBSITE_HOST = /gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com/i;
+
+function normalizeWebsiteUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const url = /^https?:\/\//i.test(s) ? s : (s.includes('.') && !s.includes(' ') ? `https://${s}` : '');
   if (!url) return '';
+  const host = url.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
+  if (CONSUMER_WEBSITE_HOST.test(host)) return '';
+  return url;
+}
+
+function clickableUrlLine(emoji, url) {
   let label = url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
   if (label.length > 60) label = `${label.slice(0, 57)}…`;
-  return `\n🔗 <${url}|${escMrkdwn(label)}>`;
+  return `\n${emoji} <${url}|${escMrkdwn(label)}>`;
+}
+
+/** Clickable LinkedIn on the Lead field — or "LinkedIn: not found", never silent omit. */
+function linkedinUrlLine(leadLinkedinUrl) {
+  const url = normalizeLinkedinUrl(leadLinkedinUrl);
+  if (url) return clickableUrlLine('🔗', url);
+  return '\n🔗 LinkedIn: not found';
+}
+
+/** Clickable company website — or "Website: not found". Free-mail hosts are not a website. */
+function websiteUrlLine(leadWebsite) {
+  const url = normalizeWebsiteUrl(leadWebsite);
+  if (url) return clickableUrlLine('🌐', url);
+  return '\n🌐 Website: not found';
 }
 
 function leadFieldText({
@@ -118,6 +141,7 @@ function leadFieldText({
   phoneProvider,
   phoneEnrichmentStatus,
   leadLinkedinUrl,
+  leadWebsite,
   enrichmentReceipt,
 } = {}) {
   return (
@@ -125,6 +149,7 @@ function leadFieldText({
     `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
     linkedinUrlLine(leadLinkedinUrl) +
+    websiteUrlLine(leadWebsite) +
     enrichmentReceiptLine(enrichmentReceipt)
   );
 }
@@ -466,14 +491,15 @@ function buildSentConfirmationBlocks({
   ccUsed,
   threadMessages,
   leadLinkedinUrl,
+  leadWebsite,
   enrichmentReceipt,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
-  // Keep the enriched cellphone + LinkedIn on the Lead line after Approve/Reject/DQ —
-  // they used to vanish when the card flipped to the confirmation layout.
+  // Keep the enriched cellphone + LinkedIn + website on the Lead line after
+  // Approve/Reject/DQ — they used to vanish when the card flipped to confirmation.
   const leadLine = leadFieldText({
-    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
-    enrichmentReceipt,
+    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+    leadLinkedinUrl, leadWebsite, enrichmentReceipt,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
@@ -592,12 +618,12 @@ function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  threadPermalink, threadMessages, leadLinkedinUrl, clientName, enrichmentReceipt,
+  threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
-    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
-    enrichmentReceipt,
+    leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+    leadLinkedinUrl, leadWebsite, enrichmentReceipt,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
@@ -698,13 +724,12 @@ async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
   });
 }
 
-async function postAlert(token, channelId, {
+function buildAlertCard({
   replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  leadLinkedinUrl, enrichmentReceipt,
+  leadLinkedinUrl, leadWebsite, enrichmentReceipt,
   platform, classification, inboundMessage, reasoning,
-  campaignDisplay, lastOutboundMessage, contextLabel, threadTs, inThread,
+  campaignDisplay, lastOutboundMessage, contextLabel, inThread,
 }) {
-  const slack = getClient(token);
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const headerText = inThread
     ? `↩️ ${classification} — ${platform.toUpperCase()}`
@@ -723,8 +748,8 @@ async function postAlert(token, channelId, {
           text:
             `*Lead*\n` +
             leadFieldText({
-              leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus, leadLinkedinUrl,
-              enrichmentReceipt,
+              leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
+              leadLinkedinUrl, leadWebsite, enrichmentReceipt,
             }),
         },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
@@ -766,10 +791,30 @@ async function postAlert(token, channelId, {
     });
   }
 
+  return {
+    blocks,
+    text: `${(platform || '').toUpperCase()} alert: ${classification} from ${leadName}`,
+  };
+}
+
+async function postAlert(token, channelId, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildAlertCard(opts);
   return slack.chat.postMessage({
     channel: channelId,
-    ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: `${platform.toUpperCase()} alert: ${classification} from ${leadName}`,
+    ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+    text,
+    blocks,
+  });
+}
+
+async function updateAlertCard(token, channelId, messageTs, opts) {
+  const slack = getClient(token);
+  const { blocks, text } = buildAlertCard(opts);
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text,
     blocks,
   });
 }
@@ -960,8 +1005,12 @@ module.exports = {
   buildDraftApprovalCard,
   leadFieldText,
   linkedinUrlLine,
+  websiteUrlLine,
   normalizeLinkedinUrl,
+  normalizeWebsiteUrl,
   postAlert,
+  updateAlertCard,
+  buildAlertCard,
   postError,
   postClientActionNotice,
   postProspectFollowUpReminder,
