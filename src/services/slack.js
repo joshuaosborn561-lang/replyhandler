@@ -134,6 +134,22 @@ function websiteUrlLine(leadWebsite) {
   return '\n🌐 Website: not found';
 }
 
+/**
+ * ICP line on every reply card. Topup icp-llm stores fit + P(PASS);
+ * display is "{n}% qualified|disqualified: {reason}" or "ICP: unknown (reason)".
+ */
+function icpVerdictLine(leadIcpVerdict) {
+  const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
+  if (!v || !v.status || v.status === 'unknown') {
+    const why = String(v?.reason || 'unknown').replace(/[()]/g, '').trim() || 'unknown';
+    return `\n🎯 ICP: unknown (${escMrkdwn(why)})`;
+  }
+  const word = v.status === 'qualified' ? 'qualified' : 'disqualified';
+  const pct = Number.isFinite(Number(v.confidence)) ? `${Math.round(Number(v.confidence))}% ` : '';
+  const reason = String(v.reason || word).replace(/\s+/g, ' ').trim().slice(0, 180);
+  return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason}`)}`;
+}
+
 function leadFieldText({
   leadName,
   leadEmail,
@@ -143,6 +159,7 @@ function leadFieldText({
   leadLinkedinUrl,
   leadWebsite,
   enrichmentReceipt,
+  leadIcpVerdict,
 } = {}) {
   return (
     `*${escMrkdwn(leadName || 'Unknown')}*` +
@@ -150,6 +167,7 @@ function leadFieldText({
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
     linkedinUrlLine(leadLinkedinUrl) +
     websiteUrlLine(leadWebsite) +
+    icpVerdictLine(leadIcpVerdict) +
     enrichmentReceiptLine(enrichmentReceipt)
   );
 }
@@ -493,13 +511,14 @@ function buildSentConfirmationBlocks({
   leadLinkedinUrl,
   leadWebsite,
   enrichmentReceipt,
+  leadIcpVerdict,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   // Keep the enriched cellphone + LinkedIn + website on the Lead line after
   // Approve/Reject/DQ — they used to vanish when the card flipped to confirmation.
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-    leadLinkedinUrl, leadWebsite, enrichmentReceipt,
+    leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
@@ -619,11 +638,12 @@ function buildDraftApprovalCard({
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
+  leadIcpVerdict,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-    leadLinkedinUrl, leadWebsite, enrichmentReceipt,
+    leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const headerText = inThread
@@ -726,7 +746,7 @@ async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
 
 function buildAlertCard({
   replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-  leadLinkedinUrl, leadWebsite, enrichmentReceipt,
+  leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread,
 }) {
@@ -749,7 +769,7 @@ function buildAlertCard({
             `*Lead*\n` +
             leadFieldText({
               leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
-              leadLinkedinUrl, leadWebsite, enrichmentReceipt,
+              leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
             }),
         },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
@@ -1004,6 +1024,7 @@ module.exports = {
   updateDraftApprovalCard,
   buildDraftApprovalCard,
   leadFieldText,
+  icpVerdictLine,
   linkedinUrlLine,
   websiteUrlLine,
   normalizeLinkedinUrl,

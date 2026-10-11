@@ -197,6 +197,7 @@ test('poster posts immediately then chat.update when LinkedIn arrives late', asy
     }),
     dbClient,
     awaitLinkUpdate: true,
+    evaluateIcp: async () => ({ status: 'unknown', reason: 'no ICP' }),
   });
 
   assert.equal(result.ts, '123.456');
@@ -264,6 +265,7 @@ test('alert cards also late-update through updateAlertCard', async () => {
     linkLookup: async () => ({ linkedinUrl: LI }),
     dbClient: { query: async () => ({ rows: [] }) },
     awaitLinkUpdate: true,
+    evaluateIcp: async () => ({ status: 'unknown', reason: 'no ICP' }),
   });
 
   assert.equal(updates.length, 1);

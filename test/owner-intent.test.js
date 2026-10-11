@@ -1065,6 +1065,112 @@ test('every Slack reply card shows LinkedIn and the company website', () => {
   }
 });
 
+// ── Decision: every reply card shows the topup ICP verdict ────────────
+// Do not invent a new grader. Reuse topup site_check / icp (icp_variants +
+// icp_llm_results + icp-llm PASS). Post first, chat.update when late.
+test('every Slack reply card shows the topup ICP verdict', () => {
+  const { leadFieldText, icpVerdictLine, buildDraftApprovalCard, buildAlertCard, buildSentConfirmationBlocks } = require('../src/services/slack');
+  const poster = read('src/services/slack-reply-post.js');
+  const icp = read('src/services/reply-icp.js');
+  const variants = read('src/services/reply-icp-variants.js');
+  const decisions = read('DECISIONS.md');
+  const slackRoute = read('src/routes/slack.js');
+
+  assert.match(decisions, /Every Slack reply card shows the topup ICP verdict/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'the decision was removed from DECISIONS.md'));
+
+  const unknown = icpVerdictLine({ status: 'unknown', reason: 'no website' });
+  assert.match(unknown, /ICP: unknown \(no website\)/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'missing website/ICP no longer prints ICP: unknown (reason)'));
+
+  const dq = icpVerdictLine({
+    status: 'disqualified',
+    confidence: 80,
+    reason: 'website says venture capital firm; client only works with private equity firm',
+  });
+  assert.match(dq, /80% disqualified/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'disqualified line lost the confidence percentage'));
+  assert.match(dq, /venture capital firm/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'disqualified line lost the one-sentence reason'));
+
+  const lead = leadFieldText({
+    leadName: 'Pat',
+    leadIcpVerdict: { status: 'qualified', confidence: 99, reason: 'website says independent manufacturer; client ICP is independent manufacturer' },
+  });
+  assert.match(lead, /99% qualified/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'leadFieldText no longer renders the ICP line'));
+
+  const draft = JSON.stringify(buildDraftApprovalCard({
+    replyId: '1', leadName: 'Pat', platform: 'smartlead', classification: 'INTERESTED',
+    draft: 'Hey', inboundMessage: 'Sure',
+    leadIcpVerdict: { status: 'disqualified', confidence: 80, reason: 'website says VC firm; client only works with PE' },
+  }).blocks);
+  assert.match(draft, /80% disqualified/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'approval card dropped the ICP line'));
+
+  const alert = JSON.stringify(buildAlertCard({
+    leadName: 'Pat', platform: 'heyreach', classification: 'QUESTION',
+    inboundMessage: 'When',
+    leadIcpVerdict: { status: 'unknown', reason: 'no ICP' },
+  }).blocks);
+  assert.match(alert, /ICP: unknown \(no ICP\)/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'alert card dropped the ICP line'));
+
+  const sent = JSON.stringify(buildSentConfirmationBlocks({
+    leadName: 'Pat', platform: 'smartlead', classification: 'INTERESTED',
+    inboundMessage: 'Sure', sentReply: 'Hey', actionKind: 'approved',
+    leadIcpVerdict: { status: 'qualified', confidence: 72, reason: 'buyer with own facility' },
+  }));
+  assert.match(sent, /72% qualified/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'confirmation card dropped the ICP line'));
+
+  assert.match(poster, /completeCardLinks/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'poster no longer late-updates when the verdict arrives'));
+  assert.match(poster, /evaluateIcp|resolveReplyIcp/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'late path no longer evaluates ICP after the first post'));
+  assert.match(poster, /chat\.update|updateDraftApprovalCard|updateAlertCard/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'late ICP arrival no longer chat.update the posted card'));
+  assert.match(slackRoute, /leadIcpVerdict/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'approve confirmation no longer passes the stored ICP verdict'));
+
+  assert.match(icp, /icp_variants/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'resolver no longer reads topup.icp_variants'));
+  assert.match(icp, /icp_llm_results/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'resolver no longer reuses the shared topup cache'));
+  assert.match(icp, /estimate|REPLY_ICP_CEILING|icpCeilingUsd/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'miss path no longer estimates cost before grading'));
+  assert.match(icp, /0\.02/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'the $0.02 ceiling was raised or removed'));
+  assert.doesNotMatch(icp, /\bdl_status\s*=/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'ICP path writes dl_status'));
+  assert.doesNotMatch(icp, /\bsg_exclude\s*=/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'ICP path writes sg_exclude'));
+  assert.match(variants, /private_equity_firm/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'BCP PASS token was changed — that is topup icp-llm, not ours to invent'));
+  assert.match(variants, /joshuaosborn561-lang\/topup/,
+    reversal('every Slack reply card shows the topup ICP verdict',
+      'the topup source citation was removed'));
+});
+
 // ── Decision: phone waterfall is email-waterfall (LeadMagic dropped 2026-10-08)
 test('phone enrichment walks the email-waterfall to FullEnrich', () => {
   const enrich = read('src/services/prospect-enrich.js');
