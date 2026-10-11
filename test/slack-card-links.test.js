@@ -220,7 +220,7 @@ test('alert cards also late-update through updateAlertCard', async () => {
     postDraftApproval: async () => ({ ts: '9.9' }),
     updateDraftApprovalCard: async () => ({ ok: true }),
     postAlert: async (token, channel, payload) => {
-      assert.match(JSON.stringify(payload), /acme\.com|leadWebsite/);
+      assert.equal(payload.leadLinkedinUrl, LI);
       return { ts: '9.9' };
     },
     updateAlertCard: async (token, channel, ts, payload) => {

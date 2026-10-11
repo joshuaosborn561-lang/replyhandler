@@ -117,7 +117,14 @@ function resolveLinksFromFields({
 }
 
 async function resolveCardIdentity({
-  card, reply, leadData, payload, db, clientTag, excludeReplyId, identityLookup = lookupReplyIdentity,
+  card = {},
+  reply = {},
+  leadData = {},
+  payload = {},
+  db,
+  clientTag,
+  excludeReplyId,
+  identityLookup = lookupReplyIdentity,
 } = {}) {
   const fromFields = resolveLinksFromFields({ card, reply, leadData, payload });
   let linkedinUrl = fromFields.linkedinUrl;

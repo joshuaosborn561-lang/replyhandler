@@ -272,7 +272,7 @@ async function completeCardLinks({
   let email = identity.email || card.leadEmail || null;
   let enrichment = null;
 
-  if (replyId && !shouldSkipEnrichment(classification)) {
+  if (replyId && !shouldSkipEnrichment(card?.classification)) {
     try {
       enrichment = await enrichFn(replyId);
     } catch (err) {
@@ -384,15 +384,25 @@ async function postProspectSlackCard({
   if (replyId) {
     // Lazy require — reply-dedupe loads this file at the top level.
     const { claimSlackCard } = require('./reply-dedupe');
-    const claim = await (claimFn || claimSlackCard)({
-      replyId,
-      clientId,
-      platform,
-      leadId,
-      leadEmail: card?.leadEmail,
-      inboundMessage: card?.inboundMessage,
-      classification: card?.classification,
-    });
+    const claim = claimFn
+      ? await claimFn({
+          replyId,
+          clientId,
+          platform,
+          leadId,
+          leadEmail: card?.leadEmail,
+          inboundMessage: card?.inboundMessage,
+          classification: card?.classification,
+        })
+      : await claimSlackCard({
+          replyId,
+          clientId,
+          platform,
+          leadId,
+          leadEmail: card?.leadEmail,
+          inboundMessage: card?.inboundMessage,
+          classification: card?.classification,
+        });
     if (!claim.claimed) {
       console.log('[Slack] Skip card — already claimed or posted', {
         replyId, reason: claim.reason,

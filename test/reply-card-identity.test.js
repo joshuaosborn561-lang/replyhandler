@@ -122,11 +122,13 @@ test('card identity never writes dl_status / sg_exclude / skip_*', () => {
   const cache = read('src/services/reply-contact-cache.js');
   const poster = read('src/services/slack-reply-post.js');
   for (const src of [identity, cache, poster]) {
-    assert.doesNotMatch(src, /SET[^;]*dl_status/i);
-    assert.doesNotMatch(src, /SET[^;]*sg_exclude/i);
-    assert.doesNotMatch(src, /SET[^;]*skip_/i);
-    assert.doesNotMatch(src, /UPDATE[^;]*dl_status/i);
+    assert.doesNotMatch(src, /\bdl_status\s*=/);
+    assert.doesNotMatch(src, /\bsg_exclude\s*=/);
+    assert.doesNotMatch(src, /\bskip_[a-z0-9_]+\s*=/);
   }
+  const persist = poster.match(/UPDATE pending_replies[\s\S]*?WHERE id = \$4/);
+  assert.ok(persist, 'poster must persist LinkedIn/website');
+  assert.doesNotMatch(persist[0], /dl_status|sg_exclude|skip_/);
   assert.match(poster, /linkedin_url = COALESCE/);
   assert.match(poster, /lead_website = COALESCE/);
 });
