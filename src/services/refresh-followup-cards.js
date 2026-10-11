@@ -87,6 +87,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
             pr.inbound_message, pr.thread_context, pr.slack_message_ts,
             pr.lead_name, pr.lead_email, pr.lead_phone, pr.lead_phone_provider,
             pr.phone_enrichment_status, pr.linkedin_url, pr.lead_website,
+            pr.icp_verdict,
             pr.platform, pr.campaign_id, pr.campaign_name,
             c.slack_bot_token,
             c.slack_channel_id AS client_slack_channel_id
@@ -124,6 +125,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
       phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
       leadLinkedinUrl: reply.linkedin_url || undefined,
       leadWebsite: reply.lead_website || undefined,
+      leadIcpVerdict: reply.icp_verdict || undefined,
       platform: reply.platform,
       classification: 'FOLLOW_UP',
       draft: reply.draft_reply,

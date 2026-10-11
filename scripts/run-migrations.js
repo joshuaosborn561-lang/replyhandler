@@ -37,6 +37,7 @@ const MIGRATION_FILES = [
   '028_client_allo_api_key.sql',
   '029_booking_destination_url.sql',
   '030_reply_enrichment_receipt.sql',
+  '031_reply_icp_verdicts.sql',
 ];
 
 async function clientsTableExists(client) {

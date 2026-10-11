@@ -14,6 +14,13 @@ const {
   lookupMissingLinkedin,
   linkLookupCeilingUsd,
 } = require('./reply-card-identity');
+const {
+  resolveReplyIcp,
+  checkingVerdict,
+  unknownVerdict,
+  icpVerdictEquals,
+  parseStoredIcp,
+} = require('./reply-icp');
 
 function heyreachLastOutboundFromMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -163,6 +170,11 @@ function applyCardLinks(card, identity = {}, extra = {}) {
       || card.leadWebsite
       || card.website
       || undefined,
+    leadIcpVerdict:
+      extra.icp
+      || identity.icp
+      || card.leadIcpVerdict
+      || undefined,
   };
 }
 
@@ -266,6 +278,7 @@ async function completeCardLinks({
   platform,
   campaignId,
   leadId,
+  evaluateIcp = resolveReplyIcp,
 }) {
   let linkedinUrl = identity.linkedinUrl || null;
   let website = identity.website || null;
@@ -308,6 +321,23 @@ async function completeCardLinks({
     }
   }
 
+  let icp = payload.leadIcpVerdict || card.leadIcpVerdict || null;
+  try {
+    icp = await evaluateIcp({
+      website,
+      clientName: payload.clientName || card.clientName,
+      clientId,
+      replyId,
+      db: dbClient,
+      grade: true,
+    });
+  } catch (err) {
+    console.warn('[Slack] ICP verdict failed after card post', {
+      replyId, err: err.message,
+    });
+    icp = icp || unknownVerdict('grade failed');
+  }
+
   const extra = {
     email,
     phone: enrichment?.phone || undefined,
@@ -316,6 +346,7 @@ async function completeCardLinks({
     enrichmentReceipt: enrichment?.receipt || undefined,
     linkedinUrl,
     website,
+    icp,
   };
   const updatedCard = applyCardLinks(card, identity, extra);
   const updatedPayload = {
@@ -336,7 +367,8 @@ async function completeCardLinks({
     || (website && website !== beforeWeb)
     || (extra.phone && extra.phone !== beforePhone)
     || extra.phoneEnrichmentStatus === 'not_found'
-    || extra.phoneEnrichmentStatus === 'failed';
+    || extra.phoneEnrichmentStatus === 'failed'
+    || !icpVerdictEquals(payload.leadIcpVerdict, icp);
 
   if (changed) {
     try {
@@ -350,7 +382,7 @@ async function completeCardLinks({
     }
   }
 
-  return { linkedinUrl, website, email, enrichment, updated: changed };
+  return { linkedinUrl, website, email, enrichment, icp, updated: changed };
 }
 
 /**
@@ -377,6 +409,7 @@ async function postProspectSlackCard({
   enrichFn = enrichPendingReplyPhone,
   identityResolve = resolveCardIdentity,
   linkLookup = lookupMissingLinkedin,
+  evaluateIcp = resolveReplyIcp,
   claimFn = null,
   dbClient = db,
   awaitLinkUpdate = false,
@@ -428,7 +461,10 @@ async function postProspectSlackCard({
       excludeReplyId: replyId,
     });
 
-    let enrichedCard = applyCardLinks(card, identity);
+    const initialIcp = identity.website
+      ? (card?.leadIcpVerdict || parseStoredIcp(card?.icpVerdict) || checkingVerdict())
+      : unknownVerdict('no website');
+    let enrichedCard = applyCardLinks(card, identity, { icp: initialIcp });
     await persistCardIdentity(dbClient, replyId, {
       linkedinUrl: identity.linkedinUrl,
       website: identity.website,
@@ -484,6 +520,7 @@ async function postProspectSlackCard({
       platform,
       campaignId,
       leadId,
+      evaluateIcp,
     }).catch((err) => {
       console.warn('[Slack] Late card-link update failed', { replyId, err: err.message });
       return null;

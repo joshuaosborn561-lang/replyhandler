@@ -101,6 +101,7 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     phoneEnrichmentStatus: reply.phone_enrichment_status || undefined,
     leadLinkedinUrl: reply.linkedin_url || undefined,
     leadWebsite: reply.lead_website || undefined,
+    leadIcpVerdict: reply.icp_verdict || undefined,
     platform: reply.platform,
     classification: reply.classification,
     inboundMessage: reply.inbound_message,

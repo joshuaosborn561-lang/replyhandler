@@ -939,3 +939,23 @@ Cheap sources first: fields already on the lead (Smartlead custom fields, HeyRea
 
 Guard: `every Slack reply card shows LinkedIn and the company website`
 Guard: `Slack cards show the prospect LinkedIn URL` (kept — clickable when present)
+
+### Every Slack reply card shows the topup ICP verdict
+
+*"Add an ICP verdict line to every reply card. Do not invent new ICP logic — reuse what topup already does for site_check / icp."*
+
+Every new reply card (every client/channel, Smartlead and HeyReach) prints one ICP line on the shared Lead field:
+
+- `🎯 80% disqualified: website says venture capital firm; client only works with private equity firm`
+- or `🎯 ICP: unknown (no website)` / `unknown (no ICP)` / `unknown (checking)` then `chat.update`
+
+The grader is topup's, not a new one:
+
+1. `topup.icp_variants` is the per-client source of record (jev_variant + PASS token).
+2. Shared cache: `client_salesglider.icp_llm_results` (fit, `prob` = P(PASS), reason / category) — the same row `site_check(icp)` and `icp(job_id)` already paid for.
+3. Site text: `client_salesglider.icp_site_text` (icp-site-fetch), else a homepage fetch.
+4. Miss path: Gemini with the icp-llm `JEV_Q` category prompt + `PASS` token (cited in `reply-icp-variants.js`). ReplyHandler has Gemini, not Jev/OpenRouter.
+
+Estimate first (~$0.002 Gemini; topup Jev is ~$0.0001). Ceiling `$0.02`. Cache by `(client_tag, domain)` in `reply_icp_verdicts`. Post the card immediately; `completeCardLinks` `chat.update`s when the verdict lands. Never write `dl_status` / `sg_exclude` / `skip_*`. Never write topup ICP tables.
+
+Guard: `every Slack reply card shows the topup ICP verdict`
