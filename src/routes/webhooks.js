@@ -22,6 +22,7 @@ const {
   stripEmailQuotePrefix,
   cleanInboundReply,
   latestInboundFromSmartleadHistory,
+  historyHasBlankInboundReply,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
@@ -455,7 +456,42 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       }
     }
 
+    // Plain-text history can be "" while the HTML still has the prospect's
+    // words (or, as with Casey / Beck, an empty Outlook <span>). Refetch
+    // HTML only when we still have nothing, then skip blanks without paging Slack.
+    if (slEnhance && !inboundEffective && client.smartlead_api_key && resolvedCampaignId && leadId) {
+      try {
+        const htmlHist = await smartlead.getThreadHistory(
+          client.smartlead_api_key,
+          resolvedCampaignId,
+          leadId,
+          { plainText: false },
+        );
+        if (htmlHist && typeof htmlHist === 'object') {
+          threadContext = htmlHist;
+          smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(htmlHist) || smartleadEmailStatsId;
+          const fromHtml = latestInboundFromSmartleadHistory(htmlHist, leadEmail);
+          if (fromHtml) {
+            inboundEffective = fromHtml;
+            console.log('[Webhook] SmartLead inbound from HTML message-history', {
+              clientId, campaignId: resolvedCampaignId, leadId, len: inboundEffective.length,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[Webhook] SmartLead HTML history refetch failed', {
+          clientId, campaignId: resolvedCampaignId, leadId, err: err.message,
+        });
+      }
+    }
+
     if (!inboundEffective) {
+      if (historyHasBlankInboundReply(threadContext)) {
+        console.log('[Webhook] SmartLead blank inbound reply — skipped', {
+          clientId, campaignId: resolvedCampaignId, leadId, leadEmail,
+        });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'empty_inbound' });
+      }
       console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
       await slack.postError(client.slack_bot_token, client.slack_channel_id, {
         leadName: `${leadName} (SmartLead)`,

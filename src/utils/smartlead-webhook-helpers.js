@@ -140,8 +140,15 @@ function stripEmailArtifacts(raw) {
  * The prospect's own signature is deliberately left in — it carries their
  * title, phone and booking link.
  */
+function looksLikeHtml(s) {
+  return /<\/?[a-z!][\s\S]*>/i.test(String(s || ''));
+}
+
 function cleanInboundReply(raw) {
-  let t = stripHtmlToText(raw) || String(raw || '');
+  let t = stripHtmlToText(raw);
+  // Empty Outlook HTML (`<span></span>`, a lone `<br>`) strips to "". Falling
+  // back to the raw markup would treat the tags as the prospect's message.
+  if (!t && !looksLikeHtml(raw)) t = String(raw || '');
   t = stripEmailQuotePrefix(t);
   t = stripEmailArtifacts(t);
   return t.trim();
@@ -172,15 +179,43 @@ const SMARTLEAD_NON_REPLY_EVENTS = new Set([
   'EMAIL_UNSUBSCRIBED',
 ]);
 
+function historyMessageList(histResponse) {
+  if (!histResponse || typeof histResponse !== 'object') return [];
+  if (Array.isArray(histResponse.history)) return histResponse.history;
+  if (Array.isArray(histResponse.messages)) return histResponse.messages;
+  if (Array.isArray(histResponse)) return histResponse;
+  return [];
+}
+
+function rawInboundBodyFromHistoryMessage(m) {
+  if (!m || typeof m !== 'object') return '';
+  return m.email_body || m.body || m.text || m.html || m.html_body || '';
+}
+
+function isInboundHistoryType(m) {
+  const type = String(m?.type || m?.direction || '').toUpperCase();
+  return type === 'REPLY' || type === 'INBOUND';
+}
+
+/**
+ * SmartLead often stores a REPLY with empty Outlook HTML (`<span></span>` /
+ * a lone `<br>`) ~9s after we send. Plain-text history is then "". That is
+ * not a dropped parse — there is no prospect text. The poller already skips
+ * these as `no_inbound`; the webhook must not page Slack as a draft failure.
+ */
+function historyHasBlankInboundReply(histResponse) {
+  const list = historyMessageList(histResponse);
+  for (const m of list) {
+    if (!isInboundHistoryType(m)) continue;
+    const raw = rawInboundBodyFromHistoryMessage(m);
+    if (!cleanInboundReply(raw)) return true;
+  }
+  return false;
+}
+
 function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
-  if (!histResponse || typeof histResponse !== 'object') return '';
-  const list = Array.isArray(histResponse.history)
-    ? histResponse.history
-    : Array.isArray(histResponse.messages)
-      ? histResponse.messages
-      : Array.isArray(histResponse)
-        ? histResponse
-        : [];
+  const list = historyMessageList(histResponse);
+  if (!list.length) return '';
   const leadFrom = String(leadEmail || '').trim().toLowerCase();
 
   function collectRows(requireFromMatchLead) {
@@ -193,7 +228,7 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
       if (requireFromMatchLead && leadFrom && from && !from.includes(leadFrom) && leadFrom !== from) {
         continue;
       }
-      const raw = m.email_body || m.body || m.text || '';
+      const raw = rawInboundBodyFromHistoryMessage(m);
       const plain = cleanInboundReply(raw);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
@@ -233,14 +268,7 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
 }
 
 function lastOutboundBodyFromSmartleadHistory(histResponse) {
-  if (!histResponse || typeof histResponse !== 'object') return '';
-  const list = Array.isArray(histResponse.history)
-    ? histResponse.history
-    : Array.isArray(histResponse.messages)
-      ? histResponse.messages
-      : Array.isArray(histResponse)
-        ? histResponse
-        : [];
+  const list = historyMessageList(histResponse);
   let last = '';
   for (const m of list) {
     if (!m || typeof m !== 'object') continue;
@@ -391,6 +419,7 @@ module.exports = {
   stripEmailArtifacts,
   cleanInboundReply,
   latestInboundFromSmartleadHistory,
+  historyHasBlankInboundReply,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
