@@ -32,6 +32,7 @@ const {
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { maybeForwardInboundReply } = require('../services/inbound-forward');
 
 const router = Router();
 
@@ -473,6 +474,16 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         resolvedCampaignId
       );
     }
+    await maybeForwardInboundReply({
+      campaignId: resolvedCampaignId,
+      campaignName: resolvedCampaignName,
+      leadId,
+      leadEmail,
+      leadName,
+      inboundMessage: inboundEffective,
+      threadContext,
+    });
+
     const campaignDisplaySl =
       formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
     const lastOutboundSl =
@@ -974,6 +985,17 @@ router.post('/webhook/booking-bridge', async (req, res) => {
   } catch (err) {
     console.error('[BookingBridge] handler error', { err: err.message, stack: err.stack });
     return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+router.post('/webhook/inbound-forward', async (req, res) => {
+  try {
+    const { handleInboundForwardWebhook } = require('../services/inbound-forward');
+    const result = await handleInboundForwardWebhook(req);
+    return res.status(result.status).json(result.body);
+  } catch (err) {
+    console.error('[InboundForward] webhook handler error', { err: err.message, stack: err.stack });
+    return res.status(200).json({ ok: true, error: 'inbound_forward_failed' });
   }
 });
 

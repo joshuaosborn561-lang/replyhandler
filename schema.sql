@@ -239,3 +239,30 @@ CREATE TABLE voice_learning_runs (
   summary JSONB,
   error TEXT
 );
+
+CREATE TABLE inbound_forward_rules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id TEXT,
+  campaign_name_pattern TEXT,
+  to_emails TEXT NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT true,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT inbound_forward_rules_match CHECK (
+    campaign_id IS NOT NULL OR campaign_name_pattern IS NOT NULL
+  )
+);
+
+CREATE TABLE inbound_forwards (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id TEXT NOT NULL,
+  lead_key TEXT NOT NULL,
+  inbound_prefix TEXT NOT NULL,
+  to_emails TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent')),
+  sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (campaign_id, lead_key, inbound_prefix)
+);

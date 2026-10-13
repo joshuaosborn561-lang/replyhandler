@@ -183,12 +183,16 @@ Gmail is primary; SmartLead forward is the fallback.
 $1M–$10M EBITDA, did not name an out-of-range headcount, and wants to
 schedule a call. Slack cards for Josh stay as they are.
 
-Do **not** add a second forward that fires on *inbound* receipt. That was tried
-(`3f97035`) and rejected for three reasons: it ran before classification so it
-emailed clients every OOO auto-reply and bounce; it keyed off `cc_emails`, which
-now drives the CC-on-send system, so clients would receive raw inbound replies
-they never opted into; and its purpose — a net against dropped replies — is
-already served by the pollers below.
+Do **not** add a second **client** forward that fires on *inbound* receipt
+and keys off `cc_emails`. That was tried (`3f97035`) and rejected: it emailed
+clients every OOO auto-reply and bounce, and `cc_emails` now drives CC-on-send.
+
+**Exception (campaign map only):** `inbound_forward_rules` emails a configured
+address the moment a reply arrives on a mapped campaign (Gabe Calls ids +
+`Gabe Calls%` name pattern → `gabriel.lopez@rocketbox.mx`). Never
+`crecimiento@rocketbox.mx`. That path is not client notify. The Allo
+`Caller reply to Allo` hook on those campaigns stays. Client notify for
+everyone else is still on send.
 
 ## Webhooks are not the only path — the pollers are the backstop
 

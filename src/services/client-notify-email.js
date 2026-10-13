@@ -383,8 +383,50 @@ function buildClientNotifyEmail({
   return { subject, htmlBody, textBody };
 }
 
+/**
+ * Inbound-only copy of the same inbox-thread email, used by campaign-mapped
+ * forwards. No "we just replied" line and no enrichment spend.
+ */
+function buildInboundForwardEmail({
+  leadName,
+  leadEmail,
+  campaignName,
+  campaignId,
+  threadContext,
+  inboundMessage,
+}) {
+  const name = String(leadName || 'Prospect').trim() || 'Prospect';
+  const campaign = String(campaignName || '').trim()
+    || (campaignId != null && String(campaignId).trim() ? `Campaign ${String(campaignId).trim()}` : '');
+  const steps = normalizeThreadSteps(threadContext, {
+    inboundMessage,
+    sentText: '',
+    leadName: name,
+    leadEmail: leadEmail || null,
+  });
+  const subject = `Inbound reply: ${name}${campaign ? ` · ${campaign}` : ''}`;
+
+  const htmlBody = `
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
+  <p>A new reply came in${campaign ? ` on <strong>${escapeHtml(campaign)}</strong>` : ''}.</p>
+  <h3 style="margin:22px 0 8px;font-size:14px;">Thread</h3>
+  ${threadHtml(steps)}
+  <p style="margin-top:24px;color:#888;font-size:12px;">Sent from SalesGlider primary domain · campaign inbound forward · do not reply-all unless you intend to loop Joshua.</p>
+</div>`.trim();
+
+  const textBody = [
+    `A new reply came in${campaign ? ` on ${campaign}` : ''}.`,
+    '',
+    'Thread',
+    threadText(steps),
+  ].join('\n');
+
+  return { subject, htmlBody, textBody };
+}
+
 module.exports = {
   buildClientNotifyEmail,
+  buildInboundForwardEmail,
   normalizeThreadSteps,
   pickRicherThreadContext,
   messageListFromThread,

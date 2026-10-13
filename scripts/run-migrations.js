@@ -38,6 +38,7 @@ const MIGRATION_FILES = [
   '029_booking_destination_url.sql',
   '030_reply_enrichment_receipt.sql',
   '031_reply_icp_verdicts.sql',
+  '032_inbound_forward_rules.sql',
 ];
 
 async function clientsTableExists(client) {

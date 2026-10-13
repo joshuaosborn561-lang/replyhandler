@@ -192,15 +192,24 @@ test('call booking checks fail open when unconfigured', async () => {
 });
 
 // ── Client notify ─────────────────────────────────────────────────────
-// One notify path, on send, enriched. A second on inbound was rejected.
+// Client notify (cc_emails) stays on send, enriched. A second *client*
+// forward on inbound was rejected. Campaign-mapped inbound_forward_rules
+// are a separate path and must not reuse Always-notify.
 test('client notification stays on the enriched send path', () => {
   const smartlead = read('src/services/smartlead.js');
   assert.match(smartlead, /forwardThreadToClient/, 'the enriched client forward must remain');
   const webhooks = read('src/routes/webhooks.js');
   assert.ok(
     !/forwardEmail\s*\(/.test(webhooks),
-    'do not forward inbound replies from the webhook — it fires before classification and emails clients every auto-reply'
+    'do not resurrect the rejected inbound client-notify helper'
   );
+  const inboundFwd = read('src/services/inbound-forward.js');
+  assert.ok(
+    !/cc_emails|alwaysCcEmails|buildSmartleadCcList/.test(inboundFwd),
+    'campaign inbound forward must not read clients.cc_emails'
+  );
+  const send = read('src/services/reply-send.js');
+  assert.match(send, /buildClientNotifyEmail/, 'on-send client notify must remain');
 });
 
 // OOO / REMOVE_ME may still alert in Slack, but never burn enrichment credits.
