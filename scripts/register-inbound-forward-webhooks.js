@@ -58,8 +58,10 @@ async function slFetch(method, path, body) {
 function alreadyHasInboundForward(hooks, url) {
   return (hooks || []).some((h) => {
     const events = (h.event_types || h.eventTypes || []).map((e) => String(e).toUpperCase());
+    const map = h.event_type_map || h.eventTypeMap || {};
+    const mapHit = Object.entries(map).some(([k, v]) => String(k).toUpperCase() === 'EMAIL_REPLY' && v);
     const hookUrl = String(h.webhook_url || h.webhookUrl || '');
-    return events.includes('EMAIL_REPLY') && hookUrl.split('?')[0] === url.split('?')[0];
+    return (events.includes('EMAIL_REPLY') || mapHit) && hookUrl.split('?')[0] === url.split('?')[0];
   });
 }
 
@@ -139,7 +141,9 @@ async function main() {
         name: WEBHOOK_NAME,
         webhook_url: url,
         email_campaign_id: Number(campaignId),
-        event_types: ['EMAIL_REPLY'],
+        association_type: 'campaign',
+        event_type_map: { EMAIL_REPLY: true },
+        force_create: true,
       };
       console.log('  planned create (POST /webhook/create):');
       console.log(`    ${JSON.stringify(createBody)}`);
@@ -149,8 +153,15 @@ async function main() {
         continue;
       }
 
-      await slFetch('POST', '/webhook/create', createBody);
-      console.log('  action: created EMAIL_REPLY inbound-forward (Allo hook left in place)');
+      const created = await slFetch('POST', '/webhook/create', createBody);
+      if (created && created.ok === false) {
+        throw new Error(`create refused: ${JSON.stringify({
+          warning: created.warning || null,
+          conflicting: (created.conflictingWebhooks || []).map((w) => w.name),
+        })}`);
+      }
+      const createdId = created?.id || created?.data?.id || null;
+      console.log(`  action: created EMAIL_REPLY inbound-forward id=${createdId} (Allo hook left in place)`);
     }
 
     if (!apply) {
