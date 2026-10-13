@@ -24,6 +24,7 @@ const {
   normalizeSmartleadCampaignId,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { maybeForwardInboundReply } = require('./inbound-forward');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -238,6 +239,16 @@ async function processInboxRow(client, row, options) {
   }
 
   if (!inbound) return { skipped: 'no_inbound' };
+
+  await maybeForwardInboundReply({
+    campaignId,
+    campaignName: row.email_campaign_name || row.emailCampaignName || null,
+    leadId,
+    leadEmail: row.lead_email || null,
+    leadName: `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown',
+    inboundMessage: inbound,
+    threadContext,
+  });
 
   const smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext);
 

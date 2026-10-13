@@ -1690,3 +1690,124 @@ test('voice profile history is permanent, auto-updates continue, any earlier wee
   assert.ok(fs.existsSync(path.join(__dirname, '..', 'scripts', 'voice-profile-revert.js')),
     reversal('voice history is permanent', 'scripts/voice-profile-revert.js was removed'));
 });
+
+// ── Decision: Gabe Calls inbound forward, client notify stays on send ──
+// "Anytime one of Gabe's cold call emails gets a reply I want it to
+// forward to him same as other clients." Then: every inbound on Gabe
+// Calls campaigns (and future Gabe Calls by name), to
+// gabriel.lopez@rocketbox.mx, never crecimiento@rocketbox.mx. Exception
+// to on-send is this campaign map only.
+test('Gabe Calls inbound forwards on arrival; client notify stays on send', () => {
+  const decisions = read('DECISIONS.md');
+  const policy = read('src/utils/inbound-forward-policy.js');
+  const service = read('src/services/inbound-forward.js');
+  const webhooks = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const send = read('src/services/reply-send.js');
+  const migration = read('migrations/032_inbound_forward_rules.sql');
+  const script = read('scripts/register-inbound-forward-webhooks.js');
+  const srcFiles = [
+    'src/utils/inbound-forward-policy.js',
+    'src/services/inbound-forward.js',
+    'src/routes/webhooks.js',
+    'src/services/smartlead-poller.js',
+    'src/services/reply-send.js',
+  ];
+
+  assert.match(
+    decisions,
+    /gabriel\.lopez@rocketbox\.mx/,
+    reversal('Gabe Calls inbound forward', 'DECISIONS.md lost Gabe\'s forward address'),
+  );
+  assert.match(
+    decisions,
+    /crecimiento@rocketbox\.mx/,
+    reversal('Gabe Calls inbound forward', 'DECISIONS.md no longer names the bounced address to never use'),
+  );
+  assert.match(
+    decisions,
+    /4085158[\s\S]*4085159[\s\S]*4085160/,
+    reversal('Gabe Calls inbound forward', 'DECISIONS.md lost the Gabe Calls campaign ids'),
+  );
+  assert.match(
+    decisions,
+    /inbound[\s\S]*exception|exception[\s\S]*inbound/i,
+    reversal('Gabe Calls inbound forward', 'DECISIONS.md no longer records this as an inbound-only exception'),
+  );
+
+  assert.ok(
+    policy.includes('BLOCKED_INBOUND_FORWARD_EMAILS') && policy.includes('crecimiento@rocketbox.mx'),
+    reversal('Gabe Calls inbound forward', 'the bounced rocketbox address is no longer denylisted'),
+  );
+  assert.match(
+    migration,
+    /gabriel\.lopez@rocketbox\.mx/,
+    reversal('Gabe Calls inbound forward', 'migration 032 no longer seeds Gabe\'s address'),
+  );
+  assert.match(
+    migration,
+    /Gabe Calls%/,
+    reversal('Gabe Calls inbound forward', 'future Gabe Calls campaigns are no longer covered by a name pattern'),
+  );
+  assert.doesNotMatch(
+    migration,
+    /crecimiento@rocketbox\.mx/,
+    reversal('Gabe Calls inbound forward', 'the bounced address was seeded as a recipient'),
+  );
+
+  assert.match(
+    webhooks,
+    /maybeForwardInboundReply/,
+    reversal('Gabe Calls inbound forward', 'the SmartLead webhook no longer forwards mapped campaigns on inbound'),
+  );
+  assert.match(
+    poller,
+    /maybeForwardInboundReply/,
+    reversal('Gabe Calls inbound forward', 'the SmartLead poller no longer forwards mapped campaigns on inbound'),
+  );
+  assert.match(
+    webhooks,
+    /\/webhook\/inbound-forward/,
+    reversal('Gabe Calls inbound forward', 'the dedicated EMAIL_REPLY inbound-forward route was removed'),
+  );
+  assert.match(
+    service,
+    /leave_allo_hook/,
+    reversal('Gabe Calls inbound forward', 'LEAD_CATEGORY_UPDATED is no longer left to the Allo hook'),
+  );
+  assert.doesNotMatch(
+    service,
+    /classification/,
+    reversal('Gabe Calls inbound forward', 'inbound forward is gated on classification — Josh wants every reply'),
+  );
+  assert.doesNotMatch(
+    service,
+    /cc_emails|alwaysCcEmails|buildSmartleadCcList/,
+    reversal('Gabe Calls inbound forward', 'inbound forward reused client Always-notify / cc_emails'),
+  );
+  assert.match(
+    send,
+    /buildClientNotifyEmail/,
+    reversal('client notification stays on the enriched send path', 'on-send client notify was removed'),
+  );
+
+  for (const file of srcFiles) {
+    const src = read(file);
+    assert.doesNotMatch(
+      src,
+      /if\s*\([^)]*gabe/i,
+      reversal('Gabe Calls inbound forward', `${file} has if(gabe) special-case code — use inbound_forward_rules`),
+    );
+  }
+
+  assert.match(
+    script,
+    /Caller reply to Allo/,
+    reversal('Gabe Calls inbound forward', 'the webhook script no longer protects the Allo hook'),
+  );
+  assert.doesNotMatch(
+    script,
+    /applyRequested\(\)\s*\|\|\s*true/,
+    reversal('Gabe Calls inbound forward', 'the webhook script applies against live campaigns by default'),
+  );
+});

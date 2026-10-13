@@ -959,3 +959,34 @@ The grader is topup's, not a new one:
 Estimate first (~$0.002 Gemini; topup Jev is ~$0.0001). Ceiling `$0.02`. Cache by `(client_tag, domain)` in `reply_icp_verdicts`. Post the card immediately; `completeCardLinks` `chat.update`s when the verdict lands. Never write `dl_status` / `sg_exclude` / `skip_*`. Never write topup ICP tables.
 
 Guard: `every Slack reply card shows the topup ICP verdict`
+
+## 2026-10-13
+
+### Gabe Calls: every inbound reply forwards to Gabe
+
+*"Anytime one of Gabe's cold call emails gets a reply I want it to forward to him same as other clients."*
+
+Then, after we could not guess the address: forward-to is
+`gabriel.lopez@rocketbox.mx`. Never `crecimiento@rocketbox.mx` (it bounced).
+
+Josh is making a **deliberate exception** to **Client notification is his
+enriched forward, on send**. The exception is only this caller-campaign path:
+
+- Gabe Calls | SalesGlider `#4085158`
+- Gabe Calls | EMCOR `#4085159`
+- Gabe Calls | Deep Roots `#4085160`
+- any future campaign whose name matches `Gabe Calls%`
+
+Every inbound on those campaigns is emailed to Gabe the moment it arrives —
+including OOO / not interested / wrong person. Client notify (`cc_emails`,
+Gmail / SmartLead forward on Approve) is unchanged and still on send for
+every client.
+
+Implementation is config, not `if (gabe)`: `inbound_forward_rules` maps
+campaign id and/or a name LIKE pattern to `to_emails`. Dedupe table
+`inbound_forwards` so webhook + poller send once. Primary Gmail, same sender
+as client-notify. The Allo `Caller reply to Allo` webhook
+(`LEAD_CATEGORY_UPDATED`) stays on those campaigns. Registering `EMAIL_REPLY`
+is a reviewed script / UI step — do not auto-apply against live campaigns.
+
+Guard: `Gabe Calls inbound forwards on arrival; client notify stays on send`
