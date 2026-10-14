@@ -1,5 +1,6 @@
 const replyExamples = require('./reply-examples');
 const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
+const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
 
 const JOSH_VOICE_STYLE_GUIDE = `JOSH'S VOICE — RULES:
 - ACK FIRST: React to what they actually said before any CTA. If they asked a question, answer it. If they mentioned tickets/offer/catch/location/skepticism, acknowledge that point in the first line.
@@ -191,6 +192,7 @@ async function generateClaudeReply({
   clientName = null,
   draftMode = 'realtime',
   learnedVoiceBlock = '',
+  factCheckRetryClaims = null,
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
   if (String(draftMode || '').toLowerCase() === 'bulk') {
@@ -257,8 +259,8 @@ async function generateClaudeReply({
     '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
     '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply, the scheduling guidance, or the CLIENT NOTES above. If it appears only in a retrieved example, remove it.',
     teammateRule,
-    '- Use only facts present in the current thread, latest reply, or scheduling guidance.',
-    '- Before writing, silently check every factual claim against the current thread. If it is not explicitly supported there, leave it out.',
+    FACT_GROUNDING_RULES,
+    '- Before writing, silently check every factual claim against the provided context. If it is not explicitly supported there, leave it out.',
     specificsRule,
     '- Never invent lead sources, qualification criteria, locations, pricing structure, service coverage, project types, capabilities, results, or availability.',
     '- Do not call pricing simple or imply a price/fee structure unless the exact relevant fact appears in the current thread.',
@@ -292,7 +294,10 @@ async function generateClaudeReply({
     '</similar_manual_replies>',
     '',
     'Write the reply now. Acknowledge their latest point before any CTA.',
-  ].join('\n');
+    factCheckRetryClaims && factCheckRetryClaims.length
+      ? `\n${require('../utils/draft-fact-check').factCheckRetryHint(factCheckRetryClaims)}`
+      : '',
+  ].filter(Boolean).join('\n');
 
   let data = await callAnthropic(system, user);
   let text = extractText(data);

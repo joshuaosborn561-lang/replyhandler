@@ -16,6 +16,7 @@ const { classifyFromSmartlead } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   stripHtmlToText,
@@ -567,7 +568,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       });
       return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
     }
-    const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+    const policy = applyFactCheckToPolicy(
+      applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning }),
+      result.factCheck,
+    );
     draft = policy.draft;
     reasoning = policy.reasoning;
     const isDraft = policy.isDraft;
@@ -618,6 +622,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       classification,
       draft,
       reasoning,
+      needsReview: policy.needsReview,
       inboundMessage: inboundEffective,
       campaignDisplay: campaignDisplaySl,
       lastOutboundMessage: lastOutboundSl,
@@ -847,7 +852,10 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         // HeyReach often has no email at ingest; policy applies when email is known.
-        const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+        const policy = applyFactCheckToPolicy(
+          applyClientDraftPolicy(client, null, { classification, draft, reasoning }),
+          result.factCheck,
+        );
         draft = policy.draft;
         reasoning = policy.reasoning;
         let isDraft = policy.isDraft;
@@ -917,6 +925,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           classification,
           draft,
           reasoning,
+          needsReview: policy.needsReview,
           inboundMessage,
           campaignDisplay: campaignDisplayHr,
           lastOutboundMessage: lastOutboundHr,

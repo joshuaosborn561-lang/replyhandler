@@ -990,3 +990,49 @@ as client-notify. The Allo `Caller reply to Allo` webhook
 is a reviewed script / UI step — do not auto-apply against live campaigns.
 
 Guard: `Gabe Calls inbound forwards on arrival; client notify stays on send`
+
+## 2026-10-14
+
+### Drafts never invent facts — prompt plus a verifier
+
+On Oct 13 a QUESTION draft said a Boulder-named cyber firm was based in
+Denver. The prospect had asked where the sender was based. Evidence
+(counts and field names only):
+
+- Slack card 2026-10-13 14:40 CDT, `#bcp-ai-replies`, classification
+  `QUESTION`, status Approved & sent (not edited).
+- `draft_reply` contained "Denver, CO". Inbound asked "based out of".
+- Campaign `3763803` messages: 129 rows, **0** `denver` / `boulder` in
+  `body`. BCP `sequence_steps`: 117 rows, **0** `denver` / `boulder` /
+  `based` in `email_body` / `subject_line`.
+- `reply_examples` for that client: Denver first appears **2026-10-13
+  after this send** (the approved hallucination was learned). Earlier
+  rows: **0** Denver.
+- LinkedIn / website / ICP from PRs #92 / #93 are Slack-card only and
+  were not in the draft prompt. Card had `linkedin_url` empty, website =
+  prospect domain, ICP about the prospect vertical — none mentioned
+  Denver.
+- Prompt already said "never invent locations." That was instruction
+  only. The example-term leak check only flags proper nouns copied from
+  RAG examples, so a world-knowledge city slipped through.
+
+Root cause: **the model invented Denver.** Not bad lead fields, not
+enrichment, not a campaign template, not a swapped contact.
+
+Josh: drafts must not hallucinate. Guardrails:
+
+1. Prompt may use only facts in the provided context. Never state or
+   guess a location, size, client name, or other specific unless it is
+   there. If they ask and the context is silent, say you do not want to
+   guess and offer a call.
+2. After generation, extract cities/states, numbers, and proper nouns
+   and require each in the source context (thread / inbound /
+   scheduling / voice / names — not RAG examples). Mismatch → regenerate
+   once with a stricter hint; if it still fails, strip the claim
+   sentence or flag the Slack card `needs review` (`status = flagged`)
+   rather than treating it as a clean send.
+
+Do not add a client HQ field to the prompt unless Josh asks. Silence
+beats a guessed city.
+
+Guard: `drafts never invent facts — prompt + post-generation check`

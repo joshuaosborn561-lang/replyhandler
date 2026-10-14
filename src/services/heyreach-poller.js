@@ -6,6 +6,7 @@ const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
@@ -422,7 +423,10 @@ async function processConversation(client, conv, options) {
     return { skipped: suppressed };
   }
 
-  const policy = applyClientDraftPolicy(client, null, { classification, draft, reasoning });
+  const policy = applyFactCheckToPolicy(
+    applyClientDraftPolicy(client, null, { classification, draft, reasoning }),
+    result.factCheck,
+  );
   draft = policy.draft;
   reasoning = policy.reasoning;
   const isDraft = policy.isDraft;
@@ -486,6 +490,7 @@ async function processConversation(client, conv, options) {
     classification,
     draft,
     reasoning: `${reasoning} (Recovered by HeyReach polling backstop.)`,
+    needsReview: policy.needsReview,
     inboundMessage: inbound.text,
     campaignDisplay: campaignDisplay(conv, cid),
     lastOutboundMessage: lastOut || undefined,
