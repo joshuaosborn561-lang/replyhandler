@@ -167,14 +167,26 @@ function extractNumberClaims(draft) {
   return claims;
 }
 
+function distinctiveTokens(term) {
+  return String(term || '')
+    .split(/\s+/)
+    .map((tok) => tok.replace(/[.,;:!?]+$/g, ''))
+    .filter((tok) => tok && !GENERIC_CAPITALIZED_TERMS.has(tok.toLowerCase()));
+}
+
 function extractProperNouns(draft) {
   const text = String(draft || '');
   const claims = [];
   const candidates = text.match(/\b(?:[A-Z]{3,}|[A-Z][a-z]{2,})(?:\s+[A-Z][a-z]{2,}){0,3}\b/g) || [];
   for (const term of candidates) {
-    if (GENERIC_CAPITALIZED_TERMS.has(term.toLowerCase())) continue;
-    if (US_CITIES.has(term.toLowerCase()) || US_STATES.has(term.toLowerCase())) continue;
-    addClaim(claims, term, 'proper_noun');
+    const distinctive = distinctiveTokens(term);
+    if (!distinctive.length) continue;
+    const focus = distinctive.join(' ');
+    if (US_CITIES.has(focus.toLowerCase()) || US_STATES.has(focus.toLowerCase())) continue;
+    if (distinctive.length === 1 && (US_CITIES.has(distinctive[0].toLowerCase()) || US_STATES.has(distinctive[0].toLowerCase()))) {
+      continue;
+    }
+    addClaim(claims, focus, 'proper_noun');
   }
   return claims;
 }
@@ -195,6 +207,12 @@ function claimSupported(claim, sourceText) {
   const source = normalizeSource(sourceText);
   if (containsWholeTerm(source, claim.value)) return true;
   if (containsWholeTerm(source, claim.key)) return true;
+  if (claim.kind === 'proper_noun') {
+    const tokens = distinctiveTokens(claim.value);
+    if (tokens.length && tokens.every((tok) => containsWholeTerm(source, tok))) {
+      return true;
+    }
+  }
   if (claim.kind === 'number') {
     const compact = claim.key.replace(/[\s,]/g, '');
     const sourceCompact = source.toLowerCase().replace(/[\s,]/g, '');
