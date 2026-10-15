@@ -1092,7 +1092,7 @@ CCs `FYI_CC_EMAILS` so ops sees every notify. When that env is unset,
 use the default ops teammate address. Set the env empty to disable.
 
 The body includes: "If you have any notes on this reply, just hit
-reply. Our operations team sees it." Reply-To is `FYI_REPLY_TO` or
+reply all. Our operations team sees it." Reply-To is `FYI_REPLY_TO` or
 `PRIMARY_GMAIL_FROM` (the connected primary Gmail mailbox).
 
 Guard: `FYI emails CC ops and invite reply to the ops inbox`

@@ -1960,7 +1960,7 @@ test('FYI emails CC ops and invite reply to the ops inbox', () => {
     reversal('FYI CC + reply', 'Gmail MIME no longer has a Reply-To header'));
   assert.match(notify, /FYI_NOTES_LINE/,
     reversal('FYI CC + reply', 'the FYI body no longer invites a reply'));
-  assert.match(FYI_NOTES_LINE, /hit reply/,
+  assert.match(FYI_NOTES_LINE, /hit reply all/,
     reversal('FYI CC + reply', 'the ops reply sentence was changed'));
   assert.equal(fyiReplyTo({}), 'joshua@salesglidergrowth.com',
     reversal('FYI CC + reply', 'default Reply-To is no longer the primary Gmail mailbox'));

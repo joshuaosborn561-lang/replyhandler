@@ -50,6 +50,7 @@ describe('FYI body', () => {
       inboundMessage: 'Sure, send times',
       sentText: 'Tue or Wed work.',
     });
+    assert.match(FYI_NOTES_LINE, /just hit reply all/);
     assert.match(htmlBody, /FYI — we just replied/);
     assert.match(htmlBody, new RegExp(FYI_NOTES_LINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(textBody, new RegExp(FYI_NOTES_LINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
