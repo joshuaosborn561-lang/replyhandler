@@ -91,10 +91,12 @@ async function verifyCampaignAccess(apiKey, campaignId) {
  * Real shape (confirmed against live account, not the public doc's simplified example):
  * { history: [{ stats_id, type: 'SENT'|'REPLY', message_id, time, email_body, ... }, ...] }
  */
-async function getThreadHistory(apiKey, campaignId, leadId) {
+async function getThreadHistory(apiKey, campaignId, leadId, { plainText = true } = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   const lid = toSmartleadId(leadId, 'lead_id');
-  const url = `${BASE_URL}/campaigns/${cid}/leads/${lid}/message-history?api_key=${encodeURIComponent(apiKey)}&show_plain_text_response=true`;
+  const qs = new URLSearchParams({ api_key: apiKey });
+  if (plainText) qs.set('show_plain_text_response', 'true');
+  const url = `${BASE_URL}/campaigns/${cid}/leads/${lid}/message-history?${qs}`;
   const res = await fetch(url);
   if (!res.ok) {
     const body = await res.text();
