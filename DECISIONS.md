@@ -1074,3 +1074,25 @@ Does not reopen "NOT_INTERESTED reaches Slack". Pure not-interested
 stays suppressed.
 
 Guard: `mixed-intent replies are classified from the body, not SmartLead category`
+
+## 2026-10-15
+
+### Calendly PAT is gone
+
+Josh never uses a Calendly personal access token. Remove the field, the
+authenticated Calendly API client, dashboard inputs, and docs. Public
+Calendly / HubSpot / Teams slot reads stay — those do not need a PAT.
+
+Guard: `Calendly PAT integration is removed`
+
+### Every client FYI is CC'd to ops; replies go to the ops inbox
+
+The "FYI, we just replied" Gmail (and SmartLead-forward fallback) also
+CCs `FYI_CC_EMAILS` so ops sees every notify. When that env is unset,
+use the default ops teammate address. Set the env empty to disable.
+
+The body includes: "If you have any notes on this reply, just hit
+reply. Our operations team sees it." Reply-To is `FYI_REPLY_TO` or
+`PRIMARY_GMAIL_FROM` (the connected primary Gmail mailbox).
+
+Guard: `FYI emails CC ops and invite reply to the ops inbox`

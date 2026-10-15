@@ -40,6 +40,7 @@ const MIGRATION_FILES = [
   '031_reply_icp_verdicts.sql',
   '032_inbound_forward_rules.sql',
   '033_client_icp_profile.sql',
+  '034_drop_calendly_pat.sql',
 ];
 
 async function clientsTableExists(client) {

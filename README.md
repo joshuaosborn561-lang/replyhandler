@@ -76,7 +76,7 @@ cp .env.example .env
 | `PORT` | Server port (default: 3000) |
 | `RAILWAY_PUBLIC_DOMAIN` | Set automatically by Railway |
 
-Each client may store an optional **`calendly_personal_access_token`**. When the prospect-facing **booking link** is a Calendly URL **or** a booking-bridge wrap (`book.gosalesglider.com/{slug}`) whose destination is Calendly, and a PAT is set, the server uses Calendly’s API to fetch **real** open times. The draft still pastes the public wrap, not the raw Calendly. HubSpot / Microsoft Bookings / PowerPSA destinations have no availability API here — connect Google or Outlook so two slots may still be inferred from free/busy. If neither Calendly+PAT nor a connected calendar is available, drafts fall back to rough dayparts plus the booking link. On existing databases, run `migrations/004_calendly_pat.sql` once.
+Open times come from the **public booking page** (Calendly / HubSpot / Teams / SavvyCal) behind a `book.gosalesglider.com/{slug}` wrap. There is no Calendly personal access token. If the public page has no slots, drafts fall back to rough dayparts plus the booking link.
 
 ### Manual-reply retrieval corpus
 

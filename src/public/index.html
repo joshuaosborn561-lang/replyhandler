@@ -733,12 +733,6 @@
       </div>
 
       <div class="form-group">
-        <label>Calendly personal access token (optional)</label>
-        <input type="text" id="f_calendly_personal_access_token" placeholder="pat_...">
-        <div class="hint">Only if <strong>Booking link</strong> is Calendly. With a PAT, we pull <strong>real</strong> open slots from Calendly for times-first drafts. For other schedulers, leave blank; connect Google or Outlook below if you want slot suggestions from calendar free/busy — otherwise the draft suggests rough next-few-days windows.</div>
-      </div>
-
-      <div class="form-group">
         <label>Voice Prompt</label>
         <textarea id="f_voice_prompt" placeholder="Direct, no-nonsense tone. Speak like a fellow practitioner, not a salesperson. Never use filler phrases. Keep replies to 2-3 sentences."></textarea>
         <div class="hint">Describes how AI-drafted replies should sound for this client.</div>
@@ -849,10 +843,9 @@
     </details>
 
     <details class="guide-section">
-      <summary>Booking Link &amp; Calendly token</summary>
+      <summary>Booking Link</summary>
       <div class="guide-section-body">
-        <p><strong>Booking link</strong> &mdash; any scheduler (Calendly, Cal.com, SavvyCal, HubSpot meetings, etc.). First replies suggest concrete times and offer to send this link if needed; the URL is only pasted when the prospect asks for it (or says &ldquo;sure&rdquo; after we offered).</p>
-        <p><strong>Calendly personal access token</strong> (optional) &mdash; only if the booking link is a <code>calendly.com</code> URL. With it, the app pulls <strong>real</strong> open times from Calendly so the AI can suggest two slots that actually exist. Without it (or for non-Calendly links), connect <strong>Google or Outlook</strong> on this client card so we can suggest times from calendar free/busy; otherwise the draft suggests rough next-few-days windows without inventing fake wall-clock times.</p>
+        <p><strong>Booking link</strong> &mdash; any scheduler (Calendly, Cal.com, SavvyCal, HubSpot meetings, etc.). First replies suggest concrete times from the public booking page and offer to send this link if needed; the URL is only pasted when the prospect asks for it (or says &ldquo;sure&rdquo; after we offered).</p>
         <p>Examples:</p>
         <ul>
           <li><code>https://calendly.com/acme-ceo/30min</code></li>
@@ -889,7 +882,7 @@
         <p>When a prospect agrees to meet:</p>
         <ol>
           <li>AI drafts a short friendly reply</li>
-          <li>If we have <strong>real</strong> availability (Calendly API and/or their connected calendar), the draft offers <strong>those</strong> times and offers to send the booking link if neither works</li>
+          <li>If we have <strong>real</strong> availability from the public booking page, the draft offers <strong>those</strong> times and offers to send the booking link if neither works</li>
           <li>The message goes to <strong>Slack</strong> &mdash; someone taps <strong>Approve &amp; send</strong> or <strong>Edit &amp; send</strong> (or Reject)</li>
           <li>After approval, the reply goes out on SmartLead or HeyReach; optional calendar invite still depends on Google/Outlook being connected</li>
         </ol>
@@ -934,7 +927,7 @@
         <ol>
           <li>Connect this repo; Railway sets <code>RAILWAY_PUBLIC_DOMAIN</code> automatically</li>
           <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, optional <code>EMAIL_WATERFALL_URL</code>, optional <code>WEBHOOK_TEST_SECRET</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
-          <li>Run SQL: <code>schema.sql</code> on a fresh DB, or apply <code>migrations/*.sql</code> in order on an existing one (includes <code>004_calendly_pat.sql</code> for the Calendly token column)</li>
+          <li>Run SQL: <code>schema.sql</code> on a fresh DB, or apply <code>migrations/*.sql</code> in order on an existing one</li>
           <li>Slack app &rarr; Interactivity URL = <code>https://&lt;your-domain&gt;/slack/actions</code></li>
         </ol>
       </div>
@@ -1116,10 +1109,6 @@ function openDetail(id) {
         <span class="label">Round-robin forward</span>
         <span class="value">${c.cc_round_robin_emails ? esc(c.cc_round_robin_emails) : '—'}</span>
       </div>
-      <div class="detail-row">
-        <span class="label">Calendly PAT</span>
-        <span class="value masked" onclick="toggleMask(this, '${esc(c.calendly_personal_access_token || '')}')">${mask(c.calendly_personal_access_token)}</span>
-      </div>
     </div>
 
     <div class="detail-section">
@@ -1201,7 +1190,6 @@ function openEditFromDetail() {
   document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
   syncPortalEmailFromAlwaysNotify();
   document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
-  document.getElementById('f_calendly_personal_access_token').value = c.calendly_personal_access_token || '';
   document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
 
   openModal('formModal');
@@ -1219,7 +1207,6 @@ async function submitForm() {
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
     cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
     cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
-    calendly_personal_access_token: document.getElementById('f_calendly_personal_access_token').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
 
@@ -1275,7 +1262,7 @@ function syncPortalEmailFromAlwaysNotify() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_allo_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_calendly_personal_access_token', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }
