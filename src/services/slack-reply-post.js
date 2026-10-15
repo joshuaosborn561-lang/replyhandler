@@ -550,4 +550,5 @@ module.exports = {
   applyCardLinks,
   persistCardIdentity,
   completeCardLinks,
+  updatePostedCard,
 };

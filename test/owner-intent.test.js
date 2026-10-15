@@ -1882,6 +1882,30 @@ test('new clients get an ICP profile or needs-review when no calls', () => {
     reversal('new clients get an ICP', 'the required Fireflies env var name changed'));
 });
 
+// ── Decision: ICP builds stay automatic ───────────────────────────────
+test('ICP builds stay automatic — no client stays blank', () => {
+  const cron = read('src/cron.js');
+  const admin = read('src/routes/admin.js');
+  const icp = read('src/services/client-icp-profile.js');
+  const auto = read('src/services/icp-auto-build.js');
+  const decisions = read('DECISIONS.md');
+
+  assert.match(decisions, /ICP builds stay automatic — no client stays blank/,
+    reversal('automatic ICP', 'the decision was removed from DECISIONS.md'));
+  assert.match(cron, /runAutomaticIcpBuilds/,
+    reversal('automatic ICP', 'startup/cron no longer run the ICP backfill'));
+  assert.match(auto, /6am|ICP_BUILD_START_HOUR = 6/,
+    reversal('automatic ICP', 'the weekday 6am-8pm CT window is gone'));
+  assert.match(admin, /rebuild-icp/,
+    reversal('automatic ICP', 'POST /admin/clients/:id/rebuild-icp is gone'));
+  assert.match(icp, /skipped_existing/,
+    reversal('automatic ICP', 'skipped default-variant clients no longer persist skipped_existing'));
+  assert.match(read('src/services/regrade-no-icp-cards.js'), /updatePostedCard|updateCard/,
+    reversal('automatic ICP', 'no-ICP cards are no longer updated in place'));
+  assert.doesNotMatch(read('src/services/regrade-no-icp-cards.js'), /postProspectSlackCard/,
+    reversal('automatic ICP', 're-grade started posting new cards'));
+});
+
 // ── Decision: mixed-intent replies are classified from the body ───────
 // SmartLead "Not Interested" on a hold-off opener dropped conversations.
 test('mixed-intent replies are classified from the body, not SmartLead category', () => {

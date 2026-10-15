@@ -15,6 +15,7 @@ const {
   ensureClientIcp,
   backfillMissingClientIcp,
   summarizeIcpResult,
+  needsIcpWork,
 } = require('../src/services/client-icp-profile');
 const { loadVariant, resolveReplyIcp, clearIcpMemoryCache } = require('../src/services/reply-icp');
 const fireflies = require('../src/services/fireflies');
@@ -282,6 +283,42 @@ test('backfill counts only and skips clients that already have an ICP', async ()
   assert.equal(counts.missing_credentials, 1);
   assert.ok(!JSON.stringify(counts).includes('New Co'));
   assert.ok(!/\b[A-Z][a-z]+ [A-Z]/.test(JSON.stringify(counts)));
+});
+
+test('backfill persists skipped_existing for default-variant clients', async () => {
+  const writes = [];
+  const db = {
+    query: async (sql, params) => {
+      if (/FROM clients/.test(sql) && /SELECT/.test(sql)) {
+        return { rows: [{ id: '1', name: 'bcp', active: true, icp_status: null }] };
+      }
+      writes.push({ sql, params });
+      return { rows: [] };
+    },
+  };
+  const counts = await backfillMissingClientIcp({
+    db,
+    dryRun: false,
+    env: {},
+    firefliesApi: fireflies,
+  });
+  assert.equal(counts.skipped_existing, 1);
+  assert.ok(writes.some((w) => /icp_status/.test(w.sql) && w.params && w.params[1] === 'skipped_existing'));
+});
+
+test('needsIcpWork retries stale needs_review and ignores fresh ones', () => {
+  const now = Date.parse('2026-10-15T18:00:00Z');
+  assert.equal(needsIcpWork({ id: '1', name: 'New Co', icp_status: null, active: true }), true);
+  assert.equal(needsIcpWork({ id: '1', name: 'bcp', icp_status: 'skipped_existing', active: true }), false);
+  assert.equal(needsIcpWork({
+    id: '1', name: 'New Co', icp_status: 'needs_review', icp_built_at: '2026-10-15T12:00:00Z', active: true,
+  }, { includeNeedsReview: true, now }), false);
+  assert.equal(needsIcpWork({
+    id: '1', name: 'New Co', icp_status: 'needs_review', icp_built_at: '2026-10-14T12:00:00Z', active: true,
+  }, { includeNeedsReview: true, now }), true);
+  assert.equal(needsIcpWork({
+    id: '1', name: 'New Co', icp_status: 'needs_review', icp_built_at: '2026-10-14T12:00:00Z', active: true,
+  }, { includeNeedsReview: false, now }), false);
 });
 
 test('admin create and backfill are wired to ensureClientIcp', () => {
