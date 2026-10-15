@@ -73,6 +73,8 @@ describe('client notify thread format', () => {
     assert.doesNotMatch(htmlBody, />Us</);
     assert.match(textBody, /From: matthew\.carter4@roofsbypetersonget\.info/);
     assert.match(textBody, /To: shelby@sbpcommercial\.com/);
+    assert.match(htmlBody, /If you have any notes on this reply, just hit reply/);
+    assert.match(textBody, /If you have any notes on this reply, just hit reply/);
   });
 
   it('prefixes lead name when From matches lead email', () => {

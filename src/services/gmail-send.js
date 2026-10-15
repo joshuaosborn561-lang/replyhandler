@@ -151,17 +151,27 @@ function toBase64Url(raw) {
     .replace(/=+$/, '');
 }
 
-function buildRawMime({ from, to, subject, htmlBody, textBody }) {
+function buildRawMime({ from, to, cc, replyTo, subject, htmlBody, textBody }) {
   const toList = Array.isArray(to) ? to.join(', ') : String(to);
+  const ccList = Array.isArray(cc)
+    ? cc.filter(Boolean).join(', ')
+    : String(cc || '').trim();
+  const reply = String(replyTo || '').trim();
   const boundary = `sg_${Date.now().toString(36)}`;
   const html = String(htmlBody || '');
   const text = String(textBody || html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
   const lines = [
     `From: ${from}`,
     `To: ${toList}`,
+  ];
+  if (ccList) lines.push(`Cc: ${ccList}`);
+  if (reply) lines.push(`Reply-To: ${reply}`);
+  lines.push(
     `Subject: ${encodeSubject(subject)}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
+  );
+  const rest = [
     '',
     `--${boundary}`,
     'Content-Type: text/plain; charset="UTF-8"',
@@ -178,24 +188,29 @@ function buildRawMime({ from, to, subject, htmlBody, textBody }) {
     `--${boundary}--`,
     '',
   ];
-  return toBase64Url(lines.join('\r\n'));
+  return toBase64Url([...lines, ...rest].join('\r\n'));
 }
 
 /**
  * Send email from the connected primary Gmail account.
- * @param {{ to: string|string[], subject: string, htmlBody: string, textBody?: string }} opts
+ * @param {{ to: string|string[], cc?: string|string[], replyTo?: string, subject: string, htmlBody: string, textBody?: string }} opts
  */
-async function sendMail({ to, subject, htmlBody, textBody }) {
+async function sendMail({ to, cc, replyTo, subject, htmlBody, textBody }) {
   const recipients = (Array.isArray(to) ? to : String(to || '').split(/[,;]+/))
     .map((e) => e.trim())
     .filter((e) => e.includes('@'));
   if (!recipients.length) throw new Error('Gmail sendMail: no recipients');
+  const ccList = (Array.isArray(cc) ? cc : String(cc || '').split(/[,;]+/))
+    .map((e) => e.trim())
+    .filter((e) => e.includes('@') && !recipients.includes(e.toLowerCase()));
 
   const { token, account } = await getValidAccessToken();
   const from = account.email || expectedFromEmail();
   const raw = buildRawMime({
     from,
     to: recipients,
+    cc: ccList,
+    replyTo,
     subject,
     htmlBody,
     textBody,
@@ -214,9 +229,9 @@ async function sendMail({ to, subject, htmlBody, textBody }) {
     throw new Error(`Gmail send failed (${res.status}): ${body.slice(0, 400)}`);
   }
   try {
-    return { ...(JSON.parse(body) || {}), from, to: recipients };
+    return { ...(JSON.parse(body) || {}), from, to: recipients, cc: ccList, replyTo: replyTo || null };
   } catch {
-    return { ok: true, from, to: recipients, raw: body };
+    return { ok: true, from, to: recipients, cc: ccList, replyTo: replyTo || null, raw: body };
   }
 }
 
@@ -231,4 +246,5 @@ module.exports = {
   getAccount,
   expectedFromEmail,
   sendMail,
+  buildRawMime,
 };

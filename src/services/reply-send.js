@@ -10,6 +10,7 @@ const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
 const { alreadySentSameOutbound } = require('./reply-dedupe');
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
+const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -247,6 +248,8 @@ async function sendReplyToPlatform(client, reply, replyText) {
 
         await gmail.sendMail({
           to: forwardEmails,
+          cc: fyiCcEmails(),
+          replyTo: fyiReplyTo(),
           subject: notify.subject,
           htmlBody: notify.htmlBody,
           textBody: notify.textBody,
@@ -273,7 +276,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
             reply.campaign_id,
             reply.lead_id,
             {
-              toEmail: forwardEmails,
+              toEmail: mergeEmailLists(forwardEmails, fyiCcEmails()).join(', '),
               leadName: reply.lead_name,
               leadEmail: enrichment?.email || reply.lead_email,
               sentText: replyText,

@@ -6,6 +6,8 @@
  * Subject / From / To / body — not vague "Us" / "Prospect" labels.
  */
 
+const { FYI_NOTES_LINE } = require('../utils/fyi-notify');
+
 function escapeHtml(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -363,15 +365,16 @@ function buildClientNotifyEmail({
   const htmlBody = `
 <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
   <p>FYI — we just replied to <strong>${escapeHtml(name)}</strong>${campaignName ? ` (${escapeHtml(String(campaignName))})` : ''}.</p>
+  <p>${escapeHtml(FYI_NOTES_LINE)}</p>
   <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
   <table style="border-collapse:collapse;font-size:14px;">${enrichLinesHtml(enrichment)}</table>
   <h3 style="margin:22px 0 8px;font-size:14px;">Thread</h3>
   ${threadHtml(steps)}
-  <p style="margin-top:24px;color:#888;font-size:12px;">Sent from SalesGlider primary domain · do not reply-all to this notify unless you intend to loop Joshua.</p>
 </div>`.trim();
 
   const textBody = [
     `FYI — we just replied to ${name}${campaignName ? ` (${campaignName})` : ''}.`,
+    FYI_NOTES_LINE,
     '',
     'Prospect',
     enrichLinesText(enrichment),

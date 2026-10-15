@@ -4,8 +4,6 @@ const {
   resolveLiveAvailabilityBookingUrl,
 } = require('../utils/booking-bridge-destinations');
 
-const CALENDLY_API = 'https://api.calendly.com';
-
 function normalizeBookingUrl(url) {
   if (!url || typeof url !== 'string') return '';
   try {
@@ -405,102 +403,6 @@ async function fetchPublicBookingStarts(bookingUrl, range) {
   return fetchPublicSavvyCalStarts(bookingUrl, range);
 }
 
-async function calendlyFetch(pathWithQuery, token) {
-  const res = await fetch(`${CALENDLY_API}${pathWithQuery}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Calendly API ${res.status}: ${t.slice(0, 200)}`);
-  }
-  return res.json();
-}
-
-async function listAllCalendlyEventTypes(userUri, token) {
-  const all = [];
-  let nextUrl = `/event_types?user=${encodeURIComponent(userUri)}&active=true&count=100`;
-  while (nextUrl) {
-    const page = await calendlyFetch(nextUrl, token);
-    all.push(...(page.collection || []));
-    nextUrl = page.pagination?.next_page_token
-      ? `/event_types?user=${encodeURIComponent(userUri)}&active=true&count=100&page_token=${encodeURIComponent(page.pagination.next_page_token)}`
-      : null;
-  }
-  return all;
-}
-
-/**
- * Resolve event type URI from a public Calendly scheduling URL + PAT.
- */
-async function resolveCalendlyEventTypeUri(bookingLink, token) {
-  const normalizedTarget = normalizeBookingUrl(bookingLink);
-  const me = await calendlyFetch('/users/me', token);
-  const userUri = me?.resource?.uri;
-  if (!userUri) throw new Error('Calendly /users/me missing resource.uri');
-
-  const eventTypes = await listAllCalendlyEventTypes(userUri, token);
-  const schedMatches = eventTypes.filter((et) => {
-    if (!et.scheduling_url) return false;
-    const s = normalizeBookingUrl(et.scheduling_url);
-    return s === normalizedTarget || normalizedTarget.startsWith(`${s}/`);
-  });
-
-  if (schedMatches.length === 1) return schedMatches[0].uri;
-  if (schedMatches.length > 1) {
-    const exact = schedMatches.find((et) => normalizeBookingUrl(et.scheduling_url) === normalizedTarget);
-    return (exact || schedMatches[0]).uri;
-  }
-
-  let slug;
-  try {
-    const parts = new URL(bookingLink).pathname.split('/').filter(Boolean);
-    slug = parts[parts.length - 1]?.toLowerCase();
-  } catch {
-    slug = null;
-  }
-  if (slug) {
-    const bySlug = eventTypes.filter((et) => (et.slug || '').toLowerCase() === slug);
-    if (bySlug.length === 1) return bySlug[0].uri;
-    if (bySlug.length > 1) {
-      const exact = bySlug.find((et) => normalizeBookingUrl(et.scheduling_url) === normalizedTarget);
-      return (exact || bySlug[0]).uri;
-    }
-  }
-
-  throw new Error('No Calendly event type matched this booking link for this token.');
-}
-
-/**
- * Fetch available start times from Calendly (API max 7 days per request).
- */
-async function fetchCalendlyAvailableStarts(eventTypeUri, token, fromDate, toDate) {
-  const slots = [];
-  let cursor = new Date(fromDate);
-
-  while (cursor < toDate) {
-    const windowEnd = new Date(cursor.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const end = windowEnd > toDate ? toDate : windowEnd;
-    const qs = new URLSearchParams({
-      event_type: eventTypeUri,
-      start_time: cursor.toISOString(),
-      end_time: end.toISOString(),
-    });
-    const data = await calendlyFetch(`/event_type_available_times?${qs}`, token);
-    const collection = data.collection || [];
-    for (const item of collection) {
-      const st = item.start_time;
-      if (st) slots.push(new Date(st));
-    }
-    cursor = end;
-  }
-
-  slots.sort((a, b) => a - b);
-  return slots;
-}
-
 function formatSlotLabel(isoDate, timeZone) {
   const tz = timeZone || 'America/New_York';
   const d = new Date(isoDate);
@@ -711,7 +613,7 @@ function schedulingPromptBookingLinkOnly(client) {
 
 /**
  * Returns verified open times + human labels for Gemini.
- * @param {object} client - DB client row (booking_link, calendly_personal_access_token, id, voice_prompt)
+ * @param {object} client - DB client row (booking_link, id, voice_prompt)
  * @param {{ skipExternalFetch?: boolean, offset?: number, count?: number, excludeStarts?: Array<string|Date> }} [options]
  */
 async function resolveVerifiedSchedulingSlots(client, options = {}) {

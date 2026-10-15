@@ -1,4 +1,5 @@
 const { categoryIdForClassification } = require('./smartlead-category');
+const { FYI_NOTES_LINE } = require('../utils/fyi-notify');
 
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
 
@@ -354,6 +355,7 @@ async function forwardThreadToClient(apiKey, campaignId, leadId, {
 
   const forwardBody = (
     `<p>FYI — reply sent to ${escapeHtml(lead)}${emailLine}:</p>` +
+    `<p>${escapeHtml(FYI_NOTES_LINE)}</p>` +
     phoneLine +
     `<p>${formatPlainTextAsSmartleadHtml(sentText)}</p>`
   );

@@ -1920,3 +1920,48 @@ test('mixed-intent replies are classified from the body, not SmartLead category'
     reversal('mixed-intent body classification', 'mixed replies are still dropped from Slack'),
   );
 });
+
+// ── Decision: Calendly PAT is gone ────────────────────────────────────
+test('Calendly PAT integration is removed', () => {
+  const slots = read('src/services/scheduling-slots.js');
+  const admin = read('src/routes/admin.js');
+  const dash = read('src/public/index.html');
+  const schema = read('schema.sql');
+  const decisions = read('DECISIONS.md');
+  assert.match(decisions, /Calendly PAT is gone/,
+    reversal('Calendly PAT is gone', 'the decision was removed from DECISIONS.md'));
+  assert.doesNotMatch(slots, /calendlyFetch|api\.calendly\.com/,
+    reversal('Calendly PAT is gone', 'authenticated Calendly API client is still in scheduling-slots'));
+  assert.doesNotMatch(admin, /calendly_personal_access_token/,
+    reversal('Calendly PAT is gone', 'admin still reads or writes a Calendly PAT'));
+  assert.doesNotMatch(dash, /calendly_personal_access_token|Calendly PAT|personal access token/,
+    reversal('Calendly PAT is gone', 'the dashboard still collects a Calendly PAT'));
+  assert.doesNotMatch(schema, /calendly_personal_access_token/,
+    reversal('Calendly PAT is gone', 'schema.sql still declares the PAT column'));
+  assert.match(slots, /fetchPublicCalendlyStarts/,
+    reversal('Calendly PAT is gone', 'public Calendly slot reads were removed with the PAT'));
+});
+
+// ── Decision: FYI emails CC ops and invite reply ──────────────────────
+test('FYI emails CC ops and invite reply to the ops inbox', () => {
+  const send = read('src/services/reply-send.js');
+  const notify = read('src/services/client-notify-email.js');
+  const gmail = read('src/services/gmail-send.js');
+  const decisions = read('DECISIONS.md');
+  const { FYI_NOTES_LINE, fyiReplyTo } = require('../src/utils/fyi-notify');
+
+  assert.match(decisions, /Every client FYI is CC'd to ops/,
+    reversal('FYI CC + reply', 'the decision was removed from DECISIONS.md'));
+  assert.match(send, /fyiCcEmails/,
+    reversal('FYI CC + reply', 'reply-send no longer CCs FYI_CC_EMAILS'));
+  assert.match(send, /fyiReplyTo/,
+    reversal('FYI CC + reply', 'reply-send no longer sets Reply-To'));
+  assert.match(gmail, /Reply-To/,
+    reversal('FYI CC + reply', 'Gmail MIME no longer has a Reply-To header'));
+  assert.match(notify, /FYI_NOTES_LINE/,
+    reversal('FYI CC + reply', 'the FYI body no longer invites a reply'));
+  assert.match(FYI_NOTES_LINE, /hit reply/,
+    reversal('FYI CC + reply', 'the ops reply sentence was changed'));
+  assert.equal(fyiReplyTo({}), 'joshua@salesglidergrowth.com',
+    reversal('FYI CC + reply', 'default Reply-To is no longer the primary Gmail mailbox'));
+});

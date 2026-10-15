@@ -175,8 +175,9 @@ driven by `clients.voice_prompt` (and, for Deep Roots, client name) via
   taken and offers two new times plus the link.
 
 Booking-bridge wraps do not expose open slots — `scheduling-slots.js`
-unwraps `book.gosalesglider.com/{slug}` to the destination Calendly and
-reads live times from there when a PAT is set.
+unwraps `book.gosalesglider.com/{slug}` to the destination Calendly /
+HubSpot / Teams page and reads live times from the public slot JSON.
+There is no Calendly personal access token.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 
