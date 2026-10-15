@@ -7,6 +7,7 @@ const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
   alreadyPostedToSlack,
@@ -350,7 +351,10 @@ async function processInboxRow(client, row, options) {
     return { skipped: suppressed };
   }
 
-  const policy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+  const policy = applyFactCheckToPolicy(
+    applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning }),
+    result.factCheck,
+  );
   draft = policy.draft;
   reasoning = policy.reasoning;
   const isDraft = policy.isDraft;
@@ -395,6 +399,7 @@ async function processInboxRow(client, row, options) {
     classification,
     draft,
     reasoning: `${reasoning} (Recovered by SmartLead inbox polling backstop.)`,
+    needsReview: policy.needsReview,
     inboundMessage: inbound,
     campaignDisplay,
     lastOutboundMessage: lastOutbound || undefined,

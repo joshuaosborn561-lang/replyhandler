@@ -1811,3 +1811,49 @@ test('Gabe Calls inbound forwards on arrival; client notify stays on send', () =
     reversal('Gabe Calls inbound forward', 'the webhook script applies against live campaigns by default'),
   );
 });
+
+// ── Decision: drafts never invent facts ───────────────────────────────
+// Oct 13 2026 a QUESTION draft said a Boulder-named cyber firm was in
+// Denver. Denver was in none of the inputs. Josh: do not hallucinate.
+test('drafts never invent facts — prompt + post-generation check', () => {
+  const check = read('src/utils/draft-fact-check.js');
+  const claude = read('src/services/claude-reply-draft.js');
+  const classifier = read('src/services/classifier.js');
+  const slack = read('src/services/slack.js');
+  const {
+    findUnsupportedClaims,
+    applyFactCheckToPolicy,
+    FACT_GROUNDING_RULES,
+  } = require('../src/utils/draft-fact-check');
+
+  assert.match(check, /enforceDraftGrounding/,
+    reversal('drafts never invent facts', 'post-generation fact check was removed'));
+  assert.match(claude, /FACT_GROUNDING_RULES/,
+    reversal('drafts never invent facts', 'Claude prompt lost the grounding rules'));
+  assert.match(classifier, /FACT_GROUNDING_RULES/,
+    reversal('drafts never invent facts', 'Gemini prompt lost the grounding rules'));
+  assert.match(classifier, /enforceDraftGrounding/,
+    reversal('drafts never invent facts', 'classifyAndDraft no longer verifies claims'));
+  assert.match(FACT_GROUNDING_RULES, /Never state or guess a location/,
+    reversal('drafts never invent facts', 'location/size/name guess ban was softened'));
+  assert.match(slack, /needs review/,
+    reversal('drafts never invent facts', 'Slack card no longer flags needs review'));
+
+  const unsupported = findUnsupportedClaims(
+    "We're based out of Denver, CO.",
+    'Prospect asked where you are based. Client brand is Bolder Cyber Partners. No city is given.',
+  );
+  assert.ok(
+    unsupported.some((c) => /denver/i.test(c.value)),
+    reversal('drafts never invent facts', 'Denver is no longer treated as an unsupported location'),
+  );
+  const flagged = applyFactCheckToPolicy(
+    { isDraft: true, draft: 'x', status: 'pending', reasoning: 'ok' },
+    { text: 'x', needsReview: true, claims: [{ value: 'Denver' }] },
+  );
+  assert.equal(
+    flagged.status,
+    'flagged',
+    reversal('drafts never invent facts', 'ungrounded drafts are no longer flagged for review'),
+  );
+});

@@ -638,7 +638,7 @@ function buildDraftApprovalCard({
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
-  leadIcpVerdict,
+  leadIcpVerdict, needsReview,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -646,9 +646,11 @@ function buildDraftApprovalCard({
     leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
+  const review = needsReview === true
+    || /needs review/i.test(String(reasoning || ''));
   const headerText = inThread
-    ? `↩️ ${platform.toUpperCase()} — ${classification}`
-    : `📩 ${platform.toUpperCase()} — ${classification}`;
+    ? `↩️ ${platform.toUpperCase()} — ${classification}${review ? ' · needs review' : ''}`
+    : `📩 ${platform.toUpperCase()} — ${classification}${review ? ' · needs review' : ''}`;
 
   let contextText = `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`;
   if (threadPermalink) {
@@ -701,6 +703,12 @@ function buildDraftApprovalCard({
           elements: [{ type: 'mrkdwn', text: contextText }],
         },
       ];
+  if (review) {
+    blocks.splice(blocks.length - (isFollowUp ? 1 : 0), 0, {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '⚠️ *needs review* — draft stated a fact that was not in the provided context. Do not send until checked.' }],
+    });
+  }
 
   if (!isFollowUp && platform === 'smartlead') {
     const notice = ccAutoNoticeBlock({

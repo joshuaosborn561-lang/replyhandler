@@ -13,6 +13,12 @@ const {
   rewriteRawCtapperCalendly,
 } = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
+const {
+  FACT_GROUNDING_RULES,
+  factSourceText,
+  factCheckRetryHint,
+  enforceDraftGrounding,
+} = require('../utils/draft-fact-check');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -638,6 +644,7 @@ ${bookingRules}
 ${channelNote}
 
 Do NOT hallucinate offer details, pricing, or specifics not in the thread.
+${FACT_GROUNDING_RULES}
 Do NOT use em dashes. Do NOT add any sign-off, closing line, or signature — no "Best," no "Thanks," and no name at the end. The mailbox appends the real signature on send. End on the last sentence of the message itself.
 Always finish every sentence. Never cut off mid-thought.`;
 }
@@ -724,6 +731,7 @@ async function draftOnly({
   clientName = null,
   clientId = null,
   draftMode = 'realtime',
+  factCheckRetryClaims = null,
 }) {
   if (!assertDraftableClassification(classification)) {
     console.warn('[Classifier] Refusing draft for non-positive classification', {
@@ -792,7 +800,10 @@ async function draftOnly({
     `${proposedTimesNote ? `${proposedTimesNote}\n\n` : ''}` +
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
-    `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.`;
+    `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.` +
+    (factCheckRetryClaims && factCheckRetryClaims.length
+      ? `\n\n${factCheckRetryHint(factCheckRetryClaims)}`
+      : '');
 
   const deterministicFallback = () => finalizeDraft(fallbackDraftText({
     leadName,
@@ -862,6 +873,7 @@ async function draftOnly({
         clientName,
         draftMode,
         learnedVoiceBlock,
+        factCheckRetryClaims,
       });
       const draft = finalizeDraft(result.text, {
         booking, includeBookingLink, voicePrompt, leadName, clientName,
@@ -939,7 +951,7 @@ async function classifyAndDraft(
   const { shouldIncludeBookingLink } = require('../utils/meeting-modality');
   const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt, clientName);
 
-  const draft = needsDraft
+  let draft = needsDraft
     ? await draftOnly({
       classification,
       threadContext,
@@ -959,9 +971,58 @@ async function classifyAndDraft(
     })
     : null;
 
+  let factCheck = null;
+  if (draft) {
+    const { loadLearnedVoiceBlock } = require('./voice-profile');
+    const learnedVoiceBlock = await loadLearnedVoiceBlock({ clientId, clientName });
+    const sourceText = factSourceText({
+      inboundMessage,
+      threadSummary: summarizeThread(threadContext),
+      leadName,
+      clientName,
+      schedulingPromptBlock,
+      voicePrompt,
+      learnedVoiceBlock,
+    });
+    factCheck = await enforceDraftGrounding({
+      draft,
+      sourceText,
+      regenerate: (claims) => draftOnly({
+        classification,
+        threadContext,
+        inboundMessage,
+        leadName,
+        voicePrompt,
+        bookingLink,
+        schedulingPromptBlock,
+        digestTimezone,
+        platform,
+        includeBookingLink,
+        replyMode: ordinal.mode,
+        replyOrdinal: ordinal.replyOrdinal,
+        clientName,
+        clientId,
+        draftMode,
+        factCheckRetryClaims: claims,
+      }),
+    });
+    draft = factCheck.text;
+    if (factCheck.regenerated || factCheck.stripped || factCheck.needsReview) {
+      console.warn('[Classifier] Draft fact-check', {
+        regenerated: factCheck.regenerated,
+        stripped: factCheck.stripped,
+        needsReview: factCheck.needsReview,
+        claims: (factCheck.claims || []).map((c) => c.value),
+      });
+    }
+  }
+
   const note = preGate ? ` (pre-gate: ${preGate})` : '';
   const linkNote = needsDraft
     ? (includeBookingLink ? ' (booking-link follow-up)' : ` (${ordinal.mode.toLowerCase()})`)
+    : '';
+  const reviewNote = factCheck?.needsReview
+    ? ' needs review'
     : '';
   return {
     classification,
@@ -970,8 +1031,9 @@ async function classifyAndDraft(
     includeBookingLink,
     replyMode: ordinal.mode,
     replyOrdinal: ordinal.replyOrdinal,
+    factCheck,
     reasoning: needsDraft
-      ? `Classified as ${classification}; draft generated${note}${linkNote}.`
+      ? `Classified as ${classification}; draft generated${note}${linkNote}.${reviewNote}`
       : `Classified as ${classification}; no draft${note}.`,
   };
 }

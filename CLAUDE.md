@@ -143,6 +143,22 @@ never used there — no env opt-in. Only `INTERESTED` / `MEETING_PROPOSED` /
 If drafts suddenly all look like "Happy to jump on a quick call…", check
 Anthropic quota first, then confirm this fallthrough is still wired.
 
+## Drafts never invent facts
+
+Claude and Gemini may use only facts in the provided context (thread,
+inbound, scheduling, voice, names). They must not state or guess a
+location, size, client name, or other specific unless it is there.
+
+`enforceDraftGrounding()` in `src/utils/draft-fact-check.js` runs after
+every draft. Unsupported cities / states / numbers / proper nouns trigger
+one stricter regen; leftover claims are stripped or the Slack card is
+flagged `needs review` (`pending_replies.status = flagged`). RAG
+examples are style-only and are not source context.
+
+Oct 13 2026: a QUESTION draft said a Boulder-named cyber firm was in
+Denver. Denver was in none of the inputs. The model invented it. Do not
+weaken this check.
+
 ## Client meeting modality (Vasco / Carlos / Deep Roots)
 
 Some clients do not use the default two-times + booking-link CTA. That is

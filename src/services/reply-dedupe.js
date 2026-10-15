@@ -530,6 +530,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     classification: reply.classification,
     draft: policy.draft,
     reasoning: policy.reasoning,
+    needsReview: reply.status === 'flagged' || /needs review/i.test(String(policy.reasoning || '')),
     inboundMessage: reply.inbound_message,
     campaignDisplay: formatCampaignDisplayFromReply(reply),
     lastOutboundMessage: lastOutboundFromThreadContext(reply) || undefined,
