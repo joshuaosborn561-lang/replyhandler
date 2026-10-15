@@ -1,5 +1,6 @@
 const allo = require('./allo');
 const drive = require('./google-drive');
+const fireflies = require('./fireflies');
 
 /**
  * One-shot probe at boot: prove the call-recording integrations actually work,
@@ -8,14 +9,22 @@ const drive = require('./google-drive');
  * Logs the Allo lines on the account and whether Drive is readable. Never
  * throws — a failed probe is a log line, not a failed start.
  */
-let lastStatus = { at: null, allo: 'unknown', drive: 'unknown' };
+let lastStatus = { at: null, allo: 'unknown', drive: 'unknown', fireflies: 'unknown' };
 
 function getIntegrationStatus() {
   return { ...lastStatus };
 }
 
 async function logIntegrationStatus() {
-  lastStatus = { at: new Date().toISOString(), allo: 'unknown', drive: 'unknown' };
+  lastStatus = { at: new Date().toISOString(), allo: 'unknown', drive: 'unknown', fireflies: 'unknown' };
+
+  if (!fireflies.isConfigured()) {
+    lastStatus.fireflies = 'not_configured';
+    console.log(`[Startup] Fireflies not configured (${fireflies.requiredEnvVar()} unset) — auto-ICP from calls skipped`);
+  } else {
+    lastStatus.fireflies = 'ready';
+    console.log('[Startup] Fireflies ready');
+  }
 
   if (!allo.isConfigured()) {
     lastStatus.allo = 'not_configured';

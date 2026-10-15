@@ -1,0 +1,294 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const {
+  emptyProfile,
+  clientSearchHints,
+  hasDefaultVariant,
+  clientHasIcp,
+  profileHasFacts,
+  groundIcpProfile,
+  profileToVariantSpec,
+  buildExtractPrompt,
+  ensureClientIcp,
+  backfillMissingClientIcp,
+  summarizeIcpResult,
+} = require('../src/services/client-icp-profile');
+const { loadVariant, resolveReplyIcp, clearIcpMemoryCache } = require('../src/services/reply-icp');
+const fireflies = require('../src/services/fireflies');
+const { FACT_GROUNDING_RULES } = require('../src/utils/draft-fact-check');
+
+const ROOT = path.join(__dirname, '..');
+const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+
+test('Fireflies reports FIREFLIES_API_KEY when unset', () => {
+  assert.equal(fireflies.requiredEnvVar(), 'FIREFLIES_API_KEY');
+  assert.equal(fireflies.isConfigured({}), false);
+  assert.equal(fireflies.isConfigured({ FIREFLIES_API_KEY: 'x' }), true);
+});
+
+test('known variant clients already have an ICP', () => {
+  assert.equal(hasDefaultVariant({ name: 'bcp' }), true);
+  assert.equal(hasDefaultVariant({ name: 'New Co LLC' }), false);
+  assert.equal(clientHasIcp({ name: 'New Co LLC' }), false);
+});
+
+test('client search hints take domain from booking / email, not generic hosts', () => {
+  const hints = clientSearchHints({
+    name: 'New Co LLC',
+    booking_link: 'https://www.newcoexample.com/book',
+    contact_email: 'ops@newcoexample.com',
+    cc_emails: 'josh@salesglidergrowth.com',
+  });
+  assert.deepEqual(hints.domains, ['newcoexample.com']);
+});
+
+test('grounding drops industries that are not in the transcript', () => {
+  const source = [
+    'We only sell to independent HVAC contractors in the Midwest.',
+    'Buyer is usually the owner or the service manager.',
+    'Skip national chains and anything residential-only.',
+  ].join(' ');
+  const extracted = {
+    industries: ['independent HVAC contractors', 'biotech'],
+    titles: ['owner', 'service manager'],
+    company_size: [],
+    geos: ['Midwest', 'Denver'],
+    offer: ['sell to independent HVAC contractors'],
+    exclusions: ['national chains', 'residential-only'],
+  };
+  const grounded = groundIcpProfile(extracted, source);
+  assert.ok(grounded.industries.includes('independent HVAC contractors'));
+  assert.ok(!grounded.industries.includes('biotech'));
+  assert.ok(!grounded.geos.includes('Denver'));
+  assert.ok(grounded.geos.includes('Midwest'));
+  assert.ok(profileHasFacts(grounded));
+});
+
+test('extract prompt carries PR #97 fact-grounding rules', () => {
+  const prompt = buildExtractPrompt('transcript text');
+  assert.match(prompt, /FACT|facts present|Never state or guess/i);
+  assert.ok(prompt.includes(FACT_GROUNDING_RULES.split('\n')[0].slice(2, 20)));
+});
+
+test('stored profile becomes a variant the grader can read', () => {
+  const spec = profileToVariantSpec({
+    industries: ['independent HVAC contractors'],
+    titles: ['owner'],
+    company_size: ['10-50'],
+    geos: ['Midwest'],
+    offer: ['outbound for HVAC shops'],
+    exclusions: ['national chains'],
+  });
+  assert.equal(spec.pass, 'icp_fit');
+  assert.match(spec.criteria.icp_fit, /HVAC/);
+  assert.match(spec.criteria.not_icp, /national chains/);
+});
+
+test('ensureClientIcp flags needs_review when the Fireflies key is missing', async () => {
+  const writes = [];
+  const db = {
+    query: async (sql, params) => {
+      writes.push({ sql, params });
+      return { rows: [] };
+    },
+  };
+  const result = await ensureClientIcp(
+    { id: '00000000-0000-0000-0000-000000000001', name: 'New Co LLC' },
+    { db, env: {}, firefliesApi: fireflies },
+  );
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'missing_credentials');
+  assert.equal(result.env_needed, 'FIREFLIES_API_KEY');
+  const summary = summarizeIcpResult(result);
+  assert.equal(summary.env_needed, 'FIREFLIES_API_KEY');
+  assert.ok(writes.some((w) => /icp_status/.test(w.sql)));
+});
+
+test('ensureClientIcp flags needs_review when no calls match', async () => {
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [],
+    transcriptMatches: () => false,
+    getTranscript: async () => null,
+    sentencesToText: () => '',
+  };
+  const result = await ensureClientIcp(
+    { id: '00000000-0000-0000-0000-000000000002', name: 'New Co LLC' },
+    { db: { query: async () => ({ rows: [] }) }, firefliesApi: api, env: { FIREFLIES_API_KEY: 'x' } },
+  );
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'no_calls');
+  assert.equal(result.transcript_count, 0);
+});
+
+test('ensureClientIcp stores a grounded profile from matching transcripts', async () => {
+  const transcript = [
+    'Target is independent HVAC contractors in the Midwest.',
+    'Talk to the owner. Skip national chains.',
+  ].join(' ');
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [{ id: 't1', title: 'kickoff', meeting_attendees: [] }],
+    transcriptMatches: () => true,
+    getTranscript: async () => ({ id: 't1', sentences: [{ text: transcript }] }),
+    sentencesToText: () => transcript,
+  };
+  const result = await ensureClientIcp(
+    { id: '00000000-0000-0000-0000-000000000003', name: 'New Co LLC' },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: api,
+      extractFn: async () => ({
+        industries: ['independent HVAC contractors'],
+        titles: ['owner'],
+        company_size: [],
+        geos: ['Midwest'],
+        offer: [],
+        exclusions: ['national chains'],
+      }),
+      env: { FIREFLIES_API_KEY: 'x' },
+    },
+  );
+  assert.equal(result.status, 'ready');
+  assert.equal(result.source, 'fireflies');
+  assert.ok(result.profile.industries.includes('independent HVAC contractors'));
+  assert.equal(result.transcript_count, 1);
+});
+
+test('loadVariant reads clients.icp_profile when no topup variant exists', async () => {
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try {
+    const db = {
+      query: async (sql) => {
+        if (/icp_profile/.test(sql)) {
+          return {
+            rows: [{
+              icp_status: 'ready',
+              icp_profile: {
+                industries: ['independent HVAC contractors'],
+                titles: ['owner'],
+                company_size: [],
+                geos: ['Midwest'],
+                offer: ['outbound for HVAC shops'],
+                exclusions: ['national chains'],
+              },
+            }],
+          };
+        }
+        return { rows: [] };
+      },
+    };
+    const variant = await loadVariant('new_co_llc', {
+      db,
+      clientId: '00000000-0000-0000-0000-000000000004',
+    });
+    assert.equal(variant.jev_variant, 'client_profile');
+    assert.equal(variant.spec.pass, 'icp_fit');
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+  }
+});
+
+test('resolveReplyIcp uses the stored client profile instead of no ICP', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  try {
+    const db = {
+      query: async (sql) => {
+        if (/FROM clients/.test(sql) && /icp_profile/.test(sql)) {
+          return {
+            rows: [{
+              icp_status: 'ready',
+              icp_profile: {
+                industries: ['independent HVAC contractors'],
+                titles: [],
+                company_size: [],
+                geos: [],
+                offer: ['maintenance'],
+                exclusions: [],
+              },
+            }],
+          };
+        }
+        if (/FROM reply_icp_verdicts/.test(sql)) return { rows: [] };
+        if (/INSERT INTO reply_icp_verdicts/.test(sql)) return { rows: [] };
+        return { rows: [] };
+      },
+    };
+    const verdict = await resolveReplyIcp({
+      website: 'https://hvacshop.example',
+      clientName: 'New Co LLC',
+      clientId: '00000000-0000-0000-0000-000000000005',
+      db,
+      grade: true,
+      fetchImpl: async () => ({
+        ok: true,
+        text: async () => '<html><body>We are an independent HVAC contractor serving commercial buildings across the region for twenty years.</body></html>',
+      }),
+      gradeFn: async (spec) => ({
+        fit: spec.pass === 'icp_fit' ? 'yes' : 'no',
+        prob: 0.9,
+        reason: 'fits',
+        answers: { category: { choice: spec.pass } },
+      }),
+    });
+    assert.equal(verdict.status, 'qualified');
+    assert.notEqual(verdict.reason, 'no ICP');
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+  }
+});
+
+test('backfill counts only and skips clients that already have an ICP', async () => {
+  const db = {
+    query: async (sql) => {
+      if (/FROM clients/.test(sql)) {
+        return {
+          rows: [
+            { id: '1', name: 'bcp', active: true },
+            { id: '2', name: 'New Co LLC', active: true, icp_status: null },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+  };
+  const counts = await backfillMissingClientIcp({
+    db,
+    dryRun: true,
+    env: {},
+    firefliesApi: fireflies,
+  });
+  assert.equal(counts.total, 2);
+  assert.equal(counts.skipped_existing, 1);
+  assert.equal(counts.needs_review, 1);
+  assert.equal(counts.missing_credentials, 1);
+  assert.ok(!JSON.stringify(counts).includes('New Co'));
+  assert.ok(!/\b[A-Z][a-z]+ [A-Z]/.test(JSON.stringify(counts)));
+});
+
+test('admin create and backfill are wired to ensureClientIcp', () => {
+  const admin = read('src/routes/admin.js');
+  assert.match(admin, /ensureClientIcp/);
+  assert.match(admin, /backfill-icp/);
+  assert.match(admin, /backfillMissingClientIcp/);
+  const migrate = read('scripts/run-migrations.js');
+  assert.match(migrate, /033_client_icp_profile\.sql/);
+});

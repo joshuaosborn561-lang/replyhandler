@@ -21,6 +21,12 @@ CREATE TABLE clients (
   reply_enrich_ceiling_hot_usd NUMERIC,
   cc_round_robin_index INTEGER NOT NULL DEFAULT 0,
   active BOOLEAN NOT NULL DEFAULT true,
+  icp_profile JSONB,
+  icp_status TEXT,
+  icp_reason TEXT,
+  icp_source TEXT,
+  icp_transcript_count INTEGER NOT NULL DEFAULT 0,
+  icp_built_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

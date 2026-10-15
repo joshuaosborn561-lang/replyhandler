@@ -12,7 +12,7 @@ const {
   claimNewInbound,
 } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
-const { classifyFromSmartlead } = require('../services/smartlead-category');
+const { classifyFromSmartlead, applySmartleadCategory } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
@@ -536,16 +536,26 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     let { classification, draft, proposed_time, reasoning } = result;
 
     // SmartLead already categorised this reply. Prefer its answer over Gemini's
-    // for email; Gemini's draft is still used. LinkedIn has no equivalent and
-    // stays fully on Gemini.
+    // for email — except mixed/conditional bodies, which we classify ourselves
+    // from the full inbound so a "hold off" opener cannot drop a conversation.
     const slCategory = classifyFromSmartlead(payload, threadContext);
-    if (slCategory && slCategory.classification !== classification) {
-      console.log('[Webhook] Using SmartLead category over Gemini', {
-        leadName, smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+    const applied = applySmartleadCategory({
+      slCategory, classification, inboundMessage: inboundEffective, reasoning,
+    });
+    if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead') {
+      console.log('[Webhook] Classified from full body over SmartLead category', {
+        source: applied.source,
+        smartlead: slCategory?.raw || null,
+        mappedTo: slCategory?.classification || null,
+        body: applied.classification,
       });
-      classification = slCategory.classification;
-      reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+    } else if (slCategory && slCategory.classification !== classification) {
+      console.log('[Webhook] Using SmartLead category over Gemini', {
+        smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+      });
     }
+    classification = applied.classification;
+    reasoning = applied.reasoning;
 
     if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
       try {
