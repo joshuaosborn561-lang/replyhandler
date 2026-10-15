@@ -285,6 +285,10 @@ closed (503). Wrong or missing header is 401.
 full-body classification on `pending_replies` with `status='suppressed'`
 and Slack-cards mixed-intent / QUESTION rows. Response is counts only.
 
+Startup + weekday hourly cron (6am–8pm CT) fill empty / missing client
+ICPs; `needs_review` retries once a day. `POST /admin/clients/:id/rebuild-icp`
+(`force=true`) rebuilds one client. Counts only.
+
 `GET /health` returns `gitSha` from `RAILWAY_GIT_COMMIT_SHA` — the fastest way
 to confirm what is actually deployed rather than assuming a push went live.
 

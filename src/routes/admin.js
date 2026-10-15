@@ -13,6 +13,7 @@ const {
   backfillMissingClientIcp,
   summarizeIcpResult,
 } = require('../services/client-icp-profile');
+const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { requireAdminApiKey } = require('../utils/admin-auth');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 
@@ -163,6 +164,33 @@ router.post('/admin/clients/backfill-icp', async (req, res) => {
     res.json({ ok: true, ...counts });
   } catch (err) {
     console.error('[Admin] ICP backfill error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Rebuild one client's ICP. force=true (default) ignores an existing
+ * skipped_existing / ready row and re-searches Fireflies.
+ * Counts only; re-grades last-3-day "no ICP" cards in place when ready.
+ */
+router.post('/admin/clients/:clientId/rebuild-icp', async (req, res) => {
+  try {
+    const forceRaw = req.query.force ?? req.body?.force;
+    const force = forceRaw == null ? true : /^(1|true|yes|on)$/i.test(String(forceRaw));
+    const { rows: [client] } = await db.query(
+      'SELECT * FROM clients WHERE id = $1',
+      [req.params.clientId],
+    );
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+    const result = await ensureClientIcp(client, { db, force });
+    let regrade = { scanned: 0, updated: 0 };
+    if (result.status === 'ready') {
+      regrade = await regradeNoIcpCards({ clientId: client.id });
+    }
+    console.log('[Admin] rebuild-icp', { status: result.status, regrade });
+    res.json({ ok: true, force, icp: summarizeIcpResult(result), regrade });
+  } catch (err) {
+    console.error('[Admin] rebuild-icp error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

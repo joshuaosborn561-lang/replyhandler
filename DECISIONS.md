@@ -1058,6 +1058,21 @@ Counts only in the response.
 
 Guard: `new clients get an ICP profile or needs-review when no calls`
 
+### ICP builds stay automatic — no client stays blank
+
+Startup and a weekday hourly cron (6am–8pm America/Chicago, Josh's
+quiet hours) run the backfill for any active client whose `icp_status`
+is empty, missing, or never built. `needs_review` is retried once a
+day in case new Fireflies calls appeared. Clients already covered by
+a default variant persist `icp_status='skipped_existing'` so the
+column is not left empty.
+
+`POST /admin/clients/:id/rebuild-icp` (`force=true` by default) rebuilds
+one client. When an ICP becomes ready, last-3-day Slack cards graded
+`no ICP` are `chat.update`d in place — no new cards.
+
+Guard: `ICP builds stay automatic — no client stays blank`
+
 ### Mixed-intent replies are classified from the full body
 
 SmartLead stamps "Not Interested" from an opening deferral ("let's hold

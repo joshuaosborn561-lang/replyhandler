@@ -8,6 +8,12 @@ const { logInterestedSweep } = require('./services/interested-sweep');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
 const { runWeeklyVoiceLearning } = require('./services/weekly-voice-learning');
+const {
+  icpAutoBuildEnabled,
+  inIcpBuildWindow,
+  runAutomaticIcpBuilds,
+  ICP_BUILD_TZ,
+} = require('./services/icp-auto-build');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
 const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
@@ -257,10 +263,33 @@ function startCron() {
     });
   }
 
+  // ─── Auto ICP — weekdays 6am–8pm CT (Josh's quiet hours) ──────────
+  // Empty / missing / never-built statuses every hour in-window.
+  // needs_review retries once a day when new Fireflies calls may exist.
+  if (icpAutoBuildEnabled()) {
+    cron.schedule('0 6-20 * * 1-5', async () => {
+      if (!inIcpBuildWindow()) return;
+      try {
+        const counts = await runAutomaticIcpBuilds({ db });
+        console.log('[Cron] ICP auto-build', counts);
+      } catch (err) {
+        console.error('[Cron] ICP auto-build failed', { err: err.message });
+      }
+    }, { timezone: ICP_BUILD_TZ });
+  }
+
   // Fire and forget — never delays startup.
   logIntegrationStatus().catch((err) =>
     console.error('[Startup] Integration check failed', { err: err.message })
   );
+
+  if (icpAutoBuildEnabled()) {
+    runAutomaticIcpBuilds({ db }).then((counts) => {
+      console.log('[Startup] ICP auto-build', counts);
+    }).catch((err) => {
+      console.error('[Startup] ICP auto-build failed', { err: err.message });
+    });
+  }
 
   // Print who looks booked, straight into the deploy log. Read-only.
   if (/^(1|true|yes|on)$/i.test(String(process.env.SWEEP_INTERESTED_ON_BOOT || '1').trim())) {
@@ -275,7 +304,10 @@ function startCron() {
   const voiceNote = voiceLearningEnabled()
     ? `weekly voice learning (${VOICE_LEARNING_CRON} ${VOICE_LEARNING_TZ})`
     : 'weekly voice learning disabled (DISABLE_VOICE_LEARNING)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${digestNote}`);
+  const icpNote = icpAutoBuildEnabled()
+    ? `ICP auto-build (hourly weekdays 6am-8pm ${ICP_BUILD_TZ})`
+    : 'ICP auto-build disabled (DISABLE_ICP_AUTO_BUILD)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

@@ -408,9 +408,40 @@ function summarizeIcpResult(row) {
   };
 }
 
+function icpStatusOf(client) {
+  return String(client?.icp_status || '').trim();
+}
+
+/**
+ * True when this client still needs an ICP write: empty/missing status,
+ * never built, or (when includeNeedsReview) a stale needs_review row.
+ * Default-variant clients with an empty status still need a write so
+ * icp_status becomes skipped_existing instead of staying blank.
+ */
+function needsIcpWork(client, {
+  includeNeedsReview = false,
+  retryNeedsReviewAfterMs = 24 * 60 * 60 * 1000,
+  now = Date.now(),
+} = {}) {
+  if (!client || client.active === false) return false;
+  if (hasStoredProfile(client)) return false;
+  const status = icpStatusOf(client);
+  if (status === 'skipped_existing') return false;
+  if (status === 'ready') return false;
+  if (hasDefaultVariant(client)) return status === '';
+  if (status === 'needs_review') {
+    if (!includeNeedsReview) return false;
+    const built = client.icp_built_at ? new Date(client.icp_built_at).getTime() : 0;
+    if (!Number.isFinite(built) || built <= 0) return true;
+    return (now - built) >= retryNeedsReviewAfterMs;
+  }
+  return true;
+}
+
 /**
  * Backfill existing clients that have no ICP the grader can read.
- * Returns counts only.
+ * Default-variant skips persist icp_status='skipped_existing' so the
+ * column is never left empty. Returns counts only.
  */
 async function backfillMissingClientIcp({
   db,
@@ -419,6 +450,8 @@ async function backfillMissingClientIcp({
   fetchImpl,
   env = process.env,
   dryRun = false,
+  includeNeedsReview = false,
+  now = Date.now(),
 } = {}) {
   if (!db) throw new Error('db is required');
   const { rows } = await db.query(
@@ -439,7 +472,16 @@ async function backfillMissingClientIcp({
   };
 
   for (const client of rows) {
-    if (!forceMissing(client)) {
+    if (!needsIcpWork(client, { includeNeedsReview, now })) {
+      if (!dryRun && hasDefaultVariant(client) && !icpStatusOf(client)) {
+        await persistIcp(db, client.id, {
+          status: 'skipped_existing',
+          reason: 'existing_variant',
+          source: 'default_variant',
+          profile: null,
+          transcript_count: 0,
+        });
+      }
       counts.skipped_existing += 1;
       continue;
     }
@@ -460,14 +502,6 @@ async function backfillMissingClientIcp({
     tally(counts, result);
   }
   return counts;
-}
-
-function forceMissing(client) {
-  if (hasDefaultVariant(client)) return false;
-  if (hasStoredProfile(client)) return false;
-  if (client.icp_status === 'needs_review') return false;
-  if (client.icp_status === 'skipped_existing') return false;
-  return true;
 }
 
 function tally(counts, result) {
@@ -497,4 +531,6 @@ module.exports = {
   ensureClientIcp,
   backfillMissingClientIcp,
   summarizeIcpResult,
+  persistIcp,
+  needsIcpWork,
 };
