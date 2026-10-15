@@ -9,7 +9,7 @@
 const { parseEmailList } = require('../services/client-cc');
 
 const FYI_NOTES_LINE =
-  'If you have any notes on this reply, just hit reply. Our operations team sees it.';
+  'If you have any notes on this reply, just hit reply all. Our operations team sees it.';
 
 /** Default CC when FYI_CC_EMAILS is unset. Override or blank the env to change. */
 const DEFAULT_FYI_CC_EMAILS = 'cayden@salesglidergrowth.com';
