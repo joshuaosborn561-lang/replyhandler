@@ -26,6 +26,7 @@ const {
   CLIENT_TAG_ALIASES,
   variantSpec,
 } = require('./reply-icp-variants');
+const { profileToVariantSpec } = require('./client-icp-profile');
 
 function supabaseRequest(path, opts) {
   return replyExamples.supabaseRequest(path, opts);
@@ -161,7 +162,32 @@ async function supabaseSchema(schema, path, extraHeaders = {}) {
   });
 }
 
-async function loadVariant(clientTag) {
+async function loadStoredClientVariant(db, { clientId, clientTag } = {}) {
+  if (!db || !clientId) return null;
+  try {
+    const { rows } = await db.query(
+      `SELECT icp_profile, icp_status FROM clients WHERE id = $1`,
+      [clientId]
+    );
+    const row = rows[0];
+    if (!row || row.icp_status !== 'ready' || !row.icp_profile) return null;
+    const spec = profileToVariantSpec(row.icp_profile);
+    if (!spec) return null;
+    return {
+      jev_variant: 'client_profile',
+      disco_icp: clientTag || null,
+      spec,
+      note: 'clients.icp_profile',
+    };
+  } catch (err) {
+    if (!/icp_profile|icp_status/.test(err.message || '')) {
+      console.warn('[Icp] client icp_profile read skipped', { err: err.message });
+    }
+    return null;
+  }
+}
+
+async function loadVariant(clientTag, { db, clientId } = {}) {
   const local = DEFAULT_CLIENT_VARIANTS[clientTag];
   if (supabaseReady()) {
     try {
@@ -171,18 +197,21 @@ async function loadVariant(clientTag) {
       );
       const row = Array.isArray(rows) ? rows[0] : null;
       if (row?.jev_variant) {
-        return {
-          jev_variant: row.jev_variant,
-          disco_icp: row.disco_icp || null,
-          spec: variantSpec(row.jev_variant),
-        };
+        const spec = variantSpec(row.jev_variant);
+        if (spec) {
+          return {
+            jev_variant: row.jev_variant,
+            disco_icp: row.disco_icp || null,
+            spec,
+          };
+        }
       }
     } catch (err) {
       console.warn('[Icp] icp_variants read skipped', { err: err.message });
     }
   }
-  if (!local) return null;
-  return { ...local, spec: variantSpec(local.jev_variant) };
+  if (local) return { ...local, spec: variantSpec(local.jev_variant) };
+  return loadStoredClientVariant(db, { clientId, clientTag });
 }
 
 async function readTopupLlm(domain, jevVariant) {
@@ -430,7 +459,7 @@ async function resolveReplyIcp({
   if (!domain) return unknownVerdict('no website');
 
   const clientTag = await resolveClientTagFromDb(db, { clientId, clientName });
-  const variant = await loadVariant(clientTag);
+  const variant = await loadVariant(clientTag, { db, clientId });
   if (!variant?.jev_variant || !variant.spec) {
     return unknownVerdict('no ICP', { domain, clientTag, source: 'icp_variants' });
   }
@@ -528,5 +557,6 @@ module.exports = {
   persistPendingIcp,
   clearIcpMemoryCache,
   buildGradePrompt,
+  loadVariant,
   FORBIDDEN_WRITE_COLUMNS: Object.freeze(['dl_status', 'sg_exclude', 'skip_*']),
 };

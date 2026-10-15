@@ -2,7 +2,7 @@ const db = require('../db');
 const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
-const { classifyFromSmartlead } = require('./smartlead-category');
+const { classifyFromSmartlead, applySmartleadCategory } = require('./smartlead-category');
 const { classifyAndDraft } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
@@ -333,13 +333,23 @@ async function processInboxRow(client, row, options) {
   let { classification, draft, proposed_time, reasoning } = result;
 
   const slCategory = classifyFromSmartlead(row, threadContext);
-  if (slCategory && slCategory.classification !== classification) {
-    console.log('[SmartLeadPoll] Using SmartLead category over Gemini', {
-      leadName, smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+  const applied = applySmartleadCategory({
+    slCategory, classification, inboundMessage: inbound, reasoning,
+  });
+  if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead') {
+    console.log('[SmartLeadPoll] Classified from full body over SmartLead category', {
+      source: applied.source,
+      smartlead: slCategory?.raw || null,
+      mappedTo: slCategory?.classification || null,
+      body: applied.classification,
     });
-    classification = slCategory.classification;
-    reasoning = `SmartLead category "${slCategory.raw}" → ${classification}. ${reasoning}`;
+  } else if (slCategory && slCategory.classification !== classification) {
+    console.log('[SmartLeadPoll] Using SmartLead category over Gemini', {
+      smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
+    });
   }
+  classification = applied.classification;
+  reasoning = applied.reasoning;
 
   const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
   if (suppressed) {

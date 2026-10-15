@@ -8,6 +8,11 @@ const {
   provisionAllClients,
 } = require('../services/portal-provision');
 const { normalizeClientBooking } = require('../utils/booking-bridge-destinations');
+const {
+  ensureClientIcp,
+  backfillMissingClientIcp,
+  summarizeIcpResult,
+} = require('../services/client-icp-profile');
 
 const router = Router();
 
@@ -86,10 +91,18 @@ router.post('/admin/clients', async (req, res) => {
       ]
     );
 
-    console.log('[Admin] Client created', { id: client.id, name: client.name });
+    console.log('[Admin] Client created', { id: client.id });
+    let icp;
+    try {
+      icp = summarizeIcpResult(await ensureClientIcp(client, { db }));
+    } catch (err) {
+      console.warn('[Admin] ICP ensure failed', { err: err.message });
+      icp = { status: 'needs_review', reason: 'ensure_failed', env_needed: null, transcript_count: 0 };
+    }
     const portal = await provisionClientToPortal(client);
     res.status(201).json({
       ...formatClient(client),
+      icp,
       portal_login_link: portal.loginLink || null,
       portal_warning: portal.warning || null,
       portal_synced: !!portal.ok,
@@ -135,6 +148,19 @@ router.post('/admin/clients/sync-portal', async (_req, res) => {
     res.json({ ok: true, total: results.length, synced: ok, results });
   } catch (err) {
     console.error('[Admin] Portal sync-all error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backfill ICP profiles for existing clients that have none.
+router.post('/admin/clients/backfill-icp', async (req, res) => {
+  try {
+    const dryRun = /^(1|true|yes)$/i.test(String(req.query.dry || req.body?.dry || ''));
+    const counts = await backfillMissingClientIcp({ db, dryRun });
+    console.log('[Admin] ICP backfill finished', counts);
+    res.json({ ok: true, ...counts });
+  } catch (err) {
+    console.error('[Admin] ICP backfill error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

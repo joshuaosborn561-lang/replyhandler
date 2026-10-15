@@ -4,6 +4,7 @@ const {
   looksLikeNotInterested,
   looksLikeWrongPerson,
 } = require('../utils/smartlead-webhook-helpers');
+const { looksLikeMixedIntent, promoteMixedIntent } = require('../utils/mixed-intent');
 const {
   looksLikeBookingLinkRequest,
   stripBookingUrls,
@@ -928,7 +929,10 @@ async function classifyAndDraft(
   let preGate = null;
   if (looksLikeOutOfOffice(inboundMessage)) { classification = 'OOO'; preGate = 'ooo'; }
   else if (looksLikeWrongPerson(inboundMessage)) { classification = 'WRONG_PERSON'; preGate = 'wrong_person'; }
-  else if (looksLikeNotInterested(inboundMessage)) { classification = 'NOT_INTERESTED'; preGate = 'not_interested'; }
+  else if (looksLikeNotInterested(inboundMessage) && !looksLikeMixedIntent(inboundMessage)) {
+    classification = 'NOT_INTERESTED';
+    preGate = 'not_interested';
+  }
 
   if (!classification) {
     classification = await classifyOnly(threadContext, inboundMessage);
@@ -936,10 +940,13 @@ async function classifyAndDraft(
       const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
       if (ooo === 'OOO') classification = 'OOO';
     }
-    if (classification === 'OTHER') {
+    if (classification === 'OTHER' && !looksLikeMixedIntent(inboundMessage)) {
       const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
       if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
     }
+  }
+  if (preGate !== 'ooo' && preGate !== 'wrong_person') {
+    classification = promoteMixedIntent(classification, inboundMessage);
   }
 
   const { resolveReplyOrdinal } = require('../utils/reply-ordinal');

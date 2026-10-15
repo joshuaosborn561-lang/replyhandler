@@ -6,11 +6,18 @@
  * benefit — so for email we use SmartLead's category and keep Gemini for
  * LinkedIn, which has no equivalent.
  *
+ * Exception: mixed / conditional replies. SmartLead often stamps "Not
+ * Interested" from the opening ("let's hold off for now") even when the rest
+ * of the body is a question or interest. Those are classified from the full
+ * body and must reach Slack as a conversation.
+ *
  * Category names vary by account (they are user-editable in SmartLead), so
  * matching is on normalised substrings rather than exact strings, and anything
  * unrecognised falls through to notify-with-draft. Never guess your way into a
  * silent drop.
  */
+
+const { looksLikeMixedIntent, promoteMixedIntent, SLACK_POSITIVES } = require('../utils/mixed-intent');
 
 const CATEGORY_FIELDS = [
   'lead_category', 'leadCategory',
@@ -94,6 +101,55 @@ function classifyFromSmartlead(...sources) {
 }
 
 /**
+ * Combine SmartLead's inbox category with our full-body classification.
+ * Mixed / conditional bodies always win over a SmartLead Not Interested
+ * (or any other drop-worthy label). Clear declines still follow SmartLead.
+ */
+function applySmartleadCategory({
+  slCategory,
+  classification,
+  inboundMessage,
+  reasoning = '',
+} = {}) {
+  const bodyClass = promoteMixedIntent(classification, inboundMessage);
+  const mixed = looksLikeMixedIntent(inboundMessage);
+
+  if (mixed) {
+    const note = slCategory && slCategory.classification !== bodyClass
+      ? `Body classified over SmartLead category "${slCategory.raw}" (mixed/conditional reply) → ${bodyClass}.`
+      : `Mixed/conditional reply classified from full body → ${bodyClass}.`;
+    return {
+      classification: bodyClass,
+      reasoning: `${note} ${reasoning}`.trim(),
+      source: 'body_mixed_intent',
+    };
+  }
+
+  const slClass = slCategory?.classification || null;
+  if (slClass === 'NOT_INTERESTED' && SLACK_POSITIVES.has(String(bodyClass || '').toUpperCase())) {
+    return {
+      classification: bodyClass,
+      reasoning: `SmartLead category "${slCategory.raw}" ignored; full body is ${bodyClass}. ${reasoning}`.trim(),
+      source: 'body_over_smartlead',
+    };
+  }
+
+  if (slCategory && slClass !== classification) {
+    return {
+      classification: slClass,
+      reasoning: `SmartLead category "${slCategory.raw}" → ${slClass}. ${reasoning}`.trim(),
+      source: slCategory.source || 'smartlead_category',
+    };
+  }
+
+  return {
+    classification: bodyClass || classification,
+    reasoning,
+    source: slCategory ? 'smartlead_agree' : 'gemini',
+  };
+}
+
+/**
  * SmartLead category id whose name maps to our classification.
  * Default "Not Interested" is id 3, but names are account-editable — match
  * the mapped label, never a hardcoded id.
@@ -114,5 +170,6 @@ module.exports = {
   extractCategory,
   categoryToClassification,
   classifyFromSmartlead,
+  applySmartleadCategory,
   categoryIdForClassification,
 };

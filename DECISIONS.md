@@ -1036,3 +1036,41 @@ Do not add a client HQ field to the prompt unless Josh asks. Silence
 beats a guessed city.
 
 Guard: `drafts never invent facts — prompt + post-generation check`
+
+## 2026-10-15
+
+### New clients get an ICP profile from Josh's Fireflies calls
+
+When a client is added (`POST /admin/clients`) they must have an ICP the
+Slack-card grader can read. Existing clients already covered by
+`topup.icp_variants` / `DEFAULT_CLIENT_VARIANTS` are left alone. Everyone
+else is built from Josh's Fireflies transcripts: search by client name
+and domain, extract industries / titles / company size / geos / offer /
+exclusions using **only facts in those transcripts** (same
+`FACT_GROUNDING_RULES` as the draft verifier). Store on
+`clients.icp_profile` — that is what `loadVariant()` reads after topup /
+defaults miss.
+
+No matching calls, missing `FIREFLIES_API_KEY`, or no grounded facts →
+`icp_status = needs_review`. Do not invent an ICP. Backfill is
+`POST /admin/clients/backfill-icp` and `scripts/backfill-client-icp.js`.
+Counts only in the response.
+
+Guard: `new clients get an ICP profile or needs-review when no calls`
+
+### Mixed-intent replies are classified from the full body
+
+SmartLead stamps "Not Interested" from an opening deferral ("let's hold
+off for now") even when the rest of the body is a question or interest.
+Those replies reached ReplyHandler, then the category override replaced
+Gemini, then the interested-only Slack gate dropped them.
+
+Classify mixed / conditional replies from the **full body**. A hold-off
+plus a later question or interest is a conversation (`QUESTION` unless
+the body is already `INTERESTED` / `MEETING_PROPOSED`) and gets a Slack
+card. Clear declines still follow SmartLead and stay out of the channel.
+
+Does not reopen "NOT_INTERESTED reaches Slack". Pure not-interested
+stays suppressed.
+
+Guard: `mixed-intent replies are classified from the body, not SmartLead category`

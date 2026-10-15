@@ -1857,3 +1857,66 @@ test('drafts never invent facts — prompt + post-generation check', () => {
     reversal('drafts never invent facts', 'ungrounded drafts are no longer flagged for review'),
   );
 });
+
+// ── Decision: new clients get an ICP from Fireflies or needs-review ───
+test('new clients get an ICP profile or needs-review when no calls', () => {
+  const admin = read('src/routes/admin.js');
+  const icp = read('src/services/client-icp-profile.js');
+  const grader = read('src/services/reply-icp.js');
+  const decisions = read('DECISIONS.md');
+  const { requiredEnvVar } = require('../src/services/fireflies');
+
+  assert.match(decisions, /new clients get an ICP profile or needs-review when no calls/,
+    reversal('new clients get an ICP', 'the decision was removed from DECISIONS.md'));
+  assert.match(admin, /ensureClientIcp/,
+    reversal('new clients get an ICP', 'POST /admin/clients no longer builds an ICP'));
+  assert.match(admin, /backfill-icp/,
+    reversal('new clients get an ICP', 'the existing-client ICP backfill route is gone'));
+  assert.match(icp, /needs_review/,
+    reversal('new clients get an ICP', 'missing calls are no longer flagged needs_review'));
+  assert.match(icp, /FACT_GROUNDING_RULES/,
+    reversal('new clients get an ICP', 'transcript extract dropped the PR #97 grounding rules'));
+  assert.match(grader, /icp_profile/,
+    reversal('new clients get an ICP', 'loadVariant no longer reads clients.icp_profile'));
+  assert.equal(requiredEnvVar(), 'FIREFLIES_API_KEY',
+    reversal('new clients get an ICP', 'the required Fireflies env var name changed'));
+});
+
+// ── Decision: mixed-intent replies are classified from the body ───────
+// SmartLead "Not Interested" on a hold-off opener dropped conversations.
+test('mixed-intent replies are classified from the body, not SmartLead category', () => {
+  const webhooks = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const classifier = read('src/services/classifier.js');
+  const decisions = read('DECISIONS.md');
+  const { applySmartleadCategory, classifyFromSmartlead } = require('../src/services/smartlead-category');
+  const { slackChannelSuppressionReason } = require('../src/utils/slack-channel-policy');
+
+  assert.match(decisions, /Mixed-intent replies are classified from the full body/,
+    reversal('mixed-intent body classification', 'the decision was removed from DECISIONS.md'));
+  assert.match(webhooks, /applySmartleadCategory/,
+    reversal('mixed-intent body classification', 'the SmartLead webhook no longer applies body-over-category'));
+  assert.match(poller, /applySmartleadCategory/,
+    reversal('mixed-intent body classification', 'the SmartLead poller no longer applies body-over-category'));
+  assert.match(classifier, /looksLikeMixedIntent/,
+    reversal('mixed-intent body classification', 'the not-interested pre-gate no longer skips mixed bodies'));
+
+  const body = "Let's hold off for now. What's your typical timeline to get started?";
+  const sl = classifyFromSmartlead({ lead_category: 'Not Interested' });
+  const applied = applySmartleadCategory({
+    slCategory: sl,
+    classification: 'NOT_INTERESTED',
+    inboundMessage: body,
+    reasoning: 'synthetic',
+  });
+  assert.equal(
+    applied.classification,
+    'QUESTION',
+    reversal('mixed-intent body classification', 'a hold-off-plus-question is not surfaced as QUESTION'),
+  );
+  assert.equal(
+    slackChannelSuppressionReason({ classification: applied.classification, inboundMessage: body }),
+    null,
+    reversal('mixed-intent body classification', 'mixed replies are still dropped from Slack'),
+  );
+});
