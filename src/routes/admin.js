@@ -13,8 +13,11 @@ const {
   backfillMissingClientIcp,
   summarizeIcpResult,
 } = require('../services/client-icp-profile');
+const { requireAdminApiKey } = require('../utils/admin-auth');
+const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 
 const router = Router();
+router.use(requireAdminApiKey);
 
 function webhookUrls(clientId) {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + (process.env.PORT || 3000);
@@ -342,6 +345,28 @@ router.post('/admin/post-approval-card', async (req, res) => {
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
     return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Re-classify suppressed replies from the last N days (default 3) and
+ * Slack-card mixed-intent / QUESTION rows. dry_run is the default.
+ * Response is counts only.
+ *
+ * POST /admin/resurface-suppressed?days=3&dry=1
+ * POST /admin/resurface-suppressed  { days, dry: false }  // live
+ */
+router.post('/admin/resurface-suppressed', async (req, res) => {
+  try {
+    const days = parseDays(req.query.days ?? req.body?.days);
+    const dryRun = parseDryRun(req.query.dry ?? req.body?.dry);
+    const limit = req.query.limit ?? req.body?.limit;
+    const counts = await resurfaceSuppressedReplies({ days, dryRun, limit });
+    console.log('[Admin] resurface-suppressed', counts);
+    res.json({ ok: true, ...counts });
+  } catch (err) {
+    console.error('[Admin] resurface-suppressed error', { err: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 

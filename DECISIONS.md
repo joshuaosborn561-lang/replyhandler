@@ -1096,3 +1096,28 @@ reply. Our operations team sees it." Reply-To is `FYI_REPLY_TO` or
 `PRIMARY_GMAIL_FROM` (the connected primary Gmail mailbox).
 
 Guard: `FYI emails CC ops and invite reply to the ops inbox`
+
+## 2026-10-15
+
+### Every /admin route requires ADMIN_API_KEY
+
+`/admin` was open on the public internet — client create/list/update,
+test Slack drafts, voice-learning revert, diagnostics. Require header
+`ADMIN_API_KEY`. If the env is missing, fail closed (503), do not 404
+and serve the route. Wrong or missing header is 401. Dashboard and
+scripts send the same header.
+
+Guard: `all /admin routes require ADMIN_API_KEY and fail closed`
+
+### Resurface wrongly suppressed mixed/question replies
+
+Mixed-intent bodies that landed as `pending_replies.status = suppressed`
+before full-body classification can be re-opened. Select suppressed rows
+from the last N days (default 3), re-run `classifyAndDraft` (`draftMode:
+bulk`), and for mixed-intent or `QUESTION` reset status and call
+`postProspectSlackCard`. `dry_run` is the default and returns counts
+only — no names.
+
+`POST /admin/resurface-suppressed` and `scripts/resurface-suppressed.js`.
+
+Guard: `wrongly suppressed mixed/question replies can be resurfaced`

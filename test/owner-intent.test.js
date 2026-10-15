@@ -1965,3 +1965,72 @@ test('FYI emails CC ops and invite reply to the ops inbox', () => {
   assert.equal(fyiReplyTo({}), 'joshua@salesglidergrowth.com',
     reversal('FYI CC + reply', 'default Reply-To is no longer the primary Gmail mailbox'));
 });
+
+// ── Decision: /admin is keyed and fail-closed ─────────────────────────
+test('all /admin routes require ADMIN_API_KEY and fail closed', () => {
+  const auth = read('src/utils/admin-auth.js');
+  const index = read('src/index.js');
+  const admin = read('src/routes/admin.js');
+  const testWh = read('src/routes/test-webhooks.js');
+  const voice = read('src/routes/voice-learning.js');
+  const dash = read('src/public/index.html');
+  const decisions = read('DECISIONS.md');
+  const { evaluateAdminAuth } = require('../src/utils/admin-auth');
+
+  assert.match(decisions, /all \/admin routes require ADMIN_API_KEY and fail closed/,
+    reversal('admin auth', 'the decision was removed from DECISIONS.md'));
+  assert.match(index, /requireAdminApiKey/,
+    reversal('admin auth', 'index.js no longer mounts admin auth on /admin'));
+  assert.match(admin, /requireAdminApiKey/,
+    reversal('admin auth', 'admin.js no longer requires ADMIN_API_KEY'));
+  assert.match(testWh, /requireAdminApiKey/,
+    reversal('admin auth', 'test-webhooks no longer requires ADMIN_API_KEY'));
+  assert.doesNotMatch(testWh, /WEBHOOK_TEST_SECRET/,
+    reversal('admin auth', 'test-webhooks still gates on WEBHOOK_TEST_SECRET'));
+  assert.match(voice, /requireAdminApiKey/,
+    reversal('admin auth', 'voice-learning no longer requires ADMIN_API_KEY'));
+  assert.doesNotMatch(voice, /WEBHOOK_TEST_SECRET/,
+    reversal('admin auth', 'voice-learning still gates on WEBHOOK_TEST_SECRET'));
+  assert.match(dash, /ADMIN_API_KEY/,
+    reversal('admin auth', 'the dashboard no longer sends ADMIN_API_KEY'));
+  assert.match(auth, /admin auth not configured/,
+    reversal('admin auth', 'missing env no longer fails closed'));
+
+  const missing = evaluateAdminAuth({}, 'any');
+  assert.equal(missing.ok, false,
+    reversal('admin auth', 'unset ADMIN_API_KEY is treated as open'));
+  assert.equal(missing.status, 503,
+    reversal('admin auth', 'unset ADMIN_API_KEY is not fail-closed'));
+  const bad = evaluateAdminAuth({ ADMIN_API_KEY: 'secret' }, 'nope');
+  assert.equal(bad.status, 401,
+    reversal('admin auth', 'a wrong key is not rejected'));
+  const ok = evaluateAdminAuth({ ADMIN_API_KEY: 'secret' }, 'secret');
+  assert.equal(ok.ok, true,
+    reversal('admin auth', 'a matching ADMIN_API_KEY header is rejected'));
+});
+
+// ── Decision: resurface wrongly suppressed mixed/question replies ──────
+test('wrongly suppressed mixed/question replies can be resurfaced', () => {
+  const svc = read('src/services/resurface-suppressed.js');
+  const admin = read('src/routes/admin.js');
+  const decisions = read('DECISIONS.md');
+
+  assert.match(decisions, /wrongly suppressed mixed\/question replies can be resurfaced/,
+    reversal('resurface suppressed', 'the decision was removed from DECISIONS.md'));
+  assert.match(admin, /\/admin\/resurface-suppressed/,
+    reversal('resurface suppressed', 'the admin endpoint was removed'));
+  assert.match(svc, /status = 'suppressed'/,
+    reversal('resurface suppressed', 'the query no longer selects suppressed pending_replies'));
+  assert.match(svc, /draftMode: 'bulk'/,
+    reversal('resurface suppressed', 'reclassification is no longer bulk (Claude-safe)'));
+  assert.match(svc, /looksLikeMixedIntent/,
+    reversal('resurface suppressed', 'mixed-intent bodies are no longer selected'));
+  assert.match(svc, /QUESTION/,
+    reversal('resurface suppressed', 'QUESTION is no longer a resurface target'));
+  assert.match(svc, /postProspectSlackCard|postFn/,
+    reversal('resurface suppressed', 'live mode no longer posts a Slack card'));
+  assert.match(svc, /dryRun = true|dry_run/,
+    reversal('resurface suppressed', 'dry_run is no longer the default'));
+  assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'resurface-suppressed.js')),
+    reversal('resurface suppressed', 'scripts/resurface-suppressed.js was removed'));
+});

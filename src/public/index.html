@@ -915,7 +915,7 @@
           <li>Copy the <strong>HeyReach Webhook URL</strong> and paste it only on campaigns in <strong>that</strong> HeyReach workspace</li>
           <li>Send a test reply &mdash; you should see a Slack card with Approve / Edit &amp; send / Reject</li>
         </ol>
-        <div class="guide-note">Optional: set <code>WEBHOOK_TEST_SECRET</code> on the server and use <code>POST /admin/test/slack-draft/&lt;client-id&gt;</code> with header <code>x-webhook-test-secret</code> to post a fake card without a real prospect reply.</div>
+        <div class="guide-note">Set <code>ADMIN_API_KEY</code> on the server and send it as the <code>ADMIN_API_KEY</code> header on every <code>/admin</code> call, including <code>POST /admin/test/slack-draft/&lt;client-id&gt;</code> for a fake card without a real prospect reply.</div>
       </div>
     </details>
 
@@ -926,7 +926,7 @@
       <div class="guide-section-body">
         <ol>
           <li>Connect this repo; Railway sets <code>RAILWAY_PUBLIC_DOMAIN</code> automatically</li>
-          <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, optional <code>EMAIL_WATERFALL_URL</code>, optional <code>WEBHOOK_TEST_SECRET</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
+          <li>Variables: <code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>SLACK_SIGNING_SECRET</code>, <code>ADMIN_API_KEY</code>, optional <code>EMAIL_WATERFALL_URL</code>, optional <code>DEFAULT_BOOKING_TIMEZONE</code></li>
           <li>Run SQL: <code>schema.sql</code> on a fresh DB, or apply <code>migrations/*.sql</code> in order on an existing one</li>
           <li>Slack app &rarr; Interactivity URL = <code>https://&lt;your-domain&gt;/slack/actions</code></li>
         </ol>
@@ -957,14 +957,52 @@
 
 <script>
 const API = window.location.origin;
+const ADMIN_KEY_STORAGE = 'admin_api_key';
 let clients = [];
 let currentDetailClient = null;
+
+function getAdminKey() {
+  let key = sessionStorage.getItem(ADMIN_KEY_STORAGE);
+  if (!key) {
+    key = window.prompt('Admin API key (ADMIN_API_KEY header)') || '';
+    if (key) sessionStorage.setItem(ADMIN_KEY_STORAGE, key);
+  }
+  return key;
+}
+
+function adminHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  const key = getAdminKey();
+  if (key) headers.ADMIN_API_KEY = key;
+  return headers;
+}
+
+async function adminFetch(path, opts) {
+  const options = Object.assign({}, opts || {});
+  options.headers = adminHeaders(options.headers);
+  const res = await fetch(`${API}${path}`, options);
+  if (res.status === 401 || res.status === 503) {
+    sessionStorage.removeItem(ADMIN_KEY_STORAGE);
+  }
+  return res;
+}
 
 // ─── Load ────────────────────────────────────────────
 async function loadClients() {
   try {
-    const res = await fetch(`${API}/admin/clients`);
-    clients = await res.json();
+    const res = await adminFetch('/admin/clients');
+    if (!res.ok) {
+      toast(res.status === 503
+        ? 'ADMIN_API_KEY is not set on the server'
+        : 'Admin key rejected', 'error');
+      return;
+    }
+    const body = await res.json();
+    if (!Array.isArray(body)) {
+      toast('Failed to load clients', 'error');
+      return;
+    }
+    clients = body;
     renderStats();
     renderGrid();
   } catch (err) {
@@ -1150,7 +1188,7 @@ async function toggleActive() {
   if (!currentDetailClient) return;
   const newState = !currentDetailClient.active;
   try {
-    await fetch(`${API}/admin/clients/${currentDetailClient.id}`, {
+    await adminFetch(`/admin/clients/${currentDetailClient.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ active: newState }),
@@ -1217,10 +1255,9 @@ async function submitForm() {
 
   try {
     const isEdit = !!id;
-    const url = isEdit ? `${API}/admin/clients/${id}` : `${API}/admin/clients`;
     const method = isEdit ? 'PATCH' : 'POST';
 
-    const res = await fetch(url, {
+    const res = await adminFetch(isEdit ? `/admin/clients/${id}` : '/admin/clients', {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -1342,7 +1379,7 @@ async function syncAllToPortal() {
     return;
   }
   try {
-    const res = await fetch(`${API}/admin/clients/sync-portal`, { method: 'POST' });
+    const res = await adminFetch('/admin/clients/sync-portal', { method: 'POST' });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'Sync failed');
     toast(`Portal sync: ${body.synced} of ${body.total} ok`, 'success');

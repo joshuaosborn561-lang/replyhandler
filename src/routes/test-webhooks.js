@@ -1,28 +1,13 @@
-const crypto = require('crypto');
 const { Router } = require('express');
 const db = require('../db');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { logIntegrationStatus, getIntegrationStatus } = require('../services/integration-check');
 const { sweepInterested } = require('../services/interested-sweep');
 const { refreshFollowUpSlackCards } = require('../services/refresh-followup-cards');
+const { requireAdminApiKey } = require('../utils/admin-auth');
 
 const router = Router();
-
-function assertSecret(req, res) {
-  const secret = process.env.WEBHOOK_TEST_SECRET;
-  if (!secret) {
-    res.status(404).json({ error: 'not found' });
-    return null;
-  }
-  const token = req.get('x-webhook-test-secret') || req.query.secret;
-  const a = Buffer.from(String(token || ''), 'utf8');
-  const b = Buffer.from(secret, 'utf8');
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    res.status(401).json({ error: 'unauthorized' });
-    return null;
-  }
-  return secret;
-}
+router.use(requireAdminApiKey);
 
 /**
  * Inserts a pending reply and posts the same Slack approval card as production,
@@ -30,13 +15,11 @@ function assertSecret(req, res) {
  * against your workspace.
  *
  * POST /admin/test/slack-draft/:clientId
- * Header: x-webhook-test-secret: <WEBHOOK_TEST_SECRET>
+ * Header: ADMIN_API_KEY: <ADMIN_API_KEY>
  * Body (optional): { classification, draft, inboundMessage, leadName, leadEmail, platform,
  *   campaignDisplay, lastOutboundMessage, campaignId }
  */
 router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
-  if (!assertSecret(req, res)) return;
-
   const { clientId } = req.params;
   const {
     classification = 'INTERESTED',
@@ -152,12 +135,10 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
 
 /**
  * Read-only production diagnostics: recent stored replies, optionally filtered.
- * GET /admin/test/replies?secret=...&client=parlay&lead=doug&days=7&limit=50
+ * GET /admin/test/replies?client=parlay&lead=doug&days=7&limit=50
  * Add &status=suppressed to see only replies that were silenced, and why.
  */
 router.get('/admin/test/replies', async (req, res) => {
-  if (!assertSecret(req, res)) return;
-
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
   const clientLike = req.query.client ? `%${req.query.client}%` : null;
@@ -201,10 +182,9 @@ router.get('/admin/test/replies', async (req, res) => {
 /**
  * Live check of the call-recording integrations. Re-runs the probe unless
  * ?cached=1, so a config change can be verified without a redeploy.
- * GET /admin/test/integrations?secret=...
+ * GET /admin/test/integrations
  */
 router.get('/admin/test/integrations', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   try {
     const status = /^(1|true|yes)$/i.test(String(req.query.cached || ''))
       ? getIntegrationStatus()
@@ -219,10 +199,9 @@ router.get('/admin/test/integrations', async (req, res) => {
  * Who booked? Sweeps every client's SmartLead inbox for replies SmartLead
  * marked Interested / Meeting Request, then checks each against the booking
  * signals. Read-only — stores nothing, posts nothing.
- * GET /admin/test/interested?secret=...&hours=24
+ * GET /admin/test/interested?hours=24
  */
 router.get('/admin/test/interested', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 168);
   try {
     const result = await sweepInterested({ hours });
@@ -235,10 +214,9 @@ router.get('/admin/test/interested', async (req, res) => {
 
 /**
  * Rewrite already-posted FOLLOW_UP Slack cards to the compact layout.
- * POST /admin/refresh-followup-cards?secret=...&days=21&limit=80
+ * POST /admin/refresh-followup-cards?days=21&limit=80
  */
 router.post('/admin/refresh-followup-cards', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   const days = parseInt(req.query.days || req.body?.days, 10) || 21;
   const limit = parseInt(req.query.limit || req.body?.limit, 10) || 80;
   try {

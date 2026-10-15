@@ -52,7 +52,8 @@ cp .env.example .env
 | `ANTHROPIC_REPLY_MODEL` | Optional drafting model override (default `claude-sonnet-5`) |
 | `GEMINI_EMBEDDING_MODEL` | Optional embedding override (default `gemini-embedding-001`; `text-embedding-004` retired Jan 2026) |
 | `SLACK_SIGNING_SECRET` | From your Slack app's Basic Information page |
-| `WEBHOOK_TEST_SECRET` | Optional. Protects `POST /admin/test/slack-draft/:clientId` for Slack-only testing |
+| `ADMIN_API_KEY` | Required. Header on every `/admin` route. Fail-closed if unset |
+| `WEBHOOK_TEST_SECRET` | Optional. Protects `/auth/gmail/connect` when `AUTH_CONNECT_SECRET` is unset |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
 | `FOLLOW_UP_REMINDER_HOURS` | Optional. After you **send** an approved reply, Slack gets a **follow-up nudge** if the prospect hasnâ€™t replied again within this many hours (default `24`) |
 | `HEYREACH_POLL_ENABLED` | Optional. Backstop poller for HeyReach inbox replies if webhooks are late/missed (default `true`) |
@@ -122,8 +123,8 @@ also in the tracked migration list). Run it by hand or inspect the result:
 ```bash
 railway run node scripts/run-weekly-voice-learning.js --dry   # preview, no writes
 railway run node scripts/run-weekly-voice-learning.js --hours 336
-curl -X POST "$HOST/admin/voice-learning/run?secret=$WEBHOOK_TEST_SECRET&dry=1"
-curl "$HOST/admin/voice-learning/profiles?secret=$WEBHOOK_TEST_SECRET&client=SalesGlider"
+curl -X POST "$HOST/admin/voice-learning/run?dry=1" -H "ADMIN_API_KEY: $ADMIN_API_KEY"
+curl "$HOST/admin/voice-learning/profiles?client=SalesGlider" -H "ADMIN_API_KEY: $ADMIN_API_KEY"
 ```
 
 This is a bulk job: it never calls Anthropic.
@@ -141,9 +142,9 @@ railway run node scripts/voice-profile-revert.js revert --previous        # glob
 railway run node scripts/voice-profile-revert.js revert --previous --client SalesGlider
 railway run node scripts/voice-profile-revert.js revert <id> --note "Oct 2 version was too salesy"
 
-curl "$HOST/admin/voice-learning/history?secret=$WEBHOOK_TEST_SECRET&client=SalesGlider"
-curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&client=global&previous=1"
-curl -X POST "$HOST/admin/voice-learning/revert?secret=$WEBHOOK_TEST_SECRET&id=<profile id>"
+curl "$HOST/admin/voice-learning/history?client=SalesGlider" -H "ADMIN_API_KEY: $ADMIN_API_KEY"
+curl -X POST "$HOST/admin/voice-learning/revert?client=global&previous=1" -H "ADMIN_API_KEY: $ADMIN_API_KEY"
+curl -X POST "$HOST/admin/voice-learning/revert?id=<profile id>" -H "ADMIN_API_KEY: $ADMIN_API_KEY"
 ```
 
 Drafts pick up a revert within 10 minutes (`LEARNED_VOICE_CACHE_MINUTES`).
@@ -171,7 +172,7 @@ Use the admin API to create a client. This returns webhook URLs ready to paste i
 
 ```bash
 curl -X POST https://your-app.up.railway.app/admin/clients \
-  \
+  -H "ADMIN_API_KEY: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Acme Corp",
@@ -199,14 +200,15 @@ Response includes:
 ### List all clients
 
 ```bash
-curl https://your-app.up.railway.app/admin/clients
+curl https://your-app.up.railway.app/admin/clients \
+  -H "ADMIN_API_KEY: $ADMIN_API_KEY"
 ```
 
 ### Update a client
 
 ```bash
 curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
-  \
+  -H "ADMIN_API_KEY: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"voice_prompt": "Updated voice instructions here"}'
 ```
@@ -290,7 +292,7 @@ For each client:
 
 ```bash
 curl -X PATCH https://your-app.up.railway.app/admin/clients/uuid-here \
-  \
+  -H "ADMIN_API_KEY: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"calcom_event_type_id": "123456"}'
 ```
@@ -338,26 +340,27 @@ Cal.com handles sending calendar invites and confirmation emails automatically â
 | `POST` | `/webhook/smartlead/:clientId` | None | SmartLead inbound webhook |
 | `POST` | `/webhook/heyreach/:clientId` | None | HeyReach inbound webhook |
 | `POST` | `/slack/actions` | Slack signature | Button interactions |
-| `POST` | `/admin/clients` | None | Create client |
-| `GET` | `/admin/clients` | None | List clients |
-| `PATCH` | `/admin/clients/:clientId` | None | Update client |
-| `POST` | `/admin/test/slack-draft/:clientId` | `WEBHOOK_TEST_SECRET` (header `x-webhook-test-secret` or `?secret=`) | Post a fake approval card to Slack (no Gemini / no outbound APIs) |
+| `POST` | `/admin/clients` | `ADMIN_API_KEY` header | Create client |
+| `GET` | `/admin/clients` | `ADMIN_API_KEY` header | List clients |
+| `PATCH` | `/admin/clients/:clientId` | `ADMIN_API_KEY` header | Update client |
+| `POST` | `/admin/resurface-suppressed` | `ADMIN_API_KEY` header | Re-classify suppressed replies; dry_run default; counts only |
+| `POST` | `/admin/test/slack-draft/:clientId` | `ADMIN_API_KEY` header | Post a fake approval card to Slack (no Gemini / no outbound APIs) |
 | `GET` | `/health` | None | Health check |
 
 ### Test Slack with a fake thread (no SmartLead/HeyReach)
 
-1. Set `WEBHOOK_TEST_SECRET` in your environment (any long random string).
-2. Add the same value when calling the test endpoint so it is not open to the public internet.
+1. Set `ADMIN_API_KEY` in your environment (any long random string).
+2. Send the same value as the `ADMIN_API_KEY` header on every `/admin` call.
 3. Example JSON bodies for real webhook smoke tests live in `scripts/fake-webhook-payloads.json`.
 4. Post a draft card directly to your approval channel:
 
 ```bash
-export WEBHOOK_TEST_SECRET='your-secret'
+export ADMIN_API_KEY='your-secret'
 export CLIENT_ID='<uuid from GET /admin/clients>'
 curl -sS -X POST "https://your-app.up.railway.app/admin/test/slack-draft/$CLIENT_ID" \
   -H "Content-Type: application/json" \
-  -H "x-webhook-test-secret: $WEBHOOK_TEST_SECRET" \
+  -H "ADMIN_API_KEY: $ADMIN_API_KEY" \
   -d '{"classification":"INTERESTED","leadName":"Slack Test"}'
 ```
 
-Or run `node scripts/post-test-slack-draft.js` after setting `BASE_URL`, `CLIENT_ID`, and `WEBHOOK_TEST_SECRET`.
+Or run `node scripts/post-test-slack-draft.js` after setting `BASE_URL`, `CLIENT_ID`, and `ADMIN_API_KEY`.

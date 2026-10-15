@@ -1,11 +1,12 @@
-const crypto = require('crypto');
 const { Router } = require('express');
 const db = require('../db');
 const { runWeeklyVoiceLearning } = require('../services/weekly-voice-learning');
 const voiceProfile = require('../services/voice-profile');
 const { renderLearnedVoiceBlock } = voiceProfile;
+const { requireAdminApiKey } = require('../utils/admin-auth');
 
 const router = Router();
+router.use(requireAdminApiKey);
 
 const PROFILE_SELECT = `
   SELECT vp.id, vp.scope, vp.client_id, c.name AS client_name, vp.week_ending::text AS week_ending, vp.profile,
@@ -56,34 +57,16 @@ function annotateActive(rows) {
   return out;
 }
 
-/** Same gate as /admin/test/*: 404 when unset, timing-safe compare. */
-function assertSecret(req, res) {
-  const secret = process.env.WEBHOOK_TEST_SECRET;
-  if (!secret) {
-    res.status(404).json({ error: 'not found' });
-    return null;
-  }
-  const token = req.get('x-webhook-test-secret') || req.query.secret;
-  const a = Buffer.from(String(token || ''), 'utf8');
-  const b = Buffer.from(secret, 'utf8');
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    res.status(401).json({ error: 'unauthorized' });
-    return null;
-  }
-  return secret;
-}
-
 function flag(v) {
   return /^(1|true|yes|on)$/i.test(String(v || '').trim());
 }
 
 /**
- * POST /admin/voice-learning/run?secret=…&hours=192&dry=1
+ * POST /admin/voice-learning/run?hours=192&dry=1
  * Runs the Friday job now. `dry=1` collects and synthesizes but writes nothing
  * (profiles are returned inline as preview:*). Runs inline; expect 30–120s.
  */
 router.post('/admin/voice-learning/run', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   const hours = parseInt(req.query.hours || req.body?.hours || '', 10);
   const dryRun = flag(req.query.dry ?? req.body?.dry);
   try {
@@ -99,12 +82,11 @@ router.post('/admin/voice-learning/run', async (req, res) => {
 });
 
 /**
- * GET /admin/voice-learning/profiles?secret=…[&client=<name>]
+ * GET /admin/voice-learning/profiles[?client=<name>]
  * The profile drafts are using right now (newest version) for global and each
  * client, plus the rendered prompt block a draft for that client would receive.
  */
 router.get('/admin/voice-learning/profiles', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   try {
     const { rows: all } = await db.query(`${PROFILE_SELECT} ORDER BY vp.created_at DESC`);
     const rows = annotateActive(all).filter((r) => r.active);
@@ -136,12 +118,11 @@ router.get('/admin/voice-learning/profiles', async (req, res) => {
 });
 
 /**
- * GET /admin/voice-learning/history?secret=…[&client=<name>|global]
+ * GET /admin/voice-learning/history[?client=<name>|global]
  * Every stored version, newest first, with `active` marking the one drafts
  * use. Nothing is ever deleted from this list; any `id` here can be reverted to.
  */
 router.get('/admin/voice-learning/history', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   try {
     const filter = String(req.query.client || '').trim();
     let where = '';
@@ -159,7 +140,7 @@ router.get('/admin/voice-learning/history', async (req, res) => {
     res.json({
       count: versions.length,
       versions,
-      howToRevert: 'POST /admin/voice-learning/revert?secret=…&id=<id>   or   &client=<name>|global&previous=1',
+      howToRevert: 'POST /admin/voice-learning/revert?id=<id>   or   &client=<name>|global&previous=1',
     });
   } catch (err) {
     migrationError(res, err);
@@ -167,15 +148,14 @@ router.get('/admin/voice-learning/history', async (req, res) => {
 });
 
 /**
- * POST /admin/voice-learning/revert?secret=…&id=<profile id>[&note=…]
- * POST /admin/voice-learning/revert?secret=…&client=<name>|global&previous=1[&note=…]
+ * POST /admin/voice-learning/revert?id=<profile id>[&note=…]
+ * POST /admin/voice-learning/revert?client=<name>|global&previous=1[&note=…]
  *
  * Copies the chosen version forward as the new current one. Drafts switch to
  * it and the Friday job keeps auto-updating from it. The version being
  * reverted away from stays in history. `previous=1` = one week back.
  */
 router.post('/admin/voice-learning/revert', async (req, res) => {
-  if (!assertSecret(req, res)) return;
   const id = String(req.query.id || req.body?.id || '').trim();
   const note = String(req.query.note || req.body?.note || '').trim() || null;
   try {
