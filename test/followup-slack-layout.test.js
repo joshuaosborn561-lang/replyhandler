@@ -41,16 +41,16 @@ describe('FOLLOW_UP Slack channel', () => {
 });
 
 describe('FOLLOW_UP card conversation layout', () => {
-  it('shows the suggested send and last thread turn, not the full dump', () => {
+  it('shows the suggested send first, then every turn in the exchange', () => {
     const blocks = buildFollowUpConversationBlocks({
       inboundMessage: 'Sure, Tuesday works.',
       lastOutboundMessage: 'Great — talk Tuesday at 2.',
       draft: 'Still interested in meeting for a free campaign?',
       threadMessages: [
-        { role: 'them', body: 'Sure, Tuesday works.' },
-        { role: 'us', body: 'Great — talk Tuesday at 2.' },
-        { role: 'us', body: 'Bump #1 checking in' },
-        { role: 'them', body: 'Still around next week?' },
+        { role: 'them', body: 'Sure, Tuesday works.', time: '2026-10-01T15:00:00Z' },
+        { role: 'us', body: 'Great — talk Tuesday at 2.', time: '2026-10-01T16:00:00Z' },
+        { role: 'us', body: 'Bump #1 checking in', time: '2026-10-02T15:00:00Z' },
+        { role: 'them', body: 'Still around next week?', time: '2026-10-03T15:00:00Z' },
       ],
     });
 
@@ -61,11 +61,19 @@ describe('FOLLOW_UP card conversation layout', () => {
 
     assert.match(texts, /\*Suggested follow-up\*/);
     assert.match(texts, /Still interested in meeting for a free campaign/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /\*Email exchange\*/);
+    assert.match(texts, /Sure, Tuesday works/);
+    assert.match(texts, /Great — talk Tuesday at 2/);
+    assert.match(texts, /Bump #1 checking in/);
     assert.match(texts, /Still around next week/);
+    assert.match(texts, /1 · Them · Oct 1/);
+    assert.match(texts, /4 · Them · Oct 3/);
+    assert.ok(
+      texts.indexOf('Suggested follow-up') < texts.indexOf('Email exchange'),
+      'the draft stays above the transcript',
+    );
     assert.doesNotMatch(texts, /\*Original message\*/);
-    assert.doesNotMatch(texts, /Bump #1 checking in/);
-    assert.ok(!texts.includes('Sure, Tuesday works.'), 'original inbound is not dumped');
+    assert.doesNotMatch(texts, /\*Last message/);
 
     const last = lastThreadTurn({
       threadMessages: [
@@ -77,7 +85,7 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.doesNotMatch(last.body, /Rebecca White wrote/);
   });
 
-  it('sent confirmation stays compact — send first, last turn, no thread dump', () => {
+  it('sent confirmation shows the send, then the whole exchange', () => {
     const blocks = buildSentConfirmationBlocks({
       leadName: 'Patrick Lefler',
       leadEmail: 'plefler@seeking-eureeka.com',
@@ -98,9 +106,15 @@ describe('FOLLOW_UP card conversation layout', () => {
       .join('\n');
     assert.match(texts, /\*Sent to prospect\*/);
     assert.match(texts, /still interested in meeting/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /\*Email exchange\*/);
+    assert.match(texts, /1 · You/);
+    assert.match(texts, /76ers tickets/);
+    assert.match(texts, /2 · Them/);
     assert.match(texts, /more interested in PowerGRYD/);
-    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
+    assert.ok(
+      texts.indexOf('Sent to prospect') < texts.indexOf('Email exchange'),
+      'what we sent stays above the transcript',
+    );
     assert.doesNotMatch(texts, /\*Original message\*/);
     assert.doesNotMatch(texts, /\*They replied/);
     assert.doesNotMatch(texts, /Rebecca White wrote/);
@@ -121,7 +135,7 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.match(reject.text.text, /not interested/i);
   });
 
-  it('pending FOLLOW_UP approval card is compact — no Original / You sent dump', () => {
+  it('pending FOLLOW_UP approval card shows the exchange under the buttons', () => {
     const { blocks } = buildDraftApprovalCard({
       replyId: 'r1',
       leadName: 'Cory Schell',
@@ -142,16 +156,24 @@ describe('FOLLOW_UP card conversation layout', () => {
       .map((b) => b.text.text)
       .join('\n');
     assert.match(texts, /\*Suggested follow-up\*/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /\*Email exchange\*/);
+    assert.match(texts, /1 · You/);
+    assert.match(texts, /AirPods/);
+    assert.match(texts, /2 · Them/);
     assert.match(texts, /Were are you guys out of/);
     assert.doesNotMatch(texts, /margin-top/);
     assert.doesNotMatch(texts, /\*Original message\*/);
     assert.doesNotMatch(texts, /\*Our reply\*/);
     assert.doesNotMatch(texts, /\*You sent \(2\)\*/);
-    assert.ok(blocks.some((b) => b.type === 'actions'), 'buttons stay on the pending card');
+    const actionsAt = blocks.findIndex((b) => b.type === 'actions');
+    const exchangeAt = blocks.findIndex((b) => (
+      b.type === 'section' && b.text && String(b.text.text).includes('*Email exchange*')
+    ));
+    assert.ok(actionsAt > 0 && exchangeAt > actionsAt, 'buttons stay above the transcript');
+    assert.ok(blocks.length <= 50, 'card stays inside Slack’s block cap');
   });
 
-  it('does not repeat the outgoing bump as Last message (you)', () => {
+  it('keeps a prior send in the exchange when the new draft repeats it', () => {
     const blocks = buildFollowUpConversationBlocks({
       draft: 'Hey Patrick, still interested in meeting for this?',
       inboundMessage: 'Would like to learn more.',
@@ -166,9 +188,46 @@ describe('FOLLOW_UP card conversation layout', () => {
       .map((b) => b.text.text)
       .join('\n');
     assert.match(texts, /\*Suggested follow-up\*/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /1 · Them/);
     assert.match(texts, /Would like to learn more/);
-    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
+    assert.match(texts, /2 · You/);
+    assert.doesNotMatch(texts, /\*Last message/);
+  });
+
+  it('keeps the opening and the latest turns when the thread is very long', () => {
+    const threadMessages = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 === 0 ? 'us' : 'them',
+      body: `turn ${i + 1} ${'word '.repeat(40)}`,
+      time: new Date(Date.UTC(2026, 9, 1, 15, i)).toISOString(),
+    }));
+    const blocks = buildFollowUpConversationBlocks({
+      draft: 'Still interested in meeting for the tickets?',
+      threadMessages,
+    });
+    const texts = blocks
+      .filter((b) => b.type === 'section' || b.type === 'context')
+      .map((b) => (b.text && b.text.text) || (b.elements && b.elements[0].text) || '')
+      .join('\n');
+    assert.match(texts, /turn 1 /);
+    assert.match(texts, /turn 2 /);
+    assert.match(texts, /turn 40 /);
+    assert.match(texts, /earlier message/);
+    assert.ok(blocks.length <= 50);
+  });
+
+  it('keeps the quoted chain when that blob is the only copy of the thread', () => {
+    const blocks = buildFollowUpConversationBlocks({
+      draft: 'Still interested in meeting for this?',
+      threadMessages: [
+        { role: 'them', body: 'Yes.\n\nOn Monday Jane wrote: the original offer' },
+      ],
+    });
+    const texts = blocks
+      .filter((b) => b.type === 'section')
+      .map((b) => b.text.text)
+      .join('\n');
+    assert.match(texts, /Jane wrote/);
+    assert.match(texts, /the original offer/);
   });
 
   it('strips Outlook CSS from the last-message line', () => {
@@ -203,6 +262,18 @@ describe('FOLLOW_UP card refresh', () => {
 });
 
 describe('thread extract pinStart', () => {
+  it('keeps every turn when keepAll is set', () => {
+    const list = Array.from({ length: 30 }, (_, i) => ({
+      type: i % 2 === 0 ? 'REPLY' : 'SENT',
+      email_body: `msg ${i + 1}`,
+      time: new Date(Date.UTC(2026, 7, 1, 12, i)).toISOString(),
+    }));
+    const msgs = extractThreadMessages('smartlead', { history: list }, { keepAll: true });
+    assert.equal(msgs.length, 30);
+    assert.equal(msgs[0].body, 'msg 1');
+    assert.equal(msgs[29].body, 'msg 30');
+  });
+
   it('keeps the opening exchange when history is long', () => {
     const list = Array.from({ length: 30 }, (_, i) => ({
       type: i % 2 === 0 ? 'REPLY' : 'SENT',

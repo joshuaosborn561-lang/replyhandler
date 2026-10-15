@@ -72,7 +72,7 @@ async function slackCardContextFromReply(reply, client) {
   const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
   const threadMessages = String(reply.classification || '').toUpperCase() === 'FOLLOW_UP'
     ? extractThreadMessages(reply.platform, tc, {
-      maxMessages: 12,
+      keepAll: true,
       extraMessages: [
         ...(reply.inbound_message ? [{ role: 'them', body: reply.inbound_message }] : []),
         ...((reply.sent_reply || lastOutbound)

@@ -660,13 +660,15 @@ New card (approval and confirmation): **lead + campaign → suggested send (or w
 
 Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
 
+Superseded for the card layout on 2026-10-15 — see "FOLLOW_UP cards show the whole email exchange". The "only after we have replied" rule below is unchanged.
+
 ### Follow-ups only fire after we have replied first
 
 *"Also make sure follow up only fired if we have replied first."*
 
 A SmartLead/HeyReach sequence email in thread history is not "we replied." Cadence scheduling requires a non-empty `sent_reply` on the approved row. The runner and the attention digest skip (and cancel later steps) with `no_prior_send` unless that thread already has a Slack-approved send. `draft_reply` is not treated as a send.
 
-Guard: `FOLLOW_UP cards show draft + last message; only after we have sent`
+Guard: `FOLLOW_UP cards show the whole email exchange; only after we have sent`
 
 ### Portal takeover stops our follow-ups and sends
 
@@ -990,3 +992,19 @@ as client-notify. The Allo `Caller reply to Allo` webhook
 is a reviewed script / UI step — do not auto-apply against live campaigns.
 
 Guard: `Gabe Calls inbound forwards on arrival; client notify stays on send`
+
+## 2026-10-15
+
+### FOLLOW_UP cards show the whole email exchange
+
+*"i need the followups to show me the whole email exchange with a client."*
+
+Supersedes the compact layout from 2026-10-01 ("draft and last message only"). That cut was because a transcript placed above the draft forced Slack "See more" and hid what we were about to send. The exchange comes back, under the draft.
+
+Pending card: **lead + campaign → suggested send → buttons → the whole thread, oldest first**. Sent confirmation: **what we sent → status → the whole thread**. Each turn is numbered (`1 · You`, `2 · Them`) with the Chicago date when we have one. Quoted reply chains are stripped once the history is already split into separate messages, so a turn is that message and not a second copy of the earlier ones. A single leftover blob keeps its quotes. CSS leftovers stay stripped.
+
+The runner, the Approve/confirm path, and the card refresh all pass `keepAll` so the middle of a thread is not dropped. A thread past 24 turns, or past the transcript character budget, keeps the opening and the latest turns and says how many were left out — Slack still caps a message at 50 blocks. The draft and the buttons stay above the transcript so "See more" cannot hide them.
+
+Follow-ups still post only after a Slack-approved send. That rule is unchanged.
+
+Guard: `FOLLOW_UP cards show the whole email exchange; only after we have sent`
