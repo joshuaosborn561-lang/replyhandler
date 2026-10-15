@@ -13,8 +13,11 @@ const {
   backfillMissingClientIcp,
   summarizeIcpResult,
 } = require('../services/client-icp-profile');
+const { requireAdminApiKey } = require('../utils/admin-auth');
+const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 
 const router = Router();
+router.use(requireAdminApiKey);
 
 function webhookUrls(clientId) {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + (process.env.PORT || 3000);
@@ -50,7 +53,7 @@ router.post('/admin/clients', async (req, res) => {
   try {
     const {
       name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token,
-      slack_channel_id, booking_link, calendly_personal_access_token, voice_prompt, digest_timezone,
+      slack_channel_id, booking_link, voice_prompt, digest_timezone,
       cc_email, cc_emails, cc_round_robin_emails, contact_email,
     } = req.body;
 
@@ -68,10 +71,10 @@ router.post('/admin/clients', async (req, res) => {
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
          name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token, slack_channel_id,
-         booking_link, booking_destination_url, calendly_personal_access_token, voice_prompt, digest_timezone,
+         booking_link, booking_destination_url, voice_prompt, digest_timezone,
          cc_email, cc_emails, cc_round_robin_emails, contact_email
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -81,7 +84,6 @@ router.post('/admin/clients', async (req, res) => {
         slack_channel_id,
         booked.booking_link || null,
         booked.booking_destination_url || null,
-        calendly_personal_access_token || null,
         voice_prompt || '',
         digest_timezone || null,
         legacyCc,
@@ -172,7 +174,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const fields = req.body;
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'allo_api_key', 'slack_bot_token',
-      'slack_channel_id', 'booking_link', 'booking_destination_url', 'calendly_personal_access_token', 'voice_prompt',
+      'slack_channel_id', 'booking_link', 'booking_destination_url', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
       'contact_email',
     ];
@@ -343,6 +345,28 @@ router.post('/admin/post-approval-card', async (req, res) => {
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
     return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Re-classify suppressed replies from the last N days (default 3) and
+ * Slack-card mixed-intent / QUESTION rows. dry_run is the default.
+ * Response is counts only.
+ *
+ * POST /admin/resurface-suppressed?days=3&dry=1
+ * POST /admin/resurface-suppressed  { days, dry: false }  // live
+ */
+router.post('/admin/resurface-suppressed', async (req, res) => {
+  try {
+    const days = parseDays(req.query.days ?? req.body?.days);
+    const dryRun = parseDryRun(req.query.dry ?? req.body?.dry);
+    const limit = req.query.limit ?? req.body?.limit;
+    const counts = await resurfaceSuppressedReplies({ days, dryRun, limit });
+    console.log('[Admin] resurface-suppressed', counts);
+    res.json({ ok: true, ...counts });
+  } catch (err) {
+    console.error('[Admin] resurface-suppressed error', { err: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 

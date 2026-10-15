@@ -9,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const voiceLearningRoutes = require('./routes/voice-learning');
 const publicBookingCatalogRoutes = require('./routes/public-booking-catalog');
+const { requireAdminApiKey } = require('./utils/admin-auth');
 const { startCron } = require('./cron');
 const { assertDatabaseReady, getHealthStatus } = require('./db-ready');
 
@@ -46,6 +47,7 @@ app.get('/health', async (_req, res) => {
 app.use(webhookRoutes);
 app.use(bookingBridgeRecapRoutes);
 app.use(slackRoutes);
+app.use('/admin', requireAdminApiKey);
 app.use(adminRoutes);
 app.use(clientActionRoutes);
 app.use(authRoutes);

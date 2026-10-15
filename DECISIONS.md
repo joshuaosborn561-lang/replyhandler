@@ -1074,3 +1074,50 @@ Does not reopen "NOT_INTERESTED reaches Slack". Pure not-interested
 stays suppressed.
 
 Guard: `mixed-intent replies are classified from the body, not SmartLead category`
+
+## 2026-10-15
+
+### Calendly PAT is gone
+
+Josh never uses a Calendly personal access token. Remove the field, the
+authenticated Calendly API client, dashboard inputs, and docs. Public
+Calendly / HubSpot / Teams slot reads stay — those do not need a PAT.
+
+Guard: `Calendly PAT integration is removed`
+
+### Every client FYI is CC'd to ops; replies go to the ops inbox
+
+The "FYI, we just replied" Gmail (and SmartLead-forward fallback) also
+CCs `FYI_CC_EMAILS` so ops sees every notify. When that env is unset,
+use the default ops teammate address. Set the env empty to disable.
+
+The body includes: "If you have any notes on this reply, just hit
+reply. Our operations team sees it." Reply-To is `FYI_REPLY_TO` or
+`PRIMARY_GMAIL_FROM` (the connected primary Gmail mailbox).
+
+Guard: `FYI emails CC ops and invite reply to the ops inbox`
+
+## 2026-10-15
+
+### Every /admin route requires ADMIN_API_KEY
+
+`/admin` was open on the public internet — client create/list/update,
+test Slack drafts, voice-learning revert, diagnostics. Require header
+`ADMIN_API_KEY`. If the env is missing, fail closed (503), do not 404
+and serve the route. Wrong or missing header is 401. Dashboard and
+scripts send the same header.
+
+Guard: `all /admin routes require ADMIN_API_KEY and fail closed`
+
+### Resurface wrongly suppressed mixed/question replies
+
+Mixed-intent bodies that landed as `pending_replies.status = suppressed`
+before full-body classification can be re-opened. Select suppressed rows
+from the last N days (default 3), re-run `classifyAndDraft` (`draftMode:
+bulk`), and for mixed-intent or `QUESTION` reset status and call
+`postProspectSlackCard`. `dry_run` is the default and returns counts
+only — no names.
+
+`POST /admin/resurface-suppressed` and `scripts/resurface-suppressed.js`.
+
+Guard: `wrongly suppressed mixed/question replies can be resurfaced`

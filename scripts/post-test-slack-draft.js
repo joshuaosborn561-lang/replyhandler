@@ -3,7 +3,7 @@
  * Post a fake approval card to Slack (same blocks as production) without Gemini.
  *
  * Usage:
- *   export WEBHOOK_TEST_SECRET='your-secret'
+ *   export ADMIN_API_KEY='your-secret'
  *   export CLIENT_ID='<uuid from dashboard /admin/clients>'
  *   export BASE_URL='http://localhost:3000'   # or your public URL
  *   node scripts/post-test-slack-draft.js
@@ -16,11 +16,11 @@ const { readFileSync } = require('fs');
 const path = require('path');
 
 const BASE_URL = (process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`).replace(/\/$/, '');
-const secret = process.env.WEBHOOK_TEST_SECRET;
+const secret = process.env.ADMIN_API_KEY;
 const clientId = process.env.CLIENT_ID;
 
 if (!secret || !clientId) {
-  console.error('Set WEBHOOK_TEST_SECRET and CLIENT_ID environment variables.');
+  console.error('Set ADMIN_API_KEY and CLIENT_ID environment variables.');
   process.exit(1);
 }
 
@@ -32,7 +32,7 @@ async function main() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-webhook-test-secret': secret,
+      ADMIN_API_KEY: secret,
     },
     body: JSON.stringify({
       classification: 'MEETING_PROPOSED',

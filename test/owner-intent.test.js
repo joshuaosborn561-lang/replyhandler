@@ -1920,3 +1920,117 @@ test('mixed-intent replies are classified from the body, not SmartLead category'
     reversal('mixed-intent body classification', 'mixed replies are still dropped from Slack'),
   );
 });
+
+// ── Decision: Calendly PAT is gone ────────────────────────────────────
+test('Calendly PAT integration is removed', () => {
+  const slots = read('src/services/scheduling-slots.js');
+  const admin = read('src/routes/admin.js');
+  const dash = read('src/public/index.html');
+  const schema = read('schema.sql');
+  const decisions = read('DECISIONS.md');
+  assert.match(decisions, /Calendly PAT is gone/,
+    reversal('Calendly PAT is gone', 'the decision was removed from DECISIONS.md'));
+  assert.doesNotMatch(slots, /calendlyFetch|api\.calendly\.com/,
+    reversal('Calendly PAT is gone', 'authenticated Calendly API client is still in scheduling-slots'));
+  assert.doesNotMatch(admin, /calendly_personal_access_token/,
+    reversal('Calendly PAT is gone', 'admin still reads or writes a Calendly PAT'));
+  assert.doesNotMatch(dash, /calendly_personal_access_token|Calendly PAT|personal access token/,
+    reversal('Calendly PAT is gone', 'the dashboard still collects a Calendly PAT'));
+  assert.doesNotMatch(schema, /calendly_personal_access_token/,
+    reversal('Calendly PAT is gone', 'schema.sql still declares the PAT column'));
+  assert.match(slots, /fetchPublicCalendlyStarts/,
+    reversal('Calendly PAT is gone', 'public Calendly slot reads were removed with the PAT'));
+});
+
+// ── Decision: FYI emails CC ops and invite reply ──────────────────────
+test('FYI emails CC ops and invite reply to the ops inbox', () => {
+  const send = read('src/services/reply-send.js');
+  const notify = read('src/services/client-notify-email.js');
+  const gmail = read('src/services/gmail-send.js');
+  const decisions = read('DECISIONS.md');
+  const { FYI_NOTES_LINE, fyiReplyTo } = require('../src/utils/fyi-notify');
+
+  assert.match(decisions, /Every client FYI is CC'd to ops/,
+    reversal('FYI CC + reply', 'the decision was removed from DECISIONS.md'));
+  assert.match(send, /fyiCcEmails/,
+    reversal('FYI CC + reply', 'reply-send no longer CCs FYI_CC_EMAILS'));
+  assert.match(send, /fyiReplyTo/,
+    reversal('FYI CC + reply', 'reply-send no longer sets Reply-To'));
+  assert.match(gmail, /Reply-To/,
+    reversal('FYI CC + reply', 'Gmail MIME no longer has a Reply-To header'));
+  assert.match(notify, /FYI_NOTES_LINE/,
+    reversal('FYI CC + reply', 'the FYI body no longer invites a reply'));
+  assert.match(FYI_NOTES_LINE, /hit reply/,
+    reversal('FYI CC + reply', 'the ops reply sentence was changed'));
+  assert.equal(fyiReplyTo({}), 'joshua@salesglidergrowth.com',
+    reversal('FYI CC + reply', 'default Reply-To is no longer the primary Gmail mailbox'));
+});
+
+// ── Decision: /admin is keyed and fail-closed ─────────────────────────
+test('all /admin routes require ADMIN_API_KEY and fail closed', () => {
+  const auth = read('src/utils/admin-auth.js');
+  const index = read('src/index.js');
+  const admin = read('src/routes/admin.js');
+  const testWh = read('src/routes/test-webhooks.js');
+  const voice = read('src/routes/voice-learning.js');
+  const dash = read('src/public/index.html');
+  const decisions = read('DECISIONS.md');
+  const { evaluateAdminAuth } = require('../src/utils/admin-auth');
+
+  assert.match(decisions, /all \/admin routes require ADMIN_API_KEY and fail closed/,
+    reversal('admin auth', 'the decision was removed from DECISIONS.md'));
+  assert.match(index, /requireAdminApiKey/,
+    reversal('admin auth', 'index.js no longer mounts admin auth on /admin'));
+  assert.match(admin, /requireAdminApiKey/,
+    reversal('admin auth', 'admin.js no longer requires ADMIN_API_KEY'));
+  assert.match(testWh, /requireAdminApiKey/,
+    reversal('admin auth', 'test-webhooks no longer requires ADMIN_API_KEY'));
+  assert.doesNotMatch(testWh, /WEBHOOK_TEST_SECRET/,
+    reversal('admin auth', 'test-webhooks still gates on WEBHOOK_TEST_SECRET'));
+  assert.match(voice, /requireAdminApiKey/,
+    reversal('admin auth', 'voice-learning no longer requires ADMIN_API_KEY'));
+  assert.doesNotMatch(voice, /WEBHOOK_TEST_SECRET/,
+    reversal('admin auth', 'voice-learning still gates on WEBHOOK_TEST_SECRET'));
+  assert.match(dash, /ADMIN_API_KEY/,
+    reversal('admin auth', 'the dashboard no longer sends ADMIN_API_KEY'));
+  assert.match(auth, /admin auth not configured/,
+    reversal('admin auth', 'missing env no longer fails closed'));
+
+  const missing = evaluateAdminAuth({}, 'any');
+  assert.equal(missing.ok, false,
+    reversal('admin auth', 'unset ADMIN_API_KEY is treated as open'));
+  assert.equal(missing.status, 503,
+    reversal('admin auth', 'unset ADMIN_API_KEY is not fail-closed'));
+  const bad = evaluateAdminAuth({ ADMIN_API_KEY: 'secret' }, 'nope');
+  assert.equal(bad.status, 401,
+    reversal('admin auth', 'a wrong key is not rejected'));
+  const ok = evaluateAdminAuth({ ADMIN_API_KEY: 'secret' }, 'secret');
+  assert.equal(ok.ok, true,
+    reversal('admin auth', 'a matching ADMIN_API_KEY header is rejected'));
+});
+
+// ── Decision: resurface wrongly suppressed mixed/question replies ──────
+test('wrongly suppressed mixed/question replies can be resurfaced', () => {
+  const svc = read('src/services/resurface-suppressed.js');
+  const admin = read('src/routes/admin.js');
+  const decisions = read('DECISIONS.md');
+
+  assert.match(decisions, /wrongly suppressed mixed\/question replies can be resurfaced/,
+    reversal('resurface suppressed', 'the decision was removed from DECISIONS.md'));
+  assert.match(admin, /\/admin\/resurface-suppressed/,
+    reversal('resurface suppressed', 'the admin endpoint was removed'));
+  assert.match(svc, /status = 'suppressed'/,
+    reversal('resurface suppressed', 'the query no longer selects suppressed pending_replies'));
+  assert.match(svc, /draftMode: 'bulk'/,
+    reversal('resurface suppressed', 'reclassification is no longer bulk (Claude-safe)'));
+  assert.match(svc, /looksLikeMixedIntent/,
+    reversal('resurface suppressed', 'mixed-intent bodies are no longer selected'));
+  assert.match(svc, /QUESTION/,
+    reversal('resurface suppressed', 'QUESTION is no longer a resurface target'));
+  assert.match(svc, /postProspectSlackCard|postFn/,
+    reversal('resurface suppressed', 'live mode no longer posts a Slack card'));
+  assert.match(svc, /dryRun = true|dry_run/,
+    reversal('resurface suppressed', 'dry_run is no longer the default'));
+  assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'resurface-suppressed.js')),
+    reversal('resurface suppressed', 'scripts/resurface-suppressed.js was removed'));
+});

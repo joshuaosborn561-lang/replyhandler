@@ -59,7 +59,14 @@ function latestReplyText(row) {
 }
 
 async function main() {
-  const clientsRes = await fetch(`${BASE}/admin/clients`);
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (!adminKey) {
+    console.error('Set ADMIN_API_KEY to call /admin/clients.');
+    process.exit(1);
+  }
+  const clientsRes = await fetch(`${BASE}/admin/clients`, {
+    headers: { ADMIN_API_KEY: adminKey },
+  });
   const clients = await clientsRes.json();
   const client = clients.find((c) => c.active && String(c.name).toLowerCase().includes(needle));
   if (!client) {

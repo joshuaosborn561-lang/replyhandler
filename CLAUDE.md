@@ -125,8 +125,8 @@ voice) still win, and the sanitizer drops any learned line carrying a URL.
 Every failure in the job is logged and skipped. A missing `voice_profiles`
 table (migration 027 not applied) means drafts simply run without the block.
 Trigger by hand with `scripts/run-weekly-voice-learning.js --dry` or
-`POST /admin/voice-learning/run?secret=…&dry=1`; inspect with
-`GET /admin/voice-learning/profiles?secret=…`.
+`POST /admin/voice-learning/run?dry=1` with header `ADMIN_API_KEY`; inspect with
+`GET /admin/voice-learning/profiles`.
 
 ## Draft provider order
 
@@ -175,8 +175,9 @@ driven by `clients.voice_prompt` (and, for Deep Roots, client name) via
   taken and offers two new times plus the link.
 
 Booking-bridge wraps do not expose open slots — `scheduling-slots.js`
-unwraps `book.gosalesglider.com/{slug}` to the destination Calendly and
-reads live times from there when a PAT is set.
+unwraps `book.gosalesglider.com/{slug}` to the destination Calendly /
+HubSpot / Teams page and reads live times from the public slot JSON.
+There is no Calendly personal access token.
 
 ## No pending-nudge / "you haven't actioned this" alerts
 
@@ -274,9 +275,15 @@ separate things must both be true, and they fail with different errors:
 
 ## Diagnostics
 
-`GET /admin/test/replies?secret=$WEBHOOK_TEST_SECRET&client=<name>&days=N`
-— read-only view of stored replies and a per-classification summary. Returns
-404 if `WEBHOOK_TEST_SECRET` is unset.
+Every `/admin` route requires header `ADMIN_API_KEY`. Missing env fails
+closed (503). Wrong or missing header is 401.
+
+`GET /admin/test/replies?client=<name>&days=N`
+— read-only view of stored replies and a per-classification summary.
+
+`POST /admin/resurface-suppressed?days=3&dry=1` (default dry_run) re-runs
+full-body classification on `pending_replies` with `status='suppressed'`
+and Slack-cards mixed-intent / QUESTION rows. Response is counts only.
 
 `GET /health` returns `gitSha` from `RAILWAY_GIT_COMMIT_SHA` — the fastest way
 to confirm what is actually deployed rather than assuming a push went live.

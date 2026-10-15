@@ -10,7 +10,6 @@ CREATE TABLE clients (
   slack_channel_id TEXT NOT NULL,
   booking_link TEXT,
   booking_destination_url TEXT,
-  calendly_personal_access_token TEXT,
   voice_prompt TEXT NOT NULL DEFAULT '',
   digest_timezone TEXT,
   cc_email TEXT,
