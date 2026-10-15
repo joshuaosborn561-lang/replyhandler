@@ -35,7 +35,7 @@ function lastOutboundFor(platform, threadContext) {
 
 function threadMessagesFor(reply, lastOutbound) {
   return extractThreadMessages(reply.platform, reply.thread_context, {
-    maxMessages: 20,
+    keepAll: true,
     extraMessages: [
       ...(reply.inbound_message ? [{ role: 'them', body: reply.inbound_message }] : []),
       ...((reply.sent_reply || lastOutbound)
@@ -75,9 +75,8 @@ function sleep(ms) {
 }
 
 /**
- * Rewrite already-posted FOLLOW_UP Slack cards to the compact layout
- * (lead → suggested send → last thread turn → buttons). Old cards from
- * before that layout still sit in #followups-ai-replies as the full dump.
+ * Rewrite already-posted FOLLOW_UP Slack cards so each one shows the
+ * suggested send, the buttons, and the whole email exchange.
  */
 async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
   const lookback = Number.isFinite(Number(days)) ? Math.min(Math.max(Number(days), 1), 60) : 21;

@@ -90,6 +90,8 @@ function extractThreadMessages(platform, threadContext, {
   extraMessages = [],
   /** Prefer keeping the start of the thread (original inbound + our reply). */
   pinStart = false,
+  /** FOLLOW_UP cards render every turn. Do not drop the middle of the thread. */
+  keepAll = false,
 } = {}) {
   const tc = parseContext(threadContext);
   const list = messageList(platform, tc);
@@ -130,7 +132,7 @@ function extractThreadMessages(platform, threadContext, {
     return 0;
   });
 
-  if (out.length <= maxMessages) return out;
+  if (keepAll || out.length <= maxMessages) return out;
 
   if (pinStart) {
     // Keep the opening exchange + the most recent turns so the original inbound

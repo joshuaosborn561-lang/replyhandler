@@ -289,17 +289,33 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
   }));
 }
 
-const LAST_THREAD_DISPLAY_MAX = 800;
+/** One turn on the exchange. Longer emails are cut so a thread still fits one Slack message. */
+const EXCHANGE_TURN_MAX = 1600;
+/** Headroom for the lead line, the draft, and the buttons above the transcript. */
+const EXCHANGE_TURN_CAP = 24;
+/** Slack rejects oversized block payloads. Stay under this for the transcript text. */
+const EXCHANGE_CHAR_BUDGET = 12000;
 
-/**
- * Latest turn on the thread — quoted email history stripped so the card
- * shows the actual last message, not the whole back-and-forth.
- */
 function isPlaceholderInbound(text) {
   const s = String(text || '').trim().toLowerCase();
   return !s
     || s.startsWith('(no new reply')
     || s.includes('follow-up re-attempt');
+}
+
+function normTurn(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function exchangeWhen(time) {
+  if (!time) return '';
+  const d = new Date(time);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'America/Chicago',
+  });
 }
 
 function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage, preferThem = false } = {}) {
@@ -337,10 +353,155 @@ function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage, p
   return null;
 }
 
+function turnBody(role, raw, { stripQuotes }) {
+  const body = role === 'them' && stripQuotes
+    ? cleanInboundReply(raw)
+    : plainTextForSlack(raw);
+  if (!body || isPlaceholderInbound(body)) return '';
+  return body;
+}
+
 /**
- * FOLLOW_UP layout: what we are sending, then the last thread turn.
- * The full dump (original → our reply → rest) forced Slack "See more" and
- * hid both the draft and the latest message.
+ * Chronological turns for the FOLLOW_UP card.
+ * Once the thread is already split into separate messages, quoted reply
+ * chains are cut off each inbound so a turn is that message, not a second
+ * copy of the earlier ones. A single leftover blob keeps its quotes — that
+ * blob is the only copy of the exchange.
+ */
+function collectExchangeTurns({
+  threadMessages,
+  inboundMessage,
+  lastOutboundMessage,
+  omitTrailingBody,
+} = {}) {
+  const history = Array.isArray(threadMessages)
+    ? threadMessages.filter((m) => m && m.body && String(m.body).trim())
+    : [];
+  const stripQuotes = history.length >= 2;
+  const turns = [];
+  const push = (role, raw, time) => {
+    const who = role === 'us' ? 'us' : 'them';
+    const body = turnBody(who, raw, { stripQuotes });
+    if (!body) return;
+    const prev = turns[turns.length - 1];
+    if (prev && prev.role === who && normTurn(prev.body) === normTurn(body)) return;
+    turns.push({ role: who, body, time: time || '' });
+  };
+
+  if (history.length) {
+    for (const m of history) push(m.role, m.body, m.time);
+  } else {
+    if (lastOutboundMessage) push('us', lastOutboundMessage);
+    if (inboundMessage) push('them', inboundMessage);
+  }
+
+  const omit = normTurn(omitTrailingBody);
+  if (omit && turns.length) {
+    const last = turns[turns.length - 1];
+    if (last.role === 'us' && normTurn(last.body) === omit) turns.pop();
+  }
+  return turns;
+}
+
+function capExchangeTurns(turns) {
+  let list = turns.map((t, i) => ({ ...t, n: i + 1 }));
+  if (list.length > EXCHANGE_TURN_CAP) {
+    const omitted = list.length - EXCHANGE_TURN_CAP;
+    const head = list.slice(0, 2);
+    const tail = list.slice(list.length - (EXCHANGE_TURN_CAP - 2));
+    list = [...head, { role: 'omitted', omitted }, ...tail];
+  }
+
+  const bodyLen = (items) => items.reduce((n, t) => n + (t.body ? t.body.length : 0), 0);
+  while (bodyLen(list) > EXCHANGE_CHAR_BUDGET) {
+    const real = list.filter((t) => t.role !== 'omitted');
+    if (real.length <= 4) {
+      const over = bodyLen(list) - EXCHANGE_CHAR_BUDGET;
+      const share = Math.ceil(over / Math.max(real.length, 1)) + 1;
+      list = list.map((t) => {
+        if (!t.body || t.body.length <= 240) return t;
+        const next = t.body.slice(0, Math.max(240, t.body.length - share)).trimEnd();
+        return { ...t, body: `${next}…` };
+      });
+      if (bodyLen(list) <= EXCHANGE_CHAR_BUDGET) break;
+      break;
+    }
+    const dropAt = list.findIndex((t, i) => i >= 2 && t.role !== 'omitted');
+    if (dropAt < 0) break;
+    list.splice(dropAt, 1);
+    const marker = list.find((t) => t.role === 'omitted');
+    if (marker) marker.omitted += 1;
+    else list.splice(2, 0, { role: 'omitted', omitted: 1 });
+  }
+  return list;
+}
+
+function buildFollowUpExchangeBlocks({
+  threadMessages,
+  inboundMessage,
+  lastOutboundMessage,
+  omitTrailingBody,
+} = {}) {
+  const turns = capExchangeTurns(collectExchangeTurns({
+    threadMessages,
+    inboundMessage,
+    lastOutboundMessage,
+    omitTrailingBody,
+  }));
+  if (!turns.length) return [];
+
+  const blocks = [
+    dividerBlock(),
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*Email exchange*' },
+    },
+  ];
+
+  for (const turn of turns) {
+    if (turn.role === 'omitted') {
+      blocks.push({
+        type: 'context',
+        elements: [{
+          type: 'mrkdwn',
+          text: `_… ${turn.omitted} earlier message${turn.omitted === 1 ? '' : 's'} not shown …_`,
+        }],
+      });
+      continue;
+    }
+    const when = exchangeWhen(turn.time);
+    const who = turn.role === 'us' ? 'You' : 'Them';
+    blocks.push(
+      ...conversationStepBlocks({
+        emoji: turn.role === 'us' ? '📤' : '📥',
+        label: when ? `${turn.n} · ${who} · ${when}` : `${turn.n} · ${who}`,
+        body: turn.body,
+        maxLen: EXCHANGE_TURN_MAX,
+      }),
+    );
+  }
+  return blocks;
+}
+
+function buildFollowUpOutgoingBlocks({
+  draft,
+  outgoingLabel = 'Suggested follow-up',
+  outgoingBody = null,
+} = {}) {
+  const sendBody = outgoingBody != null ? outgoingBody : draft;
+  if (sendBody == null || String(sendBody).trim() === '') return [];
+  const isSent = /sent/i.test(String(outgoingLabel || ''));
+  return conversationStepBlocks({
+    emoji: isSent ? '📤' : '✍️',
+    label: outgoingLabel,
+    body: sendBody,
+    neverTruncate: true,
+  });
+}
+
+/**
+ * FOLLOW_UP layout: the send first, then every turn in the thread.
+ * The send stays above the transcript so Slack "See more" cannot hide the draft.
  */
 function buildFollowUpConversationBlocks({
   lastOutboundMessage,
@@ -349,45 +510,18 @@ function buildFollowUpConversationBlocks({
   threadMessages = null,
   outgoingLabel = 'Suggested follow-up',
   outgoingBody = null,
-}) {
-  const blocks = [];
+} = {}) {
   const sendBody = outgoingBody != null ? outgoingBody : draft;
-  if (sendBody != null && String(sendBody).trim() !== '') {
-    const isSent = /sent/i.test(String(outgoingLabel || ''));
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: isSent ? '📤' : '✍️',
-        label: outgoingLabel,
-        body: sendBody,
-        neverTruncate: true,
-      }),
-    );
-  }
-
-  const last = lastThreadTurn({
-    threadMessages,
-    inboundMessage,
-    lastOutboundMessage,
-    preferThem: true,
-  });
-  if (last) {
-    const sendPlain = plainTextForSlack(sendBody || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const lastPlain = String(last.body || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const sameAsOutgoing = sendPlain && lastPlain && sendPlain === lastPlain;
-    if (!sameAsOutgoing) {
-      if (blocks.length) blocks.push(dividerBlock());
-      blocks.push(
-        ...conversationStepBlocks({
-          emoji: last.role === 'us' ? '📤' : '📥',
-          label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
-          body: last.body,
-          maxLen: LAST_THREAD_DISPLAY_MAX,
-        }),
-      );
-    }
-  }
-
-  return blocks;
+  const omitTrailingBody = /sent/i.test(String(outgoingLabel || '')) ? sendBody : null;
+  return [
+    ...buildFollowUpOutgoingBlocks({ draft, outgoingLabel, outgoingBody }),
+    ...buildFollowUpExchangeBlocks({
+      threadMessages,
+      inboundMessage,
+      lastOutboundMessage,
+      omitTrailingBody,
+    }),
+  ];
 }
 
 function buildConversationBlocks({
@@ -396,7 +530,7 @@ function buildConversationBlocks({
   draft,
   priorLabel,
   inboundLabel,
-  /** FOLLOW_UP cards: original → our reply → rest of thread → bump draft. */
+  /** FOLLOW_UP cards render the send, then the whole exchange. */
   followUpContext = false,
   /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
   threadMessages = null,
@@ -554,14 +688,11 @@ function buildSentConfirmationBlocks({
     },
     dividerBlock(),
     ...(isFollowUp
-      ? buildFollowUpConversationBlocks({
-          lastOutboundMessage,
-          inboundMessage,
+      ? buildFollowUpOutgoingBlocks({
           draft: (sentReply && String(sentReply).trim()
             && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked')
             ? sentReply
             : null,
-          threadMessages,
           outgoingLabel: 'Sent to prospect',
         })
       : buildConversationBlocks({
@@ -607,6 +738,17 @@ function buildSentConfirmationBlocks({
     type: 'context',
     elements: [{ type: 'mrkdwn', text: footerText }],
   });
+
+  if (isFollowUp) {
+    const sentShown = sentReply && String(sentReply).trim()
+      && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked';
+    blocks.push(...buildFollowUpExchangeBlocks({
+      threadMessages,
+      inboundMessage,
+      lastOutboundMessage,
+      omitTrailingBody: sentShown ? sentReply : null,
+    }));
+  }
 
   return blocks;
 }
@@ -669,28 +811,34 @@ function buildDraftApprovalCard({
     },
   ];
 
-  const conversation = buildConversationBlocks({
-    lastOutboundMessage,
-    inboundMessage,
-    draft,
-    priorLabel: contextLabel || 'You sent',
-    inboundLabel: isFollowUp ? 'Last message (them)' : 'They replied',
-    followUpContext: isFollowUp,
-    threadMessages: isFollowUp ? threadMessages : null,
-  });
+  const conversation = isFollowUp
+    ? null
+    : buildConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft,
+      priorLabel: contextLabel || 'You sent',
+      inboundLabel: 'They replied',
+    });
 
   const blocks = isFollowUp
     ? [
-        // Compact: lead → suggested send → last thread turn → buttons.
-        // The old full-thread dump hid the draft behind Slack "See more".
+        // Lead → suggested send → buttons, then the whole email exchange.
+        // The send and the buttons stay above the transcript so Slack
+        // "See more" cannot hide them.
         ...metaBlocks,
         dividerBlock(),
-        ...conversation,
+        ...buildFollowUpOutgoingBlocks({ draft }),
         draftApprovalActionsBlock(replyId),
         {
           type: 'context',
           elements: [{ type: 'mrkdwn', text: contextText }],
         },
+        ...buildFollowUpExchangeBlocks({
+          threadMessages,
+          inboundMessage,
+          lastOutboundMessage,
+        }),
       ]
     : [
         ...metaBlocks,
@@ -732,7 +880,7 @@ async function postDraftApproval(token, channelId, opts) {
   });
 }
 
-/** Rewrite an already-posted approval card in place (compact FOLLOW_UP layout). */
+/** Rewrite an already-posted approval card in place. */
 async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
   const slack = getClient(token);
   const { blocks, text } = buildDraftApprovalCard(opts);

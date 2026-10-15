@@ -449,33 +449,63 @@ test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
     reversal('follow-ups after any positive reply at 2h/24h/48h/1w', '3-day backfill cap was removed'));
 });
 
-// ── Decision: follow-up Slack cards stay compact; only after we sent ──
-test('FOLLOW_UP cards show draft + last message; only after we have sent', () => {
+// ── Decision: follow-up cards show the whole exchange; only after we sent ──
+test('FOLLOW_UP cards show the whole email exchange; only after we have sent', () => {
   const slackSrc = read('src/services/slack.js');
   const runner = read('src/services/follow-up-runner.js');
   const scheduleSrc = read('src/services/outbound-follow-up.js');
   const cron = read('src/cron.js');
-  const { lastThreadTurn, buildFollowUpConversationBlocks } = require('../src/services/slack');
+  const confirmPath = read('src/routes/slack.js');
+  const refresh = read('src/services/refresh-followup-cards.js');
+  const { lastThreadTurn, buildFollowUpConversationBlocks, buildDraftApprovalCard } = require('../src/services/slack');
 
-  assert.ok(slackSrc.includes('lastThreadTurn') && slackSrc.includes('Last message'),
-    reversal('FOLLOW_UP cards show draft + last message', 'last-thread-turn helper was removed'));
+  assert.ok(slackSrc.includes('Email exchange') && slackSrc.includes('buildFollowUpExchangeBlocks'),
+    reversal('FOLLOW_UP cards show the whole email exchange', 'the exchange block was removed'));
+  assert.ok(runner.includes('keepAll: true'),
+    reversal('FOLLOW_UP cards show the whole email exchange', 'the runner is dropping turns from the thread again'));
+  assert.ok(confirmPath.includes('keepAll: true') && refresh.includes('keepAll: true'),
+    reversal('FOLLOW_UP cards show the whole email exchange', 'approve or refresh is dropping turns from the thread again'));
   assert.ok(!/label: 'Original message'/.test(slackSrc),
-    reversal('FOLLOW_UP cards show draft + last message', 'full original-message dump is back'));
+    reversal('FOLLOW_UP cards show the whole email exchange', 'the old original-message label is back'));
   const blocks = buildFollowUpConversationBlocks({
     draft: 'Hey Pat, still interested in meeting for this?',
     inboundMessage: 'Tell me more.',
     lastOutboundMessage: 'Happy to share tickets.',
     threadMessages: [
-      { role: 'them', body: 'Tell me more.' },
       { role: 'us', body: 'Happy to share tickets.' },
+      { role: 'them', body: 'Tell me more.' },
+      { role: 'us', body: 'Thursday or Friday?' },
     ],
   });
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /Suggested follow-up/);
   assert.match(text, /Hey Pat, still interested/);
-  assert.match(text, /Last message \(them\)/);
+  assert.match(text, /Email exchange/);
+  assert.match(text, /Happy to share tickets/);
   assert.match(text, /Tell me more/);
+  assert.match(text, /Thursday or Friday/);
+  assert.ok(text.indexOf('Suggested follow-up') < text.indexOf('Email exchange'),
+    reversal('FOLLOW_UP cards show the whole email exchange', 'the draft is no longer above the transcript'));
   assert.doesNotMatch(text, /Original message/);
+  assert.doesNotMatch(text, /Last message/);
+  const card = buildDraftApprovalCard({
+    replyId: 'r-exchange',
+    leadName: 'Pat',
+    leadEmail: 'pat@example.com',
+    platform: 'smartlead',
+    classification: 'FOLLOW_UP',
+    draft: 'Hey Pat, still interested in meeting for this?',
+    threadMessages: [
+      { role: 'us', body: 'Happy to share tickets.' },
+      { role: 'them', body: 'Tell me more.' },
+    ],
+  });
+  const actionsAt = card.blocks.findIndex((b) => b.type === 'actions');
+  const exchangeAt = card.blocks.findIndex((b) => (
+    b.type === 'section' && b.text && String(b.text.text).includes('Email exchange')
+  ));
+  assert.ok(actionsAt > 0 && exchangeAt > actionsAt,
+    reversal('FOLLOW_UP cards show the whole email exchange', 'buttons are no longer above the transcript'));
   const last = lastThreadTurn({
     inboundMessage: 'Yes please.\nOn Monday Jane wrote: old',
   });
@@ -593,8 +623,8 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
   assert.ok(!/channelId:\s*client\.slack_channel_id/.test(
     runner.slice(runner.indexOf('await postProspectSlackCard'), runner.indexOf('return newReply'))
   ), reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP cards still post to the client inbox channel'));
-  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Last message'),
-    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the last-message block'));
+  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Email exchange'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the email exchange'));
   assert.ok(slackSrc.includes('updateDraftApprovalCard') && slackSrc.includes('buildDraftApprovalCard'),
     reversal('FOLLOW_UP cards show draft + last message', 'pending FOLLOW_UP cards can no longer be rewritten compact'));
   assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
@@ -636,7 +666,7 @@ test('FOLLOW_UP next-day bump refreshes times with booking link and Meeting book
   assert.ok(bump.includes(link),
     reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'next-day bump dropped the booking link'));
   assert.ok(runner.includes('threadMessages') && runner.includes('extractThreadMessages'),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'thread history is no longer loaded for the last-message line'));
+    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'thread history is no longer loaded for the email exchange'));
   assert.ok(runner.includes('resolveVerifiedSchedulingSlots') && runner.includes('slotOffsetForFollowUpStep'),
     reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'FOLLOW_UP runner no longer fetches later calendar slots'));
   assert.ok(slackSrc.includes("action_id: 'meeting_booked'") || slackSrc.includes('action_id: "meeting_booked"'),

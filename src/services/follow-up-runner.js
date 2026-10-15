@@ -208,8 +208,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   const sentExtras = await priorSentMessages(client.id, fu);
   const threadMessages = extractThreadMessages(fu.platform, threadContext, {
-    maxMessages: 20,
-    pinStart: true,
+    keepAll: true,
     extraMessages: [
       ...sentExtras,
       ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
@@ -250,8 +249,8 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   );
 
   // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
-  // under the original card). Compact layout: campaign/lead → suggested send →
-  // last thread turn → buttons. Full thread dump hid the draft behind "See more".
+  // under the original card). The card shows the suggested send and the buttons
+  // first, then the whole email exchange.
   await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: followUpSlackChannelId(),
