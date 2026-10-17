@@ -1136,3 +1136,31 @@ only — no names.
 `POST /admin/resurface-suppressed` and `scripts/resurface-suppressed.js`.
 
 Guard: `wrongly suppressed mixed/question replies can be resurfaced`
+
+## 2026-10-17
+
+### Reply classification moves to Jev; drafts stay Claude then Gemini
+
+Classification (category + `pitch_to_us_prob` in one call) uses Jev
+(`typesafe/jev-1.13` via the Decisions API), not Gemini. Keyword prechecks
+for OOO / wrong-person / not-interested stay. Gemini remains the
+per-reply fallback when Jev fails (`CLASSIFIER_FALLBACK_GEMINI`, default
+on) so a Jev outage cannot swallow replies. Drafting is unchanged:
+Claude on realtime webhooks, Gemini on bulk, template last.
+
+Endpoint and key come from `JEV_API_URL` and `JEV_API_KEY`. Fail-fast
+if they are missing — never hardcode them.
+
+Guard: `reply classification is Jev with Gemini fallback`
+
+### Hide cold inbound pitches, never campaign threads we started
+
+`isColdInbound` means no campaign ID AND (they wrote first OR we never
+sent before their reply). Slack suppresses when that is true AND
+`pitch_to_us_prob >= 0.8`. Campaign threads where we sent first always
+post. Record those hides with `recordSuppressedReply` reason
+`pitch_inbound`. A one-line daily Slack summary per channel,
+"N pitches hidden today", posts only if N > 0. `SUPPRESS_PITCHES`
+defaults on.
+
+Guard: `cold inbound pitches at 0.8 are hidden; campaign threads are not`

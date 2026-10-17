@@ -14,6 +14,7 @@ const {
   rewriteRawCtapperCalendly,
 } = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
+const jevClassifier = require('./jev-classifier');
 const {
   FACT_GROUNDING_RULES,
   factSourceText,
@@ -650,7 +651,7 @@ Do NOT use em dashes. Do NOT add any sign-off, closing line, or signature — no
 Always finish every sentence. Never cut off mid-thought.`;
 }
 
-async function classifyOnly(threadContext, inboundMessage) {
+async function classifyOnlyGemini(threadContext, inboundMessage) {
   try {
     const model = buildClassifyModel();
     const res = await withGeminiRetry(() => model.generateContent(
@@ -661,9 +662,52 @@ async function classifyOnly(threadContext, inboundMessage) {
     const text = res.response.text().trim();
     return normalizeClassification(text);
   } catch (err) {
-    console.error('[Classifier] classify call failed', { err: err.message });
+    console.error('[Classifier] Gemini classify call failed', { err: err.message });
     return 'OTHER';
   }
+}
+
+/** Gemini path used only when Jev fails (CLASSIFIER_FALLBACK_GEMINI, default on). */
+async function classifyWithGemini(threadContext, inboundMessage) {
+  let classification = await classifyOnlyGemini(threadContext, inboundMessage);
+  if (classification === 'OTHER') {
+    const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
+    if (ooo === 'OOO') classification = 'OOO';
+  }
+  if (classification === 'OTHER' && !looksLikeMixedIntent(inboundMessage)) {
+    const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
+    if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
+  }
+  return { classification, pitchToUsProb: null, source: 'gemini_fallback' };
+}
+
+/**
+ * Primary classifier: one Jev call (category + pitch_to_us_prob).
+ * On Jev failure, fall back to Gemini when CLASSIFIER_FALLBACK_GEMINI is on.
+ */
+async function classifyReply(threadContext, inboundMessage, deps = {}) {
+  const runJev = deps.classifyWithJev || jevClassifier.classifyWithJev;
+  const runGemini = deps.classifyWithGemini || classifyWithGemini;
+  try {
+    const result = await runJev(threadContext, inboundMessage);
+    return {
+      classification: normalizeClassification(result.classification),
+      pitchToUsProb: result.pitchToUsProb == null ? null : Number(result.pitchToUsProb),
+      source: result.source || 'jev',
+    };
+  } catch (err) {
+    if (!jevClassifier.isGeminiFallbackEnabled()) {
+      console.error('[Classifier] Jev failed and Gemini fallback is off', { err: err.message });
+      return { classification: 'OTHER', pitchToUsProb: null, source: 'jev_failed' };
+    }
+    console.warn('[Classifier] Jev failed — falling back to Gemini', { err: err.message });
+    return runGemini(threadContext, inboundMessage);
+  }
+}
+
+async function classifyOnly(threadContext, inboundMessage) {
+  const result = await classifyReply(threadContext, inboundMessage);
+  return result.classification;
 }
 
 /** Second pass: when primary label is OTHER, ask explicitly for OOO vs not. */
@@ -927,6 +971,8 @@ async function classifyAndDraft(
   // Deterministic pre-classification gates — kill drafts that should not exist.
   let classification = null;
   let preGate = null;
+  let pitchToUsProb = null;
+  let classifySource = null;
   if (looksLikeOutOfOffice(inboundMessage)) { classification = 'OOO'; preGate = 'ooo'; }
   else if (looksLikeWrongPerson(inboundMessage)) { classification = 'WRONG_PERSON'; preGate = 'wrong_person'; }
   else if (looksLikeNotInterested(inboundMessage) && !looksLikeMixedIntent(inboundMessage)) {
@@ -935,15 +981,10 @@ async function classifyAndDraft(
   }
 
   if (!classification) {
-    classification = await classifyOnly(threadContext, inboundMessage);
-    if (classification === 'OTHER') {
-      const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
-      if (ooo === 'OOO') classification = 'OOO';
-    }
-    if (classification === 'OTHER' && !looksLikeMixedIntent(inboundMessage)) {
-      const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
-      if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
-    }
+    const result = await classifyReply(threadContext, inboundMessage);
+    classification = result.classification;
+    pitchToUsProb = result.pitchToUsProb;
+    classifySource = result.source;
   }
   if (preGate !== 'ooo' && preGate !== 'wrong_person') {
     classification = promoteMixedIntent(classification, inboundMessage);
@@ -1024,7 +1065,7 @@ async function classifyAndDraft(
     }
   }
 
-  const note = preGate ? ` (pre-gate: ${preGate})` : '';
+  const note = preGate ? ` (pre-gate: ${preGate})` : (classifySource ? ` (${classifySource})` : '');
   const linkNote = needsDraft
     ? (includeBookingLink ? ' (booking-link follow-up)' : ` (${ordinal.mode.toLowerCase()})`)
     : '';
@@ -1033,6 +1074,8 @@ async function classifyAndDraft(
     : '';
   return {
     classification,
+    pitchToUsProb,
+    classifySource: preGate ? `pre-gate:${preGate}` : classifySource,
     draft,
     proposed_time: null,
     includeBookingLink,
@@ -1048,6 +1091,8 @@ async function classifyAndDraft(
 module.exports = {
   classifyAndDraft,
   classifyOnly,
+  classifyReply,
+  classifyWithGemini,
   draftOnly,
   firstNameFromLead,
   nextBusinessDayLabel,
