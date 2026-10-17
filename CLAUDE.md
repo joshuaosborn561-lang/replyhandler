@@ -136,9 +136,14 @@ Trigger by hand with `scripts/run-weekly-voice-learning.js --dry` or
    same voice prompt — do not skip to the template
 3. Deterministic `fallbackDraftText` only if Gemini also fails / returns empty
 
-**Hard rule:** pollers and backfill scripts pass `draftMode: 'bulk'`. Claude is
-never used there — no env opt-in. Only `INTERESTED` / `MEETING_PROPOSED` /
-`QUESTION` get drafts at all.
+**Hard rule:** pollers and backfill scripts pass `draftMode: 'bulk'` for
+original inbound drafts. Claude is never used there — no env opt-in. Only
+`INTERESTED` / `MEETING_PROPOSED` / `QUESTION` get those drafts at all.
+
+**FOLLOW_UP exception:** cadence cards call `generateFollowUpClaudeDraft`
+even from cron. Per-run cap `FOLLOW_UP_CLAUDE_CAP` (default 25) and logged
+token cost. Gemini only if Claude errors or the cap is hit. Templates are
+last-resort when both LLMs fail.
 
 If drafts suddenly all look like "Happy to jump on a quick call…", check
 Anthropic quota first, then confirm this fallthrough is still wired.
@@ -166,13 +171,14 @@ driven by `clients.voice_prompt` (and, for Deep Roots, client name) via
 `src/utils/meeting-modality.js` — not a global default.
 
 - Vasco: Carlos stops by the dealership in person. Drafts and FOLLOW_UP
-  bumps omit Zoom / phone / "our CEO" / booking links.
+  prompts omit Zoom / phone / "our CEO" / booking links.
 - Deep Roots: Tyler calls from 218-469-3457. Ask what time works best.
   No booking link, no two calendar slots. Pinned by client name so a
   missing `voice_prompt` update cannot leak a Calendly URL.
 - Other clients: two verified calendar times **and** the booking link on
-  the first positive reply; the next-day FOLLOW_UP says those times were
-  taken and offers two new times plus the link.
+  the first positive reply. FOLLOW_UP drafts get two later verified times
+  plus the link as available facts; the model decides whether a meeting
+  ask fits. Last-resort templates still use the times-taken bump.
 
 Booking-bridge wraps do not expose open slots — `scheduling-slots.js`
 unwraps `book.gosalesglider.com/{slug}` to the destination Calendly /
@@ -232,11 +238,21 @@ self-recover and needs a manual sweep.
 hours (`FOLLOW_UP_HOURS`). FOLLOW_UP sends do not restart the sequence.
 
 `follow-up-runner.js` posts the next due step as a **top-level** Slack channel
-card (not threaded under the original reply). Same-day step 1 stays a short
-offer-first bump. Next-day step 2+ says the first times were taken and
-offers two new calendar slots plus the booking link (except Vasco). The
-card shows the last prospect turn, a permalink to the original card, and a
-**Meeting booked** button that cancels the cadence.
+card (not threaded under the original reply). Drafts are Claude + RAG
+continuations of the thread (Gemini fallback, template last-resort). Cayden
+sends them — never stall for Josh. Pricing → walk through it on a call, no
+flag. One-pager / deck / "email me some info" → `needs_client` +
+`what_to_send`, card label `LOOP IN CLIENT: <what>`. The draft names the
+configured client contact by first name from `voice_prompt`, copied
+character-for-character (e.g. "Myles" with a Y, never a lookalike) as
+"looping in {Name} from our side" — no title, never "founder". Default
+Approve still omits SmartLead `cc`; **Send + CC client** appears only
+when that loop-in line is in the draft, and CCs the same Always-forward
+addresses (`cc_emails` / `cc_email`) via SmartLead payload field `cc`
+(comma-separated string). FYI forward to the client and Cayden still
+runs on send. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
+text) then buttons, a permalink to the original card, the full thread, and
+a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —
 a `meetings` row, a later reply proposing a time or confirming, a calendar
 event with them as attendee, or a call transcript (Allo / Cube ACR). Any one

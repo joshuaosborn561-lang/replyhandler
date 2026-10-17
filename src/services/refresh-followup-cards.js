@@ -2,6 +2,7 @@ const db = require('../db');
 const slack = require('./slack');
 const { followUpSlackChannelId } = require('./follow-up-runner');
 const { extractThreadMessages } = require('../utils/thread-transcript');
+const { readFollowUpMeta } = require('../utils/follow-up-meta');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 
@@ -35,7 +36,8 @@ function lastOutboundFor(platform, threadContext) {
 
 function threadMessagesFor(reply, lastOutbound) {
   return extractThreadMessages(reply.platform, reply.thread_context, {
-    maxMessages: 20,
+    maxMessages: 40,
+    pinStart: true,
     extraMessages: [
       ...(reply.inbound_message ? [{ role: 'them', body: reply.inbound_message }] : []),
       ...((reply.sent_reply || lastOutbound)
@@ -75,9 +77,7 @@ function sleep(ms) {
 }
 
 /**
- * Rewrite already-posted FOLLOW_UP Slack cards to the compact layout
- * (lead → suggested send → last thread turn → buttons). Old cards from
- * before that layout still sit in #followups-ai-replies as the full dump.
+ * Rewrite already-posted FOLLOW_UP Slack cards to WILL SEND + full thread.
  */
 async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
   const lookback = Number.isFinite(Number(days)) ? Math.min(Math.max(Number(days), 1), 60) : 21;
@@ -90,7 +90,8 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
             pr.icp_verdict,
             pr.platform, pr.campaign_id, pr.campaign_name,
             c.slack_bot_token,
-            c.slack_channel_id AS client_slack_channel_id
+            c.slack_channel_id AS client_slack_channel_id,
+            c.cc_email, c.cc_emails
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
       WHERE upper(pr.classification) = 'FOLLOW_UP'
@@ -116,6 +117,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
     ) || undefined;
     const channels = uniqueChannels(reply, followUpChannel);
     const kind = actionKindFor(reply.status);
+    const followMeta = readFollowUpMeta(reply.thread_context);
     const card = {
       replyId: reply.id,
       leadName: reply.lead_name,
@@ -134,6 +136,9 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
       campaignDisplay,
       threadMessages,
       contextLabel: 'You sent',
+      needsClient: followMeta.needsClient,
+      whatToSend: followMeta.whatToSend,
+      ccEmails: reply.cc_emails || reply.cc_email || undefined,
     };
 
     let updated = false;

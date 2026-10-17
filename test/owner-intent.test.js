@@ -449,37 +449,37 @@ test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
     reversal('follow-ups after any positive reply at 2h/24h/48h/1w', '3-day backfill cap was removed'));
 });
 
-// ── Decision: follow-up Slack cards stay compact; only after we sent ──
-test('FOLLOW_UP cards show draft + last message; only after we have sent', () => {
+// ── Decision: FOLLOW_UP cards show WILL SEND + full thread; only after we sent ──
+test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', () => {
   const slackSrc = read('src/services/slack.js');
   const runner = read('src/services/follow-up-runner.js');
   const scheduleSrc = read('src/services/outbound-follow-up.js');
   const cron = read('src/cron.js');
   const { lastThreadTurn, buildFollowUpConversationBlocks } = require('../src/services/slack');
 
-  assert.ok(slackSrc.includes('lastThreadTurn') && slackSrc.includes('Last message'),
-    reversal('FOLLOW_UP cards show draft + last message', 'last-thread-turn helper was removed'));
+  assert.ok(slackSrc.includes('WILL SEND'),
+    reversal('FOLLOW_UP cards show WILL SEND + full thread', 'WILL SEND label was removed'));
   assert.ok(!/label: 'Original message'/.test(slackSrc),
-    reversal('FOLLOW_UP cards show draft + last message', 'full original-message dump is back'));
+    reversal('FOLLOW_UP cards show WILL SEND + full thread', 'Original message dump label is back'));
   const blocks = buildFollowUpConversationBlocks({
-    draft: 'Hey Pat, still interested in meeting for this?',
-    inboundMessage: 'Tell me more.',
-    lastOutboundMessage: 'Happy to share tickets.',
+    draft: 'Hey Alex, looping in Myles from our side to send that over.',
+    inboundMessage: 'Yes send it over',
+    lastOutboundMessage: 'Happy to share a one-pager.',
     threadMessages: [
-      { role: 'them', body: 'Tell me more.' },
-      { role: 'us', body: 'Happy to share tickets.' },
+      { role: 'them', body: 'Yes send it over' },
+      { role: 'us', body: 'Happy to share a one-pager.' },
     ],
   });
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
-  assert.match(text, /Suggested follow-up/);
-  assert.match(text, /Hey Pat, still interested/);
-  assert.match(text, /Last message \(them\)/);
-  assert.match(text, /Tell me more/);
+  assert.match(text, /WILL SEND/);
+  assert.match(text, /looping in Myles from our side/);
+  assert.match(text, /Yes send it over/);
+  assert.doesNotMatch(text, /Suggested follow-up/);
   assert.doesNotMatch(text, /Original message/);
   const last = lastThreadTurn({
-    inboundMessage: 'Yes please.\nOn Monday Jane wrote: old',
+    inboundMessage: 'Yes please.\nOn Monday Jordan wrote: old',
   });
-  assert.doesNotMatch(last.body, /Jane wrote/);
+  assert.doesNotMatch(last.body, /Jordan wrote/);
 
   assert.ok(runner.includes('threadHasOurSend') && runner.includes('no_prior_send'),
     reversal('follow-ups only after we have replied', 'runner no longer requires a prior Slack send'));
@@ -593,17 +593,18 @@ test('FOLLOW_UP bumps go to dedicated channel with easy-to-reach buttons', () =>
   assert.ok(!/channelId:\s*client\.slack_channel_id/.test(
     runner.slice(runner.indexOf('await postProspectSlackCard'), runner.indexOf('return newReply'))
   ), reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP cards still post to the client inbox channel'));
-  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('Last message'),
-    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the last-message block'));
+  assert.ok(slackSrc.includes('buildFollowUpConversationBlocks') && slackSrc.includes('WILL SEND'),
+    reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP layout lost the WILL SEND block'));
   assert.ok(slackSrc.includes('updateDraftApprovalCard') && slackSrc.includes('buildDraftApprovalCard'),
-    reversal('FOLLOW_UP cards show draft + last message', 'pending FOLLOW_UP cards can no longer be rewritten compact'));
+    reversal('FOLLOW_UP cards show WILL SEND + full thread', 'pending FOLLOW_UP cards can no longer be rewritten'));
   assert.ok(slackSrc.includes('draftApprovalActionsBlock'),
     reversal('FOLLOW_UP dedicated Slack channel', 'shared approval actions helper missing'));
-  // Suggested send must appear on the card (not only after Slack "See more").
+  // WILL SEND must appear on the card (not only after Slack "See more").
   const postFn = slackSrc.slice(slackSrc.indexOf('function buildDraftApprovalCard'));
-  const followUpBranch = postFn.slice(postFn.indexOf('const blocks = isFollowUp'), postFn.indexOf('if (!isFollowUp && platform'));
   assert.ok(
-    followUpBranch.includes('...conversation') && followUpBranch.includes('draftApprovalActionsBlock'),
+    slackSrc.includes('assembleFollowUpApprovalBlocks')
+      && postFn.includes('draftApprovalActionsBlock')
+      && slackSrc.includes('WILL SEND'),
     reversal('FOLLOW_UP dedicated Slack channel', 'FOLLOW_UP card lost draft or buttons'),
   );
 });
@@ -615,15 +616,18 @@ test('FOLLOW_UP next-day bump refreshes times with booking link and Meeting book
   const slackSrc = read('src/services/slack.js');
   const routes = read('src/routes/slack.js');
   const booked = read('src/services/meeting-booked.js');
+  const claude = read('src/services/claude-reply-draft.js');
   const { fallbackReattempt } = require('../src/services/follow-up-drafts');
-  const link = 'https://calendly.com/joshua-salesglidergrowth/30min';
+  const link = 'https://calendly.com/example/30min';
+  assert.ok(drafts.includes('generateFollowUpClaudeDraft') || claude.includes('generateFollowUpClaudeDraft'),
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'Claude follow-up generator is missing'));
   assert.ok(drafts.includes('timesTakenBump') && drafts.includes('bumpForOffer'),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'times-taken / offer-first helpers were removed'));
+    reversal('FOLLOW_UP last-resort templates remain', 'times-taken / offer-first last-resort helpers were removed'));
   assert.ok(!/return\s*\(?\s*`Hey \$\{name\}, thanks for getting back to me/.test(drafts),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'FOLLOW_UP drafts reused the first-reply opener'));
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'FOLLOW_UP drafts reused the first-reply opener'));
   const bump = fallbackReattempt({
-    leadName: 'Scott',
-    lastOutboundMessage: 'Happy to send you some Rangers tix just for the convo.',
+    leadName: 'Alex',
+    lastOutboundMessage: 'Happy to send you some tickets just for the convo.',
     step: 2,
     bookingLink: link,
     slots: [
@@ -632,13 +636,13 @@ test('FOLLOW_UP next-day bump refreshes times with booking link and Meeting book
     ],
   });
   assert.match(bump, /those times got taken/i,
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'next-day bump is not a times-taken refresh'));
+    reversal('FOLLOW_UP last-resort templates remain', 'last-resort next-day bump is not a times-taken refresh'));
   assert.ok(bump.includes(link),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'next-day bump dropped the booking link'));
+    reversal('FOLLOW_UP last-resort templates remain', 'last-resort next-day bump dropped the booking link'));
   assert.ok(runner.includes('threadMessages') && runner.includes('extractThreadMessages'),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'thread history is no longer loaded for the last-message line'));
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'thread history is no longer loaded for the follow-up draft'));
   assert.ok(runner.includes('resolveVerifiedSchedulingSlots') && runner.includes('slotOffsetForFollowUpStep'),
-    reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'FOLLOW_UP runner no longer fetches later calendar slots'));
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'FOLLOW_UP runner no longer fetches later calendar slots'));
   assert.ok(slackSrc.includes("action_id: 'meeting_booked'") || slackSrc.includes('action_id: "meeting_booked"'),
     reversal('FOLLOW_UP next-day bump refreshes times with booking link and Meeting booked button', 'Meeting booked button missing from Slack cards'));
   assert.ok(routes.includes('handleMeetingBooked') && routes.includes('meeting_booked'),
@@ -654,7 +658,7 @@ test('FOLLOW_UP bumps reframe value prop and 3rd bump has no dashes', () => {
   assert.ok(drafts.includes('valuePropPhrase') && drafts.includes('scrubDashes'),
     reversal('FOLLOW_UP value-prop bumps', 'value-prop / dash scrub helpers were removed'));
   const step3 = fallbackReattempt({
-    leadName: 'Scott',
+    leadName: 'Alex',
     lastOutboundMessage: 'Free campaign to 10k leads on me for more business clients.',
     step: 3,
     bookingLink: 'https://calendly.com/joshua-salesglidergrowth/30min',
@@ -681,9 +685,15 @@ test('follow-up draft tolerates null digest_timezone', () => {
   assert.doesNotThrow(() => nextBusinessDayLabel(undefined));
   assert.doesNotThrow(() => nextBusinessDayLabel(''));
   assert.match(nextBusinessDayLabel(null), /day$/i);
-  return draftReattemptToBook({ leadName: 'Jim Sprague', digestTimezone: null })
+  return draftReattemptToBook({
+    leadName: 'Jim Sprague',
+    digestTimezone: null,
+    claudeGenerate: async () => { throw new Error('skip live'); },
+    geminiGenerate: async () => { throw new Error('skip live'); },
+  })
     .then((draft) => {
-      assert.ok(draft && draft.includes('Jim'), 'draft must still render with null TZ');
+      const text = typeof draft === 'string' ? draft : (draft && draft.text);
+      assert.ok(text && text.includes('Jim'), 'draft must still render with null TZ');
     });
 });
 
@@ -1218,8 +1228,10 @@ test('Reject marks the lead Not Interested in SmartLead', () => {
   const sl = read('src/services/smartlead.js');
   const { categoryIdForClassification } = require('../src/services/smartlead-category');
 
-  assert.match(slackService, /Reject & not interested/,
-    reversal('Reject marks Not Interested in SmartLead', 'the Slack button no longer says reject and mark as not interested'));
+  assert.match(slackService, /text: '❌ Reject'/,
+    reversal('Reject marks Not Interested in SmartLead', 'the Slack Reject button was removed'));
+  assert.doesNotMatch(slackService, /Reject & not interested/,
+    reversal('Reject button is labeled Reject', 'the Slack button was renamed back to Reject & not interested'));
   assert.match(slackRoute, /markLeadNotInterested/,
     reversal('Reject marks Not Interested in SmartLead', 'Reject no longer updates the SmartLead category'));
   assert.match(slackRoute, /classification = 'NOT_INTERESTED'/,
@@ -2057,6 +2069,66 @@ test('wrongly suppressed mixed/question replies can be resurfaced', () => {
     reversal('resurface suppressed', 'dry_run is no longer the default'));
   assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'resurface-suppressed.js')),
     reversal('resurface suppressed', 'scripts/resurface-suppressed.js was removed'));
+});
+
+// ── Decision: FOLLOW_UP drafts continue the thread; never wait on Josh ──
+test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
+  const drafts = read('src/services/follow-up-drafts.js');
+  const claude = read('src/services/claude-reply-draft.js');
+  const slackSrc = read('src/services/slack.js');
+  const routes = read('src/routes/slack.js');
+  const send = read('src/services/reply-send.js');
+  const smartlead = read('src/services/smartlead.js');
+
+  assert.match(claude, /generateFollowUpClaudeDraft/,
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'Claude follow-up generator was removed'));
+  assert.match(drafts, /BOTH LLMs failed/,
+    reversal('FOLLOW_UP drafts continue the thread with Claude', 'loud last-resort template log was removed'));
+  assert.match(claude, /needs_client/,
+    reversal('FOLLOW_UP loop-in-client', 'needs_client flag was removed from the prompt'));
+  assert.doesNotMatch(claude, /NEEDS JOSH/,
+    reversal('FOLLOW_UP drafts never wait on Josh', 'NEEDS JOSH was reintroduced'));
+  assert.match(claude, /never stall for Josh/,
+    reversal('FOLLOW_UP drafts never wait on Josh', 'the never-stall-for-Josh rule was removed'));
+  assert.match(claude, /Never say founder/,
+    reversal('FOLLOW_UP loop-in-client', 'loop-in drafts were allowed to say founder'));
+  assert.doesNotMatch(claude, /CLIENT FOUNDER/,
+    reversal('FOLLOW_UP loop-in-client', 'CLIENT FOUNDER prompt label is back'));
+  assert.match(claude, /CLIENT CONTACT/,
+    reversal('FOLLOW_UP loop-in-client', 'CLIENT CONTACT prompt line was removed'));
+  assert.match(slackSrc, /LOOP IN CLIENT/,
+    reversal('FOLLOW_UP loop-in-client', 'LOOP IN CLIENT card label was removed'));
+  assert.doesNotMatch(slackSrc, /NEEDS JOSH/,
+    reversal('FOLLOW_UP drafts never wait on Josh', 'NEEDS JOSH card label is back'));
+  assert.match(slackSrc, /approve_reply_cc_client/,
+    reversal('FOLLOW_UP Send + CC client', 'Send + CC client button was removed'));
+  assert.match(routes, /ccClientOnProspect/,
+    reversal('FOLLOW_UP Send + CC client', 'approve handler no longer opts into prospect CC'));
+  assert.match(send, /ccClientOnProspect/,
+    reversal('FOLLOW_UP Send + CC client', 'send path no longer accepts prospect CC'));
+  assert.match(send, /alwaysForwardEmailsForProspectCc/,
+    reversal('FOLLOW_UP Send + CC client', 'prospect CC no longer reuses Always-forward'));
+  assert.match(smartlead, /payload\.cc/,
+    reversal('FOLLOW_UP Send + CC client', 'SmartLead sendReply no longer sends cc'));
+  assert.match(smartlead, /payload\.bcc/,
+    reversal('FOLLOW_UP Send + CC client', 'documented bcc field was dropped from sendReply'));
+  const sendReplyFn = smartlead.slice(smartlead.indexOf('async function sendReply'));
+  assert.match(sendReplyFn, /typeof cc === 'string'/,
+    reversal('FOLLOW_UP Send + CC client', 'sendReply no longer requires cc as a string'));
+  assert.doesNotMatch(sendReplyFn, /ccEmails|cc_emails/,
+    reversal('FOLLOW_UP Send + CC client', 'sendReply still reads ccEmails / cc_emails instead of cc'));
+  assert.match(send, /sendOpts\.cc = prospectCc/,
+    reversal('FOLLOW_UP Send + CC client', 'reply-send no longer passes cc only for the CC button'));
+  assert.match(slackSrc, /draftLoopsInContact/,
+    reversal('FOLLOW_UP Send + CC client', 'Send + CC is no longer gated on the loop-in phrase'));
+  assert.match(claude, /copy character-for-character/,
+    reversal('FOLLOW_UP contact first name is verbatim', 'Sonnet is no longer told to copy the first name exactly'));
+  const rules = claude.slice(
+    claude.indexOf('const FOLLOW_UP_RULES'),
+    claude.indexOf('function formatFollowUpThread')
+  );
+  assert.doesNotMatch(rules, /\bMiles\b/,
+    reversal('FOLLOW_UP contact first name is verbatim', 'FOLLOW_UP_RULES hardcodes a contact first name again'));
 });
 
 // ── Decision: classification is Jev; drafts stay Claude then Gemini ───

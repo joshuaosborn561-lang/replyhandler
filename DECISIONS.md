@@ -640,7 +640,7 @@ Guard: `no follow-up messages past 5pm CT or on the weekend` (asserts `SEND_WIND
 
 *"please change the reject button to be reject and mark as not interested where it changes the classification in smartlead"*
 
-The Slack **❌ Reject** button is now **❌ Reject & not interested**. Hitting it still dismisses the draft (no send). It also:
+The Slack **❌ Reject** button still dismisses the draft (no send) and marks the lead Not Interested. Hitting it:
 
 1. Sets our `pending_replies.classification` to `NOT_INTERESTED`
 2. POSTs SmartLead ` /campaigns/{id}/leads/{id}/category` with the account's "Not Interested" category (looked up by name via `/leads/fetch-categories`, not a hardcoded id)
@@ -1164,3 +1164,80 @@ post. Record those hides with `recordSuppressedReply` reason
 defaults on.
 
 Guard: `cold inbound pitches at 0.8 are hidden; campaign threads are not`
+
+### FOLLOW_UP drafts continue the conversation; never wait on Josh
+
+Cayden sends follow-ups. 19 of the last 31 cards in the follow-ups channel
+ignored an explicit prospect ask because `draftReattemptToBook` discarded
+`lastInboundMessage` and always used `bumpForOffer` / `timesTakenBump`.
+
+Supersedes **FOLLOW_UP Slack cards show the draft and last message only**,
+the template half of **FOLLOW_UP bumps are offer-first**, and the canned
+"those times got taken" half of **First positive reply: two calendar times
+AND the booking link** (slots and the booking link are still passed in as
+available facts; the model decides whether a meeting ask fits).
+
+- Draft with Claude Sonnet + RAG the same way original replies do, even from
+  the cron / poller path. Per-run cap (`FOLLOW_UP_CLAUDE_CAP`, default 25)
+  and logged token cost. Gemini only if Claude errors or the cap is hit.
+  Templates remain last-resort when both LLMs fail, logged loudly.
+- Give the model the full thread, cadence step, and days since the last
+  message. Address anything they asked for or set as a condition. Never
+  repeat an earlier bump. Suggest a meeting only where it naturally fits.
+- Follow-ups must not wait on Josh. There is no `needs_josh` flag.
+  Pricing → "happy to walk through pricing on a quick call", no flag.
+  One-pager / deck / "email me some info" → `needs_client=true` plus
+  `what_to_send` **only when the draft actually loops the contact in**.
+  The draft names the actual client contact from `voice_prompt`,
+  copied character-for-character (e.g. it is "Myles" with a Y, not
+  Miles). Spoken line: "looping in {exact first name} from our side".
+  Name only, no title. Never say founder. Never let the model respell
+  the name. Card shows `LOOP IN CLIENT: <what>`. Existing Gmail /
+  SmartLead-forward notify to the client and Cayden still runs on send.
+- Slack card: **WILL SEND** (full text, never truncated) at the top,
+  buttons directly under it, optional LOOP IN CLIENT line, then the
+  full thread oldest → newest (them/us + dates, signatures and
+  disclaimers stripped, older turns ~400 chars, last two in full).
+  Stay inside Slack's 50-block / 3000-char limits; overflow posts the
+  full history as a thread reply.
+- SmartLead `POST /campaigns/{id}/reply-email-thread` documents `cc` and
+  `bcc` as comma-separated **strings** (field name `cc`, not an array).
+  Default send still omits both. **Send + CC client** appears only when
+  `needs_client` is set **and** the draft contains "looping in X from
+  our side". That button is the only path that passes `cc` into
+  `sendReply()`. Recipient is the same Always-forward addresses
+  (`cc_emails` / legacy `cc_email`) that already receive that client's
+  FYI — not a new field, not round-robin. The usual FYI forward still
+  goes out.
+
+Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
+Guard: `FOLLOW_UP cards show WILL SEND + full thread; only after we have sent`
+
+### Send + CC only on loop-in drafts; Reject label; verbatim contact name
+
+*"The 'Send + CC client' button must appear ONLY on cards where the draft
+loops in the client contact ('looping in X from our side'); tie it to
+the loop-in flag. CC recipient = existing client always-forward address.
+Use smartlead sendReply() payload.cc as a comma-separated string (field
+name 'cc', NOT cc_emails, NOT array) and wire reply-send.js to pass it
+only for that button. Rename the 'Reject / Not interested' button to
+just 'Reject'. Contact first names must come verbatim from client
+config, never LLM-spelled; e.g. it is 'Myles' with a Y, not Miles. Pass
+the exact name to Sonnet and validate the draft contains it exactly."*
+
+Tightens the follow-up loop-in path:
+
+- **Send + CC client** is gated on `needs_client` **and** the spoken
+  loop-in line in the draft. Pricing cards that wrongly set the flag
+  do not get the button. `reply-send.js` passes SmartLead `cc` (string)
+  only when that button was used.
+- Slack **❌ Reject** is the label. Hitting it still marks the lead
+  Not Interested in SmartLead (the 2026-10-01 behavior is unchanged).
+- The contact first name is copied from `voice_prompt` character-for-
+  character into the Sonnet prompt. Global FOLLOW_UP rules do not
+  include example spellings. A lookalike (Miles vs Myles) is rewritten
+  to the configured name; `needs_client` stays only if the exact
+  phrase is present after that check.
+
+Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
+Guard: `Reject marks the lead Not Interested in SmartLead`

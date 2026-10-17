@@ -3,7 +3,12 @@ const smartlead = require('./smartlead');
 const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
-const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
+const {
+  buildSmartleadCcList,
+  alwaysCcEmails,
+  alwaysForwardEmailsForProspectCc,
+  roundRobinEmails,
+} = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
@@ -107,7 +112,7 @@ async function resolveClientNotifyThread(client, reply) {
   };
 }
 
-async function sendReplyToPlatform(client, reply, replyText) {
+async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false } = {}) {
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
@@ -152,8 +157,11 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
-    // Deliverability: reply to the prospect with NO CC.
+    // Deliverability: reply to the prospect with NO CC by default.
     // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
+    // Optional exception: FOLLOW_UP "Send + CC client" CCs the same Always-forward
+    // addresses this client already receives (not round-robin, not a new field).
+    // FYI notify still fires.
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
@@ -165,12 +173,25 @@ async function sendReplyToPlatform(client, reply, replyText) {
     let clientCcWarning = '';
     let clientCcMode = '';
     let enrichment = null;
+    let prospectCc = '';
+    const sendOpts = { replyText, emailStatsId };
+    if (ccClientOnProspect) {
+      prospectCc = alwaysForwardEmailsForProspectCc(client);
+      if (!prospectCc) {
+        console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
+          replyId: reply.id,
+        });
+      } else {
+        // Comma-separated string on SmartLead field `cc`. Only this button.
+        sendOpts.cc = prospectCc;
+      }
+    }
 
     await smartlead.sendReply(
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      { replyText, emailStatsId }
+      sendOpts
     );
 
     if (forwardEmails) {
@@ -189,6 +210,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
         return {
           clientNotifySkipped: true,
           clientNotifySkipReason: notifySkip,
+          prospectCcEmails: prospectCc || undefined,
         };
       }
 
@@ -300,6 +322,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
+      prospectCcEmails: prospectCc || undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
       leadLinkedinUrl: enrichment?.linkedinUrl || undefined,

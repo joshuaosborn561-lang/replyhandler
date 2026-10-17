@@ -1,6 +1,9 @@
 const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
-const { draftReattemptToBook } = require('./follow-up-drafts');
+const { draftReattemptToBook, resetFollowUpClaudeBudget, followUpClaudeBudgetSnapshot } = require('./follow-up-drafts');
+const { attachFollowUpMeta } = require('../utils/follow-up-meta');
+const { daysSinceLastMessage } = require('../utils/follow-up-thread-display');
+const { clientLoopContact } = require('../utils/client-loop-contact');
 const { looksAlreadyBooked } = require('./booking-check');
 const {
   cancelPendingForThread,
@@ -193,7 +196,33 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     }
   }
 
-  const draft = await draftReattemptToBook({
+  const sentExtras = await priorSentMessages(client.id, fu);
+  const threadMessages = extractThreadMessages(fu.platform, threadContext, {
+    maxMessages: 40,
+    pinStart: true,
+    extraMessages: [
+      ...sentExtras,
+      ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
+      ...(lastOutbound ? [{ role: 'us', body: lastOutbound }] : []),
+    ],
+  });
+  const daysSince = daysSinceLastMessage(threadMessages, fu.sent_at);
+  let learnedVoiceBlock = '';
+  try {
+    const { loadLearnedVoiceBlock } = require('./voice-profile');
+    learnedVoiceBlock = await loadLearnedVoiceBlock({
+      clientId: client.id,
+      clientName: client.name,
+    }) || '';
+  } catch (err) {
+    console.warn('[FollowUp] Learned voice unavailable', { err: err.message });
+  }
+  const loopContact = clientLoopContact({
+    voicePrompt: client.voice_prompt,
+    clientName: client.name,
+  });
+
+  const drafted = await draftReattemptToBook({
     leadName: fu.lead_name,
     platform: fu.platform,
     voicePrompt: client.voice_prompt,
@@ -204,18 +233,17 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     step,
     slots,
     clientName: client.name,
+    clientId: client.id,
+    loopContact,
+    threadContext,
+    threadMessages,
+    learnedVoiceBlock,
+    daysSinceLastMessage: daysSince,
   });
-
-  const sentExtras = await priorSentMessages(client.id, fu);
-  const threadMessages = extractThreadMessages(fu.platform, threadContext, {
-    maxMessages: 20,
-    pinStart: true,
-    extraMessages: [
-      ...sentExtras,
-      ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
-      ...(lastOutbound ? [{ role: 'us', body: lastOutbound }] : []),
-    ],
-  });
+  const draft = typeof drafted === 'string' ? drafted : (drafted && drafted.text) || '';
+  const needsClient = Boolean(drafted && drafted.needsClient);
+  const whatToSend = needsClient ? (drafted.whatToSend || 'info') : null;
+  const storedContext = attachFollowUpMeta(threadContext, { needsClient, whatToSend });
 
   const { rows: [newReply] } = await db.query(
     `INSERT INTO pending_replies
@@ -234,7 +262,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       fu.linkedin_url,
       // Store the original prospect reply so Approve/confirm cards keep thread context.
       inboundForCard,
-      typeof threadContext === 'object' && threadContext !== null ? JSON.stringify(threadContext) : threadContext,
+      JSON.stringify(storedContext),
       draft,
       smartleadStatsId,
     ]
@@ -250,8 +278,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   );
 
   // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
-  // under the original card). Compact layout: campaign/lead → suggested send →
-  // last thread turn → buttons. Full thread dump hid the draft behind "See more".
+  // under the original card). WILL SEND + buttons first, then the full thread.
   await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: followUpSlackChannelId(),
@@ -273,7 +300,10 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       classification: 'FOLLOW_UP',
       draft,
       reasoning: reasoningExtra ||
-        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)} — offer-first bump.`,
+        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)}${daysSince != null ? ` · ${daysSince}d since last message` : ''}${drafted && drafted.source && drafted.source !== 'claude' ? ` · ${drafted.source}` : ''}.`,
+      needsClient,
+      whatToSend,
+      ccEmails: client.cc_emails || client.cc_email || undefined,
       inboundMessage: inboundForCard,
       campaignDisplay,
       lastOutboundMessage: lastOutbound || undefined,
@@ -362,7 +392,8 @@ async function dueFollowUps(limit) {
   const { rows } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*, c.name AS client_name, c.slack_bot_token, c.slack_channel_id,
-            c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key
+            c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key,
+            c.cc_email, c.cc_emails
        FROM outbound_follow_ups f
        JOIN clients c ON c.id = f.client_id
       WHERE f.status = 'pending'
@@ -381,6 +412,7 @@ async function dueFollowUps(limit) {
  * time, post a Slack card for the rest.
  */
 async function runDueFollowUps({ limit = 25 } = {}) {
+  resetFollowUpClaudeBudget();
   const deferred = await deferOffHoursFollowUps();
   // Do not post — and do not retire as stale — at night or on the weekend.
   // Stale is 24h past due; a Saturday skip would otherwise kill Monday's card.
@@ -409,6 +441,8 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       booking_link: fu.booking_link,
       digest_timezone: fu.digest_timezone,
       smartlead_api_key: fu.smartlead_api_key,
+      cc_email: fu.cc_email,
+      cc_emails: fu.cc_emails,
     };
 
     try {
@@ -508,7 +542,11 @@ async function runDueFollowUps({ limit = 25 } = {}) {
     }
   }
 
-  return totals;
+  const budget = followUpClaudeBudgetSnapshot();
+  if (budget.calls) {
+    console.log('[FollowUp] Claude usage this run', budget);
+  }
+  return { ...totals, claude: budget };
 }
 
 module.exports = {

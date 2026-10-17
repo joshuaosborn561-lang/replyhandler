@@ -12,6 +12,7 @@ const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-web
 const { learnFromApprovedReply } = require('../services/approved-reply-learning');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
+const { readFollowUpMeta } = require('../utils/follow-up-meta');
 
 const router = Router();
 
@@ -72,7 +73,8 @@ async function slackCardContextFromReply(reply, client) {
   const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
   const threadMessages = String(reply.classification || '').toUpperCase() === 'FOLLOW_UP'
     ? extractThreadMessages(reply.platform, tc, {
-      maxMessages: 12,
+      maxMessages: 40,
+      pinStart: true,
       extraMessages: [
         ...(reply.inbound_message ? [{ role: 'them', body: reply.inbound_message }] : []),
         ...((reply.sent_reply || lastOutbound)
@@ -93,6 +95,7 @@ function normDraft(s) {
 }
 
 function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFooter, ccUsed }) {
+  const followMeta = readFollowUpMeta(reply.thread_context);
   return {
     leadName: reply.lead_name,
     leadEmail: reply.lead_email,
@@ -114,6 +117,8 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     userId,
     extraFooter,
     ccUsed,
+    needsClient: followMeta.needsClient,
+    whatToSend: followMeta.whatToSend,
   };
 }
 
@@ -163,6 +168,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 
     if (action.action_id === 'approve_reply') {
       await handleApprove(action.value, interaction);
+    } else if (action.action_id === 'approve_reply_cc_client') {
+      await handleApprove(action.value, interaction, { ccClientOnProspect: true });
     } else if (action.action_id === 'reject_reply') {
       await handleReject(action.value, interaction);
     } else if (action.action_id === 'dq_prospect') {
@@ -326,7 +333,7 @@ async function handleEditModalSubmit(interaction) {
   }
 }
 
-async function handleApprove(replyId, interaction) {
+async function handleApprove(replyId, interaction, { ccClientOnProspect = false } = {}) {
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
      WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
@@ -342,7 +349,9 @@ async function handleApprove(replyId, interaction) {
   const ctx = await slackCardContextFromReply(reply, client);
 
   try {
-    const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply) || {};
+    const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply, {
+      ccClientOnProspect,
+    }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 
     await db.query(
@@ -369,6 +378,9 @@ async function handleApprove(replyId, interaction) {
       }
       if (sendResult.clientNotifySkipped) {
         extraFooter += `\nTyler notify skipped — ${sendResult.clientNotifySkipReason}`;
+      }
+      if (sendResult.prospectCcEmails) {
+        extraFooter += `\nProspect thread CC: ${sendResult.prospectCcEmails}`;
       }
     }
 

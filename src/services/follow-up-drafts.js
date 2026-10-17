@@ -1,15 +1,16 @@
 const { firstNameFromLead } = require('./classifier');
 
 /**
- * FOLLOW_UP bumps.
+ * FOLLOW_UP drafts.
  *
- * Same-day step 1 stays a short offer-first nudge (they just got times).
- * Next-day step 2+ says those times were taken, offers two new times, and
- * includes the booking link (except in-person / Vasco / Deep Roots callback).
+ * Primary path: Claude Sonnet + RAG continues the thread (even from cron).
+ * Gemini if Claude errors or the per-run cap is hit. The templates below
+ * (`bumpForOffer` / `timesTakenBump`) are last-resort only.
  *
- * Every bump reframes the value prop from the original outbound ("still
- * interested in meeting for X"). Step 3+ never uses dashes — use "..." instead.
- * Never open with "thanks for getting back to me" (they didn't).
+ * Last-resort step 1 is still a short offer-first nudge. Last-resort step 2+
+ * says those times were taken, offers two new times, and includes the
+ * booking link (except in-person / callback). Step 3+ never uses dashes —
+ * use "..." instead. Never open with "thanks for getting back to me".
  */
 
 function norm(s) {
@@ -264,9 +265,147 @@ function fallbackReattempt({
   });
 }
 
+const DEFAULT_CLAUDE_CAP = 25;
+
+let claudeCallsThisRun = 0;
+let claudeCostUsdThisRun = 0;
+
+function resetFollowUpClaudeBudget() {
+  claudeCallsThisRun = 0;
+  claudeCostUsdThisRun = 0;
+}
+
+function followUpClaudeCap() {
+  const n = parseInt(process.env.FOLLOW_UP_CLAUDE_CAP || '', 10);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return DEFAULT_CLAUDE_CAP;
+}
+
+function followUpClaudeBudgetSnapshot() {
+  return {
+    calls: claudeCallsThisRun,
+    cap: followUpClaudeCap(),
+    estimatedUsd: Math.round(claudeCostUsdThisRun * 10000) / 10000,
+  };
+}
+
+function estimateClaudeUsd(usage) {
+  const inTok = Number(usage?.input_tokens || 0);
+  const outTok = Number(usage?.output_tokens || 0);
+  const inRate = Number(process.env.FOLLOW_UP_CLAUDE_INPUT_USD_PER_MTOK || 3);
+  const outRate = Number(process.env.FOLLOW_UP_CLAUDE_OUTPUT_USD_PER_MTOK || 15);
+  return (inTok * inRate + outTok * outRate) / 1e6;
+}
+
+function sanitizeFollowUpText(text, {
+  bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
+} = {}) {
+  const { stripSignOff } = require('./classifier');
+  const { stripBookingUrls } = require('../utils/booking-link-intent');
+  const { rewriteRawCtapperCalendly, prospectBookingLink } = require('../utils/public-booking-link');
+  const { prefersInPersonMeeting, prefersCallbackCall } = require('../utils/meeting-modality');
+  const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+
+  let draft = stripSignOff(String(text || '').trim());
+  if (!draft) return '';
+  const inPerson = prefersInPersonMeeting(voicePrompt);
+  const callback = prefersCallbackCall(voicePrompt, clientName);
+  const link = prospectBookingLink({ clientName, bookingLink });
+  draft = rewriteRawCtapperCalendly(draft, { includeBookingLink: !(inPerson || callback) });
+  if (inPerson || callback) {
+    draft = stripBookingUrls(draft, link);
+  }
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
+  const guarded = enforcePrincipalVoice(draft, { asPrincipal });
+  if (guarded.scrubbed) {
+    console.warn('[FollowUp] Scrubbed principal handoff leak', { leadName });
+    draft = guarded.text;
+  }
+  if (!asPrincipal) {
+    const { rewriteLoopInCopy, clientLoopContactPhrase } = require('../utils/client-loop-contact');
+    const phrase = loopContactPhrase
+      || clientLoopContactPhrase({ voicePrompt, clientName });
+    if (phrase) draft = rewriteLoopInCopy(draft, phrase);
+  }
+  return scrubDashes(draft);
+}
+
+function lastResortTemplate(opts) {
+  return fallbackReattempt({
+    leadName: opts.leadName,
+    platform: opts.platform,
+    bookingLink: opts.bookingLink,
+    digestTimezone: opts.digestTimezone,
+    voicePrompt: opts.voicePrompt,
+    lastOutboundMessage: opts.lastOutboundMessage,
+    step: opts.step,
+    slots: opts.slots,
+    clientName: opts.clientName,
+  });
+}
+
+async function generateFollowUpGeminiDraft(opts) {
+  const { GoogleGenerativeAI } = require('@google/generative-ai');
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Gemini is not configured');
+  }
+  const { buildFollowUpPrompt } = require('./claude-reply-draft');
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const asPrincipal = speaksAsPrincipal(opts.voicePrompt);
+  const { system, user } = buildFollowUpPrompt({
+    ...opts,
+    lastInboundMessage: opts.lastInboundMessage || opts.inboundMessage,
+    asPrincipal,
+    examples: opts.examples || [],
+  });
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: process.env.GEMINI_FOLLOW_UP_MODEL || 'gemini-2.5-flash',
+    systemInstruction: system,
+    generationConfig: {
+      maxOutputTokens: 4096,
+      temperature: 0.7,
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  });
+  const res = await model.generateContent(user);
+  const raw = (res.response && typeof res.response.text === 'function')
+    ? res.response.text()
+    : '';
+  if (!String(raw || '').trim()) throw new Error('Gemini returned an empty follow-up draft');
+  const { parseFollowUpModelJson } = require('./claude-reply-draft');
+  const parsed = parseFollowUpModelJson(raw);
+  if (!parsed.draft) throw new Error('Gemini follow-up JSON had an empty draft');
+  if (asPrincipal) {
+    parsed.needsClient = false;
+    parsed.whatToSend = null;
+  }
+  return {
+    text: parsed.draft,
+    needsClient: parsed.needsClient === true,
+    whatToSend: parsed.needsClient ? parsed.whatToSend : null,
+    model: 'gemini-2.5-flash',
+    usage: null,
+  };
+}
+
+function resultShape(text, extra = {}) {
+  return {
+    text: String(text || '').trim(),
+    needsClient: extra.needsClient === true,
+    whatToSend: extra.needsClient ? (extra.whatToSend || 'info') : null,
+    source: extra.source || 'template',
+    model: extra.model || null,
+    usage: extra.usage || null,
+  };
+}
+
 /**
- * Draft the next cadence bump. Never throws; always returns plain text
- * usable in Slack.
+ * Draft the next cadence bump via Claude (+ RAG) with Gemini fallback.
+ * Templates are last-resort only when both LLMs fail. Never throws.
+ * Returns { text, needsClient, whatToSend, source }.
  */
 async function draftReattemptToBook({
   leadName,
@@ -279,9 +418,144 @@ async function draftReattemptToBook({
   step,
   slots,
   clientName,
-}) {
-  void lastInboundMessage;
-  return fallbackReattempt({
+  clientId = null,
+  loopContact = null,
+  threadContext = null,
+  threadMessages = null,
+  learnedVoiceBlock = '',
+  daysSinceLastMessage = null,
+  claudeGenerate = null,
+  geminiGenerate = null,
+} = {}) {
+  const { generateFollowUpClaudeDraft, anthropicKeyConfigured } = require('./claude-reply-draft');
+  const { factSourceText, enforceDraftGrounding } = require('../utils/draft-fact-check');
+
+  const pack = async (llmResult, source) => {
+    const {
+      clientLoopContact,
+      clientLoopContactPhrase,
+      draftLoopsInContact,
+    } = require('../utils/client-loop-contact');
+    const contact = clientLoopContact({ voicePrompt, clientName, loopContact });
+    const loopContactPhrase = clientLoopContactPhrase({
+      voicePrompt, clientName, loopContact,
+    });
+    let text = sanitizeFollowUpText(llmResult.text, {
+      bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
+    });
+    if (!text) throw new Error(`${source} draft empty after sanitization`);
+    const sourceText = factSourceText({
+      inboundMessage: lastInboundMessage,
+      threadContext,
+      threadSummary: require('./claude-reply-draft').formatFollowUpThread(threadMessages, threadContext),
+      leadName,
+      clientName,
+      schedulingPromptBlock: [
+        bookingLink,
+        (slots || []).map((s) => (s && s.label) || s).join(' '),
+        contact.firstName,
+        loopContactPhrase,
+      ].filter(Boolean).join('\n'),
+      voicePrompt,
+      learnedVoiceBlock,
+    });
+    const factCheck = await enforceDraftGrounding({
+      draft: text,
+      sourceText,
+    });
+    text = sanitizeFollowUpText(factCheck.text, {
+      bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
+    }) || text;
+    let needsClient = llmResult.needsClient === true;
+    let whatToSend = needsClient ? (llmResult.whatToSend || 'info') : null;
+    if (require('../utils/principal-voice').speaksAsPrincipal(voicePrompt)) {
+      needsClient = false;
+      whatToSend = null;
+    }
+    // Send + CC / LOOP IN CLIENT only when the draft actually loops them in
+    // with the exact configured first name.
+    if (needsClient && !draftLoopsInContact(text, contact.firstName)) {
+      needsClient = false;
+      whatToSend = null;
+    }
+    return resultShape(text, {
+      needsClient,
+      whatToSend,
+      source,
+      model: llmResult.model,
+      usage: llmResult.usage,
+    });
+  };
+
+  const claudeFn = claudeGenerate || generateFollowUpClaudeDraft;
+  const geminiFn = geminiGenerate || generateFollowUpGeminiDraft;
+  const cap = followUpClaudeCap();
+  const claudeArgs = {
+    inboundMessage: lastInboundMessage,
+    lastInboundMessage,
+    lastOutboundMessage,
+    threadContext,
+    threadMessages,
+    leadName,
+    bookingLink,
+    slots,
+    platform,
+    voicePrompt,
+    clientName,
+    loopContact,
+    step,
+    daysSinceLastMessage,
+    learnedVoiceBlock,
+  };
+
+  let claudeErr = null;
+  const canClaude = anthropicKeyConfigured() && claudeCallsThisRun < cap;
+  if (anthropicKeyConfigured() && claudeCallsThisRun >= cap) {
+    console.warn('[FollowUp] Claude cap reached for this run — Gemini fallback', {
+      cap, used: claudeCallsThisRun,
+    });
+  }
+  if (canClaude) {
+    try {
+      claudeCallsThisRun += 1;
+      const llm = await claudeFn(claudeArgs);
+      const usd = estimateClaudeUsd(llm.usage);
+      claudeCostUsdThisRun += usd;
+      console.log('[FollowUp] Claude draft generated', {
+        model: llm.model,
+        step,
+        needsClient: llm.needsClient === true,
+        inputTokens: llm.usage?.input_tokens || null,
+        outputTokens: llm.usage?.output_tokens || null,
+        estimatedUsd: Math.round(usd * 10000) / 10000,
+        runUsd: Math.round(claudeCostUsdThisRun * 10000) / 10000,
+        runCalls: claudeCallsThisRun,
+        cap,
+      });
+      return await pack(llm, 'claude');
+    } catch (err) {
+      claudeErr = err;
+      console.error('[FollowUp] Claude follow-up draft failed — falling through to Gemini', {
+        err: err.message, step,
+      });
+    }
+  }
+
+  let geminiErr = null;
+  try {
+    const llm = await geminiFn(claudeArgs);
+    console.log('[FollowUp] Gemini follow-up draft generated', { step, needsClient: llm.needsClient === true });
+    return await pack(llm, 'gemini');
+  } catch (err) {
+    geminiErr = err;
+    console.error('[FollowUp] BOTH LLMs failed — using last-resort template', {
+      claude: claudeErr ? claudeErr.message : (canClaude ? null : (anthropicKeyConfigured() ? 'cap' : 'not_configured')),
+      gemini: err.message,
+      step,
+    });
+  }
+
+  const template = lastResortTemplate({
     leadName,
     platform,
     bookingLink,
@@ -292,6 +566,8 @@ async function draftReattemptToBook({
     slots,
     clientName,
   });
+  void geminiErr;
+  return resultShape(template, { source: 'template' });
 }
 
 module.exports = {
@@ -302,4 +578,9 @@ module.exports = {
   timesTakenBump,
   valuePropPhrase,
   scrubDashes,
+  resetFollowUpClaudeBudget,
+  followUpClaudeCap,
+  followUpClaudeBudgetSnapshot,
+  generateFollowUpGeminiDraft,
+  estimateClaudeUsd,
 };

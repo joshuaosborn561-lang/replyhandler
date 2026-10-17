@@ -41,16 +41,16 @@ describe('FOLLOW_UP Slack channel', () => {
 });
 
 describe('FOLLOW_UP card conversation layout', () => {
-  it('shows the suggested send and last thread turn, not the full dump', () => {
+  it('shows WILL SEND in full, then the thread oldest to newest', () => {
     const blocks = buildFollowUpConversationBlocks({
       inboundMessage: 'Sure, Tuesday works.',
       lastOutboundMessage: 'Great — talk Tuesday at 2.',
       draft: 'Still interested in meeting for a free campaign?',
       threadMessages: [
-        { role: 'them', body: 'Sure, Tuesday works.' },
-        { role: 'us', body: 'Great — talk Tuesday at 2.' },
-        { role: 'us', body: 'Bump #1 checking in' },
-        { role: 'them', body: 'Still around next week?' },
+        { role: 'them', body: 'Sure, Tuesday works.', time: '2026-09-01T12:00:00.000Z' },
+        { role: 'us', body: 'Great — talk Tuesday at 2.', time: '2026-09-01T13:00:00.000Z' },
+        { role: 'us', body: 'Bump #1 checking in', time: '2026-09-02T13:00:00.000Z' },
+        { role: 'them', body: 'Still around next week?', time: '2026-09-03T13:00:00.000Z' },
       ],
     });
 
@@ -59,51 +59,52 @@ describe('FOLLOW_UP card conversation layout', () => {
       .map((b) => b.text.text)
       .join('\n');
 
-    assert.match(texts, /\*Suggested follow-up\*/);
+    assert.match(texts, /\*WILL SEND\*/);
     assert.match(texts, /Still interested in meeting for a free campaign/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /Sure, Tuesday works/);
+    assert.match(texts, /Bump #1 checking in/);
     assert.match(texts, /Still around next week/);
+    assert.doesNotMatch(texts, /\*Suggested follow-up\*/);
     assert.doesNotMatch(texts, /\*Original message\*/);
-    assert.doesNotMatch(texts, /Bump #1 checking in/);
-    assert.ok(!texts.includes('Sure, Tuesday works.'), 'original inbound is not dumped');
 
     const last = lastThreadTurn({
       threadMessages: [
-        { role: 'them', body: 'I am more interested in PowerGRYD.\n\nOn Wednesday, September 30, 2026 at 10:27 AM Rebecca White wrote: old thread' },
+        { role: 'them', body: 'I am more interested in a different product.\n\nOn Wednesday, September 30, 2026 at 10:27 AM Jordan wrote: old thread' },
       ],
     });
     assert.equal(last.role, 'them');
-    assert.match(last.body, /more interested in PowerGRYD/);
-    assert.doesNotMatch(last.body, /Rebecca White wrote/);
+    assert.match(last.body, /more interested in a different product/);
+    assert.doesNotMatch(last.body, /Jordan wrote/);
   });
 
-  it('sent confirmation stays compact — send first, last turn, no thread dump', () => {
+  it('sent confirmation keeps WILL SEND as Sent to prospect plus the thread', () => {
     const blocks = buildSentConfirmationBlocks({
-      leadName: 'Patrick Lefler',
-      leadEmail: 'plefler@seeking-eureeka.com',
+      leadName: 'Alex Rivera',
+      leadEmail: 'alex@example.com',
       platform: 'smartlead',
       classification: 'FOLLOW_UP',
-      inboundMessage: 'I am more interested in PowerGRYD.\n\nOn Wednesday Rebecca White wrote: old pitch',
-      lastOutboundMessage: 'Patrick, I have got an extra pair of 76ers tickets.',
-      sentReply: 'Hey Patrick, still interested in meeting for this?',
+      inboundMessage: 'I am more interested in staffing help.\n\nOn Wednesday Jordan wrote: old pitch',
+      lastOutboundMessage: 'Alex, I have an extra pair of tickets.',
+      sentReply: 'Hey Alex, looping in Myles from our side to send that over.',
       actionKind: 'edited',
       threadMessages: [
-        { role: 'us', body: 'Patrick, I have got an extra pair of 76ers tickets.' },
-        { role: 'them', body: 'I am more interested in PowerGRYD.\n\nOn Wednesday Rebecca White wrote: old pitch' },
+        { role: 'us', body: 'Alex, I have an extra pair of tickets.' },
+        { role: 'them', body: 'I am more interested in staffing help.\n\nOn Wednesday Jordan wrote: old pitch' },
       ],
+      needsClient: true,
+      whatToSend: 'one-pager',
     });
     const texts = blocks
       .filter((b) => b.type === 'section' && b.text)
       .map((b) => b.text.text)
       .join('\n');
     assert.match(texts, /\*Sent to prospect\*/);
-    assert.match(texts, /still interested in meeting/);
-    assert.match(texts, /\*Last message \(them\)\*/);
-    assert.match(texts, /more interested in PowerGRYD/);
-    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
+    assert.match(texts, /looping in Myles from our side/);
+    assert.match(texts, /more interested in staffing help/);
+    assert.match(texts, /LOOP IN CLIENT/);
     assert.doesNotMatch(texts, /\*Original message\*/);
     assert.doesNotMatch(texts, /\*They replied/);
-    assert.doesNotMatch(texts, /Rebecca White wrote/);
+    assert.doesNotMatch(texts, /Jordan wrote/);
   });
 
   it('approval actions sit in a reusable block', () => {
@@ -118,75 +119,150 @@ describe('FOLLOW_UP card conversation layout', () => {
       'meeting_booked',
     ]);
     const reject = actions.elements.find((e) => e.action_id === 'reject_reply');
-    assert.match(reject.text.text, /not interested/i);
+    assert.equal(reject.text.text, '❌ Reject');
+    assert.doesNotMatch(reject.text.text, /not interested/i);
   });
 
-  it('pending FOLLOW_UP approval card is compact — no Original / You sent dump', () => {
+  it('pending FOLLOW_UP card puts WILL SEND then buttons, never truncates the draft', () => {
+    const longDraft = `Hey Alex, looping in Myles from our side to send the one-pager you asked for.\n\n${'Details '.repeat(80)}`;
     const { blocks } = buildDraftApprovalCard({
       replyId: 'r1',
-      leadName: 'Cory Schell',
-      leadEmail: 'cory@thekellycompany.com',
+      leadName: 'Alex Rivera',
+      leadEmail: 'alex@example.com',
       platform: 'smartlead',
       classification: 'FOLLOW_UP',
-      draft: 'Hey Cory, still interested in meeting for this?',
-      inboundMessage: 'P {margin-top:0;margin-bottom:0;} Hello Ethan, Were are you guys out of?',
-      lastOutboundMessage: 'Cory, I have got an extra pair of AirPods.',
-      campaignDisplay: 'EMCOR A Property | AirPods (4036499)',
+      draft: longDraft,
+      inboundMessage: 'P {margin-top:0;margin-bottom:0;} Hello, can you send details first?',
+      lastOutboundMessage: 'Alex, want to grab time Tuesday?',
+      campaignDisplay: 'Example Co | Intro (1)',
       threadMessages: [
-        { role: 'us', body: 'Cory, I have got an extra pair of AirPods.' },
-        { role: 'them', body: 'P {margin-top:0;margin-bottom:0;} Hello Ethan, Were are you guys out of?' },
+        { role: 'us', body: 'Alex, want to grab time Tuesday?' },
+        { role: 'them', body: 'P {margin-top:0;margin-bottom:0;} Hello, can you send details first?' },
       ],
+      needsClient: true,
+      whatToSend: 'one-pager',
+      ccEmails: 'contact@example.com',
     });
     const texts = blocks
       .filter((b) => b.type === 'section' && b.text)
       .map((b) => b.text.text)
       .join('\n');
-    assert.match(texts, /\*Suggested follow-up\*/);
-    assert.match(texts, /\*Last message \(them\)\*/);
-    assert.match(texts, /Were are you guys out of/);
+    assert.match(texts, /\*WILL SEND\*/);
+    assert.ok(texts.includes(longDraft.split('\n')[0]));
+    assert.doesNotMatch(texts, /_\(truncated\)_/);
+    assert.match(texts, /LOOP IN CLIENT/);
+    assert.match(texts, /one-pager/);
+    assert.match(texts, /send details first/);
     assert.doesNotMatch(texts, /margin-top/);
-    assert.doesNotMatch(texts, /\*Original message\*/);
-    assert.doesNotMatch(texts, /\*Our reply\*/);
-    assert.doesNotMatch(texts, /\*You sent \(2\)\*/);
-    assert.ok(blocks.some((b) => b.type === 'actions'), 'buttons stay on the pending card');
+    assert.doesNotMatch(texts, /\*Suggested follow-up\*/);
+    const types = blocks.map((b) => b.type);
+    const willIdx = blocks.findIndex((b) => b.type === 'section' && /\*WILL SEND\*/.test(b.text?.text || ''));
+    const actionIdx = types.indexOf('actions');
+    assert.ok(willIdx >= 0 && actionIdx > willIdx, 'buttons sit under WILL SEND');
+    const actionIds = blocks
+      .filter((b) => b.type === 'actions')
+      .flatMap((b) => b.elements.map((e) => e.action_id));
+    assert.ok(actionIds.includes('approve_reply'));
+    assert.ok(actionIds.includes('approve_reply_cc_client'));
+    const loopIdx = blocks.findIndex((b) => b.type === 'section' && /LOOP IN CLIENT/.test(b.text?.text || ''));
+    assert.ok(loopIdx > actionIdx, 'LOOP IN CLIENT sits after buttons');
   });
 
-  it('does not repeat the outgoing bump as Last message (you)', () => {
+  it('hides Send + CC client when there is no client contact email', () => {
+    const { blocks } = buildDraftApprovalCard({
+      replyId: 'r-no-cc',
+      leadName: 'Alex Rivera',
+      platform: 'smartlead',
+      classification: 'FOLLOW_UP',
+      draft: 'Hey Alex, looping in Myles from our side to send the deck.',
+      needsClient: true,
+      whatToSend: 'deck',
+    });
+    const actionIds = blocks
+      .filter((b) => b.type === 'actions')
+      .flatMap((b) => b.elements.map((e) => e.action_id));
+    assert.ok(actionIds.includes('approve_reply'));
+    assert.ok(!actionIds.includes('approve_reply_cc_client'));
+    const texts = blocks
+      .filter((b) => b.type === 'section' && b.text)
+      .map((b) => b.text.text)
+      .join('\n');
+    assert.match(texts, /LOOP IN CLIENT/);
+  });
+
+  it('hides Send + CC client when needs_client is set but the draft does not loop anyone in', () => {
+    const { blocks } = buildDraftApprovalCard({
+      replyId: 'r-no-loop',
+      leadName: 'Alex Rivera',
+      platform: 'smartlead',
+      classification: 'FOLLOW_UP',
+      draft: 'Hey Alex, happy to walk through pricing on a quick call.',
+      needsClient: true,
+      whatToSend: 'info',
+      ccEmails: 'contact@example.com',
+    });
+    const actionIds = blocks
+      .filter((b) => b.type === 'actions')
+      .flatMap((b) => b.elements.map((e) => e.action_id));
+    assert.ok(actionIds.includes('approve_reply'));
+    assert.ok(!actionIds.includes('approve_reply_cc_client'));
+  });
+
+  it('still shows the last prospect turn in the thread, not as a duplicate last-message line', () => {
     const blocks = buildFollowUpConversationBlocks({
-      draft: 'Hey Patrick, still interested in meeting for this?',
+      draft: 'Hey Alex, looping in Myles from our side to send that over.',
       inboundMessage: 'Would like to learn more.',
-      lastOutboundMessage: 'Hey Patrick, still interested in meeting for this?',
+      lastOutboundMessage: 'Hey Alex, still interested in meeting for this?',
       threadMessages: [
         { role: 'them', body: 'Would like to learn more.' },
-        { role: 'us', body: 'Hey Patrick, still interested in meeting for this?' },
+        { role: 'us', body: 'Hey Alex, still interested in meeting for this?' },
       ],
     });
     const texts = blocks
       .filter((b) => b.type === 'section')
       .map((b) => b.text.text)
       .join('\n');
-    assert.match(texts, /\*Suggested follow-up\*/);
-    assert.match(texts, /\*Last message \(them\)\*/);
+    assert.match(texts, /\*WILL SEND\*/);
     assert.match(texts, /Would like to learn more/);
-    assert.doesNotMatch(texts, /\*Last message \(you\)\*/);
+    assert.doesNotMatch(texts, /\*Last message \(them\)\*/);
+    assert.doesNotMatch(texts, /\*Suggested follow-up\*/);
+  });
+
+  it('posts overflow history when the thread does not fit the card', () => {
+    const threadMessages = Array.from({ length: 45 }, (_, i) => ({
+      role: i % 2 === 0 ? 'us' : 'them',
+      body: `Turn ${i + 1} ${'word '.repeat(30)}`,
+      time: new Date(Date.UTC(2026, 8, 1, 12, i)).toISOString(),
+    }));
+    const { blocks, overflowThread } = buildDraftApprovalCard({
+      replyId: 'r-overflow',
+      leadName: 'Alex Rivera',
+      platform: 'smartlead',
+      classification: 'FOLLOW_UP',
+      draft: 'Hey Alex, circling back on hiring help.',
+      inboundMessage: 'We need help with hiring techs.',
+      threadMessages,
+    });
+    assert.ok(blocks.length <= 50, `card has ${blocks.length} blocks`);
+    assert.ok(overflowThread && overflowThread.length, 'overflow thread is populated');
   });
 
   it('strips Outlook CSS from the last-message line', () => {
     const cleaned = cleanInboundReply(
-      '<style>P {margin-top:0;margin-bottom:0;}</style><p>Hello Ethan,</p><p>Were are you guys out of?</p>'
+      '<style>P {margin-top:0;margin-bottom:0;}</style><p>Hello there,</p><p>Were are you guys out of?</p>'
     );
-    assert.match(cleaned, /Hello Ethan/);
+    assert.match(cleaned, /Hello there/);
     assert.match(cleaned, /Were are you guys out of/);
     assert.doesNotMatch(cleaned, /margin-top/);
-    assert.doesNotMatch(stripOutlookCss('P {margin-top:0;margin-bottom:0;} Hello Ethan,'), /margin-top/);
+    assert.doesNotMatch(stripOutlookCss('P {margin-top:0;margin-bottom:0;} Hello there,'), /margin-top/);
 
     const last = lastThreadTurn({
       threadMessages: [{
         role: 'them',
-        body: 'v\\:* {behavior:url(#default#VML);} Hello Ethan, Were are you guys out of?',
+        body: 'v\\:* {behavior:url(#default#VML);} Hello there, Were are you guys out of?',
       }],
     });
-    assert.match(last.body, /Hello Ethan/);
+    assert.match(last.body, /Hello there/);
     assert.doesNotMatch(last.body, /behavior:url/);
   });
 });

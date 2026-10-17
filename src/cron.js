@@ -466,6 +466,8 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   let posted = 0;
   const { isDisqualified } = require('./services/disqualified-prospects');
   const { postFollowUpCard, threadHasOurSend } = require('./services/follow-up-runner');
+  const { resetFollowUpClaudeBudget, followUpClaudeBudgetSnapshot } = require('./services/follow-up-drafts');
+  resetFollowUpClaudeBudget();
   const { cancelPendingForThread } = require('./services/outbound-follow-up');
   const { isLeadClaimed, cancelClaimedLeadWork } = require('./services/client-claimed');
   for (const fu of followUpsToPost) {
@@ -531,6 +533,11 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
     } catch (err) {
       console.error('[Cron] Digest follow-up card failed', { followUpId: fu.id, err: err.message });
     }
+  }
+
+  const budget = followUpClaudeBudgetSnapshot();
+  if (budget.calls) {
+    console.log('[Cron] Follow-up Claude usage this digest', budget);
   }
 
   await recordAttentionDigest({

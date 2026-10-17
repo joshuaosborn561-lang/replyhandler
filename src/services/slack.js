@@ -1,6 +1,7 @@
 const { WebClient } = require('@slack/web-api');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 const { isDeepRootsClient } = require('../utils/meeting-modality');
+const { prepareFollowUpThreadTurns } = require('../utils/follow-up-thread-display');
 
 // Cache WebClient instances per token
 const clientCache = new Map();
@@ -290,6 +291,7 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
 }
 
 const LAST_THREAD_DISPLAY_MAX = 800;
+const SLACK_BLOCK_LIMIT = 50;
 
 /**
  * Latest turn on the thread — quoted email history stripped so the card
@@ -337,56 +339,107 @@ function lastThreadTurn({ threadMessages, inboundMessage, lastOutboundMessage, p
   return null;
 }
 
+function buildWillSendBlocks({
+  draft,
+  outgoingLabel = 'WILL SEND',
+  outgoingBody = null,
+}) {
+  const sendBody = outgoingBody != null ? outgoingBody : draft;
+  if (sendBody == null || String(sendBody).trim() === '') return [];
+  const isSent = /sent/i.test(String(outgoingLabel || ''));
+  return conversationStepBlocks({
+    emoji: isSent ? '📤' : '✍️',
+    label: outgoingLabel,
+    body: sendBody,
+    neverTruncate: true,
+  });
+}
+
+function loopInClientBlock(needsClient, whatToSend) {
+  if (!needsClient) return null;
+  const what = String(whatToSend || 'info').replace(/\s+/g, ' ').trim() || 'info';
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*LOOP IN CLIENT:* ${escMrkdwn(what)}` },
+  };
+}
+
+function sendCcClientActionsBlock(replyId) {
+  return {
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '📬 Send + CC client' },
+        style: 'primary',
+        action_id: 'approve_reply_cc_client',
+        value: replyId,
+      },
+    ],
+  };
+}
+
+function followUpThreadTurnBlocks(turn) {
+  const emoji = turn.role === 'us' ? '📤' : '📥';
+  return conversationStepBlocks({
+    emoji,
+    label: turn.label,
+    body: turn.display,
+    neverTruncate: true,
+  });
+}
+
 /**
- * FOLLOW_UP layout: what we are sending, then the last thread turn.
- * The full dump (original → our reply → rest) forced Slack "See more" and
- * hid both the draft and the latest message.
+ * Oldest → newest thread for the FOLLOW_UP card. Returns card blocks plus
+ * overflow turns (full cleaned history) when the 50-block budget is hit.
+ */
+function buildFollowUpThreadBlocks(threadMessages, { maxBlocks = 28 } = {}) {
+  const turns = prepareFollowUpThreadTurns(threadMessages);
+  const blocks = [];
+  let fitted = 0;
+  for (const turn of turns) {
+    const piece = followUpThreadTurnBlocks(turn);
+    if (blocks.length + piece.length > maxBlocks) break;
+    blocks.push(...piece);
+    fitted += 1;
+  }
+  const overflow = fitted < turns.length ? turns : [];
+  return { blocks, overflow, turns };
+}
+
+/**
+ * FOLLOW_UP layout: WILL SEND (full text), optional LOOP IN CLIENT, then
+ * the full thread oldest → newest (signatures stripped; older turns ~400
+ * chars; last two in full).
  */
 function buildFollowUpConversationBlocks({
   lastOutboundMessage,
   inboundMessage,
   draft,
   threadMessages = null,
-  outgoingLabel = 'Suggested follow-up',
+  outgoingLabel = 'WILL SEND',
   outgoingBody = null,
-}) {
+  needsClient = false,
+  whatToSend = null,
+  maxThreadBlocks = 28,
+} = {}) {
+  void lastOutboundMessage;
+  void inboundMessage;
   const blocks = [];
-  const sendBody = outgoingBody != null ? outgoingBody : draft;
-  if (sendBody != null && String(sendBody).trim() !== '') {
-    const isSent = /sent/i.test(String(outgoingLabel || ''));
-    blocks.push(
-      ...conversationStepBlocks({
-        emoji: isSent ? '📤' : '✍️',
-        label: outgoingLabel,
-        body: sendBody,
-        neverTruncate: true,
-      }),
-    );
+  blocks.push(...buildWillSendBlocks({ draft, outgoingLabel, outgoingBody }));
+  const loop = loopInClientBlock(needsClient, whatToSend);
+  if (loop) {
+    if (blocks.length) blocks.push(dividerBlock());
+    blocks.push(loop);
   }
-
-  const last = lastThreadTurn({
-    threadMessages,
-    inboundMessage,
-    lastOutboundMessage,
-    preferThem: true,
+  const { blocks: thread, overflow } = buildFollowUpThreadBlocks(threadMessages, {
+    maxBlocks: maxThreadBlocks,
   });
-  if (last) {
-    const sendPlain = plainTextForSlack(sendBody || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const lastPlain = String(last.body || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const sameAsOutgoing = sendPlain && lastPlain && sendPlain === lastPlain;
-    if (!sameAsOutgoing) {
-      if (blocks.length) blocks.push(dividerBlock());
-      blocks.push(
-        ...conversationStepBlocks({
-          emoji: last.role === 'us' ? '📤' : '📥',
-          label: last.role === 'us' ? 'Last message (you)' : 'Last message (them)',
-          body: last.body,
-          maxLen: LAST_THREAD_DISPLAY_MAX,
-        }),
-      );
-    }
+  if (thread.length) {
+    if (blocks.length) blocks.push(dividerBlock());
+    blocks.push(...thread);
   }
-
+  blocks.overflowThread = overflow;
   return blocks;
 }
 
@@ -396,10 +449,13 @@ function buildConversationBlocks({
   draft,
   priorLabel,
   inboundLabel,
-  /** FOLLOW_UP cards: original → our reply → rest of thread → bump draft. */
+  /** FOLLOW_UP cards: WILL SEND + full thread. */
   followUpContext = false,
   /** Full back-and-forth when available: [{ role: 'us'|'them', body }]. */
   threadMessages = null,
+  outgoingLabel,
+  needsClient = false,
+  whatToSend = null,
 }) {
   if (followUpContext) {
     return buildFollowUpConversationBlocks({
@@ -407,6 +463,9 @@ function buildConversationBlocks({
       inboundMessage,
       draft,
       threadMessages,
+      outgoingLabel,
+      needsClient,
+      whatToSend,
     });
   }
 
@@ -469,7 +528,7 @@ function draftApprovalActionsBlock(replyId) {
       },
       {
         type: 'button',
-        text: { type: 'plain_text', text: '❌ Reject & not interested' },
+        text: { type: 'plain_text', text: '❌ Reject' },
         style: 'danger',
         action_id: 'reject_reply',
         value: replyId,
@@ -512,6 +571,8 @@ function buildSentConfirmationBlocks({
   leadWebsite,
   enrichmentReceipt,
   leadIcpVerdict,
+  needsClient = false,
+  whatToSend = null,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   // Keep the enriched cellphone + LinkedIn + website on the Lead line after
@@ -563,6 +624,8 @@ function buildSentConfirmationBlocks({
             : null,
           threadMessages,
           outgoingLabel: 'Sent to prospect',
+          needsClient,
+          whatToSend,
         })
       : buildConversationBlocks({
           lastOutboundMessage,
@@ -633,12 +696,76 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   });
 }
 
+function followUpClientContactEmail({ ccEmails, ccEmail } = {}) {
+  const raw = String(ccEmails || ccEmail || '');
+  for (const part of raw.split(/[\s,;]+/)) {
+    const email = part.trim().toLowerCase();
+    if (email.includes('@')) return email;
+  }
+  return '';
+}
+
+function assembleFollowUpApprovalBlocks({
+  replyId,
+  metaBlocks,
+  draft,
+  threadMessages,
+  needsClient,
+  whatToSend,
+  canCcClient,
+  contextText,
+  review,
+}) {
+  const willSend = buildWillSendBlocks({ draft, outgoingLabel: 'WILL SEND' });
+  const loop = loopInClientBlock(needsClient, whatToSend);
+  const head = [
+    ...metaBlocks,
+    dividerBlock(),
+    ...willSend,
+    draftApprovalActionsBlock(replyId),
+  ];
+  const { draftLoopsInContact } = require('../utils/client-loop-contact');
+  if (needsClient && canCcClient && draftLoopsInContact(draft)) {
+    head.push(sendCcClientActionsBlock(replyId));
+  }
+  if (loop) head.push(loop);
+
+  const tail = [];
+  if (review) {
+    tail.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: '⚠️ *needs review* — draft stated a fact that was not in the provided context. Do not send until checked.',
+      }],
+    });
+  }
+  tail.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: contextText }],
+  });
+
+  const remaining = Math.max(4, SLACK_BLOCK_LIMIT - head.length - tail.length - 1);
+  const { blocks: thread, overflow } = buildFollowUpThreadBlocks(threadMessages, {
+    maxBlocks: remaining,
+  });
+  const blocks = [...head];
+  if (thread.length) {
+    blocks.push(dividerBlock(), ...thread);
+  }
+  blocks.push(...tail);
+  if (blocks.length > SLACK_BLOCK_LIMIT) {
+    blocks.length = SLACK_BLOCK_LIMIT;
+  }
+  return { blocks, overflowThread: overflow };
+}
+
 function buildDraftApprovalCard({
   replyId, leadName, leadEmail, platform, classification, draft, reasoning, inboundMessage,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread, ccEmail,
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
-  leadIcpVerdict, needsReview,
+  leadIcpVerdict, needsReview, needsClient = false, whatToSend = null,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -671,73 +798,126 @@ function buildDraftApprovalCard({
     },
   ];
 
-  const conversation = buildConversationBlocks({
-    lastOutboundMessage,
-    inboundMessage,
-    draft,
-    priorLabel: contextLabel || 'You sent',
-    inboundLabel: isFollowUp ? 'Last message (them)' : 'They replied',
-    followUpContext: isFollowUp,
-    threadMessages: isFollowUp ? threadMessages : null,
-  });
-
-  const blocks = isFollowUp
-    ? [
-        // Compact: lead → suggested send → last thread turn → buttons.
-        // The old full-thread dump hid the draft behind Slack "See more".
-        ...metaBlocks,
-        dividerBlock(),
-        ...conversation,
-        draftApprovalActionsBlock(replyId),
-        {
-          type: 'context',
-          elements: [{ type: 'mrkdwn', text: contextText }],
-        },
-      ]
-    : [
-        ...metaBlocks,
-        dividerBlock(),
-        ...conversation,
-        {
-          type: 'context',
-          elements: [{ type: 'mrkdwn', text: contextText }],
-        },
-      ];
-  if (review) {
-    blocks.splice(blocks.length - (isFollowUp ? 1 : 0), 0, {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: '⚠️ *needs review* — draft stated a fact that was not in the provided context. Do not send until checked.' }],
+  let overflowThread = [];
+  let blocks;
+  if (isFollowUp) {
+    const assembled = assembleFollowUpApprovalBlocks({
+      replyId,
+      metaBlocks,
+      draft,
+      threadMessages,
+      needsClient,
+      whatToSend,
+      canCcClient: String(platform || '').toLowerCase() === 'smartlead'
+        && Boolean(followUpClientContactEmail({ ccEmails, ccEmail })),
+      contextText,
+      review,
     });
-  }
-
-  if (!isFollowUp && platform === 'smartlead') {
-    const notice = ccAutoNoticeBlock({
-      ccEmails: ccEmails || ccEmail,
-      ccRoundRobinEmails,
-      clientName,
+    blocks = assembled.blocks;
+    overflowThread = assembled.overflowThread || [];
+  } else {
+    const conversation = buildConversationBlocks({
+      lastOutboundMessage,
+      inboundMessage,
+      draft,
+      priorLabel: contextLabel || 'You sent',
+      inboundLabel: 'They replied',
     });
+    blocks = [
+      ...metaBlocks,
+      dividerBlock(),
+      ...conversation,
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: contextText }],
+      },
+    ];
+    if (review) {
+      blocks.splice(blocks.length, 0, {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '⚠️ *needs review* — draft stated a fact that was not in the provided context. Do not send until checked.' }],
+      });
+    }
+    const notice = platform === 'smartlead'
+      ? ccAutoNoticeBlock({
+          ccEmails: ccEmails || ccEmail,
+          ccRoundRobinEmails,
+          clientName,
+        })
+      : null;
     if (notice) blocks.push(notice);
-  }
-
-  // Non-follow-up cards keep actions at the bottom (short cards).
-  if (!isFollowUp) {
     blocks.push(draftApprovalActionsBlock(replyId));
   }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
   const text = `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`;
-  return { blocks, text };
+  return { blocks, text, overflowThread };
+}
+
+function followUpHistoryOverflowBlocks(overflowTurns) {
+  const turns = Array.isArray(overflowTurns) ? overflowTurns : [];
+  const blocks = [{
+    type: 'section',
+    text: { type: 'mrkdwn', text: '*Full thread*' },
+  }];
+  for (const turn of turns) {
+    const emoji = turn.role === 'us' ? '📤' : '📥';
+    blocks.push(...conversationStepBlocks({
+      emoji,
+      label: turn.label,
+      body: turn.body || turn.display,
+      neverTruncate: true,
+    }));
+  }
+  return blocks;
+}
+
+async function postFollowUpHistoryThread(token, channelId, threadTs, overflowTurns) {
+  if (!token || !channelId || !threadTs) return null;
+  const turns = Array.isArray(overflowTurns) ? overflowTurns : [];
+  if (!turns.length) return null;
+  const slack = getClient(token);
+  const all = followUpHistoryOverflowBlocks(turns);
+  const chunks = [];
+  const budget = SLACK_BLOCK_LIMIT - 1;
+  let cur = [];
+  for (const block of all) {
+    if (cur.length >= budget) {
+      chunks.push(cur);
+      cur = [];
+    }
+    cur.push(block);
+  }
+  if (cur.length) chunks.push(cur);
+  let last = null;
+  for (const blocks of chunks) {
+    last = await slack.chat.postMessage({
+      channel: channelId,
+      thread_ts: String(threadTs),
+      text: 'Full thread',
+      blocks,
+    });
+  }
+  return last;
 }
 
 async function postDraftApproval(token, channelId, opts) {
   const slack = getClient(token);
-  const { blocks, text } = buildDraftApprovalCard(opts);
-  return slack.chat.postMessage({
+  const { blocks, text, overflowThread } = buildDraftApprovalCard(opts);
+  const result = await slack.chat.postMessage({
     channel: channelId,
     ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
     text,
     blocks,
   });
+  if (overflowThread && overflowThread.length && result?.ts) {
+    try {
+      await postFollowUpHistoryThread(token, channelId, result.ts, overflowThread);
+    } catch (err) {
+      console.warn('[Slack] Follow-up thread overflow post failed', { err: err.message });
+    }
+  }
+  return result;
 }
 
 /** Rewrite an already-posted approval card in place (compact FOLLOW_UP layout). */
@@ -1072,4 +1252,9 @@ module.exports = {
   postAttentionDigestHeader,
   postPendingApprovalDigest,
   getPermalink,
+  buildWillSendBlocks,
+  loopInClientBlock,
+  sendCcClientActionsBlock,
+  postFollowUpHistoryThread,
+  followUpClientContactEmail,
 };

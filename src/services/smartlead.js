@@ -267,10 +267,13 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
  * Required: email_stats_id, email_body (lead_id is not a path param on this route).
  *
- * Note: we intentionally do NOT CC clients on the prospect reply (deliverability).
- * Client notify is via forwardThreadToClient. The live API accepts `cc` if ever needed.
+ * SmartLead POST /campaigns/{id}/reply-email-thread accepts `cc` and `bcc`
+ * as comma-separated strings (field name `cc`, never an array). Default send
+ * still omits both (deliverability); FOLLOW_UP "Send + CC client" opts into
+ * `cc` with the Always-forward address. `bcc` is unused.
+ * Client notify is via Gmail / forwardThreadToClient, independent of this CC.
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails }) {
+async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, cc, bcc } = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -300,8 +303,15 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, 
     email_body: emailBody,
     add_signature: true,
   };
-  const cc = String(ccEmails || '').trim();
-  if (cc) payload.cc = cc;
+  // SmartLead field is `cc` (comma-separated string). Never an array.
+  if (typeof cc === 'string') {
+    const ccStr = cc.trim();
+    if (ccStr) payload.cc = ccStr;
+  }
+  if (typeof bcc === 'string') {
+    const bccStr = bcc.trim();
+    if (bccStr) payload.bcc = bccStr;
+  }
 
   const res = await fetch(url, {
     method: 'POST',
