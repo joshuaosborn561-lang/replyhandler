@@ -3,7 +3,7 @@ const { postProspectSlackCard } = require('./slack-reply-post');
 const { draftReattemptToBook, resetFollowUpClaudeBudget, followUpClaudeBudgetSnapshot } = require('./follow-up-drafts');
 const { attachFollowUpMeta } = require('../utils/follow-up-meta');
 const { daysSinceLastMessage } = require('../utils/follow-up-thread-display');
-const { clientFounderName } = require('../utils/client-founder');
+const { clientLoopContact } = require('../utils/client-loop-contact');
 const { looksAlreadyBooked } = require('./booking-check');
 const {
   cancelPendingForThread,
@@ -217,7 +217,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   } catch (err) {
     console.warn('[FollowUp] Learned voice unavailable', { err: err.message });
   }
-  const founderName = clientFounderName({
+  const loopContact = clientLoopContact({
     voicePrompt: client.voice_prompt,
     clientName: client.name,
   });
@@ -234,7 +234,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     slots,
     clientName: client.name,
     clientId: client.id,
-    founderName,
+    loopContact,
     threadContext,
     threadMessages,
     learnedVoiceBlock,

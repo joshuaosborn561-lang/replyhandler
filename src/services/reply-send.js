@@ -3,7 +3,12 @@ const smartlead = require('./smartlead');
 const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
-const { buildSmartleadCcList, alwaysCcEmails, roundRobinEmails } = require('./client-cc');
+const {
+  buildSmartleadCcList,
+  alwaysCcEmails,
+  alwaysForwardEmailsForProspectCc,
+  roundRobinEmails,
+} = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
@@ -154,8 +159,9 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
 
     // Deliverability: reply to the prospect with NO CC by default.
     // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
-    // Optional exception: FOLLOW_UP "Send + CC client" puts the client contact on
-    // the prospect thread (SmartLead `cc`) so they can send collateral. FYI notify still fires.
+    // Optional exception: FOLLOW_UP "Send + CC client" CCs the same Always-forward
+    // addresses this client already receives (not round-robin, not a new field).
+    // FYI notify still fires.
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
@@ -169,11 +175,9 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     let enrichment = null;
     let prospectCc = '';
     if (ccClientOnProspect) {
-      prospectCc = (ccMeta && ccMeta.always && ccMeta.always[0])
-        || alwaysCcEmails(client)[0]
-        || '';
+      prospectCc = alwaysForwardEmailsForProspectCc(client);
       if (!prospectCc) {
-        console.warn('[ReplySend] Send + CC client requested but no client contact email', {
+        console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
           replyId: reply.id,
         });
       }

@@ -298,7 +298,7 @@ function estimateClaudeUsd(usage) {
 }
 
 function sanitizeFollowUpText(text, {
-  bookingLink, voicePrompt, leadName, clientName,
+  bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
 } = {}) {
   const { stripSignOff } = require('./classifier');
   const { stripBookingUrls } = require('../utils/booking-link-intent');
@@ -316,10 +316,18 @@ function sanitizeFollowUpText(text, {
   if (inPerson || callback) {
     draft = stripBookingUrls(draft, link);
   }
-  const guarded = enforcePrincipalVoice(draft, { asPrincipal: speaksAsPrincipal(voicePrompt) });
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
+  const guarded = enforcePrincipalVoice(draft, { asPrincipal });
   if (guarded.scrubbed) {
     console.warn('[FollowUp] Scrubbed principal handoff leak', { leadName });
     draft = guarded.text;
+  }
+  if (!asPrincipal) {
+    const { rewriteFounderLoopIn, clientLoopContactPhrase } = require('../utils/client-loop-contact');
+    const phrase = loopContactPhrase
+      || clientLoopContactPhrase({ voicePrompt, clientName })
+      || 'the client';
+    draft = rewriteFounderLoopIn(draft, phrase);
   }
   return scrubDashes(draft);
 }
@@ -412,7 +420,7 @@ async function draftReattemptToBook({
   slots,
   clientName,
   clientId = null,
-  founderName = null,
+  loopContact = null,
   threadContext = null,
   threadMessages = null,
   learnedVoiceBlock = '',
@@ -424,8 +432,12 @@ async function draftReattemptToBook({
   const { factSourceText, enforceDraftGrounding } = require('../utils/draft-fact-check');
 
   const pack = async (llmResult, source) => {
+    const { clientLoopContactPhrase } = require('../utils/client-loop-contact');
+    const loopContactPhrase = clientLoopContactPhrase({
+      voicePrompt, clientName, loopContact,
+    });
     let text = sanitizeFollowUpText(llmResult.text, {
-      bookingLink, voicePrompt, leadName, clientName,
+      bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
     });
     if (!text) throw new Error(`${source} draft empty after sanitization`);
     const sourceText = factSourceText({
@@ -437,7 +449,7 @@ async function draftReattemptToBook({
       schedulingPromptBlock: [
         bookingLink,
         (slots || []).map((s) => (s && s.label) || s).join(' '),
-        founderName,
+        loopContactPhrase,
       ].filter(Boolean).join('\n'),
       voicePrompt,
       learnedVoiceBlock,
@@ -447,7 +459,7 @@ async function draftReattemptToBook({
       sourceText,
     });
     text = sanitizeFollowUpText(factCheck.text, {
-      bookingLink, voicePrompt, leadName, clientName,
+      bookingLink, voicePrompt, leadName, clientName, loopContactPhrase,
     }) || text;
     let needsClient = llmResult.needsClient === true;
     let whatToSend = needsClient ? (llmResult.whatToSend || 'info') : null;
@@ -479,7 +491,7 @@ async function draftReattemptToBook({
     platform,
     voicePrompt,
     clientName,
-    founderName,
+    loopContact,
     step,
     daysSinceLastMessage,
     learnedVoiceBlock,

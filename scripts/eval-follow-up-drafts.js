@@ -34,8 +34,8 @@ async function main() {
           { label: 'Tue, Oct 7, 10:00 AM CDT' },
           { label: 'Wed, Oct 8, 2:00 PM CDT' },
         ],
-        founderName: 'Taylor',
-        voicePrompt: 'Write as our SDR. Taylor is the founder. Loop Taylor in for decks and one-pagers.',
+        loopContact: { firstName: 'Miles', title: 'director of sales' },
+        voicePrompt: 'Write as our SDR. Loop in Miles, our director of sales, for decks and one-pagers.',
       });
       out.push({
         id: fx.id,

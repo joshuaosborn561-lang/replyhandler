@@ -462,7 +462,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   assert.ok(!/label: 'Original message'/.test(slackSrc),
     reversal('FOLLOW_UP cards show WILL SEND + full thread', 'Original message dump label is back'));
   const blocks = buildFollowUpConversationBlocks({
-    draft: 'Hey Alex, looping Taylor in to send that over.',
+    draft: 'Hey Alex, looping in Miles, our director of sales, to send that over.',
     inboundMessage: 'Yes send it over',
     lastOutboundMessage: 'Happy to share a one-pager.',
     threadMessages: [
@@ -472,7 +472,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   });
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /WILL SEND/);
-  assert.match(text, /looping Taylor in/);
+  assert.match(text, /looping in Miles, our director of sales/);
   assert.match(text, /Yes send it over/);
   assert.doesNotMatch(text, /Suggested follow-up/);
   assert.doesNotMatch(text, /Original message/);
@@ -2088,6 +2088,12 @@ test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
     reversal('FOLLOW_UP drafts never wait on Josh', 'NEEDS JOSH was reintroduced'));
   assert.match(claude, /never stall for Josh/,
     reversal('FOLLOW_UP drafts never wait on Josh', 'the never-stall-for-Josh rule was removed'));
+  assert.match(claude, /Never say founder/,
+    reversal('FOLLOW_UP loop-in-client', 'loop-in drafts were allowed to say founder'));
+  assert.doesNotMatch(claude, /CLIENT FOUNDER/,
+    reversal('FOLLOW_UP loop-in-client', 'CLIENT FOUNDER prompt label is back'));
+  assert.match(claude, /CLIENT CONTACT/,
+    reversal('FOLLOW_UP loop-in-client', 'CLIENT CONTACT prompt line was removed'));
   assert.match(slackSrc, /LOOP IN CLIENT/,
     reversal('FOLLOW_UP loop-in-client', 'LOOP IN CLIENT card label was removed'));
   assert.doesNotMatch(slackSrc, /NEEDS JOSH/,
@@ -2098,6 +2104,8 @@ test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
     reversal('FOLLOW_UP Send + CC client', 'approve handler no longer opts into prospect CC'));
   assert.match(send, /ccClientOnProspect/,
     reversal('FOLLOW_UP Send + CC client', 'send path no longer accepts prospect CC'));
+  assert.match(send, /alwaysForwardEmailsForProspectCc/,
+    reversal('FOLLOW_UP Send + CC client', 'prospect CC no longer reuses Always-forward'));
   assert.match(smartlead, /payload\.cc/,
     reversal('FOLLOW_UP Send + CC client', 'SmartLead sendReply no longer sends cc'));
   assert.match(smartlead, /bccEmails|payload\.bcc/,

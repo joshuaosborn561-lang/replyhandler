@@ -29,6 +29,15 @@ function alwaysCcEmails(client) {
   return parseEmailList(client?.cc_email);
 }
 
+/**
+ * Prospect-thread CC for FOLLOW_UP "Send + CC client".
+ * Same Always-forward list the client already receives — not round-robin,
+ * not a new field.
+ */
+function alwaysForwardEmailsForProspectCc(client) {
+  return formatEmailList(alwaysCcEmails(client));
+}
+
 function roundRobinEmails(client) {
   return parseEmailList(client?.cc_round_robin_emails);
 }
@@ -86,6 +95,7 @@ module.exports = {
   parseEmailList,
   formatEmailList,
   alwaysCcEmails,
+  alwaysForwardEmailsForProspectCc,
   roundRobinEmails,
   claimNextRoundRobinEmail,
   buildSmartleadCcList,

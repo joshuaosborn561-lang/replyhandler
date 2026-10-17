@@ -351,7 +351,7 @@ const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a re
 - Do not invent facts (deck contents, pricing numbers, qualification cutoffs, ticket dates, locations).
 - PRICING: say you are happy to walk through pricing on a quick call. needs_client must be false. Never stall.
 - Specifics we do not have (minimums, headcount cutoffs, locations): do not guess. Offer a short call. needs_client = false.
-- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in the client's founder/CEO to send it (use CLIENT FOUNDER NAME when given). Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
+- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in CLIENT CONTACT (their real name and title from client config) to send it. Style: "looping in [Name], our [title]". Never say founder. Never invent a name or title. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
 - Tickets or a specific address they gave us: acknowledge and continue. needs_client=false unless they asked for client-owned collateral.
 - A different need than we originally pitched: follow their need. Do not drag them back to the original offer.
 - No sign-off. No markdown. No surrounding quotes.
@@ -434,7 +434,7 @@ function buildFollowUpPrompt({
   platform,
   voicePrompt,
   clientName,
-  founderName,
+  loopContact = null,
   step,
   daysSinceLastMessage,
   learnedVoiceBlock = '',
@@ -443,8 +443,10 @@ function buildFollowUpPrompt({
   factCheckRetryClaims = null,
 } = {}) {
   const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
-  const { clientFounderLabel } = require('../utils/client-founder');
-  const founder = founderName || clientFounderLabel({ voicePrompt, clientName });
+  const { clientLoopContactPhrase } = require('../utils/client-loop-contact');
+  const contactPhrase = clientLoopContactPhrase({
+    voicePrompt, clientName, loopContact,
+  });
   const clientVoice = String(voicePrompt || '').trim()
     ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
     : '';
@@ -452,8 +454,10 @@ function buildFollowUpPrompt({
     ? `\n${String(learnedVoiceBlock).trim()}\n`
     : '';
   const loopRule = asPrincipal
-    ? '- You ARE the founder/CEO. Do not set needs_client — there is no separate client to loop in. For collateral we do not have, offer a short call rather than stalling.'
-    : `- CLIENT FOUNDER NAME: ${founder}. When looping in the client for a deck / one-pager / "send info", say you are looping in ${founder} to send it.`;
+    ? '- You ARE the client principal. Do not set needs_client — there is no separate client to loop in. For collateral we do not have, offer a short call rather than stalling.'
+    : contactPhrase
+      ? `- CLIENT CONTACT: ${contactPhrase}. When looping in for a deck / one-pager / "send info", say you are looping in ${contactPhrase} to send it. Use that exact name and title. Never say founder. Never invent a different person or title.`
+      : '- CLIENT CONTACT is not configured. Do not guess a name or title. Never say founder. Say you will loop in the client to send it, without naming a person.';
 
   const system = [
     asPrincipal
@@ -535,7 +539,7 @@ async function generateFollowUpClaudeDraft({
   platform,
   voicePrompt,
   clientName = null,
-  founderName = null,
+  loopContact = null,
   step = 1,
   daysSinceLastMessage = null,
   learnedVoiceBlock = '',
@@ -572,7 +576,7 @@ async function generateFollowUpClaudeDraft({
     platform,
     voicePrompt,
     clientName,
-    founderName,
+    loopContact,
     step,
     daysSinceLastMessage,
     learnedVoiceBlock,
@@ -594,7 +598,9 @@ async function generateFollowUpClaudeDraft({
   const currentFacts = [
     leadName,
     clientName,
-    founderName,
+    require('../utils/client-loop-contact').clientLoopContactPhrase({
+      voicePrompt, clientName, loopContact,
+    }),
     formatFollowUpThread(threadMessages, threadContext),
     lastInboundMessage,
     lastOutboundMessage,

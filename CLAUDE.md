@@ -242,10 +242,12 @@ card (not threaded under the original reply). Drafts are Claude + RAG
 continuations of the thread (Gemini fallback, template last-resort). Cayden
 sends them — never stall for Josh. Pricing → walk through it on a call, no
 flag. One-pager / deck / "email me some info" → `needs_client` +
-`what_to_send`, card label `LOOP IN CLIENT: <what>`, draft loops in the
-client's founder. Default Approve still omits SmartLead `cc`; **Send + CC
-client** puts the client contact on the prospect thread. FYI forward to the
-client and Cayden still runs on send. The card shows **WILL SEND** (full
+`what_to_send`, card label `LOOP IN CLIENT: <what>`. The draft names the
+configured client contact and their real title from `voice_prompt` (e.g.
+"looping in Miles, our director of sales") — never "founder". Default
+Approve still omits SmartLead `cc`; **Send + CC client** CCs the same
+Always-forward addresses (`cc_emails` / `cc_email`) that already get the
+FYI. FYI forward to the client and Cayden still runs on send. The card shows **WILL SEND** (full
 text) then buttons, a permalink to the original card, the full thread, and
 a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —

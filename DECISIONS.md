@@ -1161,8 +1161,9 @@ available facts; the model decides whether a meeting ask fits).
 - Follow-ups must not wait on Josh. There is no `needs_josh` flag.
   Pricing → "happy to walk through pricing on a quick call", no flag.
   One-pager / deck / "email me some info" → `needs_client=true` plus
-  `what_to_send`. The draft says we are looping in the client's
-  founder/CEO (name from voice prompt when we have it). Card shows
+  `what_to_send`. The draft names the actual client contact and their
+  real title from client config (`voice_prompt`), e.g. "looping in
+  Miles, our director of sales". Never say founder. Card shows
   `LOOP IN CLIENT: <what>`. Existing Gmail / SmartLead-forward notify
   to the client and Cayden still runs on send.
 - Slack card: **WILL SEND** (full text, never truncated) at the top,
@@ -1174,8 +1175,9 @@ available facts; the model decides whether a meeting ask fits).
 - SmartLead `POST /campaigns/{id}/reply-email-thread` documents `cc` and
   `bcc` (comma-separated). Default send still omits both. When
   `needs_client` is set, the card also has **Send + CC client**, which
-  puts the client contact email on `cc` of that prospect reply (and
-  still sends the usual FYI forward).
+  CCs the same Always-forward addresses (`cc_emails` / legacy
+  `cc_email`) that already receive that client's FYI — not a new field,
+  not round-robin. The usual FYI forward still goes out.
 
 Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
 Guard: `FOLLOW_UP cards show WILL SEND + full thread; only after we have sent`

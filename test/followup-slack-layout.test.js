@@ -85,7 +85,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       classification: 'FOLLOW_UP',
       inboundMessage: 'I am more interested in staffing help.\n\nOn Wednesday Jordan wrote: old pitch',
       lastOutboundMessage: 'Alex, I have an extra pair of tickets.',
-      sentReply: 'Hey Alex, looping Taylor in to send that over.',
+      sentReply: 'Hey Alex, looping in Miles, our director of sales, to send that over.',
       actionKind: 'edited',
       threadMessages: [
         { role: 'us', body: 'Alex, I have an extra pair of tickets.' },
@@ -99,7 +99,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       .map((b) => b.text.text)
       .join('\n');
     assert.match(texts, /\*Sent to prospect\*/);
-    assert.match(texts, /looping Taylor in/);
+    assert.match(texts, /looping in Miles, our director of sales/);
     assert.match(texts, /more interested in staffing help/);
     assert.match(texts, /LOOP IN CLIENT/);
     assert.doesNotMatch(texts, /\*Original message\*/);
@@ -123,7 +123,7 @@ describe('FOLLOW_UP card conversation layout', () => {
   });
 
   it('pending FOLLOW_UP card puts WILL SEND then buttons, never truncates the draft', () => {
-    const longDraft = `Hey Alex, looping in Taylor to send the one-pager you asked for.\n\n${'Details '.repeat(80)}`;
+    const longDraft = `Hey Alex, looping in Miles, our director of sales, to send the one-pager you asked for.\n\n${'Details '.repeat(80)}`;
     const { blocks } = buildDraftApprovalCard({
       replyId: 'r1',
       leadName: 'Alex Rivera',
@@ -140,7 +140,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       ],
       needsClient: true,
       whatToSend: 'one-pager',
-      ccEmails: 'founder@example.com',
+      ccEmails: 'contact@example.com',
     });
     const texts = blocks
       .filter((b) => b.type === 'section' && b.text)
@@ -173,7 +173,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       leadName: 'Alex Rivera',
       platform: 'smartlead',
       classification: 'FOLLOW_UP',
-      draft: 'Hey Alex, looping Taylor in to send the deck.',
+      draft: 'Hey Alex, looping in Miles, our director of sales, to send the deck.',
       needsClient: true,
       whatToSend: 'deck',
     });
@@ -191,7 +191,7 @@ describe('FOLLOW_UP card conversation layout', () => {
 
   it('still shows the last prospect turn in the thread, not as a duplicate last-message line', () => {
     const blocks = buildFollowUpConversationBlocks({
-      draft: 'Hey Alex, looping Taylor in to send that over.',
+      draft: 'Hey Alex, looping in Miles, our director of sales, to send that over.',
       inboundMessage: 'Would like to learn more.',
       lastOutboundMessage: 'Hey Alex, still interested in meeting for this?',
       threadMessages: [

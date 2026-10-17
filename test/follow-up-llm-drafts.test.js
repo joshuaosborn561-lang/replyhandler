@@ -14,7 +14,12 @@ const {
   resetFollowUpClaudeBudget,
   followUpClaudeCap,
 } = require('../src/services/follow-up-drafts');
-const { clientFounderName } = require('../src/utils/client-founder');
+const {
+  clientLoopContact,
+  clientLoopContactPhrase,
+  rewriteFounderLoopIn,
+} = require('../src/utils/client-loop-contact');
+const { alwaysForwardEmailsForProspectCc } = require('../src/services/client-cc');
 const {
   formatThreadForPrompt,
   cleanThreadBody,
@@ -39,7 +44,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
           { label: 'Wed, Oct 8, 2:00 PM CDT' },
         ],
         platform: 'smartlead',
-        founderName: 'Taylor',
+        voicePrompt: 'Write as our SDR. Loop in Miles, our director of sales, for decks.',
       });
       assert.match(threadBlock, new RegExp(fx.prospectAsk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(user, /<current_thread>/);
@@ -51,6 +56,9 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.match(system, /needs_client/);
       assert.match(system, /never stall for Josh/i);
       assert.doesNotMatch(system, /NEEDS JOSH/);
+      assert.doesNotMatch(system, /CLIENT FOUNDER/);
+      assert.match(system, /Miles, our director of sales/);
+      assert.match(system, /Never say founder/);
     }
   });
 
@@ -60,11 +68,13 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.match(FOLLOW_UP_RULES, /never stall for Josh/);
     assert.match(FOLLOW_UP_RULES, /PRICING/);
     assert.match(FOLLOW_UP_RULES, /ONE-PAGER \/ DECK/);
+    assert.match(FOLLOW_UP_RULES, /Never say founder/);
+    assert.match(FOLLOW_UP_RULES, /\[Name\], our \[title\]/);
   });
 
   it('parseFollowUpModelJson reads needs_client and falls back to plain text', () => {
     const parsed = parseFollowUpModelJson(JSON.stringify({
-      draft: 'Hey Alex, looping Taylor in to send the one-pager.',
+      draft: 'Hey Alex, looping in Miles, our director of sales, to send the one-pager.',
       needs_client: true,
       what_to_send: 'one-pager',
     }));
@@ -89,12 +99,12 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         threadMessages: fx.threadMessages,
         step: fx.step,
         daysSinceLastMessage: fx.daysSinceLastMessage,
-        founderName: 'Taylor',
-        voicePrompt: 'Write as our SDR. Loop in Taylor, the founder, for decks.',
+        loopContact: { firstName: 'Miles', title: 'director of sales' },
+        voicePrompt: 'Write as our SDR. Loop in Miles, our director of sales, for decks.',
         claudeGenerate: async (args) => {
           seen = args;
           return {
-            text: 'Hey Jordan, looping in Taylor to send that one-pager over.',
+            text: 'Hey Jordan, looping in Miles, our director of sales, to send that one-pager over.',
             needsClient: true,
             whatToSend: 'one-pager',
             model: 'claude-sonnet-5',
@@ -107,8 +117,36 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.equal(result.needsClient, true);
       assert.equal(result.whatToSend, 'one-pager');
       assert.match(result.text, /one-pager/);
+      assert.match(result.text, /Miles, our director of sales/);
+      assert.doesNotMatch(result.text, /\bfounder\b/i);
       assert.equal(seen.threadMessages.length, fx.threadMessages.length);
       assert.equal(seen.lastInboundMessage, fx.prospectAsk);
+    } finally {
+      if (prev == null) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
+  });
+
+  it('rewrites a founder loop-in line to the configured contact', async () => {
+    resetFollowUpClaudeBudget();
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    try {
+      const result = await draftReattemptToBook({
+        leadName: 'Jordan Lee',
+        lastInboundMessage: 'Yes send it over',
+        voicePrompt: 'Loop in Miles, our director of sales, for decks.',
+        claudeGenerate: async () => ({
+          text: 'Hey Jordan, looping in our founder to send that one-pager.',
+          needsClient: true,
+          whatToSend: 'one-pager',
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+        }),
+        geminiGenerate: async () => { throw new Error('gemini should not run'); },
+      });
+      assert.match(result.text, /Miles, our director of sales/);
+      assert.doesNotMatch(result.text, /\bfounder\b/i);
     } finally {
       if (prev == null) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = prev;
@@ -208,13 +246,44 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.ok(followUpClaudeCap() >= 0);
   });
 
-  it('does not treat Josh as a client founder to loop in', () => {
-    assert.equal(clientFounderName({
+  it('loop-in contact uses configured name and title, never founder or Josh', () => {
+    assert.equal(clientLoopContactPhrase({
       voicePrompt: 'You are Joshua Osborn, founder/CEO. I am the CEO.',
     }), null);
-    assert.equal(clientFounderName({
+    assert.equal(clientLoopContactPhrase({
+      voicePrompt: 'Loop in Miles, our director of sales, for decks.',
+    }), 'Miles, our director of sales');
+    const titled = clientLoopContact({
+      voicePrompt: 'Taylor is our director of sales. Loop Taylor in for decks.',
+    });
+    assert.equal(titled.firstName, 'Taylor');
+    assert.equal(titled.title, 'director of sales');
+    const founderOnly = clientLoopContact({
+      voicePrompt: 'Taylor is the founder. Loop Taylor in for decks.',
+    });
+    assert.equal(founderOnly.firstName, 'Taylor');
+    assert.equal(founderOnly.title, null);
+    assert.equal(clientLoopContactPhrase({
       voicePrompt: 'Taylor is the founder. Loop Taylor in for decks.',
     }), 'Taylor');
+    assert.equal(
+      rewriteFounderLoopIn('Hey Alex, looping in our founder to send that.', 'Miles, our director of sales'),
+      'Hey Alex, looping in Miles, our director of sales to send that.'
+    );
+  });
+
+  it('Send + CC uses Always-forward example.com addresses only', () => {
+    const cc = alwaysForwardEmailsForProspectCc({
+      cc_emails: 'contact@example.com, ae@example.com',
+      cc_email: 'legacy@example.com',
+      cc_round_robin_emails: 'rep@example.com',
+    });
+    assert.equal(cc, 'contact@example.com, ae@example.com');
+    assert.doesNotMatch(cc, /rep@example.com/);
+    assert.equal(alwaysForwardEmailsForProspectCc({
+      cc_email: 'legacy@example.com',
+    }), 'legacy@example.com');
+    assert.equal(alwaysForwardEmailsForProspectCc({}), '');
   });
 
   it('formatThreadForPrompt keeps every turn', () => {
@@ -268,12 +337,12 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       await smartlead.sendReply('test-key', 11, 22, {
         replyText: 'Hey there',
         emailStatsId: 'stats-1',
-        ccEmails: 'founder@example.com',
+        ccEmails: 'contact@example.com',
         bccEmails: 'ops@example.com',
       });
       assert.match(calls[0].url, /\/campaigns\/11\/reply-email-thread/);
       assert.doesNotMatch(calls[0].url, /\/leads\/reply-email-thread/);
-      assert.equal(calls[0].body.cc, 'founder@example.com');
+      assert.equal(calls[0].body.cc, 'contact@example.com');
       assert.equal(calls[0].body.bcc, 'ops@example.com');
       assert.equal(calls[0].body.email_stats_id, 'stats-1');
 
