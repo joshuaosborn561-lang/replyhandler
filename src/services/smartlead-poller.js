@@ -351,7 +351,12 @@ async function processInboxRow(client, row, options) {
   classification = applied.classification;
   reasoning = applied.reasoning;
 
-  const suppressed = slackChannelSuppressionReason({ classification, inboundMessage: inbound });
+  const suppressed = slackChannelSuppressionReason({
+    classification,
+    inboundMessage: inbound,
+    isColdInbound: false,
+    pitchToUsProb: result.pitchToUsProb,
+  });
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'smartlead', campaignId, leadId,

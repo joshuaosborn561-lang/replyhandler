@@ -121,6 +121,45 @@ function campaignId(conv) {
   );
 }
 
+function hasCampaignId(id) {
+  if (id == null) return false;
+  const s = String(id).trim();
+  if (!s) return false;
+  if (s === '—' || s === '–' || s === '-' || s.toLowerCase() === 'none') return false;
+  return true;
+}
+
+function messageRoleOutbound(m) {
+  if (isOutboundMessage(m)) return true;
+  const role = String(m?.role || '').toLowerCase();
+  return role === 'us' || role === 'me' || role === 'sender' || role === 'user';
+}
+
+function messageRoleInbound(m) {
+  if (!m || typeof m !== 'object') return false;
+  if (messageRoleOutbound(m)) return false;
+  if (isInboundMessage(m)) return true;
+  const role = String(m.role || '').toLowerCase();
+  return role === 'prospect' || role === 'them' || role === 'lead' || role === 'correspondent';
+}
+
+/**
+ * Cold inbound: no campaign ID AND (the first message is theirs OR there is
+ * no outbound from us before their reply). Campaign threads where we sent
+ * first are never cold inbound.
+ */
+function isColdInbound(conv, messages) {
+  if (hasCampaignId(campaignId(conv))) return false;
+  const msgs = Array.isArray(messages) && messages.length
+    ? messages
+    : conversationMessages(conv);
+  if (!msgs.length) return true;
+  if (messageRoleInbound(msgs[0])) return true;
+  const firstInbound = msgs.findIndex(messageRoleInbound);
+  if (firstInbound < 0) return !msgs.some(messageRoleOutbound);
+  return !msgs.slice(0, firstInbound).some(messageRoleOutbound);
+}
+
 function campaignNameOf(conv) {
   const fromTags = campaignIdFromAutoTags(conv);
   return (
@@ -410,15 +449,25 @@ async function processConversation(client, conv, options) {
     };
   }
   let { classification, draft, proposed_time, reasoning } = result;
+  const coldInbound = isColdInbound(conv, messages);
 
   const suppressed = slackChannelSuppressionReason({
-    classification, inboundMessage: inbound.text,
+    classification,
+    inboundMessage: inbound.text,
+    isColdInbound: coldInbound,
+    pitchToUsProb: result.pitchToUsProb,
   });
   if (suppressed) {
     await recordSuppressedReply({
-      clientId: client.id, platform: 'heyreach', campaignId, leadId,
-      leadName, linkedinUrl, inboundMessage: inbound.text,
-      classification, reason: suppressed,
+      clientId: client.id,
+      platform: 'heyreach',
+      campaignId: cid,
+      leadId: leadKey,
+      leadName: leadName(conv),
+      linkedinUrl: linkedinUrl(conv),
+      inboundMessage: inbound.text,
+      classification,
+      reason: suppressed,
     });
     return { skipped: suppressed };
   }
@@ -616,4 +665,8 @@ async function pollHeyReachReplies() {
 module.exports = {
   pollHeyReachReplies,
   heyreachGetConversations,
+  isColdInbound,
+  hasCampaignId,
+  campaignId,
+  conversationMessages,
 };

@@ -4,6 +4,7 @@ const slack = require('./services/slack');
 const { sendReminder } = require('./services/reminder-email');
 const { runDueFollowUps } = require('./services/follow-up-runner');
 const { logIntegrationStatus } = require('./services/integration-check');
+const { postPitchHiddenSummaries } = require('./services/pitch-hidden-summary');
 const { logInterestedSweep } = require('./services/interested-sweep');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
 const { pollSmartleadReplies } = require('./services/smartlead-poller');
@@ -262,6 +263,19 @@ function startCron() {
       }
     });
   }
+
+  // ─── Daily "N pitches hidden today" (8pm CT, only if N > 0) ───────
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      if (hourInTimezone('America/Chicago') !== 20) return;
+      const result = await postPitchHiddenSummaries();
+      if (result.posted) {
+        console.log('[Cron] Pitch-hidden summaries posted', result);
+      }
+    } catch (err) {
+      console.error('[Cron] Pitch-hidden summary failed', { err: err.message });
+    }
+  });
 
   // ─── Auto ICP — weekdays 6am–8pm CT (Josh's quiet hours) ──────────
   // Empty / missing / never-built statuses every hour in-window.

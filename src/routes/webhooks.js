@@ -34,6 +34,7 @@ const {
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('../services/inbound-forward');
+const { isColdInbound } = require('../services/heyreach-poller');
 
 const router = Router();
 
@@ -567,7 +568,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       }
     }
     const suppressedReason = slackChannelSuppressionReason({
-      classification, inboundMessage: inboundEffective,
+      classification,
+      inboundMessage: inboundEffective,
+      isColdInbound: false,
+      pitchToUsProb: result.pitchToUsProb,
     });
     if (suppressedReason) {
       console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
@@ -778,15 +782,17 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       conversationId: hrConversationId,
     });
 
-    // Acknowledge quickly so HeyReach does not queue retries while we call Gemini/Slack.
+    // Acknowledge quickly so HeyReach does not queue retries while we classify/Slack.
     res.status(200).json({ ok: true, accepted: true });
 
     setImmediate(async () => {
       try {
         // Webhook payloads can include only the latest reply. Enrich from inbox API so Slack
-        // shows "Your last message" and Gemini sees the full context.
+        // shows "Your last message" and the classifier sees the full context. The full
+        // conversation is also what isColdInbound needs (campaign tags + who wrote first).
         let resolvedLeadName = leadName;
         let resolvedLinkedinUrl = linkedinUrl;
+        let fullConv = null;
 
         if (hrConversationId) {
           try {
@@ -796,6 +802,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
               linkedinUrl,
             });
             if (full) {
+              fullConv = full;
               const fromApi = heyreach.extractHeyreachLeadName(full);
               if (fromApi && fromApi !== heyreach.HEYREACH_LEAD_FALLBACK) {
                 resolvedLeadName = fromApi;
@@ -848,8 +855,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         }
 
         let { classification, draft, proposed_time, reasoning } = result;
+        const convForCold = fullConv
+          ? { ...fullConv, campaignId: campaignId || fullConv.campaignId, campaign_id: campaignId || fullConv.campaign_id }
+          : { campaignId, campaign_id: campaignId, campaign: payload.campaign };
+        const coldInbound = isColdInbound(convForCold, threadContext);
         const hrSuppressed = slackChannelSuppressionReason({
-          classification, inboundMessage,
+          classification,
+          inboundMessage,
+          isColdInbound: coldInbound,
+          pitchToUsProb: result.pitchToUsProb,
         });
         if (hrSuppressed) {
           console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });

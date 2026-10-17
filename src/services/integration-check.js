@@ -1,6 +1,7 @@
 const allo = require('./allo');
 const drive = require('./google-drive');
 const fireflies = require('./fireflies');
+const jevClassifier = require('./jev-classifier');
 
 /**
  * One-shot probe at boot: prove the call-recording integrations actually work,
@@ -16,7 +17,19 @@ function getIntegrationStatus() {
 }
 
 async function logIntegrationStatus() {
-  lastStatus = { at: new Date().toISOString(), allo: 'unknown', drive: 'unknown', fireflies: 'unknown' };
+  lastStatus = { at: new Date().toISOString(), allo: 'unknown', drive: 'unknown', fireflies: 'unknown', jev: 'unknown' };
+
+  const jevMissing = jevClassifier.missingJevEnv();
+  if (jevMissing.length) {
+    lastStatus.jev = 'not_configured';
+    const fallback = jevClassifier.isGeminiFallbackEnabled()
+      ? 'classification falls back to Gemini'
+      : 'classification has no fallback';
+    console.warn(`[Startup] Jev classifier not configured (${jevMissing.join(', ')} unset) — ${fallback}`);
+  } else {
+    lastStatus.jev = 'configured';
+    console.log('[Startup] Jev classifier configured');
+  }
 
   if (!fireflies.isConfigured()) {
     lastStatus.fireflies = 'not_configured';
