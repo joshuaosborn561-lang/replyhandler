@@ -1136,3 +1136,47 @@ only — no names.
 `POST /admin/resurface-suppressed` and `scripts/resurface-suppressed.js`.
 
 Guard: `wrongly suppressed mixed/question replies can be resurfaced`
+
+## 2026-10-17
+
+### FOLLOW_UP drafts continue the conversation; never wait on Josh
+
+Cayden sends follow-ups. 19 of the last 31 cards in the follow-ups channel
+ignored an explicit prospect ask because `draftReattemptToBook` discarded
+`lastInboundMessage` and always used `bumpForOffer` / `timesTakenBump`.
+
+Supersedes **FOLLOW_UP Slack cards show the draft and last message only**,
+the template half of **FOLLOW_UP bumps are offer-first**, and the canned
+"those times got taken" half of **First positive reply: two calendar times
+AND the booking link** (slots and the booking link are still passed in as
+available facts; the model decides whether a meeting ask fits).
+
+- Draft with Claude Sonnet + RAG the same way original replies do, even from
+  the cron / poller path. Per-run cap (`FOLLOW_UP_CLAUDE_CAP`, default 25)
+  and logged token cost. Gemini only if Claude errors or the cap is hit.
+  Templates remain last-resort when both LLMs fail, logged loudly.
+- Give the model the full thread, cadence step, and days since the last
+  message. Address anything they asked for or set as a condition. Never
+  repeat an earlier bump. Suggest a meeting only where it naturally fits.
+- Follow-ups must not wait on Josh. There is no `needs_josh` flag.
+  Pricing → "happy to walk through pricing on a quick call", no flag.
+  One-pager / deck / "email me some info" → `needs_client=true` plus
+  `what_to_send`. The draft says we are looping in the client's
+  founder/CEO (name from voice prompt when we have it). Card shows
+  `LOOP IN CLIENT: <what>`. Existing Gmail / SmartLead-forward notify
+  to the client and Cayden still runs on send.
+- Slack card: **WILL SEND** (full text, never truncated) at the top,
+  buttons directly under it, optional LOOP IN CLIENT line, then the
+  full thread oldest → newest (them/us + dates, signatures and
+  disclaimers stripped, older turns ~400 chars, last two in full).
+  Stay inside Slack's 50-block / 3000-char limits; overflow posts the
+  full history as a thread reply.
+- SmartLead `POST /campaigns/{id}/reply-email-thread` documents `cc` and
+  `bcc` (comma-separated). Default send still omits both. When
+  `needs_client` is set, the card also has **Send + CC client**, which
+  puts the client contact email on `cc` of that prospect reply (and
+  still sends the usual FYI forward).
+
+Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
+Guard: `FOLLOW_UP cards show WILL SEND + full thread; only after we have sent`
+

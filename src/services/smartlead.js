@@ -267,10 +267,13 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * @see https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
  * Required: email_stats_id, email_body (lead_id is not a path param on this route).
  *
- * Note: we intentionally do NOT CC clients on the prospect reply (deliverability).
- * Client notify is via forwardThreadToClient. The live API accepts `cc` if ever needed.
+ * SmartLead POST /campaigns/{id}/reply-email-thread accepts `cc` and `bcc`
+ * (comma-separated). Default send still omits both (deliverability); FOLLOW_UP
+ * "Send + CC client" opts into `cc` with the client contact email. `bcc` is
+ * unused.
+ * Client notify is via Gmail / forwardThreadToClient, independent of this CC.
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails }) {
+async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, ccEmails, bccEmails }) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -302,6 +305,8 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, 
   };
   const cc = String(ccEmails || '').trim();
   if (cc) payload.cc = cc;
+  const bcc = String(bccEmails || '').trim();
+  if (bcc) payload.bcc = bcc;
 
   const res = await fetch(url, {
     method: 'POST',

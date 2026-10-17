@@ -343,12 +343,312 @@ async function generateClaudeReply({
   };
 }
 
+const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a reply):
+- Write the natural next message on this thread. Continue the conversation the way a human would — not a canned bump.
+- Read the FULL thread. If they asked for something, set a condition, asked a question, or named a different need, address THAT first.
+- Never repeat an earlier bump almost verbatim. If we already asked "still interested in meeting for X?", do not ask it again.
+- Suggest a meeting / times / booking link ONLY where it naturally fits after addressing their point. A reply with no meeting ask is fine.
+- Do not invent facts (deck contents, pricing numbers, qualification cutoffs, ticket dates, locations).
+- PRICING: say you are happy to walk through pricing on a quick call. needs_client must be false. Never stall.
+- Specifics we do not have (minimums, headcount cutoffs, locations): do not guess. Offer a short call. needs_client = false.
+- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in the client's founder/CEO to send it (use CLIENT FOUNDER NAME when given). Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
+- Tickets or a specific address they gave us: acknowledge and continue. needs_client=false unless they asked for client-owned collateral.
+- A different need than we originally pitched: follow their need. Do not drag them back to the original offer.
+- No sign-off. No markdown. No surrounding quotes.
+- Output JSON only.`;
+
+function formatFollowUpThread(threadMessages, threadContext) {
+  const { formatThreadForPrompt } = require('../utils/follow-up-thread-display');
+  if (Array.isArray(threadMessages) && threadMessages.length) {
+    return formatThreadForPrompt(threadMessages);
+  }
+  return summarizeThread(threadContext);
+}
+
+function parseFollowUpModelJson(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return { draft: '', needsClient: false, whatToSend: null };
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) {
+      try { parsed = JSON.parse(m[0]); } catch { parsed = null; }
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { draft: text, needsClient: false, whatToSend: null };
+  }
+  const draft = String(
+    parsed.draft || parsed.text || parsed.reply || parsed.message || ''
+  ).trim();
+  const needsClient = parsed.needs_client === true || parsed.needsClient === true;
+  const what = String(parsed.what_to_send || parsed.whatToSend || '').trim();
+  return {
+    draft: draft || text,
+    needsClient,
+    whatToSend: needsClient ? (what || 'info') : null,
+  };
+}
+
+function followUpSchedulingBlock({
+  slots, bookingLink, voicePrompt, clientName, step,
+} = {}) {
+  const {
+    prefersInPersonMeeting, prefersCallbackCall, DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER,
+  } = require('../utils/meeting-modality');
+  if (prefersCallbackCall(voicePrompt, clientName)) {
+    return `CALLBACK: ${DEEP_ROOTS_CALLER} will call from ${DEEP_ROOTS_FROM_NUMBER}. Ask what time works only if a call naturally fits. No booking URL, two calendar slots, or Zoom.`;
+  }
+  if (prefersInPersonMeeting(voicePrompt)) {
+    return 'IN-PERSON: Suggest stop-by times only if a meeting naturally fits. No booking URL, Zoom, or phone CTA.';
+  }
+  const labels = (slots || [])
+    .map((s) => (s && typeof s === 'object' ? s.label : s))
+    .map((s) => String(s || '').trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  const link = String(bookingLink || '').trim();
+  const lines = [
+    'TIMES / LINK are available if a meeting naturally fits — they are not required.',
+    labels.length
+      ? `Verified open times: ${labels.join(' · ')}`
+      : 'No verified open times were fetched.',
+    link ? `Booking link (include only if useful): ${link}` : 'No booking link configured.',
+    `Cadence step ${Number(step) || 1}.`,
+  ];
+  return lines.join('\n');
+}
+
+function buildFollowUpPrompt({
+  leadName,
+  threadMessages,
+  threadContext,
+  lastInboundMessage,
+  lastOutboundMessage,
+  classification,
+  bookingLink,
+  slots,
+  platform,
+  voicePrompt,
+  clientName,
+  founderName,
+  step,
+  daysSinceLastMessage,
+  learnedVoiceBlock = '',
+  examples = [],
+  asPrincipal = false,
+  factCheckRetryClaims = null,
+} = {}) {
+  const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
+  const { clientFounderLabel } = require('../utils/client-founder');
+  const founder = founderName || clientFounderLabel({ voicePrompt, clientName });
+  const clientVoice = String(voicePrompt || '').trim()
+    ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
+    : '';
+  const learnedVoice = String(learnedVoiceBlock || '').trim()
+    ? `\n${String(learnedVoiceBlock).trim()}\n`
+    : '';
+  const loopRule = asPrincipal
+    ? '- You ARE the founder/CEO. Do not set needs_client — there is no separate client to loop in. For collateral we do not have, offer a short call rather than stalling.'
+    : `- CLIENT FOUNDER NAME: ${founder}. When looping in the client for a deck / one-pager / "send info", say you are looping in ${founder} to send it.`;
+
+  const system = [
+    asPrincipal
+      ? 'You ghostwrite a B2B follow-up as Josh, founder/CEO, in first person.'
+      : 'You ghostwrite a B2B follow-up in Josh’s voice.',
+    'Return ONLY a JSON object with keys draft (string), needs_client (boolean), what_to_send (string or null). No markdown fences.',
+    '',
+    asPrincipal ? JOSH_AS_CEO_STYLE_GUIDE : JOSH_VOICE_STYLE_GUIDE,
+    '',
+    CONTINUATION_RULES,
+    '',
+    FOLLOW_UP_RULES,
+    loopRule,
+    clientVoice,
+    learnedVoice,
+    'OPERATIONAL RULES:',
+    `- ${followUpSchedulingBlock({ slots, bookingLink, voicePrompt, clientName, step })}`,
+    '- Retrieved examples are style references only. Never copy their people names, company/product names, URLs, claims, pricing, or offer details.',
+    FACT_GROUNDING_RULES,
+    '- Keep every sentence complete and usually stay under 120 words.',
+    platform === 'heyreach'
+      ? '- This is LinkedIn: keep it especially short and do not add a signature.'
+      : '- This is email: no sign-off — the mailbox adds the signature.',
+  ].join('\n');
+
+  const threadBlock = formatFollowUpThread(threadMessages, threadContext);
+  const daysBit = daysSinceLastMessage == null
+    ? 'unknown'
+    : `${daysSinceLastMessage} day(s)`;
+
+  const user = [
+    `Prospect name: ${leadName || 'Unknown'}`,
+    `Classification: ${classification || 'FOLLOW_UP'}`,
+    `Follow-up cadence step: ${Number(step) || 1}`,
+    `Days since last message: ${daysBit}`,
+    '',
+    '<current_thread>',
+    threadBlock,
+    '</current_thread>',
+    '',
+    '<latest_prospect_message>',
+    String(lastInboundMessage || '').trim() || '(no new prospect reply since our last send)',
+    '</latest_prospect_message>',
+    '',
+    '<our_last_send>',
+    String(lastOutboundMessage || '').trim() || '(unknown)',
+    '</our_last_send>',
+    '',
+    '<similar_manual_replies>',
+    formatExamples(examples),
+    '</similar_manual_replies>',
+    '',
+    'Write the follow-up now as JSON.',
+    factCheckRetryClaims && factCheckRetryClaims.length
+      ? `\n${require('../utils/draft-fact-check').factCheckRetryHint(factCheckRetryClaims)}`
+      : '',
+  ].filter(Boolean).join('\n');
+
+  return { system, user, threadBlock };
+}
+
+function anthropicKeyConfigured() {
+  return Boolean(process.env.ANTHROPIC_API_KEY);
+}
+
+/**
+ * Claude follow-up draft. Allowed in bulk/poller/cron — follow-ups are low
+ * volume. RAG is best-effort; a missing corpus still drafts.
+ */
+async function generateFollowUpClaudeDraft({
+  inboundMessage,
+  lastInboundMessage,
+  lastOutboundMessage,
+  threadContext,
+  threadMessages,
+  leadName,
+  bookingLink,
+  slots,
+  platform,
+  voicePrompt,
+  clientName = null,
+  founderName = null,
+  step = 1,
+  daysSinceLastMessage = null,
+  learnedVoiceBlock = '',
+  factCheckRetryClaims = null,
+} = {}) {
+  if (!anthropicKeyConfigured()) {
+    throw new Error('Anthropic is not configured');
+  }
+
+  const { speaksAsPrincipal } = require('../utils/principal-voice');
+  const asPrincipal = speaksAsPrincipal(voicePrompt);
+  let examples = [];
+  if (replyExamples.isConfigured()) {
+    try {
+      const query = String(lastInboundMessage || inboundMessage || lastOutboundMessage || '').trim()
+        || formatFollowUpThread(threadMessages, threadContext);
+      examples = await replyExamples.matchReplies(query, 4, {
+        clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
+        preferAckExamples: true,
+      });
+    } catch (err) {
+      console.warn('[FollowUp] RAG match failed — drafting without examples', { err: err.message });
+    }
+  }
+
+  const { system, user } = buildFollowUpPrompt({
+    leadName,
+    threadMessages,
+    threadContext,
+    lastInboundMessage: lastInboundMessage || inboundMessage,
+    lastOutboundMessage,
+    bookingLink,
+    slots,
+    platform,
+    voicePrompt,
+    clientName,
+    founderName,
+    step,
+    daysSinceLastMessage,
+    learnedVoiceBlock,
+    examples,
+    asPrincipal,
+    factCheckRetryClaims,
+  });
+
+  const data = await callAnthropic(system, user);
+  const raw = extractText(data);
+  if (!raw) throw new Error('Anthropic returned an empty follow-up draft');
+  let parsed = parseFollowUpModelJson(raw);
+  if (!parsed.draft) throw new Error('Anthropic follow-up JSON had an empty draft');
+
+  if (asPrincipal) {
+    parsed = { ...parsed, needsClient: false, whatToSend: null };
+  }
+
+  const currentFacts = [
+    leadName,
+    clientName,
+    founderName,
+    formatFollowUpThread(threadMessages, threadContext),
+    lastInboundMessage,
+    lastOutboundMessage,
+    bookingLink,
+    learnedVoiceBlock,
+  ].filter(Boolean).join('\n');
+  let leakedTerms = findExampleOnlyTerms(examples, currentFacts, parsed.draft);
+  if (leakedTerms.length) {
+    console.warn('[FollowUp] Regenerating after example-only term leak', { terms: leakedTerms });
+    const retry = await callAnthropic(
+      system,
+      `${user}\n\nFINAL CORRECTION: The prior draft copied these terms from retrieved examples even though they are absent from the current facts: ${leakedTerms.join(', ')}. Write a fresh JSON follow-up without those terms.`
+    );
+    const retryText = extractText(retry);
+    if (!retryText) throw new Error('Anthropic returned an empty corrected follow-up');
+    parsed = parseFollowUpModelJson(retryText);
+    if (asPrincipal) {
+      parsed = { ...parsed, needsClient: false, whatToSend: null };
+    }
+    leakedTerms = findExampleOnlyTerms(examples, currentFacts, parsed.draft);
+    if (leakedTerms.length) {
+      throw new Error(`Claude follow-up retained example-only terms: ${leakedTerms.join(', ')}`);
+    }
+  }
+
+  const guarded = enforcePrincipalVoice(parsed.draft, { asPrincipal });
+  if (guarded.scrubbed) {
+    console.warn('[FollowUp] Scrubbed principal handoff leak', { leadName });
+    parsed.draft = guarded.text;
+  }
+
+  return {
+    text: parsed.draft,
+    needsClient: parsed.needsClient === true,
+    whatToSend: parsed.needsClient ? parsed.whatToSend : null,
+    model: data.model || process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+    examples,
+    usage: data.usage || null,
+  };
+}
+
 module.exports = {
   JOSH_VOICE_STYLE_GUIDE,
   JOSH_AS_CEO_STYLE_GUIDE,
   FIRST_TOUCH_RULES,
   CONTINUATION_RULES,
+  FOLLOW_UP_RULES,
   isConfigured,
+  anthropicKeyConfigured,
   generateClaudeReply,
+  generateFollowUpClaudeDraft,
   summarizeThread,
+  formatFollowUpThread,
+  buildFollowUpPrompt,
+  parseFollowUpModelJson,
+  followUpSchedulingBlock,
 };

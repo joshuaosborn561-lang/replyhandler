@@ -107,7 +107,7 @@ async function resolveClientNotifyThread(client, reply) {
   };
 }
 
-async function sendReplyToPlatform(client, reply, replyText) {
+async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false } = {}) {
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
@@ -152,8 +152,10 @@ async function sendReplyToPlatform(client, reply, replyText) {
       });
     }
 
-    // Deliverability: reply to the prospect with NO CC.
+    // Deliverability: reply to the prospect with NO CC by default.
     // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
+    // Optional exception: FOLLOW_UP "Send + CC client" puts the client contact on
+    // the prospect thread (SmartLead `cc`) so they can send collateral. FYI notify still fires.
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
@@ -165,12 +167,23 @@ async function sendReplyToPlatform(client, reply, replyText) {
     let clientCcWarning = '';
     let clientCcMode = '';
     let enrichment = null;
+    let prospectCc = '';
+    if (ccClientOnProspect) {
+      prospectCc = (ccMeta && ccMeta.always && ccMeta.always[0])
+        || alwaysCcEmails(client)[0]
+        || '';
+      if (!prospectCc) {
+        console.warn('[ReplySend] Send + CC client requested but no client contact email', {
+          replyId: reply.id,
+        });
+      }
+    }
 
     await smartlead.sendReply(
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      { replyText, emailStatsId }
+      { replyText, emailStatsId, ccEmails: prospectCc || undefined }
     );
 
     if (forwardEmails) {
@@ -189,6 +202,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
         return {
           clientNotifySkipped: true,
           clientNotifySkipReason: notifySkip,
+          prospectCcEmails: prospectCc || undefined,
         };
       }
 
@@ -300,6 +314,7 @@ async function sendReplyToPlatform(client, reply, replyText) {
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
+      prospectCcEmails: prospectCc || undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
       leadLinkedinUrl: enrichment?.linkedinUrl || undefined,
