@@ -103,14 +103,25 @@ CREATE TABLE meetings (
   pending_reply_id UUID REFERENCES pending_replies(id),
   lead_name TEXT,
   lead_email TEXT,
+  lead_phone TEXT,
   linkedin_url TEXT,
   proposed_time TEXT,
+  proposed_times JSONB,
   confirmed_time TIMESTAMPTZ,
   calendar_event_id TEXT,
   calendar_provider TEXT,
   meeting_link TEXT,
   reminder_sent BOOLEAN NOT NULL DEFAULT false,
   status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'confirmed', 'booked', 'cancelled')),
+  source TEXT NOT NULL DEFAULT 'email',
+  source_confidence TEXT NOT NULL DEFAULT 'confirmed',
+  allo_call_id TEXT,
+  allo_webhook_id TEXT,
+  allo_user_email TEXT,
+  allo_tags TEXT[],
+  prospect_kind TEXT,
+  slack_channel_id TEXT,
+  slack_message_ts TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -132,6 +143,18 @@ CREATE INDEX idx_pending_replies_client_id ON pending_replies(client_id);
 CREATE INDEX idx_pending_replies_status ON pending_replies(status);
 CREATE INDEX idx_meetings_client_id ON meetings(client_id);
 CREATE INDEX idx_meetings_status ON meetings(status);
+CREATE UNIQUE INDEX meetings_allo_call_id_uidx ON meetings (allo_call_id) WHERE allo_call_id IS NOT NULL;
+CREATE INDEX meetings_source_created_idx ON meetings (source, created_at DESC);
+CREATE INDEX meetings_lead_phone_idx ON meetings (lead_phone) WHERE lead_phone IS NOT NULL;
+CREATE INDEX meetings_lead_email_lower_idx ON meetings (lower(lead_email)) WHERE lead_email IS NOT NULL;
+
+CREATE TABLE allo_webhook_events (
+  webhook_id TEXT PRIMARY KEY,
+  topic TEXT,
+  call_id TEXT,
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX allo_webhook_events_call_idx ON allo_webhook_events (call_id, processed_at DESC);
 
 CREATE TABLE outbound_follow_ups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

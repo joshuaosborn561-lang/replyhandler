@@ -10,6 +10,7 @@
  */
 
 const BASE_URL = process.env.ALLO_BASE_URL || 'https://api.withallo.com/v1/api';
+const V2_BASE_URL = process.env.ALLO_V2_BASE_URL || 'https://api.withallo.com/v2/api';
 
 function apiKey() {
   return String(process.env.ALLO_API_KEY || '').trim();
@@ -175,6 +176,68 @@ async function searchCalls(contactNumber, { page, size = 20 } = {}) {
   );
 }
 
+async function alloFetchV2(path, params = {}) {
+  const key = apiKey();
+  if (!key) throw new Error('ALLO_API_KEY not set');
+
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && String(v) !== '') qs.set(k, String(v));
+  }
+  const url = qs.toString() ? `${V2_BASE_URL}${path}?${qs}` : `${V2_BASE_URL}${path}`;
+  const res = await fetch(url, {
+    headers: { Authorization: key, Accept: 'application/json' },
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`Allo ${path} failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  try { return JSON.parse(body); } catch { return {}; }
+}
+
+/**
+ * Full call record for a webhook that only sent an id (tag.added).
+ * Tries v2 conversation items, then v1 /calls/:id.
+ */
+async function getCallById(callId) {
+  const id = String(callId || '').trim();
+  if (!id) return null;
+  const candidates = [id];
+  if (id.startsWith('cll_')) candidates.push(`cll-${id.slice(4)}`);
+  if (id.startsWith('cll-')) candidates.push(`cll_${id.slice(4)}`);
+
+  for (const candidate of candidates) {
+    try {
+      const data = await alloFetchV2(`/conversations/items/${encodeURIComponent(candidate)}`, {
+        extend: 'transcript',
+      });
+      const item = data?.data || data;
+      if (item && (item.id || item.summary || item.transcript || item.tags)) {
+        return {
+          ...item,
+          from_number: item.from_number || (item.direction === 'INBOUND' ? item.contact_number : item.allo_number),
+          to: item.to || item.to_number || (item.direction === 'OUTBOUND' ? item.contact_number : item.allo_number),
+          type: item.type === 'CALL' ? item.direction : item.type,
+          user_email: item.user_email || item.user?.email || null,
+        };
+      }
+    } catch (err) {
+      console.warn('[Allo] v2 get-item failed', { id: candidate, err: err.message });
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const data = await alloFetch(`/calls/${encodeURIComponent(candidate)}`);
+      const call = data?.data || data;
+      if (call && (call.id || call.summary)) return call;
+    } catch (err) {
+      console.warn('[Allo] v1 get-call failed', { id: candidate, err: err.message });
+    }
+  }
+  return null;
+}
+
 /** Flatten a call's transcript turns into plain text. */
 function transcriptText(call) {
   const turns = Array.isArray(call?.transcript) ? call.transcript : [];
@@ -192,6 +255,7 @@ function transcriptText(call) {
 module.exports = {
   isConfigured,
   searchCalls,
+  getCallById,
   transcriptText,
   normalizeE164,
   phoneKey,

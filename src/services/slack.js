@@ -847,6 +847,17 @@ async function updateAlertCard(token, channelId, messageTs, opts) {
   });
 }
 
+/** Shared-channel card (meetings-booked recap / Allo booking). */
+async function postBlocks(token, channelId, { text, blocks } = {}) {
+  const slack = getClient(token);
+  const payload = {
+    channel: channelId,
+    text: text || 'Meeting booked',
+  };
+  if (Array.isArray(blocks) && blocks.length) payload.blocks = blocks;
+  return slack.chat.postMessage(payload);
+}
+
 async function postError(token, channelId, { leadName, platform, error }) {
   const slack = getClient(token);
 
@@ -1040,6 +1051,7 @@ module.exports = {
   postAlert,
   updateAlertCard,
   buildAlertCard,
+  postBlocks,
   postError,
   postClientActionNotice,
   postProspectFollowUpReminder,

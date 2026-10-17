@@ -79,6 +79,12 @@ async function buildRecap({ startIso, endIso }) {
       ORDER BY c.name ASC, pr.created_at ASC`,
     [startIso, endIso, POSITIVE_CLASSIFICATIONS]
   );
+  const {
+    recapCountsFromRows,
+    loadMeetingsForWindow,
+  } = require('./allo-meetings');
+  const meetingRows = await loadMeetingsForWindow({ startIso, endIso });
+  const meetingRecap = recapCountsFromRows(meetingRows);
   return {
     ok: true,
     clients: clients.map((c) => ({
@@ -95,6 +101,13 @@ async function buildRecap({ startIso, endIso }) {
       platform: p.platform,
       created_at: p.created_at,
     })),
+    meetings: meetingRecap.meetings,
+    likely_meetings: meetingRecap.likely_meetings,
+    meeting_counts: {
+      confirmed: meetingRecap.confirmed,
+      likely: meetingRecap.likely,
+      by_source: meetingRecap.by_source,
+    },
   };
 }
 
@@ -247,8 +260,8 @@ async function stopFollowUpsForEmail({
       await db.query(
         `INSERT INTO meetings
           (client_id, pending_reply_id, lead_name, lead_email, linkedin_url,
-           status, confirmed_time)
-         VALUES ($1, $2, $3, $4, $5, 'booked', now())`,
+           status, confirmed_time, source, source_confidence)
+         VALUES ($1, $2, $3, $4, $5, 'booked', now(), 'email', 'confirmed')`,
         [
           clientId,
           anchor.id,
@@ -272,8 +285,8 @@ async function stopFollowUpsForEmail({
       await db.query(
         `INSERT INTO meetings
           (client_id, pending_reply_id, lead_name, lead_email, linkedin_url,
-           status, confirmed_time)
-         VALUES ($1, NULL, $2, $3, NULL, 'booked', now())`,
+           status, confirmed_time, source, source_confidence)
+         VALUES ($1, NULL, $2, $3, NULL, 'booked', now(), 'email', 'confirmed')`,
         [clientId, name, email]
       );
       meetingsUpserted = 1;

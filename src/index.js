@@ -1,6 +1,7 @@
 const path = require('path');
 const express = require('express');
 const webhookRoutes = require('./routes/webhooks');
+const alloWebhookRoutes = require('./routes/allo-webhook');
 const bookingBridgeRecapRoutes = require('./routes/booking-bridge-recap');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
@@ -21,6 +22,12 @@ const PORT = process.env.PORT || 3000;
 app.use('/slack', express.urlencoded({
   extended: true,
   verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
+}));
+
+// Allo HMAC uses the raw body. Capture it before JSON parse on this path only.
+app.use('/webhook/allo', express.json({
+  limit: process.env.JSON_BODY_LIMIT || '5mb',
+  verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); },
 }));
 
 // JSON for everything else
@@ -45,6 +52,7 @@ app.get('/health', async (_req, res) => {
 
 // ─── Routes ──────────────────────────────────
 app.use(webhookRoutes);
+app.use(alloWebhookRoutes);
 app.use(bookingBridgeRecapRoutes);
 app.use(slackRoutes);
 app.use('/admin', requireAdminApiKey);

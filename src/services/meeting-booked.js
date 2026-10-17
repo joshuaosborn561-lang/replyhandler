@@ -63,8 +63,8 @@ async function markMeetingBooked({
     await db.query(
       `INSERT INTO meetings
         (client_id, pending_reply_id, lead_name, lead_email, linkedin_url,
-         status, confirmed_time)
-       VALUES ($1, $2, $3, $4, $5, 'booked', now())`,
+         status, confirmed_time, source, source_confidence)
+       VALUES ($1, $2, $3, $4, $5, 'booked', now(), 'email', 'confirmed')`,
       [
         clientId,
         reply.id,

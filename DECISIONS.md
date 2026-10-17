@@ -1136,3 +1136,33 @@ only — no names.
 `POST /admin/resurface-suppressed` and `scripts/resurface-suppressed.js`.
 
 Guard: `wrongly suppressed mixed/question replies can be resurfaced`
+
+## 2026-10-17
+
+### Allo cold-call bookings join #meetings-booked with a source label
+
+Meetings booked on Allo calls post to Slack `#meetings-booked` and to the
+daily (7:05pm CT) / weekly (Fri 7:20pm CT) recaps next to email/Calendly
+bookings. Source is labeled **Allo call** vs **email**.
+
+A call counts as confirmed when it carries a `Meeting Booked` tag
+(`call.completed` tags or `tag.added`). Summary/transcript fallback is
+**likely**: the Slack card says so, and recaps list those separately so
+they do not inflate confirmed counts.
+
+Mesa Energy is the one hardcoded number: `(916) 270-1857`. SalesGlider,
+Deep Roots, and future clients map through `ALLO_NUMBER_CLIENT_MAP` /
+`ALLO_USER_CLIENT_MAP`. SalesGlider still uses
+`https://calendly.com/joshua-salesglidergrowth/30min`; Mesa and Deep Roots
+do not allow booking links — Gabe collects two times plus an email and
+Josh books by hand.
+
+Unsigned Allo webhooks are rejected. Allo retries are idempotent on
+`webhook-id`. Same prospect booked through Calendly and Allo is one
+meeting (email/phone, 72h window).
+
+Webhook path: `POST /webhook/allo`. Register at Allo Settings > Webhooks
+(or `POST /v2/api/webhooks` with a `WEBHOOKS_READ_WRITE` key). Store
+`ALLO_WEBHOOK_SIGNING_SECRET`; never commit it.
+
+Guard: `Allo call bookings are labeled and mapped from env, not hardcoded clients`

@@ -238,6 +238,16 @@ Paste **each client’s** webhook URL only into campaigns that belong to **that*
 
 HeyReach payloads must include a **campaign id** that matches one of the campaigns returned for that API key. We read `campaignId` / `campaign_id` **or** nested `campaign.id` (common on reply webhooks). Reply text may arrive in `recent_messages` rather than top-level `message`.
 
+### Allo (cold-call meetings)
+
+Allo posts `call.completed` and `tag.added` to **`POST /webhook/allo`**. Confirmed
+`Meeting Booked` tags (and likely transcript fallbacks) land in Slack
+`#meetings-booked` and in the daily (7:05pm CT) / weekly (Fri 7:20pm CT) recaps
+next to email/Calendly bookings, labeled **Allo call** vs **email**.
+
+See [docs/ALLO-WEBHOOKS.md](docs/ALLO-WEBHOOKS.md) for the register URL, required
+env vars, and number-to-client map. Never commit the signing secret.
+
 ## Slack App Setup
 
 ### 1. Create a Slack App

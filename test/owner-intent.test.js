@@ -719,6 +719,39 @@ test('all Allo lines are searched, discovered from the API', () => {
   );
 });
 
+// ── Decision: Allo call bookings land in #meetings-booked with source ─
+// Cold-call "Meeting Booked" tags (and likely transcript fallbacks) post
+// to Slack next to email/Calendly bookings. Mesa's number is the known
+// default; SalesGlider / Deep Roots / future clients come from env.
+test('Allo call bookings are labeled and mapped from env, not hardcoded clients', () => {
+  const {
+    DEFAULT_NUMBER_CLIENTS,
+    MESA_ENERGY_NUMBER,
+    numberClientMap,
+  } = require('../src/utils/allo-client-map');
+  const { sourceLabel } = require('../src/services/allo-meetings');
+  const index = read('src/index.js');
+  const route = read('src/routes/allo-webhook.js');
+  const sig = read('src/utils/allo-webhook-signature.js');
+
+  assert.strictEqual(MESA_ENERGY_NUMBER, '9162701857');
+  assert.strictEqual(DEFAULT_NUMBER_CLIENTS['9162701857'], 'Mesa Energy');
+  assert.strictEqual(Object.keys(numberClientMap({})).length, 1,
+    reversal('Allo call bookings mapped from env', 'SalesGlider/Deep Roots numbers were hardcoded'));
+  assert.strictEqual(sourceLabel('allo_call', 'confirmed'), 'Allo call');
+  assert.strictEqual(sourceLabel('email', 'confirmed'), 'email');
+  assert.match(index, /\/webhook\/allo/,
+    reversal('Allo call bookings mapped from env', 'POST /webhook/allo was removed'));
+  assert.match(route, /verifyAlloWebhookSignature/,
+    reversal('Allo call bookings mapped from env', 'unsigned Allo webhooks are accepted'));
+  assert.match(sig, /webhook-signature/,
+    reversal('Allo call bookings mapped from env', 'HMAC verification was dropped'));
+  assert.match(read('src/cron.js'), /5 19 \* \* \*/,
+    reversal('Allo call bookings mapped from env', 'daily 7:05pm CT recap schedule was removed'));
+  assert.match(read('src/cron.js'), /20 19 \* \* 5/,
+    reversal('Allo call bookings mapped from env', 'Friday 7:20pm CT recap schedule was removed'));
+});
+
 // ── Decision: cell recordings matched by phone number ─────────────────
 // "it will be in sub folders of the date and be the phone number."
 test('Cube ACR recordings match on the last 10 digits', () => {

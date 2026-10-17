@@ -259,6 +259,17 @@ key in `Authorization` with **no `Bearer ` prefix**, and the key needs the
 `CONVERSATIONS_READ` scope. Numbers are discovered from `GET /numbers`, not
 configured; `ALLO_PHONE_NUMBERS` only pins a subset.
 
+## Allo meetings-booked webhooks
+
+`POST /webhook/allo` receives `call.completed` and `tag.added`. HMAC
+(`webhook-id` / `webhook-timestamp` / `webhook-signature`) is required;
+unsigned or invalid requests are 401, missing `ALLO_WEBHOOK_SIGNING_SECRET`
+is 503. Idempotent on `webhook-id`. A `Meeting Booked` tag is confirmed;
+summary/transcript fallback is `likely` (Slack-carded, not recap-confirmed).
+Map numbers via `ALLO_NUMBER_CLIENT_MAP` (Mesa Energy `(916) 270-1857` is
+the only default). Cards and recaps label **Allo call** vs **email**.
+Daily recap 7:05pm CT, weekly Fri 7:20pm CT, both into `#meetings-booked`.
+
 Cube ACR drops raw audio in Drive under date subfolders, named by phone number.
 Matching keys on the **last 10 digits**, which survives `+1` / `1` / bare forms.
 Those recordings do need transcribing — Gemini takes the audio directly.

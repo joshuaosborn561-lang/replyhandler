@@ -26,6 +26,9 @@ const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15'
 // after it runs is picked up the following week. Upserts are idempotent.
 const VOICE_LEARNING_CRON = process.env.VOICE_LEARNING_CRON || '0 16 * * 5';
 const VOICE_LEARNING_TZ = process.env.VOICE_LEARNING_TIMEZONE || 'America/Chicago';
+const MEETINGS_RECAP_TZ = process.env.MEETINGS_BOOKED_RECAP_TIMEZONE || 'America/Chicago';
+const MEETINGS_DAILY_RECAP_CRON = process.env.MEETINGS_DAILY_RECAP_CRON || '5 19 * * *';
+const MEETINGS_WEEKLY_RECAP_CRON = process.env.MEETINGS_WEEKLY_RECAP_CRON || '20 19 * * 5';
 
 function voiceLearningEnabled() {
   return !/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_VOICE_LEARNING || '').trim());
@@ -263,6 +266,56 @@ function startCron() {
     });
   }
 
+  // ─── Meetings-booked recaps — 7:05pm CT daily, Fri 7:20pm CT ─────
+  // Allo call + email/Calendly bookings, source-labeled. Independent of
+  // the booking-bridge digest so a missed Allo webhook still recaps from
+  // the local meetings table.
+  {
+    const { recapsEnabled, recapWindow, postMeetingsRecap } = require('./services/allo-meetings');
+    if (recapsEnabled()) {
+      if (cron.validate(MEETINGS_DAILY_RECAP_CRON)) {
+        cron.schedule(MEETINGS_DAILY_RECAP_CRON, async () => {
+          try {
+            const window = recapWindow('day');
+            const result = await postMeetingsRecap({
+              period: 'day',
+              label: window.label,
+              startIso: window.startIso,
+              endIso: window.endIso,
+            });
+            console.log('[Cron] Daily meetings recap', {
+              confirmed: result.confirmed, likely: result.likely, posted: result.posted,
+            });
+          } catch (err) {
+            console.error('[Cron] Daily meetings recap failed', { err: err.message });
+          }
+        }, { timezone: MEETINGS_RECAP_TZ });
+      } else {
+        console.error('[Cron] Invalid MEETINGS_DAILY_RECAP_CRON', { expr: MEETINGS_DAILY_RECAP_CRON });
+      }
+      if (cron.validate(MEETINGS_WEEKLY_RECAP_CRON)) {
+        cron.schedule(MEETINGS_WEEKLY_RECAP_CRON, async () => {
+          try {
+            const window = recapWindow('week');
+            const result = await postMeetingsRecap({
+              period: 'week',
+              label: window.label,
+              startIso: window.startIso,
+              endIso: window.endIso,
+            });
+            console.log('[Cron] Weekly meetings recap', {
+              confirmed: result.confirmed, likely: result.likely, posted: result.posted,
+            });
+          } catch (err) {
+            console.error('[Cron] Weekly meetings recap failed', { err: err.message });
+          }
+        }, { timezone: MEETINGS_RECAP_TZ });
+      } else {
+        console.error('[Cron] Invalid MEETINGS_WEEKLY_RECAP_CRON', { expr: MEETINGS_WEEKLY_RECAP_CRON });
+      }
+    }
+  }
+
   // ─── Auto ICP — weekdays 6am–8pm CT (Josh's quiet hours) ──────────
   // Empty / missing / never-built statuses every hour in-window.
   // needs_review retries once a day when new Fireflies calls may exist.
@@ -307,7 +360,13 @@ function startCron() {
   const icpNote = icpAutoBuildEnabled()
     ? `ICP auto-build (hourly weekdays 6am-8pm ${ICP_BUILD_TZ})`
     : 'ICP auto-build disabled (DISABLE_ICP_AUTO_BUILD)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}`);
+  const meetingsRecapNote = (() => {
+    const { recapsEnabled } = require('./services/allo-meetings');
+    return recapsEnabled()
+      ? `meetings-booked recaps (${MEETINGS_DAILY_RECAP_CRON} daily + ${MEETINGS_WEEKLY_RECAP_CRON} Fri ${MEETINGS_RECAP_TZ})`
+      : 'meetings-booked recaps disabled (MEETINGS_BOOKED_RECAP_ENABLED=0)';
+  })();
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${meetingsRecapNote}, ${digestNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {
