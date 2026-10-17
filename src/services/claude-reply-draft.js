@@ -351,7 +351,7 @@ const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a re
 - Do not invent facts (deck contents, pricing numbers, qualification cutoffs, ticket dates, locations).
 - PRICING: say you are happy to walk through pricing on a quick call. needs_client must be false. Never stall.
 - Specifics we do not have (minimums, headcount cutoffs, locations): do not guess. Offer a short call. needs_client = false.
-- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in CLIENT CONTACT (their real name and title from client config) to send it. Style: "looping in [Name], our [title]". Never say founder. Never invent a name or title. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
+- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in CLIENT CONTACT from our side to send it. Style: "looping in Miles from our side" / "Roger from our side". Name only — no title. Never say founder. Never invent a name. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
 - Tickets or a specific address they gave us: acknowledge and continue. needs_client=false unless they asked for client-owned collateral.
 - A different need than we originally pitched: follow their need. Do not drag them back to the original offer.
 - No sign-off. No markdown. No surrounding quotes.
@@ -456,8 +456,8 @@ function buildFollowUpPrompt({
   const loopRule = asPrincipal
     ? '- You ARE the client principal. Do not set needs_client — there is no separate client to loop in. For collateral we do not have, offer a short call rather than stalling.'
     : contactPhrase
-      ? `- CLIENT CONTACT: ${contactPhrase}. When looping in for a deck / one-pager / "send info", say you are looping in ${contactPhrase} to send it. Use that exact name and title. Never say founder. Never invent a different person or title.`
-      : '- CLIENT CONTACT is not configured. Do not guess a name or title. Never say founder. Say you will loop in the client to send it, without naming a person.';
+      ? `- CLIENT CONTACT: ${contactPhrase}. When looping in for a deck / one-pager / "send info", say you are looping in ${contactPhrase} to send it. Name only, no title. Never say founder. Never invent a different person.`
+      : '- CLIENT CONTACT is not configured. Do not guess a name. Never say founder. Say you will loop in someone from our side to send it, without naming a person.';
 
   const system = [
     asPrincipal

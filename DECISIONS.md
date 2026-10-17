@@ -1161,9 +1161,10 @@ available facts; the model decides whether a meeting ask fits).
 - Follow-ups must not wait on Josh. There is no `needs_josh` flag.
   Pricing → "happy to walk through pricing on a quick call", no flag.
   One-pager / deck / "email me some info" → `needs_client=true` plus
-  `what_to_send`. The draft names the actual client contact and their
-  real title from client config (`voice_prompt`), e.g. "looping in
-  Miles, our director of sales". Never say founder. Card shows
+  `what_to_send`. The draft names the actual client contact from
+  `voice_prompt`, e.g. "looping in Miles from our side" / "Roger from
+  our side". Name only, no title.
+  Never say founder. Card shows
   `LOOP IN CLIENT: <what>`. Existing Gmail / SmartLead-forward notify
   to the client and Cayden still runs on send.
 - Slack card: **WILL SEND** (full text, never truncated) at the top,

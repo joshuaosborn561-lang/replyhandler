@@ -323,11 +323,10 @@ function sanitizeFollowUpText(text, {
     draft = guarded.text;
   }
   if (!asPrincipal) {
-    const { rewriteFounderLoopIn, clientLoopContactPhrase } = require('../utils/client-loop-contact');
+    const { rewriteLoopInCopy, clientLoopContactPhrase } = require('../utils/client-loop-contact');
     const phrase = loopContactPhrase
-      || clientLoopContactPhrase({ voicePrompt, clientName })
-      || 'the client';
-    draft = rewriteFounderLoopIn(draft, phrase);
+      || clientLoopContactPhrase({ voicePrompt, clientName });
+    if (phrase) draft = rewriteLoopInCopy(draft, phrase);
   }
   return scrubDashes(draft);
 }

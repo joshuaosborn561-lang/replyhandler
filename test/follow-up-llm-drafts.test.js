@@ -17,7 +17,7 @@ const {
 const {
   clientLoopContact,
   clientLoopContactPhrase,
-  rewriteFounderLoopIn,
+  rewriteLoopInCopy,
 } = require('../src/utils/client-loop-contact');
 const { alwaysForwardEmailsForProspectCc } = require('../src/services/client-cc');
 const {
@@ -44,7 +44,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
           { label: 'Wed, Oct 8, 2:00 PM CDT' },
         ],
         platform: 'smartlead',
-        voicePrompt: 'Write as our SDR. Loop in Miles, our director of sales, for decks.',
+        voicePrompt: 'Write as our SDR. Loop in Miles from our side for decks.',
       });
       assert.match(threadBlock, new RegExp(fx.prospectAsk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(user, /<current_thread>/);
@@ -57,8 +57,9 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.match(system, /never stall for Josh/i);
       assert.doesNotMatch(system, /NEEDS JOSH/);
       assert.doesNotMatch(system, /CLIENT FOUNDER/);
-      assert.match(system, /Miles, our director of sales/);
+      assert.match(system, /Miles from our side/);
       assert.match(system, /Never say founder/);
+      assert.doesNotMatch(system, /our \[title\]/);
     }
   });
 
@@ -69,12 +70,13 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.match(FOLLOW_UP_RULES, /PRICING/);
     assert.match(FOLLOW_UP_RULES, /ONE-PAGER \/ DECK/);
     assert.match(FOLLOW_UP_RULES, /Never say founder/);
-    assert.match(FOLLOW_UP_RULES, /\[Name\], our \[title\]/);
+    assert.match(FOLLOW_UP_RULES, /from our side/);
+    assert.doesNotMatch(FOLLOW_UP_RULES, /\[title\]/);
   });
 
   it('parseFollowUpModelJson reads needs_client and falls back to plain text', () => {
     const parsed = parseFollowUpModelJson(JSON.stringify({
-      draft: 'Hey Alex, looping in Miles, our director of sales, to send the one-pager.',
+      draft: 'Hey Alex, looping in Miles from our side to send the one-pager.',
       needs_client: true,
       what_to_send: 'one-pager',
     }));
@@ -99,12 +101,12 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         threadMessages: fx.threadMessages,
         step: fx.step,
         daysSinceLastMessage: fx.daysSinceLastMessage,
-        loopContact: { firstName: 'Miles', title: 'director of sales' },
-        voicePrompt: 'Write as our SDR. Loop in Miles, our director of sales, for decks.',
+        loopContact: { firstName: 'Miles' },
+        voicePrompt: 'Write as our SDR. Loop in Miles from our side for decks.',
         claudeGenerate: async (args) => {
           seen = args;
           return {
-            text: 'Hey Jordan, looping in Miles, our director of sales, to send that one-pager over.',
+            text: 'Hey Jordan, looping in Miles from our side to send that one-pager over.',
             needsClient: true,
             whatToSend: 'one-pager',
             model: 'claude-sonnet-5',
@@ -117,8 +119,9 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.equal(result.needsClient, true);
       assert.equal(result.whatToSend, 'one-pager');
       assert.match(result.text, /one-pager/);
-      assert.match(result.text, /Miles, our director of sales/);
+      assert.match(result.text, /Miles from our side/);
       assert.doesNotMatch(result.text, /\bfounder\b/i);
+      assert.doesNotMatch(result.text, /director of sales/i);
       assert.equal(seen.threadMessages.length, fx.threadMessages.length);
       assert.equal(seen.lastInboundMessage, fx.prospectAsk);
     } finally {
@@ -135,7 +138,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       const result = await draftReattemptToBook({
         leadName: 'Jordan Lee',
         lastInboundMessage: 'Yes send it over',
-        voicePrompt: 'Loop in Miles, our director of sales, for decks.',
+        voicePrompt: 'Loop in Miles from our side for decks.',
         claudeGenerate: async () => ({
           text: 'Hey Jordan, looping in our founder to send that one-pager.',
           needsClient: true,
@@ -145,7 +148,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         }),
         geminiGenerate: async () => { throw new Error('gemini should not run'); },
       });
-      assert.match(result.text, /Miles, our director of sales/);
+      assert.match(result.text, /Miles from our side/);
       assert.doesNotMatch(result.text, /\bfounder\b/i);
     } finally {
       if (prev == null) delete process.env.ANTHROPIC_API_KEY;
@@ -246,29 +249,31 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.ok(followUpClaudeCap() >= 0);
   });
 
-  it('loop-in contact uses configured name and title, never founder or Josh', () => {
+  it('loop-in contact is first name from our side, never founder, title, or Josh', () => {
     assert.equal(clientLoopContactPhrase({
       voicePrompt: 'You are Joshua Osborn, founder/CEO. I am the CEO.',
     }), null);
     assert.equal(clientLoopContactPhrase({
-      voicePrompt: 'Loop in Miles, our director of sales, for decks.',
-    }), 'Miles, our director of sales');
-    const titled = clientLoopContact({
-      voicePrompt: 'Taylor is our director of sales. Loop Taylor in for decks.',
+      voicePrompt: 'Loop in Miles from our side for decks.',
+    }), 'Miles from our side');
+    assert.equal(clientLoopContactPhrase({
+      voicePrompt: 'Loop in Roger from our side.',
+    }), 'Roger from our side');
+    const named = clientLoopContact({
+      voicePrompt: 'Loop Taylor in for decks.',
     });
-    assert.equal(titled.firstName, 'Taylor');
-    assert.equal(titled.title, 'director of sales');
-    const founderOnly = clientLoopContact({
-      voicePrompt: 'Taylor is the founder. Loop Taylor in for decks.',
-    });
-    assert.equal(founderOnly.firstName, 'Taylor');
-    assert.equal(founderOnly.title, null);
+    assert.equal(named.firstName, 'Taylor');
+    assert.equal(named.title, undefined);
     assert.equal(clientLoopContactPhrase({
       voicePrompt: 'Taylor is the founder. Loop Taylor in for decks.',
-    }), 'Taylor');
+    }), 'Taylor from our side');
     assert.equal(
-      rewriteFounderLoopIn('Hey Alex, looping in our founder to send that.', 'Miles, our director of sales'),
-      'Hey Alex, looping in Miles, our director of sales to send that.'
+      rewriteLoopInCopy('Hey Alex, looping in our founder to send that.', 'Miles'),
+      'Hey Alex, looping in Miles from our side to send that.'
+    );
+    assert.equal(
+      rewriteLoopInCopy('Hey Alex, looping in Miles, our director of sales, to send that.', 'Miles'),
+      'Hey Alex, looping in Miles from our side to send that.'
     );
   });
 

@@ -462,7 +462,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   assert.ok(!/label: 'Original message'/.test(slackSrc),
     reversal('FOLLOW_UP cards show WILL SEND + full thread', 'Original message dump label is back'));
   const blocks = buildFollowUpConversationBlocks({
-    draft: 'Hey Alex, looping in Miles, our director of sales, to send that over.',
+    draft: 'Hey Alex, looping in Miles from our side to send that over.',
     inboundMessage: 'Yes send it over',
     lastOutboundMessage: 'Happy to share a one-pager.',
     threadMessages: [
@@ -472,7 +472,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   });
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /WILL SEND/);
-  assert.match(text, /looping in Miles, our director of sales/);
+  assert.match(text, /looping in Miles from our side/);
   assert.match(text, /Yes send it over/);
   assert.doesNotMatch(text, /Suggested follow-up/);
   assert.doesNotMatch(text, /Original message/);

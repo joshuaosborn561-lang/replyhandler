@@ -243,8 +243,8 @@ continuations of the thread (Gemini fallback, template last-resort). Cayden
 sends them — never stall for Josh. Pricing → walk through it on a call, no
 flag. One-pager / deck / "email me some info" → `needs_client` +
 `what_to_send`, card label `LOOP IN CLIENT: <what>`. The draft names the
-configured client contact and their real title from `voice_prompt` (e.g.
-"looping in Miles, our director of sales") — never "founder". Default
+configured client contact by first name from `voice_prompt` (e.g.
+"looping in Miles from our side") — no title, never "founder". Default
 Approve still omits SmartLead `cc`; **Send + CC client** CCs the same
 Always-forward addresses (`cc_emails` / `cc_email`) that already get the
 FYI. FYI forward to the client and Cayden still runs on send. The card shows **WILL SEND** (full
