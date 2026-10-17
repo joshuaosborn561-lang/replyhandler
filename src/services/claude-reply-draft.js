@@ -351,7 +351,7 @@ const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a re
 - Do not invent facts (deck contents, pricing numbers, qualification cutoffs, ticket dates, locations).
 - PRICING: say you are happy to walk through pricing on a quick call. needs_client must be false. Never stall.
 - Specifics we do not have (minimums, headcount cutoffs, locations): do not guess. Offer a short call. needs_client = false.
-- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in CLIENT CONTACT from our side to send it. Style: "looping in Miles from our side" / "Roger from our side". Name only — no title. Never say founder. Never invent a name. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
+- ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in the CLIENT CONTACT FIRST NAME from our side to send it. Copy that first name character-for-character from the CLIENT CONTACT FIRST NAME line — do not respell it, do not substitute a lookalike. Style: "looping in <that exact first name> from our side". Name only — no title. Never say founder. Never invent a name. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
 - Tickets or a specific address they gave us: acknowledge and continue. needs_client=false unless they asked for client-owned collateral.
 - A different need than we originally pitched: follow their need. Do not drag them back to the original offer.
 - No sign-off. No markdown. No surrounding quotes.
@@ -443,10 +443,10 @@ function buildFollowUpPrompt({
   factCheckRetryClaims = null,
 } = {}) {
   const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
-  const { clientLoopContactPhrase } = require('../utils/client-loop-contact');
-  const contactPhrase = clientLoopContactPhrase({
-    voicePrompt, clientName, loopContact,
-  });
+  const { clientLoopContact, loopInLine } = require('../utils/client-loop-contact');
+  const contact = clientLoopContact({ voicePrompt, clientName, loopContact });
+  const exactFirst = contact.firstName;
+  const spokenLine = exactFirst ? loopInLine(exactFirst) : null;
   const clientVoice = String(voicePrompt || '').trim()
     ? `\nCLIENT VOICE (must follow):\n${String(voicePrompt).trim()}\n`
     : '';
@@ -455,8 +455,12 @@ function buildFollowUpPrompt({
     : '';
   const loopRule = asPrincipal
     ? '- You ARE the client principal. Do not set needs_client — there is no separate client to loop in. For collateral we do not have, offer a short call rather than stalling.'
-    : contactPhrase
-      ? `- CLIENT CONTACT: ${contactPhrase}. When looping in for a deck / one-pager / "send info", say you are looping in ${contactPhrase} to send it. Name only, no title. Never say founder. Never invent a different person.`
+    : exactFirst
+      ? [
+        `- CLIENT CONTACT FIRST NAME (copy character-for-character; do not respell): ${exactFirst}`,
+        `- When looping in for a deck / one-pager / "send info", the draft MUST contain this exact phrase: ${spokenLine}`,
+        '- Name only, no title. Never say founder. Never invent a different person. Never substitute a lookalike spelling.',
+      ].join('\n')
       : '- CLIENT CONTACT is not configured. Do not guess a name. Never say founder. Say you will loop in someone from our side to send it, without naming a person.';
 
   const system = [
@@ -490,6 +494,9 @@ function buildFollowUpPrompt({
 
   const user = [
     `Prospect name: ${leadName || 'Unknown'}`,
+    exactFirst
+      ? `CLIENT CONTACT FIRST NAME (copy character-for-character): ${exactFirst}`
+      : null,
     `Classification: ${classification || 'FOLLOW_UP'}`,
     `Follow-up cadence step: ${Number(step) || 1}`,
     `Days since last message: ${daysBit}`,
@@ -598,6 +605,9 @@ async function generateFollowUpClaudeDraft({
   const currentFacts = [
     leadName,
     clientName,
+    require('../utils/client-loop-contact').clientLoopContact({
+      voicePrompt, clientName, loopContact,
+    }).firstName,
     require('../utils/client-loop-contact').clientLoopContactPhrase({
       voicePrompt, clientName, loopContact,
     }),

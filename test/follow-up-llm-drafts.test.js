@@ -18,6 +18,7 @@ const {
   clientLoopContact,
   clientLoopContactPhrase,
   rewriteLoopInCopy,
+  draftLoopsInContact,
 } = require('../src/utils/client-loop-contact');
 const { alwaysForwardEmailsForProspectCc } = require('../src/services/client-cc');
 const {
@@ -44,7 +45,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
           { label: 'Wed, Oct 8, 2:00 PM CDT' },
         ],
         platform: 'smartlead',
-        voicePrompt: 'Write as our SDR. Loop in Miles from our side for decks.',
+        voicePrompt: 'Write as our SDR. Loop in Myles from our side for decks.',
       });
       assert.match(threadBlock, new RegExp(fx.prospectAsk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(user, /<current_thread>/);
@@ -57,7 +58,11 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.match(system, /never stall for Josh/i);
       assert.doesNotMatch(system, /NEEDS JOSH/);
       assert.doesNotMatch(system, /CLIENT FOUNDER/);
-      assert.match(system, /Miles from our side/);
+      assert.match(system, /CLIENT CONTACT FIRST NAME/);
+      assert.match(system, /copy character-for-character/);
+      assert.match(system, /looping in Myles from our side/);
+      assert.match(user, /CLIENT CONTACT FIRST NAME \(copy character-for-character\): Myles/);
+      assert.doesNotMatch(system, /\bMiles\b/);
       assert.match(system, /Never say founder/);
       assert.doesNotMatch(system, /our \[title\]/);
     }
@@ -71,12 +76,16 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.match(FOLLOW_UP_RULES, /ONE-PAGER \/ DECK/);
     assert.match(FOLLOW_UP_RULES, /Never say founder/);
     assert.match(FOLLOW_UP_RULES, /from our side/);
+    assert.match(FOLLOW_UP_RULES, /character-for-character/);
+    assert.doesNotMatch(FOLLOW_UP_RULES, /\bMiles\b/);
+    assert.doesNotMatch(FOLLOW_UP_RULES, /\bMyles\b/);
+    assert.doesNotMatch(FOLLOW_UP_RULES, /\bRoger\b/);
     assert.doesNotMatch(FOLLOW_UP_RULES, /\[title\]/);
   });
 
   it('parseFollowUpModelJson reads needs_client and falls back to plain text', () => {
     const parsed = parseFollowUpModelJson(JSON.stringify({
-      draft: 'Hey Alex, looping in Miles from our side to send the one-pager.',
+      draft: 'Hey Alex, looping in Myles from our side to send the one-pager.',
       needs_client: true,
       what_to_send: 'one-pager',
     }));
@@ -101,12 +110,12 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         threadMessages: fx.threadMessages,
         step: fx.step,
         daysSinceLastMessage: fx.daysSinceLastMessage,
-        loopContact: { firstName: 'Miles' },
-        voicePrompt: 'Write as our SDR. Loop in Miles from our side for decks.',
+        loopContact: { firstName: 'Myles' },
+        voicePrompt: 'Write as our SDR. Loop in Myles from our side for decks.',
         claudeGenerate: async (args) => {
           seen = args;
           return {
-            text: 'Hey Jordan, looping in Miles from our side to send that one-pager over.',
+            text: 'Hey Jordan, looping in Myles from our side to send that one-pager over.',
             needsClient: true,
             whatToSend: 'one-pager',
             model: 'claude-sonnet-5',
@@ -119,7 +128,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       assert.equal(result.needsClient, true);
       assert.equal(result.whatToSend, 'one-pager');
       assert.match(result.text, /one-pager/);
-      assert.match(result.text, /Miles from our side/);
+      assert.match(result.text, /Myles from our side/);
       assert.doesNotMatch(result.text, /\bfounder\b/i);
       assert.doesNotMatch(result.text, /director of sales/i);
       assert.equal(seen.threadMessages.length, fx.threadMessages.length);
@@ -138,7 +147,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       const result = await draftReattemptToBook({
         leadName: 'Jordan Lee',
         lastInboundMessage: 'Yes send it over',
-        voicePrompt: 'Loop in Miles from our side for decks.',
+        voicePrompt: 'Loop in Myles from our side for decks.',
         claudeGenerate: async () => ({
           text: 'Hey Jordan, looping in our founder to send that one-pager.',
           needsClient: true,
@@ -148,8 +157,64 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         }),
         geminiGenerate: async () => { throw new Error('gemini should not run'); },
       });
-      assert.match(result.text, /Miles from our side/);
+      assert.match(result.text, /Myles from our side/);
       assert.doesNotMatch(result.text, /\bfounder\b/i);
+      assert.equal(result.needsClient, true);
+    } finally {
+      if (prev == null) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
+  });
+
+  it('rewrites LLM misspelling Miles to configured Myles and keeps needs_client', async () => {
+    resetFollowUpClaudeBudget();
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    try {
+      const result = await draftReattemptToBook({
+        leadName: 'Jordan Lee',
+        lastInboundMessage: 'Yes send it over',
+        voicePrompt: 'Loop in Myles from our side for decks.',
+        claudeGenerate: async () => ({
+          text: 'Hey Jordan, looping in Miles from our side to send that one-pager.',
+          needsClient: true,
+          whatToSend: 'one-pager',
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+        }),
+        geminiGenerate: async () => { throw new Error('gemini should not run'); },
+      });
+      assert.match(result.text, /looping in Myles from our side/);
+      assert.doesNotMatch(result.text, /\bMiles\b/);
+      assert.equal(result.needsClient, true);
+      assert.equal(draftLoopsInContact(result.text, 'Myles'), true);
+    } finally {
+      if (prev == null) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
+  });
+
+  it('drops needs_client when the draft never loops the contact in', async () => {
+    resetFollowUpClaudeBudget();
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    try {
+      const result = await draftReattemptToBook({
+        leadName: 'Riley Chen',
+        lastInboundMessage: 'What do you charge?',
+        voicePrompt: 'Loop in Myles from our side for decks.',
+        claudeGenerate: async () => ({
+          text: 'Hey Riley, happy to walk through pricing on a quick call.',
+          needsClient: true,
+          whatToSend: 'info',
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 10, output_tokens: 10 },
+        }),
+        geminiGenerate: async () => { throw new Error('gemini should not run'); },
+      });
+      assert.equal(result.needsClient, false);
+      assert.equal(result.whatToSend, null);
+      assert.doesNotMatch(result.text, /looping in/);
     } finally {
       if (prev == null) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = prev;
@@ -254,8 +319,11 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       voicePrompt: 'You are Joshua Osborn, founder/CEO. I am the CEO.',
     }), null);
     assert.equal(clientLoopContactPhrase({
-      voicePrompt: 'Loop in Miles from our side for decks.',
-    }), 'Miles from our side');
+      voicePrompt: 'Loop in Myles from our side for decks.',
+    }), 'Myles from our side');
+    assert.equal(clientLoopContact({
+      voicePrompt: 'Loop in Myles from our side for decks.',
+    }).firstName, 'Myles');
     assert.equal(clientLoopContactPhrase({
       voicePrompt: 'Loop in Roger from our side.',
     }), 'Roger from our side');
@@ -268,13 +336,20 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       voicePrompt: 'Taylor is the founder. Loop Taylor in for decks.',
     }), 'Taylor from our side');
     assert.equal(
-      rewriteLoopInCopy('Hey Alex, looping in our founder to send that.', 'Miles'),
-      'Hey Alex, looping in Miles from our side to send that.'
+      rewriteLoopInCopy('Hey Alex, looping in our founder to send that.', 'Myles'),
+      'Hey Alex, looping in Myles from our side to send that.'
     );
     assert.equal(
-      rewriteLoopInCopy('Hey Alex, looping in Miles, our director of sales, to send that.', 'Miles'),
-      'Hey Alex, looping in Miles from our side to send that.'
+      rewriteLoopInCopy('Hey Alex, looping in Miles, our director of sales, to send that.', 'Myles'),
+      'Hey Alex, looping in Myles from our side to send that.'
     );
+    assert.equal(
+      rewriteLoopInCopy('Hey Alex, looping in Miles from our side to send that.', 'Myles'),
+      'Hey Alex, looping in Myles from our side to send that.'
+    );
+    assert.equal(draftLoopsInContact('Hey Alex, looping in Myles from our side to send that.', 'Myles'), true);
+    assert.equal(draftLoopsInContact('Hey Alex, looping in Miles from our side to send that.', 'Myles'), false);
+    assert.equal(draftLoopsInContact('Hey Riley, happy to walk through pricing on a quick call.'), false);
   });
 
   it('Send + CC uses Always-forward example.com addresses only', () => {
@@ -342,14 +417,26 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       await smartlead.sendReply('test-key', 11, 22, {
         replyText: 'Hey there',
         emailStatsId: 'stats-1',
-        ccEmails: 'contact@example.com',
-        bccEmails: 'ops@example.com',
+        cc: 'contact@example.com, ae@example.com',
+        bcc: 'ops@example.com',
       });
       assert.match(calls[0].url, /\/campaigns\/11\/reply-email-thread/);
       assert.doesNotMatch(calls[0].url, /\/leads\/reply-email-thread/);
-      assert.equal(calls[0].body.cc, 'contact@example.com');
+      assert.equal(calls[0].body.cc, 'contact@example.com, ae@example.com');
+      assert.equal(typeof calls[0].body.cc, 'string');
       assert.equal(calls[0].body.bcc, 'ops@example.com');
       assert.equal(calls[0].body.email_stats_id, 'stats-1');
+      assert.equal(Object.prototype.hasOwnProperty.call(calls[0].body, 'cc_emails'), false);
+
+      calls.length = 0;
+      await smartlead.sendReply('test-key', 11, 22, {
+        replyText: 'Hey there',
+        emailStatsId: 'stats-1',
+        ccEmails: 'ignored@example.com',
+        cc: ['array@example.com'],
+      });
+      assert.equal(calls[0].body.cc, undefined);
+      assert.equal(Object.prototype.hasOwnProperty.call(calls[0].body, 'cc_emails'), false);
 
       calls.length = 0;
       await smartlead.sendReply('test-key', 11, 22, {

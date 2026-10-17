@@ -462,7 +462,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   assert.ok(!/label: 'Original message'/.test(slackSrc),
     reversal('FOLLOW_UP cards show WILL SEND + full thread', 'Original message dump label is back'));
   const blocks = buildFollowUpConversationBlocks({
-    draft: 'Hey Alex, looping in Miles from our side to send that over.',
+    draft: 'Hey Alex, looping in Myles from our side to send that over.',
     inboundMessage: 'Yes send it over',
     lastOutboundMessage: 'Happy to share a one-pager.',
     threadMessages: [
@@ -472,7 +472,7 @@ test('FOLLOW_UP cards show WILL SEND + full thread; only after we have sent', ()
   });
   const text = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
   assert.match(text, /WILL SEND/);
-  assert.match(text, /looping in Miles from our side/);
+  assert.match(text, /looping in Myles from our side/);
   assert.match(text, /Yes send it over/);
   assert.doesNotMatch(text, /Suggested follow-up/);
   assert.doesNotMatch(text, /Original message/);
@@ -1228,8 +1228,10 @@ test('Reject marks the lead Not Interested in SmartLead', () => {
   const sl = read('src/services/smartlead.js');
   const { categoryIdForClassification } = require('../src/services/smartlead-category');
 
-  assert.match(slackService, /Reject & not interested/,
-    reversal('Reject marks Not Interested in SmartLead', 'the Slack button no longer says reject and mark as not interested'));
+  assert.match(slackService, /text: '❌ Reject'/,
+    reversal('Reject marks Not Interested in SmartLead', 'the Slack Reject button was removed'));
+  assert.doesNotMatch(slackService, /Reject & not interested/,
+    reversal('Reject button is labeled Reject', 'the Slack button was renamed back to Reject & not interested'));
   assert.match(slackRoute, /markLeadNotInterested/,
     reversal('Reject marks Not Interested in SmartLead', 'Reject no longer updates the SmartLead category'));
   assert.match(slackRoute, /classification = 'NOT_INTERESTED'/,
@@ -2108,6 +2110,23 @@ test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
     reversal('FOLLOW_UP Send + CC client', 'prospect CC no longer reuses Always-forward'));
   assert.match(smartlead, /payload\.cc/,
     reversal('FOLLOW_UP Send + CC client', 'SmartLead sendReply no longer sends cc'));
-  assert.match(smartlead, /bccEmails|payload\.bcc/,
+  assert.match(smartlead, /payload\.bcc/,
     reversal('FOLLOW_UP Send + CC client', 'documented bcc field was dropped from sendReply'));
+  const sendReplyFn = smartlead.slice(smartlead.indexOf('async function sendReply'));
+  assert.match(sendReplyFn, /typeof cc === 'string'/,
+    reversal('FOLLOW_UP Send + CC client', 'sendReply no longer requires cc as a string'));
+  assert.doesNotMatch(sendReplyFn, /ccEmails|cc_emails/,
+    reversal('FOLLOW_UP Send + CC client', 'sendReply still reads ccEmails / cc_emails instead of cc'));
+  assert.match(send, /sendOpts\.cc = prospectCc/,
+    reversal('FOLLOW_UP Send + CC client', 'reply-send no longer passes cc only for the CC button'));
+  assert.match(slackSrc, /draftLoopsInContact/,
+    reversal('FOLLOW_UP Send + CC client', 'Send + CC is no longer gated on the loop-in phrase'));
+  assert.match(claude, /copy character-for-character/,
+    reversal('FOLLOW_UP contact first name is verbatim', 'Sonnet is no longer told to copy the first name exactly'));
+  const rules = claude.slice(
+    claude.indexOf('const FOLLOW_UP_RULES'),
+    claude.indexOf('function formatFollowUpThread')
+  );
+  assert.doesNotMatch(rules, /\bMiles\b/,
+    reversal('FOLLOW_UP contact first name is verbatim', 'FOLLOW_UP_RULES hardcodes a contact first name again'));
 });

@@ -528,7 +528,7 @@ function draftApprovalActionsBlock(replyId) {
       },
       {
         type: 'button',
-        text: { type: 'plain_text', text: '❌ Reject & not interested' },
+        text: { type: 'plain_text', text: '❌ Reject' },
         style: 'danger',
         action_id: 'reject_reply',
         value: replyId,
@@ -724,7 +724,10 @@ function assembleFollowUpApprovalBlocks({
     ...willSend,
     draftApprovalActionsBlock(replyId),
   ];
-  if (needsClient && canCcClient) head.push(sendCcClientActionsBlock(replyId));
+  const { draftLoopsInContact } = require('../utils/client-loop-contact');
+  if (needsClient && canCcClient && draftLoopsInContact(draft)) {
+    head.push(sendCcClientActionsBlock(replyId));
+  }
   if (loop) head.push(loop);
 
   const tail = [];

@@ -243,11 +243,14 @@ continuations of the thread (Gemini fallback, template last-resort). Cayden
 sends them — never stall for Josh. Pricing → walk through it on a call, no
 flag. One-pager / deck / "email me some info" → `needs_client` +
 `what_to_send`, card label `LOOP IN CLIENT: <what>`. The draft names the
-configured client contact by first name from `voice_prompt` (e.g.
-"looping in Miles from our side") — no title, never "founder". Default
-Approve still omits SmartLead `cc`; **Send + CC client** CCs the same
-Always-forward addresses (`cc_emails` / `cc_email`) that already get the
-FYI. FYI forward to the client and Cayden still runs on send. The card shows **WILL SEND** (full
+configured client contact by first name from `voice_prompt`, copied
+character-for-character (e.g. "Myles" with a Y, never a lookalike) as
+"looping in {Name} from our side" — no title, never "founder". Default
+Approve still omits SmartLead `cc`; **Send + CC client** appears only
+when that loop-in line is in the draft, and CCs the same Always-forward
+addresses (`cc_emails` / `cc_email`) via SmartLead payload field `cc`
+(comma-separated string). FYI forward to the client and Cayden still
+runs on send. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
 text) then buttons, a permalink to the original card, the full thread, and
 a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —

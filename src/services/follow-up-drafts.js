@@ -431,7 +431,12 @@ async function draftReattemptToBook({
   const { factSourceText, enforceDraftGrounding } = require('../utils/draft-fact-check');
 
   const pack = async (llmResult, source) => {
-    const { clientLoopContactPhrase } = require('../utils/client-loop-contact');
+    const {
+      clientLoopContact,
+      clientLoopContactPhrase,
+      draftLoopsInContact,
+    } = require('../utils/client-loop-contact');
+    const contact = clientLoopContact({ voicePrompt, clientName, loopContact });
     const loopContactPhrase = clientLoopContactPhrase({
       voicePrompt, clientName, loopContact,
     });
@@ -448,6 +453,7 @@ async function draftReattemptToBook({
       schedulingPromptBlock: [
         bookingLink,
         (slots || []).map((s) => (s && s.label) || s).join(' '),
+        contact.firstName,
         loopContactPhrase,
       ].filter(Boolean).join('\n'),
       voicePrompt,
@@ -463,6 +469,12 @@ async function draftReattemptToBook({
     let needsClient = llmResult.needsClient === true;
     let whatToSend = needsClient ? (llmResult.whatToSend || 'info') : null;
     if (require('../utils/principal-voice').speaksAsPrincipal(voicePrompt)) {
+      needsClient = false;
+      whatToSend = null;
+    }
+    // Send + CC / LOOP IN CLIENT only when the draft actually loops them in
+    // with the exact configured first name.
+    if (needsClient && !draftLoopsInContact(text, contact.firstName)) {
       needsClient = false;
       whatToSend = null;
     }

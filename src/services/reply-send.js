@@ -174,12 +174,16 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     let clientCcMode = '';
     let enrichment = null;
     let prospectCc = '';
+    const sendOpts = { replyText, emailStatsId };
     if (ccClientOnProspect) {
       prospectCc = alwaysForwardEmailsForProspectCc(client);
       if (!prospectCc) {
         console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
           replyId: reply.id,
         });
+      } else {
+        // Comma-separated string on SmartLead field `cc`. Only this button.
+        sendOpts.cc = prospectCc;
       }
     }
 
@@ -187,7 +191,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       client.smartlead_api_key,
       reply.campaign_id,
       reply.lead_id,
-      { replyText, emailStatsId, ccEmails: prospectCc || undefined }
+      sendOpts
     );
 
     if (forwardEmails) {

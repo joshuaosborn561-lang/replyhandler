@@ -85,7 +85,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       classification: 'FOLLOW_UP',
       inboundMessage: 'I am more interested in staffing help.\n\nOn Wednesday Jordan wrote: old pitch',
       lastOutboundMessage: 'Alex, I have an extra pair of tickets.',
-      sentReply: 'Hey Alex, looping in Miles from our side to send that over.',
+      sentReply: 'Hey Alex, looping in Myles from our side to send that over.',
       actionKind: 'edited',
       threadMessages: [
         { role: 'us', body: 'Alex, I have an extra pair of tickets.' },
@@ -99,7 +99,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       .map((b) => b.text.text)
       .join('\n');
     assert.match(texts, /\*Sent to prospect\*/);
-    assert.match(texts, /looping in Miles from our side/);
+    assert.match(texts, /looping in Myles from our side/);
     assert.match(texts, /more interested in staffing help/);
     assert.match(texts, /LOOP IN CLIENT/);
     assert.doesNotMatch(texts, /\*Original message\*/);
@@ -119,11 +119,12 @@ describe('FOLLOW_UP card conversation layout', () => {
       'meeting_booked',
     ]);
     const reject = actions.elements.find((e) => e.action_id === 'reject_reply');
-    assert.match(reject.text.text, /not interested/i);
+    assert.equal(reject.text.text, '❌ Reject');
+    assert.doesNotMatch(reject.text.text, /not interested/i);
   });
 
   it('pending FOLLOW_UP card puts WILL SEND then buttons, never truncates the draft', () => {
-    const longDraft = `Hey Alex, looping in Miles from our side to send the one-pager you asked for.\n\n${'Details '.repeat(80)}`;
+    const longDraft = `Hey Alex, looping in Myles from our side to send the one-pager you asked for.\n\n${'Details '.repeat(80)}`;
     const { blocks } = buildDraftApprovalCard({
       replyId: 'r1',
       leadName: 'Alex Rivera',
@@ -173,7 +174,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       leadName: 'Alex Rivera',
       platform: 'smartlead',
       classification: 'FOLLOW_UP',
-      draft: 'Hey Alex, looping in Miles from our side to send the deck.',
+      draft: 'Hey Alex, looping in Myles from our side to send the deck.',
       needsClient: true,
       whatToSend: 'deck',
     });
@@ -189,9 +190,27 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.match(texts, /LOOP IN CLIENT/);
   });
 
+  it('hides Send + CC client when needs_client is set but the draft does not loop anyone in', () => {
+    const { blocks } = buildDraftApprovalCard({
+      replyId: 'r-no-loop',
+      leadName: 'Alex Rivera',
+      platform: 'smartlead',
+      classification: 'FOLLOW_UP',
+      draft: 'Hey Alex, happy to walk through pricing on a quick call.',
+      needsClient: true,
+      whatToSend: 'info',
+      ccEmails: 'contact@example.com',
+    });
+    const actionIds = blocks
+      .filter((b) => b.type === 'actions')
+      .flatMap((b) => b.elements.map((e) => e.action_id));
+    assert.ok(actionIds.includes('approve_reply'));
+    assert.ok(!actionIds.includes('approve_reply_cc_client'));
+  });
+
   it('still shows the last prospect turn in the thread, not as a duplicate last-message line', () => {
     const blocks = buildFollowUpConversationBlocks({
-      draft: 'Hey Alex, looping in Miles from our side to send that over.',
+      draft: 'Hey Alex, looping in Myles from our side to send that over.',
       inboundMessage: 'Would like to learn more.',
       lastOutboundMessage: 'Hey Alex, still interested in meeting for this?',
       threadMessages: [
