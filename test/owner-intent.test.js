@@ -2058,3 +2058,85 @@ test('wrongly suppressed mixed/question replies can be resurfaced', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'scripts', 'resurface-suppressed.js')),
     reversal('resurface suppressed', 'scripts/resurface-suppressed.js was removed'));
 });
+
+// ── Decision: classification is Jev; drafts stay Claude then Gemini ───
+test('reply classification is Jev with Gemini fallback', () => {
+  const classifier = read('src/services/classifier.js');
+  const jev = read('src/services/jev-classifier.js');
+  const decisions = read('DECISIONS.md');
+
+  assert.match(decisions, /reply classification is Jev with Gemini fallback/,
+    reversal('Jev classification', 'the decision was removed from DECISIONS.md'));
+  assert.match(classifier, /classifyWithJev/,
+    reversal('Jev classification', 'classifyAndDraft no longer calls Jev'));
+  assert.match(classifier, /Jev failed — falling back to Gemini/,
+    reversal('Jev classification', 'Gemini fallback on Jev failure was removed'));
+  assert.match(classifier, /CLASSIFIER_FALLBACK_GEMINI|isGeminiFallbackEnabled/,
+    reversal('Jev classification', 'the Gemini fallback flag was removed'));
+  assert.match(jev, /JEV_API_URL/,
+    reversal('Jev classification', 'the endpoint is no longer read from env'));
+  assert.match(jev, /JEV_API_KEY/,
+    reversal('Jev classification', 'the key is no longer read from env'));
+  assert.match(jev, /assertJevConfigured/,
+    reversal('Jev classification', 'fail-fast preflight was removed'));
+  assert.ok(!/openrouter\.ai/.test(jev),
+    reversal('Jev classification', 'the Jev URL was hardcoded'));
+  assert.match(classifier, /draftWithGemini/,
+    reversal('Jev classification', 'Gemini draft fallback was removed — drafts must stay Claude then Gemini'));
+  assert.match(classifier, /falling through to Gemini/,
+    reversal('Jev classification', 'Claude draft failures no longer fall through to Gemini'));
+});
+
+// ── Decision: hide cold inbound pitches, never campaign threads ───────
+test('cold inbound pitches at 0.8 are hidden; campaign threads are not', () => {
+  const {
+    slackChannelSuppressionReason,
+    PITCH_INBOUND_THRESHOLD,
+    PITCH_INBOUND_REASON,
+  } = require('../src/utils/slack-channel-policy');
+  const { isColdInbound } = require('../src/services/heyreach-poller');
+  const webhooks = read('src/routes/webhooks.js');
+  const poller = read('src/services/heyreach-poller.js');
+  const suppressed = read('src/services/suppressed-replies.js');
+  const decisions = read('DECISIONS.md');
+
+  assert.match(decisions, /cold inbound pitches at 0\.8 are hidden/,
+    reversal('pitch filter', 'the decision was removed from DECISIONS.md'));
+  assert.equal(PITCH_INBOUND_THRESHOLD, 0.8,
+    reversal('pitch filter', 'the 0.8 threshold moved'));
+  assert.equal(
+    slackChannelSuppressionReason({
+      classification: 'QUESTION',
+      inboundMessage: 'How do you scale outbound?',
+      isColdInbound: true,
+      pitchToUsProb: 0.8,
+    }),
+    PITCH_INBOUND_REASON,
+    reversal('pitch filter', 'a cold inbound pitch at 0.8 is posting again'),
+  );
+  assert.equal(
+    slackChannelSuppressionReason({
+      classification: 'INTERESTED',
+      inboundMessage: 'Sure, tell me more.',
+      isColdInbound: false,
+      pitchToUsProb: 0.99,
+    }),
+    null,
+    reversal('pitch filter', 'a campaign / we-sent-first thread is being hidden as a pitch'),
+  );
+  assert.equal(
+    isColdInbound({ campaignId: '123' }, [{ role: 'prospect', message: 'hi' }]),
+    false,
+    reversal('pitch filter', 'campaign threads are treated as cold inbound'),
+  );
+  assert.match(poller, /function isColdInbound/,
+    reversal('pitch filter', 'isColdInbound was removed from the HeyReach poller'));
+  assert.match(webhooks, /isColdInbound/,
+    reversal('pitch filter', 'the HeyReach webhook no longer runs the cold-inbound check'));
+  assert.match(webhooks, /findConversation/,
+    reversal('pitch filter', 'the webhook no longer fetches the thread for that check'));
+  assert.match(suppressed, /recordSuppressedReply/,
+    reversal('pitch filter', 'suppressed replies are no longer recorded'));
+  assert.match(poller, /pitch_inbound|PITCH_INBOUND|pitchToUsProb/,
+    reversal('pitch filter', 'the poller no longer passes pitch into the Slack gate'));
+});

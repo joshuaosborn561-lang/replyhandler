@@ -15,6 +15,7 @@ const { postProspectSlackCard } = require('./slack-reply-post');
 const { isPostedSlackTs } = require('./reply-dedupe');
 const { looksLikeMixedIntent, promoteMixedIntent } = require('../utils/mixed-intent');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { isColdInbound } = require('./heyreach-poller');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 
@@ -49,7 +50,9 @@ function threadContextFromRow(row) {
   return [{ role: 'prospect', message: row.inbound_message || '' }];
 }
 
-function shouldResurface({ classification, inboundMessage }) {
+function shouldResurface({
+  classification, inboundMessage, isColdInbound: cold, pitchToUsProb,
+} = {}) {
   const inbound = inboundMessage || '';
   const mixed = looksLikeMixedIntent(inbound);
   const promoted = promoteMixedIntent(classification, inbound);
@@ -58,6 +61,8 @@ function shouldResurface({ classification, inboundMessage }) {
   return !slackChannelSuppressionReason({
     classification: promoted,
     inboundMessage: inbound,
+    isColdInbound: cold,
+    pitchToUsProb,
   });
 }
 
@@ -146,7 +151,16 @@ async function resurfaceSuppressedReplies({
     }
 
     const classification = promoteMixedIntent(result.classification, inbound);
-    if (!shouldResurface({ classification, inboundMessage: inbound })) {
+    const cold = isColdInbound(
+      { campaignId: row.campaign_id, campaign_id: row.campaign_id },
+      threadContext,
+    );
+    if (!shouldResurface({
+      classification,
+      inboundMessage: inbound,
+      isColdInbound: cold,
+      pitchToUsProb: result.pitchToUsProb,
+    })) {
       counts.still_suppressed += 1;
       continue;
     }

@@ -856,6 +856,21 @@ async function postError(token, channelId, { leadName, platform, error }) {
   });
 }
 
+function pitchHiddenSummaryText(n) {
+  const count = Number(n) || 0;
+  return `${count} pitch${count === 1 ? '' : 'es'} hidden today`;
+}
+
+/** One-line daily notice when at least one cold inbound pitch was suppressed. */
+async function postPitchHiddenSummary(token, channelId, n) {
+  const slack = getClient(token);
+  const text = pitchHiddenSummaryText(n);
+  return slack.chat.postMessage({
+    channel: channelId,
+    text,
+  });
+}
+
 /** Plain notice for Cayden when the portal claims, releases, or notes a lead. */
 async function postClientActionNotice(token, channelId, text, threadTs) {
   const slack = getClient(token);
@@ -1041,6 +1056,8 @@ module.exports = {
   updateAlertCard,
   buildAlertCard,
   postError,
+  pitchHiddenSummaryText,
+  postPitchHiddenSummary,
   postClientActionNotice,
   postProspectFollowUpReminder,
   updateMessage,
