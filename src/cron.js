@@ -4,6 +4,8 @@ const slack = require('./services/slack');
 const { sendReminder } = require('./services/reminder-email');
 const { runDueFollowUps } = require('./services/follow-up-runner');
 const { logIntegrationStatus } = require('./services/integration-check');
+const { ensureEmailReplyWebhooks } = require('./services/email-reply-webhooks');
+const { refreshAllClientSlotCaches } = require('./services/scheduling-slots');
 const { postPitchHiddenSummaries } = require('./services/pitch-hidden-summary');
 const { logInterestedSweep } = require('./services/interested-sweep');
 const { pollHeyReachReplies } = require('./services/heyreach-poller');
@@ -17,8 +19,8 @@ const {
 } = require('./services/icp-auto-build');
 
 const DEFAULT_TZ = process.env.DEFAULT_DIGEST_TIMEZONE || 'America/New_York';
-const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '3', 10);
-const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '5', 10);
+const HEYREACH_POLL_MINUTES = parseInt(process.env.HEYREACH_POLL_MINUTES || '1', 10);
+const SMARTLEAD_POLL_MINUTES = parseInt(process.env.SMARTLEAD_POLL_MINUTES || '1', 10);
 const AFTERNOON_DIGEST_TZ = process.env.AFTERNOON_DIGEST_TIMEZONE || 'America/Chicago';
 const AFTERNOON_DIGEST_HOUR = parseInt(process.env.AFTERNOON_DIGEST_HOUR || '15', 10);
 
@@ -88,7 +90,7 @@ function startCron() {
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_SMARTLEAD_POLLING || '').trim())) {
     const slEvery = Number.isFinite(SMARTLEAD_POLL_MINUTES) && SMARTLEAD_POLL_MINUTES > 0
       ? SMARTLEAD_POLL_MINUTES
-      : 5;
+      : 1;
     cron.schedule(`*/${slEvery} * * * *`, async () => {
       try {
         const result = await pollSmartleadReplies();
@@ -105,7 +107,7 @@ function startCron() {
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_HEYREACH_POLLING || '').trim())) {
     const every = Number.isFinite(HEYREACH_POLL_MINUTES) && HEYREACH_POLL_MINUTES > 0
       ? HEYREACH_POLL_MINUTES
-      : 3;
+      : 1;
     cron.schedule(`*/${every} * * * *`, async () => {
       try {
         const result = await pollHeyReachReplies();
@@ -292,9 +294,24 @@ function startCron() {
     }, { timezone: ICP_BUILD_TZ });
   }
 
+  // Background calendar cache — 8 minutes (inside the 5–10 minute window).
+  cron.schedule('*/8 * * * *', async () => {
+    try {
+      await refreshAllClientSlotCaches();
+    } catch (err) {
+      console.error('[Cron] Slot cache refresh failed', { err: err.message });
+    }
+  });
+
   // Fire and forget — never delays startup.
   logIntegrationStatus().catch((err) =>
     console.error('[Startup] Integration check failed', { err: err.message })
+  );
+  ensureEmailReplyWebhooks().catch((err) =>
+    console.error('[Startup] EMAIL_REPLY webhook check failed', { err: err.message })
+  );
+  refreshAllClientSlotCaches().catch((err) =>
+    console.error('[Startup] Slot cache warm failed', { err: err.message })
   );
 
   if (icpAutoBuildEnabled()) {

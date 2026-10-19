@@ -191,6 +191,19 @@ test('Slack draft card prints needs review when flagged', () => {
   assert.match(blob, /Do not send until checked/);
 });
 
+test('seat, section, and row patterns are ticket-detail claims', () => {
+  const { extractTicketDetailClaims } = require('../src/utils/draft-fact-check');
+  const claims = extractTicketDetailClaims(
+    'I can grab section 112 row 4 seats 5-6 for that night.'
+  );
+  assert.ok(claims.some((c) => c.kind === 'ticket_detail' && /section 112/i.test(c.value)));
+  assert.ok(claims.some((c) => /row 4/i.test(c.value)));
+  assert.ok(claims.some((c) => /seats? 5/i.test(c.value)));
+  assert.match(FACT_GROUNDING_RULES, /seat, section, row/);
+  assert.match(read('src/services/classifier.js'), /tickets get worked out after a quick call/);
+  assert.match(read('src/services/claude-reply-draft.js'), /tickets get worked out after a quick call/);
+});
+
 test('Claude and Gemini prompts include the grounding rules', () => {
   const claude = read('src/services/claude-reply-draft.js');
   const classifier = read('src/services/classifier.js');

@@ -30,13 +30,13 @@ function walkSrc() {
 // On the Express default (100kb) real SmartLead payloads 413 before the
 // route runs: no log line, no Slack card, replies silently lost.
 test('express.json keeps a raised body limit', () => {
-  const index = read('src/index.js');
+  const app = read('src/app.js');
   assert.match(
-    index,
+    app,
     /express\.json\(\s*\{\s*limit:/,
     'express.json() must set an explicit limit — the 100kb default drops real SmartLead replies'
   );
-  assert.match(index, /JSON_BODY_LIMIT\s*\|\|\s*'5mb'/, 'default body limit must remain 5mb');
+  assert.match(app, /JSON_BODY_LIMIT\s*\|\|\s*'5mb'/, 'default body limit must remain 5mb');
 });
 
 // ── Suppression policy ────────────────────────────────────────────────

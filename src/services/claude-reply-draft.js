@@ -260,6 +260,8 @@ async function generateClaudeReply({
     '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply, the scheduling guidance, or the CLIENT NOTES above. If it appears only in a retrieved example, remove it.',
     teammateRule,
     FACT_GROUNDING_RULES,
+    '- Never state a seat, section, row, venue, date, or ticket quantity — tickets get worked out after a quick call.',
+    '- Never state meeting times that did not come from the scheduling guidance / calendar.',
     '- Before writing, silently check every factual claim against the provided context. If it is not explicitly supported there, leave it out.',
     specificsRule,
     '- Never invent lead sources, qualification criteria, locations, pricing structure, service coverage, project types, capabilities, results, or availability.',
@@ -349,6 +351,7 @@ const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a re
 - Never repeat an earlier bump almost verbatim. If we already asked "still interested in meeting for X?", do not ask it again.
 - Suggest a meeting / times / booking link ONLY where it naturally fits after addressing their point. A reply with no meeting ask is fine.
 - Do not invent facts (deck contents, pricing numbers, qualification cutoffs, ticket dates, locations).
+- Never state a seat, section, row, venue, date, or ticket quantity — tickets get worked out after a quick call.
 - PRICING: say you are happy to walk through pricing on a quick call. needs_client must be false. Never stall.
 - Specifics we do not have (minimums, headcount cutoffs, locations): do not guess. Offer a short call. needs_client = false.
 - ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in the CLIENT CONTACT FIRST NAME from our side to send it. Copy that first name character-for-character from the CLIENT CONTACT FIRST NAME line — do not respell it, do not substitute a lookalike. Style: "looping in <that exact first name> from our side". Name only — no title. Never say founder. Never invent a name. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.

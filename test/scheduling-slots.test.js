@@ -75,8 +75,8 @@ describe('scheduling slot picks', () => {
       name: 'SalesGlider',
       booking_link: 'https://calendly.com/example/30min',
     });
-    assert.match(promptBlock, /TIMES \+ BOOKING LINK/);
     assert.match(promptBlock, /book\.gosalesglider\.com\/salesglider/);
+    assert.match(promptBlock, /Do NOT invent clock times/);
     assert.doesNotMatch(promptBlock, /calendly.com\/example\/30min/);
   });
 
@@ -99,7 +99,9 @@ describe('scheduling slot picks', () => {
       inPerson: false,
     });
     assert.match(block, /public booking page/);
+    assert.match(block, /Do NOT invent clock times/);
     assert.doesNotMatch(block, /PAT|Google\/Outlook/);
+    assert.doesNotMatch(block, /mid-morning|early afternoon/);
   });
 
   it('parses a public Calendly /profile/event URL', () => {

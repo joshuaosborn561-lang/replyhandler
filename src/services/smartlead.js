@@ -273,7 +273,9 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * `cc` with the Always-forward address. `bcc` is unused.
  * Client notify is via Gmail / forwardThreadToClient, independent of this CC.
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, cc, bcc } = {}) {
+async function sendReply(apiKey, campaignId, leadId, {
+  replyText, emailStatsId, cc, bcc, recipient, replyMessageId, replyEmailTime,
+} = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -303,6 +305,15 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, 
     email_body: emailBody,
     add_signature: true,
   };
+  // Docs: recipient (optional, defaults to lead email), reply_message_id
+  // (message we are replying to). Field names confirmed against
+  // https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
+  const to = typeof recipient === 'string' ? recipient.trim() : '';
+  if (to) payload.recipient = to;
+  const replyId = typeof replyMessageId === 'string' ? replyMessageId.trim() : '';
+  if (replyId) payload.reply_message_id = replyId;
+  const replyTime = typeof replyEmailTime === 'string' ? replyEmailTime.trim() : '';
+  if (replyTime) payload.reply_email_time = replyTime;
   // SmartLead field is `cc` (comma-separated string). Never an array.
   if (typeof cc === 'string') {
     const ccStr = cc.trim();
@@ -512,6 +523,115 @@ async function markLeadNotInterested(apiKey, campaignId, leadId) {
   return { categoryId, result };
 }
 
+const emailAccountCache = new Map();
+const EMAIL_ACCOUNT_TTL_MS = 10 * 60 * 1000;
+
+function emailsFromAccountRow(row) {
+  if (!row || typeof row !== 'object') return [];
+  const candidates = [
+    row.email, row.from_email, row.fromEmail, row.username,
+    row.smtp_user, row.smtpUser, row.imap_user, row.imapUser,
+  ];
+  const out = [];
+  for (const c of candidates) {
+    const e = String(c || '').trim().toLowerCase();
+    if (e.includes('@')) out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Sending mailboxes on this SmartLead key. Cached; misses are empty (fail-open).
+ */
+async function listEmailAccounts(apiKey) {
+  if (!apiKey) return [];
+  const cacheKey = String(apiKey).slice(0, 12);
+  const hit = emailAccountCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < EMAIL_ACCOUNT_TTL_MS) return hit.emails;
+  const emails = [];
+  try {
+    for (let offset = 0; offset < 500; offset += 100) {
+      const url = `${BASE_URL}/email-accounts?api_key=${encodeURIComponent(apiKey)}&offset=${offset}&limit=100`;
+      const res = await fetch(url);
+      const body = await res.text();
+      if (!res.ok) {
+        console.warn('[SmartLead] listEmailAccounts failed', { status: res.status, body: body.slice(0, 200) });
+        break;
+      }
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = {}; }
+      const rows = Array.isArray(parsed) ? parsed
+        : Array.isArray(parsed?.data) ? parsed.data
+          : Array.isArray(parsed?.email_accounts) ? parsed.email_accounts
+            : [];
+      for (const row of rows) emails.push(...emailsFromAccountRow(row));
+      if (rows.length < 100) break;
+    }
+  } catch (err) {
+    console.warn('[SmartLead] listEmailAccounts error', { err: err.message });
+  }
+  const unique = [...new Set(emails)];
+  emailAccountCache.set(cacheKey, { at: Date.now(), emails: unique });
+  return unique;
+}
+
+async function listCampaigns(apiKey) {
+  if (!apiKey) return [];
+  const url = `${BASE_URL}/campaigns?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead listCampaigns failed (${res.status}): ${body.slice(0, 300)}`);
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { parsed = {}; }
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed.data)) return parsed.data;
+  if (Array.isArray(parsed.campaigns)) return parsed.campaigns;
+  return [];
+}
+
+async function listCampaignWebhooks(apiKey, campaignId) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/campaigns/${cid}/webhooks?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead list webhooks failed (${res.status}): ${body.slice(0, 300)}`);
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { parsed = []; }
+  if (Array.isArray(parsed)) return parsed;
+  return parsed?.data || parsed?.webhooks || [];
+}
+
+async function createEmailReplyWebhook(apiKey, campaignId, webhookUrl, { name = 'ReplyHandler EMAIL_REPLY' } = {}) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/webhook/create?api_key=${encodeURIComponent(apiKey)}`;
+  const payload = {
+    name,
+    webhook_url: webhookUrl,
+    email_campaign_id: cid,
+    association_type: 'campaign',
+    event_type_map: { EMAIL_REPLY: true },
+    force_create: true,
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead create webhook failed (${res.status}): ${body.slice(0, 300)}`);
+  try { return JSON.parse(body); } catch { return { ok: true, raw: body }; }
+}
+
+function webhookHasEmailReply(hook, targetUrl) {
+  if (!hook) return false;
+  const events = (hook.event_types || hook.eventTypes || []).map((e) => String(e).toUpperCase());
+  const map = hook.event_type_map || hook.eventTypeMap || {};
+  const mapHit = Object.entries(map).some(([k, v]) => String(k).toUpperCase() === 'EMAIL_REPLY' && v);
+  const hookUrl = String(hook.webhook_url || hook.webhookUrl || '').split('?')[0];
+  const want = String(targetUrl || '').split('?')[0];
+  return (events.includes('EMAIL_REPLY') || mapHit) && hookUrl === want;
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -528,4 +648,10 @@ module.exports = {
   fetchLeadCategories,
   updateLeadCategory,
   markLeadNotInterested,
+  listEmailAccounts,
+  listCampaigns,
+  listCampaignWebhooks,
+  createEmailReplyWebhook,
+  webhookHasEmailReply,
+  historyMessages,
 };

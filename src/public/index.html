@@ -961,6 +961,7 @@ const ADMIN_KEY_STORAGE = 'admin_api_key';
 let clients = [];
 let currentDetailClient = null;
 
+// Prompt only on edit/create/deactivate — never on page load.
 function getAdminKey() {
   let key = sessionStorage.getItem(ADMIN_KEY_STORAGE);
   if (!key) {
@@ -990,11 +991,9 @@ async function adminFetch(path, opts) {
 // ─── Load ────────────────────────────────────────────
 async function loadClients() {
   try {
-    const res = await adminFetch('/admin/clients');
+    const res = await fetch(`${API}/dashboard/api/clients`);
     if (!res.ok) {
-      toast(res.status === 503
-        ? 'ADMIN_API_KEY is not set on the server'
-        : 'Admin key rejected', 'error');
+      toast('Failed to load clients', 'error');
       return;
     }
     const body = await res.json();
@@ -1012,8 +1011,8 @@ async function loadClients() {
 
 function renderStats() {
   const active = clients.filter(c => c.active).length;
-  const withSmartlead = clients.filter(c => c.smartlead_api_key).length;
-  const withHeyreach = clients.filter(c => c.heyreach_api_key).length;
+  const withSmartlead = clients.filter(c => c.has_smartlead_api_key || c.smartlead_api_key).length;
+  const withHeyreach = clients.filter(c => c.has_heyreach_api_key || c.heyreach_api_key).length;
 
   document.getElementById('stats').innerHTML = `
     <div class="stat-card">
@@ -1058,11 +1057,11 @@ function renderGrid() {
         </span>
       </div>
       <div class="client-meta">
-        <span class="${c.smartlead_api_key ? 'key-present' : 'key-missing'}">
-          ${c.smartlead_api_key ? '&#10003;' : '&#10007;'} SmartLead
+        <span class="${(c.has_smartlead_api_key || c.smartlead_api_key) ? 'key-present' : 'key-missing'}">
+          ${(c.has_smartlead_api_key || c.smartlead_api_key) ? '&#10003;' : '&#10007;'} SmartLead
         </span>
-        <span class="${c.heyreach_api_key ? 'key-present' : 'key-missing'}">
-          ${c.heyreach_api_key ? '&#10003;' : '&#10007;'} HeyReach
+        <span class="${(c.has_heyreach_api_key || c.heyreach_api_key) ? 'key-present' : 'key-missing'}">
+          ${(c.has_heyreach_api_key || c.heyreach_api_key) ? '&#10003;' : '&#10007;'} HeyReach
         </span>
         <span class="${c.booking_link ? 'key-present' : 'key-missing'}">
           ${c.booking_link ? '&#10003;' : '&#10007;'} Booking Link
@@ -1109,19 +1108,19 @@ function openDetail(id) {
       <h4>Credentials</h4>
       <div class="detail-row">
         <span class="label">SmartLead API Key</span>
-        <span class="value masked" onclick="toggleMask(this, '${esc(c.smartlead_api_key || '')}')">${mask(c.smartlead_api_key)}</span>
+        <span class="value">${(c.has_smartlead_api_key || c.smartlead_api_key) ? 'Set' : '<span style="opacity:0.3">Not set</span>'}</span>
       </div>
       <div class="detail-row">
         <span class="label">HeyReach API Key</span>
-        <span class="value masked" onclick="toggleMask(this, '${esc(c.heyreach_api_key || '')}')">${mask(c.heyreach_api_key)}</span>
+        <span class="value">${(c.has_heyreach_api_key || c.heyreach_api_key) ? 'Set' : '<span style="opacity:0.3">Not set</span>'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Allo API Key</span>
-        <span class="value masked" onclick="toggleMask(this, '${esc(c.allo_api_key || '')}')">${mask(c.allo_api_key)}</span>
+        <span class="value">${(c.has_allo_api_key || c.allo_api_key) ? 'Set' : '<span style="opacity:0.3">Not set</span>'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Slack Bot Token</span>
-        <span class="value masked" onclick="toggleMask(this, '${esc(c.slack_bot_token || '')}')">${mask(c.slack_bot_token)}</span>
+        <span class="value">${(c.has_slack_bot_token || c.slack_bot_token) ? 'Set' : '<span style="opacity:0.3">Not set</span>'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Slack Channel ID</span>
@@ -1210,25 +1209,36 @@ function openCreateModal() {
   openModal('formModal');
 }
 
-function openEditFromDetail() {
+async function openEditFromDetail() {
   const c = currentDetailClient;
   if (!c) return;
   closeModal('detailModal');
 
+  let full = c;
+  try {
+    const res = await adminFetch(`/admin/clients/${c.id}`);
+    if (res.ok) {
+      const body = await res.json();
+      if (body && body.id) full = body;
+    }
+  } catch (err) {
+    toast('Could not load credentials for edit', 'error');
+  }
+
   document.getElementById('formTitle').textContent = 'Edit Client';
   document.getElementById('formSubmitBtn').textContent = 'Save Changes';
-  document.getElementById('editClientId').value = c.id;
-  document.getElementById('f_name').value = c.name || '';
-  document.getElementById('f_smartlead_api_key').value = c.smartlead_api_key || '';
-  document.getElementById('f_heyreach_api_key').value = c.heyreach_api_key || '';
-  document.getElementById('f_allo_api_key').value = c.allo_api_key || '';
-  document.getElementById('f_slack_bot_token').value = c.slack_bot_token || '';
-  document.getElementById('f_slack_channel_id').value = c.slack_channel_id || '';
-  document.getElementById('f_booking_link').value = c.booking_destination_url || c.booking_link || '';
-  document.getElementById('f_cc_emails').value = c.cc_emails || c.cc_email || '';
+  document.getElementById('editClientId').value = full.id;
+  document.getElementById('f_name').value = full.name || '';
+  document.getElementById('f_smartlead_api_key').value = full.smartlead_api_key || '';
+  document.getElementById('f_heyreach_api_key').value = full.heyreach_api_key || '';
+  document.getElementById('f_allo_api_key').value = full.allo_api_key || '';
+  document.getElementById('f_slack_bot_token').value = full.slack_bot_token || '';
+  document.getElementById('f_slack_channel_id').value = full.slack_channel_id || '';
+  document.getElementById('f_booking_link').value = full.booking_destination_url || full.booking_link || '';
+  document.getElementById('f_cc_emails').value = full.cc_emails || full.cc_email || '';
   syncPortalEmailFromAlwaysNotify();
-  document.getElementById('f_cc_round_robin_emails').value = c.cc_round_robin_emails || '';
-  document.getElementById('f_voice_prompt').value = c.voice_prompt || '';
+  document.getElementById('f_cc_round_robin_emails').value = full.cc_round_robin_emails || '';
+  document.getElementById('f_voice_prompt').value = full.voice_prompt || '';
 
   openModal('formModal');
 }
@@ -1413,7 +1423,7 @@ document.addEventListener('keydown', (e) => {
 // ─── Calendar Connection ─────────────────────────────
 async function loadCalendarStatus(clientId) {
   try {
-    const res = await fetch(`${API}/auth/calendar-status/${clientId}`);
+    const res = await fetch(`${API}/dashboard/api/clients/${clientId}/calendar`);
     const connections = await res.json();
     const el = document.getElementById(`calendarStatus_${clientId}`);
     if (!el) return;

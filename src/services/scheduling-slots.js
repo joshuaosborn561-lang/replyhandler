@@ -469,6 +469,8 @@ function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
     : link
       ? `Then include this exact booking URL once: ${link}`
       : 'Do not invent a fake booking URL.';
+  const noInvent =
+    'Do NOT invent clock times, dayparts, or fake availability. Never state a meeting time that did not come from the calendar.';
 
   if (list.length >= 2) {
     return (
@@ -481,15 +483,15 @@ function timesPlusLinkPromptBlock({ slots, link, inPerson }) {
   }
   if (list.length === 1) {
     return (
-      `ONE verified open time: ${lines[0]}. Suggest that time plus one nearby alternative daypart. ${linkRule}`
+      `ONE verified open time: ${lines[0]}. Suggest that time. Do not invent a second clock time. ${linkRule}`
     );
   }
   if (inPerson) {
-    return `NO verified free slots were retrieved. Suggest two rough times in the next few business days to stop by in person. ${linkRule}`;
+    return `NO verified free slots were retrieved from the calendar. ${noInvent} Ask what time works to stop by in person. ${linkRule}`;
   }
   return link
-    ? `NO verified free slots were retrieved from the public booking page. Suggest two rough times on the next two business days (skip weekends). ${linkRule}`
-    : 'NO verified free slots were retrieved from the public booking page. Suggest two rough times on the next two business days (skip weekends). Do not invent a fake booking URL.';
+    ? `NO verified free slots were retrieved from the public booking page. ${noInvent} Ask what time works for a call. ${linkRule}`
+    : `NO verified free slots were retrieved from the public booking page. ${noInvent} Ask what time works for a call. Do not invent a fake booking URL.`;
 }
 
 function isLocalBusinessSlot(date, timeZone) {
@@ -525,18 +527,41 @@ async function withTimeout(promise, ms, fallback) {
   }
 }
 
-const calendarStartsCache = new Map();
+const SLOT_CACHE_TTL_MS = (() => {
+  const n = parseInt(process.env.SLOT_CACHE_TTL_MS || '', 10);
+  return Number.isFinite(n) && n >= 60_000 ? n : 8 * 60 * 1000;
+})();
+const SLOT_FETCH_TIMEOUT_MS = (() => {
+  const n = parseInt(process.env.SLOT_FETCH_TIMEOUT_MS || '', 10);
+  return Number.isFinite(n) && n >= 1000 ? n : 8000;
+})();
 
-function cachedCalendarStarts(clientId, fromDate, toDate, limit) {
-  const key = `${clientId}|${fromDate.toISOString()}|${toDate.toISOString()}|${limit}`;
-  const hit = calendarStartsCache.get(key);
-  if (hit && Date.now() - hit.at < 60_000) return hit.starts;
+/** clientId → { at, starts, timeZone } */
+const clientSlotCache = new Map();
+
+function readClientSlotCache(clientId) {
+  if (!clientId) return null;
+  const hit = clientSlotCache.get(String(clientId));
+  if (hit && Date.now() - hit.at < SLOT_CACHE_TTL_MS) return hit;
   return null;
 }
 
-function rememberCalendarStarts(clientId, fromDate, toDate, limit, starts) {
-  const key = `${clientId}|${fromDate.toISOString()}|${toDate.toISOString()}|${limit}`;
-  calendarStartsCache.set(key, { at: Date.now(), starts });
+function writeClientSlotCache(clientId, { starts, timeZone }) {
+  if (!clientId) return;
+  clientSlotCache.set(String(clientId), {
+    at: Date.now(),
+    starts: Array.isArray(starts) ? starts : [],
+    timeZone: timeZone || null,
+  });
+}
+
+function cachedCalendarStarts(clientId) {
+  const hit = readClientSlotCache(clientId);
+  return hit ? hit.starts : null;
+}
+
+function rememberCalendarStarts(clientId, starts, timeZone) {
+  writeClientSlotCache(clientId, { starts, timeZone });
 }
 
 /**
@@ -600,14 +625,14 @@ function schedulingPromptBookingLinkOnly(client) {
     return {
       slots: [],
       promptBlock:
-        'IN-PERSON (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days to stop by in person. Do NOT paste a booking URL, Zoom, or phone CTA.',
+        'IN-PERSON (no live availability in cache): Do NOT invent clock times. Ask what time works to stop by in person. Do NOT paste a booking URL, Zoom, or phone CTA.',
     };
   }
   return {
     slots: [],
     promptBlock: link
-      ? `TIMES + BOOKING LINK (no live availability API call — faster webhook path): Suggest two concrete times in the next few business days, then include this exact booking URL once: ${link}`
-      : 'No booking link on this client and no live availability lookup was run. Suggest two rough times in the next few business days; do not invent a fake booking URL.',
+      ? `NO verified calendar times (cache miss / empty). Do NOT invent clock times. Ask what time works for a call, then include this exact booking URL once: ${link}`
+      : 'No booking link on this client and no verified calendar times. Do NOT invent clock times or a fake booking URL. Ask what time works for a call.',
   };
 }
 
@@ -637,33 +662,47 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   const count = Math.max(1, Number(options.count) || 2);
   const needed = offset + count;
   let timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/Chicago';
-  // skipExternalFetch = poller / LinkedIn: still look at the public
-  // booking page, just with a short timeout. No PAT, no client OAuth.
-  const quick = Boolean(options.skipExternalFetch);
   const fromDate = new Date();
-  const toDate = new Date(Date.now() + (quick ? 10 : 14) * 24 * 60 * 60 * 1000);
+  const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
   const limit = Math.max(8, needed);
+  void limit;
 
-  const availabilityUrl = await resolveLiveAvailabilityBookingUrl(client).catch(() => '');
+  const cached = readClientSlotCache(client && client.id);
+  let starts = cached && Array.isArray(cached.starts) ? cached.starts : [];
+  if (cached && cached.timeZone) timeZone = cached.timeZone;
 
-  let starts = cachedCalendarStarts(client.id, fromDate, toDate, limit) || [];
-  if (!starts.length) {
+  // skipExternalFetch skips connected-calendar OAuth only. The public
+  // booking page still runs (or we use the 5–10 min cache of it).
+  if (!cached && !options.cacheOnly) {
     try {
-      const lookup = async () => {
-        const pub = await fetchPublicBookingStarts(availabilityUrl, { fromDate, toDate });
-        if (pub.timeZone) timeZone = pub.timeZone;
-        return pub.starts || [];
-      };
-      starts = await withTimeout(lookup(), quick ? 4000 : 8000, []);
-      if (starts.length) rememberCalendarStarts(client.id, fromDate, toDate, limit, starts);
+      const availabilityUrl = await resolveLiveAvailabilityBookingUrl(client).catch(() => '');
+      const pub = await withTimeout(
+        fetchPublicBookingStarts(availabilityUrl, { fromDate, toDate }),
+        SLOT_FETCH_TIMEOUT_MS || 8000,
+        { starts: [], timeZone: null },
+      );
+      starts = Array.isArray(pub?.starts) ? pub.starts : [];
+      if (pub?.timeZone) timeZone = pub.timeZone;
+      writeClientSlotCache(client && client.id, { starts, timeZone });
+      if (!starts.length) {
+        console.warn('[SchedulingSlots] Empty open times', {
+          clientId: client && client.id,
+        });
+      }
     } catch (err) {
       console.warn('[SchedulingSlots] Public booking slots failed', { err: err.message });
       starts = [];
     }
   }
 
-  if (!starts.length && quick) {
-    return schedulingPromptBookingLinkOnly(client);
+  if (!starts.length) {
+    console.warn('[SchedulingSlots] Empty open times', {
+      clientId: client && client.id,
+      fromCache: !!cached,
+    });
+    if (options.skipExternalFetch) {
+      return schedulingPromptBookingLinkOnly(client);
+    }
   }
 
   const picked = pickTwoBusinessDayStarts(starts, {
@@ -683,9 +722,75 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
   };
 }
 
+async function refreshClientSlotCache(client, { fromDate, toDate } = {}) {
+  const start = fromDate || new Date();
+  const end = toDate || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  if (!client) {
+    return { starts: [], timeZone: null };
+  }
+  try {
+    const lookup = async () => {
+      const availabilityUrl = await resolveLiveAvailabilityBookingUrl(client).catch(() => '');
+      return fetchPublicBookingStarts(availabilityUrl, { fromDate: start, toDate: end });
+    };
+    const pub = await withTimeout(lookup(), SLOT_FETCH_TIMEOUT_MS, { starts: [], timeZone: null });
+    const starts = Array.isArray(pub?.starts) ? pub.starts : [];
+    const timeZone = pub?.timeZone || null;
+    if (!starts.length) {
+      console.warn('[SchedulingSlots] Empty open times', { clientId: client.id });
+    }
+    writeClientSlotCache(client.id, { starts, timeZone });
+    return { starts, timeZone };
+  } catch (err) {
+    console.warn('[SchedulingSlots] Cache refresh failed', {
+      clientId: client.id, err: err.message,
+    });
+    writeClientSlotCache(client.id, { starts: [], timeZone: null });
+    return { starts: [], timeZone: null };
+  }
+}
+
+async function refreshAllClientSlotCaches() {
+  const db = require('../db');
+  let rows = [];
+  try {
+    const result = await db.query(
+      `SELECT id, name, booking_link, booking_destination_url, voice_prompt
+         FROM clients
+        WHERE active IS DISTINCT FROM false`
+    );
+    rows = result.rows || [];
+  } catch (err) {
+    console.error('[SchedulingSlots] Failed to load clients for cache refresh', { err: err.message });
+    return { refreshed: 0, errors: 1 };
+  }
+  const results = await Promise.all(rows.map(async (client) => {
+    try {
+      const r = await refreshClientSlotCache(client);
+      return { clientId: client.id, slots: (r.starts || []).length };
+    } catch (err) {
+      console.warn('[SchedulingSlots] Per-client cache refresh failed', {
+        clientId: client.id, err: err.message,
+      });
+      return { clientId: client.id, error: err.message };
+    }
+  }));
+  console.log('[SchedulingSlots] Background cache refresh', {
+    clients: results.length,
+    withSlots: results.filter((r) => r.slots > 0).length,
+    empty: results.filter((r) => !r.error && !r.slots).length,
+  });
+  return { refreshed: results.length, results };
+}
+
 module.exports = {
   resolveVerifiedSchedulingSlots,
   schedulingPromptBookingLinkOnly,
+  refreshClientSlotCache,
+  refreshAllClientSlotCaches,
+  readClientSlotCache,
+  SLOT_CACHE_TTL_MS,
+  SLOT_FETCH_TIMEOUT_MS,
   pickOpenStarts,
   pickTwoBusinessDayStarts,
   parseCalendlyPublicUrl,

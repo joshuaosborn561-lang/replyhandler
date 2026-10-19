@@ -1241,3 +1241,66 @@ Tightens the follow-up loop-in path:
 
 Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
 Guard: `Reject marks the lead Not Interested in SmartLead`
+
+## 2026-10-19
+
+### The dashboard stays open with no login
+
+`/dashboard` loads with no login prompt. Read-only `/dashboard/api/*`
+never returns SmartLead, HeyReach, or Allo keys or Slack tokens.
+`window.prompt` / `getAdminKey` must not run on page load. `/admin/*`
+stays behind `requireAdminApiKey`; edits may prompt only when you click
+an edit. Do not add dashboard auth back.
+
+Guard: `the dashboard stays open with no login`
+
+### SmartLead numeric categories; unknown never OTHER
+
+EMAIL_REPLY now sends the category as a number: 1 Interested, 2 Meeting,
+3 Not Interested, 4 Do Not Contact, 5 Info Request, 6 OOO, 7 Wrong
+Person. Names still map. An unknown category falls through to our
+classifier (Jev / Gemini). Never stamp OTHER from an unmapped category.
+
+Guard: `SmartLead's category wins over Gemini for email`
+
+### Reply to the actual sender, reply-all
+
+Send to the latest inbound From. CC every other human on that message
+(to + cc), including the original lead when a colleague replied. Exclude
+our sending accounts and domains, duplicates, and auto-reply addresses.
+Loop-in client CC from #106 still applies on Send + CC client. Use
+SmartLead `recipient` and `reply_message_id`. Greeting and Slack card
+use that sender's first name.
+
+Guard: covered by `test/reply-all.test.js`
+
+### New replies post as top-level cards
+
+`postInThread` defaults false. If an earlier card exists, link to it
+("Earlier card"). FOLLOW_UP cards stay top-level as well.
+
+Guard: `new replies post as top-level cards and link to an earlier card`
+
+### Webhook is primary (persist, 200, async); poller every minute
+
+Persist the inbound, return 200 immediately, process async. Post the
+Slack card right after classification, then update it with the draft and
+times. Poller is the backstop: every minute, clients in parallel, skip
+already-handled rows before extra fetches, skip inactive clients.
+Parallelize thread / campaign / calendar fetches. Startup registers an
+EMAIL_REPLY webhook for every active client's campaigns or reports
+what is missing.
+
+### Never invent ticket details or calendar times
+
+Reply and follow-up prompts must not state seat, section, row, venue,
+date, or quantity — tickets get worked out after a quick call. Fact-check
+catches seat/section/row. FOLLOW_UP ticket detector requires `ticket` or
+`tix`; a team name alone is not enough. Calendar open times cache for
+5–10 minutes, ~8s timeout, log empty. Never state times that did not
+come from the calendar.
+
+### HeyReach: isolate a bad key
+
+One client's HeyReach key failure must not stop polling for the others.
+Each client is try/caught (including GetConversationsV2).

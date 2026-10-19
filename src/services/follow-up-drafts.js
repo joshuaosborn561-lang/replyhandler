@@ -22,7 +22,7 @@ function detectOffer(lastOutboundMessage) {
   const s = norm(lastOutboundMessage).toLowerCase();
   if (!s) return { kind: 'generic' };
 
-  if (/\b(ticket|tix)\b/.test(s) || /\b(marlins|rangers|astros|yankees|mets|cubs|dodgers|padres|twins|guardians|orioles|rays|royals|tigers|angels|mariners|nationals|phillies|braves|cardinals|brewers|pirates|reds|rockies|diamondbacks|giants|blue jays|white sox|red sox)\b/.test(s)) {
+  if (/\b(ticket|tix)\b/.test(s)) {
     const team = (s.match(/\b(marlins|rangers|astros|yankees|mets|cubs|dodgers|padres|twins|guardians|orioles|rays|royals|tigers|angels|mariners|nationals|phillies|braves|cardinals|brewers|pirates|reds|rockies|diamondbacks|giants)\b/) || [])[1];
     return { kind: 'tickets', team: team ? team.charAt(0).toUpperCase() + team.slice(1) : null };
   }
@@ -166,14 +166,12 @@ function bumpForOffer({
 }
 
 function slotLabelsFrom(slots, digestTimezone) {
+  void digestTimezone;
   const labels = (slots || [])
     .map((s) => (s && typeof s === 'object' ? s.label : s))
     .map((s) => String(s || '').trim())
     .filter(Boolean);
-  if (labels.length >= 2) return labels.slice(0, 2);
-  const { nextTwoBusinessDayLabels } = require('./classifier');
-  const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone);
-  return [labels[0] || `${d1} mid-morning`, labels[1] || `${d2} early afternoon`];
+  return labels.slice(0, 2);
 }
 
 /**
@@ -196,22 +194,32 @@ function timesTakenBump({
   if (callback) {
     return bumpForOffer({ name, offer, step: n, callback: true, lastOutboundMessage });
   }
-  const [a, b] = slotLabelsFrom(slots, digestTimezone);
+  const labels = slotLabelsFrom(slots, digestTimezone);
   const link = String(bookingLink || '').trim();
+  const hasTimes = labels.length >= 2;
+  const [a, b] = labels;
 
   let text;
   if (inPerson) {
-    if (n === 2) {
-      text = `Hey ${name}, those times got taken...does ${a} or ${b} work for me to stop by in person about ${x}?`;
+    if (hasTimes) {
+      text = n === 2
+        ? `Hey ${name}, those times got taken...does ${a} or ${b} work for me to stop by in person about ${x}?`
+        : `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work to stop by for ${x}?`;
     } else {
-      text = `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work to stop by for ${x}?`;
+      text = n === 2
+        ? `Hey ${name}, those times got taken...what time works for me to stop by in person about ${x}?`
+        : `Hey ${name}, last nudge...those times got taken too. What time works to stop by for ${x}?`;
     }
   } else {
     const linkBit = link ? ` Or grab a time here: ${link}` : '';
-    if (n === 2) {
-      text = `Hey ${name}, those times got taken...does ${a} or ${b} work instead to chat about ${x}?${linkBit}`;
+    if (hasTimes) {
+      text = n === 2
+        ? `Hey ${name}, those times got taken...does ${a} or ${b} work instead to chat about ${x}?${linkBit}`
+        : `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work for ${x}?${linkBit}`;
     } else {
-      text = `Hey ${name}, last nudge...those times got taken too. Does ${a} or ${b} work for ${x}?${linkBit}`;
+      text = n === 2
+        ? `Hey ${name}, those times got taken...what time works instead to chat about ${x}?${linkBit}`
+        : `Hey ${name}, last nudge...those times got taken too. What time works for ${x}?${linkBit}`;
     }
   }
   return n >= 3 ? scrubDashes(text) : text;

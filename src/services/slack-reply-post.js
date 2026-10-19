@@ -404,7 +404,7 @@ async function postProspectSlackCard({
   isDraft,
   card,
   replyId,
-  postInThread = true,
+  postInThread = false,
   slackApi = slack,
   enrichFn = enrichPendingReplyPhone,
   identityResolve = resolveCardIdentity,
@@ -471,9 +471,16 @@ async function postProspectSlackCard({
       email: identity.email || card?.leadEmail,
     });
 
-    const threadTs = postInThread
-      ? await findSlackThreadRootTs(clientId, platform, campaignId, leadId, dbClient)
-      : null;
+    const earlierTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId, dbClient);
+    const threadTs = postInThread ? earlierTs : null;
+    let earlierPermalink = enrichedCard.threadPermalink || null;
+    if (!postInThread && earlierTs && !earlierPermalink && token && channelId) {
+      try {
+        earlierPermalink = await slackApi.getPermalink(token, channelId, earlierTs);
+      } catch (err) {
+        console.warn('[Slack] Earlier-card permalink failed', { replyId, err: err.message });
+      }
+    }
     const contextMessage = resolveSlackContextMessage({
       platform,
       threadContext,
@@ -487,6 +494,7 @@ async function postProspectSlackCard({
       contextLabel: contextMessage.label,
       threadTs: threadTs || undefined,
       inThread: !!threadTs,
+      threadPermalink: earlierPermalink || undefined,
     };
     payload = await attachDraftCc(dbClient, { replyId, platform, isDraft, payload });
 

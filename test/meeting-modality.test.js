@@ -43,9 +43,10 @@ describe('meeting modality — in person', () => {
       digestTimezone: 'America/Chicago',
       voicePrompt: '',
       bookingLink: 'https://calendly.com/example/30min',
+      slotLabels: ['Tue, Oct 6, 10:00 AM CDT', 'Wed, Oct 7, 2:00 PM CDT'],
     });
     assert.match(draft, /quick call/i);
-    assert.match(draft, /mid-morning|afternoon/i);
+    assert.match(draft, /Tue, Oct 6, 10:00 AM CDT/);
     assert.match(draft, /calendly.com\/example\/30min/);
   });
 

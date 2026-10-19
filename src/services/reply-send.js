@@ -16,6 +16,7 @@ const clientClaimed = require('./client-claimed');
 const { alreadySentSameOutbound } = require('./reply-dedupe');
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
+const { buildReplyAll, mergeCcLists } = require('../utils/reply-all');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -175,17 +176,50 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     let enrichment = null;
     let prospectCc = '';
     const sendOpts = { replyText, emailStatsId };
+
+    let threadForReplyAll = reply.thread_context;
+    if (leadIdNumeric && client.smartlead_api_key) {
+      try {
+        threadForReplyAll = await smartlead.getThreadHistory(
+          client.smartlead_api_key,
+          reply.campaign_id,
+          reply.lead_id,
+        ) || threadForReplyAll;
+      } catch (err) {
+        console.warn('[ReplySend] Thread fetch for reply-all failed — using stored context', {
+          replyId: reply.id, err: err.message,
+        });
+      }
+    }
+    let accountEmails = [];
+    try {
+      accountEmails = await smartlead.listEmailAccounts(client.smartlead_api_key);
+    } catch (err) {
+      console.warn('[ReplySend] listEmailAccounts failed', { replyId: reply.id, err: err.message });
+    }
+    const replyAll = buildReplyAll({
+      history: threadForReplyAll,
+      accountEmails,
+      originalLeadEmail: reply.lead_email,
+      fallbackName: reply.lead_name,
+    });
+    if (replyAll.recipient) sendOpts.recipient = replyAll.recipient;
+    if (replyAll.replyMessageId) sendOpts.replyMessageId = replyAll.replyMessageId;
+    if (replyAll.replyEmailTime) sendOpts.replyEmailTime = replyAll.replyEmailTime;
+
     if (ccClientOnProspect) {
       prospectCc = alwaysForwardEmailsForProspectCc(client);
       if (!prospectCc) {
         console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
           replyId: reply.id,
         });
-      } else {
-        // Comma-separated string on SmartLead field `cc`. Only this button.
-        sendOpts.cc = prospectCc;
       }
+      sendOpts.cc = prospectCc;
     }
+    // Reply-all: CC other humans on the inbound. Loop-in client CC (#106)
+    // still applies on Send + CC client and is merged in.
+    const ccMerged = mergeCcLists(replyAll.cc, prospectCc);
+    if (ccMerged.length) sendOpts.cc = ccMerged.join(', ');
 
     await smartlead.sendReply(
       client.smartlead_api_key,

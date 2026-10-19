@@ -404,9 +404,10 @@ test('landline from the waterfall is stored as alt and does not count as a mobil
 
 test('HeyReach webhook acks before the background enrich job and does not call LeadMagic', () => {
   const webhooks = read('src/routes/webhooks.js');
-  const ackAt = webhooks.indexOf("res.status(200).json({ ok: true, accepted: true })");
-  const jobAt = webhooks.indexOf('await enrichPendingReplyPhone');
-  const immediateAt = webhooks.indexOf('setImmediate');
+  const hr = webhooks.slice(webhooks.indexOf("router.post('/webhook/heyreach"));
+  const ackAt = hr.indexOf("res.status(200).json({ ok: true, accepted: true })");
+  const jobAt = hr.indexOf('await enrichPendingReplyPhone');
+  const immediateAt = hr.indexOf('setImmediate');
   assert.ok(ackAt !== -1 && jobAt !== -1 && immediateAt !== -1);
   assert.ok(ackAt < immediateAt, 'HeyReach must ack before setImmediate');
   assert.ok(immediateAt < jobAt, 'enrichment must run inside the background job');

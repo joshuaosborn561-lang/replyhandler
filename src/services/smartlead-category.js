@@ -21,8 +21,9 @@ const { looksLikeMixedIntent, promoteMixedIntent, SLACK_POSITIVES } = require('.
 
 const CATEGORY_FIELDS = [
   'lead_category', 'leadCategory',
+  'lead_category_id', 'leadCategoryId',
   'lead_category_name', 'leadCategoryName',
-  'category', 'categoryName', 'category_name',
+  'category', 'category_id', 'categoryId', 'categoryName', 'category_name',
   'reply_category', 'replyCategory',
   'sl_lead_category', 'slLeadCategory',
 ];
@@ -33,12 +34,13 @@ function extractCategory(source) {
   for (const field of CATEGORY_FIELDS) {
     const v = source[field];
     if (v == null) continue;
-    // Some shapes nest it: { lead_category: { name: 'Interested' } }
+    // Some shapes nest it: { lead_category: { name: 'Interested' } } or { id: 1 }
     if (typeof v === 'object') {
-      const nested = v.name || v.label || v.category || v.value;
-      if (nested) return String(nested).trim();
+      const nested = v.name || v.label || v.category || v.value || v.id;
+      if (nested != null && nested !== '') return String(nested).trim();
       continue;
     }
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
     const s = String(v).trim();
     if (s) return s;
   }
@@ -58,10 +60,35 @@ function norm(s) {
 }
 
 /**
+ * SmartLead now sends the category as a number on EMAIL_REPLY webhooks.
+ * Names remain supported because older payloads and the category list API
+ * still use labels (and labels are account-editable).
+ */
+const NUMERIC_CATEGORY = {
+  1: 'INTERESTED',
+  2: 'MEETING_PROPOSED',
+  3: 'NOT_INTERESTED',
+  4: 'REMOVE_ME',
+  5: 'QUESTION',
+  6: 'OOO',
+  7: 'WRONG_PERSON',
+};
+
+function numericCategoryId(raw) {
+  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
+  const s = String(raw == null ? '' : raw).trim();
+  if (!/^\d+$/.test(s)) return null;
+  return Number(s);
+}
+
+/**
  * Map a SmartLead category onto our classification vocabulary.
  * @returns {string|null} classification, or null when the category is unknown
  */
 function categoryToClassification(raw) {
+  const n = numericCategoryId(raw);
+  if (n != null && NUMERIC_CATEGORY[n]) return NUMERIC_CATEGORY[n];
+
   const c = norm(raw);
   if (!c) return null;
 
@@ -71,7 +98,7 @@ function categoryToClassification(raw) {
   if (c.includes('do not contact') || c.includes('unsubscribe') || c.includes('opt out')) return 'REMOVE_ME';
   if (c.includes('out of office') || c === 'ooo' || c.includes('vacation')) return 'OOO';
   if (c.includes('wrong person')) return 'WRONG_PERSON';
-  if (c.includes('information request') || c.includes('question') || c.includes('more info')) return 'QUESTION';
+  if (c.includes('information request') || c.includes('info request') || c.includes('question') || c.includes('more info')) return 'QUESTION';
   if (c.includes('objection')) return 'OBJECTION';
   if (c.includes('competitor')) return 'COMPETITOR';
   // "Team member", "Forwarded", anything bespoke: unknown to us.
@@ -93,9 +120,9 @@ function classifyFromSmartlead(...sources) {
     if (classification) {
       return { classification, source: 'smartlead_category', raw };
     }
-    // A category we do not recognise still means SmartLead saw a real reply.
-    // Treat it as worth a look rather than dropping to a guess.
-    return { classification: 'OTHER', source: 'smartlead_category_unmapped', raw };
+    // Unknown SmartLead category: do not stamp OTHER. Caller uses our
+    // classifier (Jev / Gemini) instead.
+    continue;
   }
   return null;
 }
@@ -172,4 +199,5 @@ module.exports = {
   classifyFromSmartlead,
   applySmartleadCategory,
   categoryIdForClassification,
+  NUMERIC_CATEGORY,
 };

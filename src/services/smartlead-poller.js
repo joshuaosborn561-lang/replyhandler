@@ -196,6 +196,41 @@ async function processInboxRow(client, row, options) {
   // When the visible reply is new we card it now and, once it is on the record,
   // the next cycle's probe fires and recovers whatever was behind it.
   const staleHistory = historyLagsLastReply(row, threadContext);
+
+  // Skip already-handled rows before any extra fetches. Recover unposted
+  // cards first — alreadyPostedToSlack is true for those rows too.
+  // A stale already-carded row still refetches — that is how a hidden
+  // newer reply is recovered.
+  if (inbound && !staleHistory) {
+    const earlyStatsId = smartlead.extractStatsIdFromHistory(threadContext);
+    const unpostedEarly = await findUnpostedReply({
+      clientId: client.id,
+      platform: 'smartlead',
+      campaignId,
+      leadId,
+      leadEmail: row.lead_email || null,
+      inboundMessage: inbound,
+      emailStatsId: earlyStatsId,
+    });
+    if (unpostedEarly) {
+      await repostReplyRowToSlack(client, unpostedEarly, {
+        reasoningExtra: `${unpostedEarly.classification || 'pending'} (Recovered by SmartLead inbox polling — Slack post retry.)`,
+      });
+      return { posted: true, replyId: unpostedEarly.id, leadName: unpostedEarly.lead_name, recovered: true };
+    }
+    if (await alreadyPostedToSlack({
+      clientId: client.id,
+      platform: 'smartlead',
+      campaignId,
+      leadId,
+      leadEmail: row.lead_email || null,
+      inboundMessage: inbound,
+      emailStatsId: earlyStatsId,
+    })) {
+      return { skipped: 'already_posted' };
+    }
+  }
+
   if (staleHistory && client.smartlead_api_key) {
     const visibleAlreadyCarded = inbound
       ? await alreadyPostedToSlack({
@@ -293,12 +328,15 @@ async function processInboxRow(client, row, options) {
   const leadEmail = row.lead_email || null;
   const lastOutbound = lastOutboundBodyFromSmartleadHistory(threadContext) || '';
   let campaignName = row.email_campaign_name || row.emailCampaignName || null;
-  if (!campaignName && client.smartlead_api_key && campaignId) {
-    campaignName = await smartlead.resolveCampaignName(client.smartlead_api_key, campaignId);
-  }
+  const [resolvedName, slotResult] = await Promise.all([
+    campaignName || !client.smartlead_api_key || !campaignId
+      ? Promise.resolve(campaignName)
+      : smartlead.resolveCampaignName(client.smartlead_api_key, campaignId),
+    resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true }),
+  ]);
+  if (resolvedName) campaignName = resolvedName;
   const campaignDisplay = formatCampaignDisplay(campaignName, campaignId);
-
-  const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
+  const { promptBlock } = slotResult;
   let result;
   try {
     result = await classifyAndDraft(
@@ -317,6 +355,7 @@ async function processInboxRow(client, row, options) {
         clientName: client.name,
         // Poller = backfill/sweep. Never burn Anthropic here.
         draftMode: 'bulk',
+        slots: slotResult.slots,
       },
     );
   } catch (err) {
@@ -501,7 +540,7 @@ async function pollSmartleadReplies() {
     // is a safety valve against a pathological cycle — not the normal limit.
     const maxHistoryRefetch = numberEnv('SMARTLEAD_POLL_MAX_HISTORY_REFETCH', 40);
 
-    for (const client of clients) {
+    await Promise.all(clients.map(async (client) => {
       let scanned = 0;
       let posted = 0;
       const clientSkips = {};
@@ -509,42 +548,46 @@ async function pollSmartleadReplies() {
         skipCounts[reason] = (skipCounts[reason] || 0) + 1;
         clientSkips[reason] = (clientSkips[reason] || 0) + 1;
       };
-      for (let offset = 0; scanned < maxReplies; offset += pageLimit) {
-        let payload;
-        try {
-          payload = await fetchInboxReplies(client.smartlead_api_key, offset, pageLimit);
-        } catch (err) {
-          console.error('[SmartLeadPoll] Inbox fetch failed', { clientId: client.id, client: client.name, err: err.message });
-          break;
-        }
-        const rows = Array.isArray(payload?.data) ? payload.data : [];
-        if (!rows.length) break;
-        for (const row of rows) {
-          if (scanned >= maxReplies) break;
-          scanned++;
+      try {
+        for (let offset = 0; scanned < maxReplies; offset += pageLimit) {
+          let payload;
           try {
-            const result = await processInboxRow(client, row, {
-              lookbackHours, refetchCounter, maxHistoryRefetch,
-            });
-            if (result.posted) {
-              posted++;
-              totals.processed++;
-            } else if (result.skipped) {
-              totals.skipped++;
-              bumpSkip(result.skipped);
-            }
+            payload = await fetchInboxReplies(client.smartlead_api_key, offset, pageLimit);
           } catch (err) {
-            console.error('[SmartLeadPoll] Row processing failed', {
-              clientId: client.id, client: client.name, err: err.message,
-            });
+            console.error('[SmartLeadPoll] Inbox fetch failed', { clientId: client.id, err: err.message });
+            break;
           }
+          const rows = Array.isArray(payload?.data) ? payload.data : [];
+          if (!rows.length) break;
+          for (const row of rows) {
+            if (scanned >= maxReplies) break;
+            scanned++;
+            try {
+              const result = await processInboxRow(client, row, {
+                lookbackHours, refetchCounter, maxHistoryRefetch,
+              });
+              if (result.posted) {
+                posted++;
+                totals.processed++;
+              } else if (result.skipped) {
+                totals.skipped++;
+                bumpSkip(result.skipped);
+              }
+            } catch (err) {
+              console.error('[SmartLeadPoll] Row processing failed', {
+                clientId: client.id, err: err.message,
+              });
+            }
+          }
+          if (rows.length < pageLimit) break;
         }
-        if (rows.length < pageLimit) break;
+      } catch (err) {
+        console.error('[SmartLeadPoll] Client scan failed', { clientId: client.id, err: err.message });
       }
       console.log('[SmartLeadPoll] Client scan complete', {
-        clientId: client.id, client: client.name, scanned, posted, skipReasons: clientSkips,
+        clientId: client.id, scanned, posted, skipReasons: clientSkips,
       });
-    }
+    }));
   } catch (err) {
     console.error('[SmartLeadPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {
