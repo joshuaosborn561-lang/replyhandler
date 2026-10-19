@@ -24,6 +24,11 @@ describe('offer-first FOLLOW_UP bumps', () => {
     assert.match(draft, /still interested in meeting for/i);
   });
 
+  it('does not treat a team name alone as tickets', () => {
+    assert.equal(detectOffer('Go Rangers this weekend if you are free to meet.').kind, 'generic');
+    assert.equal(detectOffer('The Marlins look good this year.').kind, 'generic');
+  });
+
   it('references tickets when the prior send offered tix', () => {
     const offer = detectOffer('Happy to send you some Marlins tix just for the convo.');
     assert.equal(offer.kind, 'tickets');

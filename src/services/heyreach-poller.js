@@ -416,7 +416,7 @@ async function processConversation(client, conv, options) {
   })) {
     return { skipped: 'already_processed_enriched' };
   }
-  const { promptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
+  const { promptBlock, slots } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
   let result;
   try {
     result = await classifyAndDraft(
@@ -434,6 +434,7 @@ async function processConversation(client, conv, options) {
         clientName: client.name,
         // Poller = backfill/sweep. Never burn Anthropic here.
         draftMode: 'bulk',
+        slots,
       },
     );
   } catch (err) {
@@ -611,7 +612,7 @@ async function pollHeyReachReplies() {
       .map((s) => parseInt(s.trim(), 10))
       .filter((n) => Number.isFinite(n));
 
-    for (const client of clients) {
+    await Promise.all(clients.map(async (client) => {
       let scanned = 0;
       let posted = 0;
       const clientSkips = {};
@@ -619,40 +620,53 @@ async function pollHeyReachReplies() {
         skipCounts[reason] = (skipCounts[reason] || 0) + 1;
         clientSkips[reason] = (clientSkips[reason] || 0) + 1;
       };
-      for (let offset = 0; scanned < maxConversations; offset += limit) {
-        const payload = await heyreachGetConversations(client.heyreach_api_key, {
-          offset,
-          limit,
-          accountIds: accountIds.length ? accountIds : undefined,
-        });
-        const conversations = conversationsFromPayload(payload);
-        if (!conversations.length) break;
-        for (const conv of conversations) {
-          if (scanned >= maxConversations) break;
-          scanned++;
+      try {
+        for (let offset = 0; scanned < maxConversations; offset += limit) {
+          let payload;
           try {
-            const result = await processConversation(client, conv, { lookbackHours });
-            if (result.posted) {
-              posted++;
-              totals.processed++;
-            } else if (result.skipped) {
-              totals.skipped++;
-              bumpSkip(result.skipped);
-            }
-          } catch (err) {
-            console.error('[HeyReachPoll] Conversation processing failed', {
-              clientId: client.id,
-              client: client.name,
-              err: err.message,
+            payload = await heyreachGetConversations(client.heyreach_api_key, {
+              offset,
+              limit,
+              accountIds: accountIds.length ? accountIds : undefined,
             });
+          } catch (err) {
+            console.error('[HeyReachPoll] Inbox fetch failed — skipping this client', {
+              clientId: client.id, err: err.message,
+            });
+            break;
           }
+          const conversations = conversationsFromPayload(payload);
+          if (!conversations.length) break;
+          for (const conv of conversations) {
+            if (scanned >= maxConversations) break;
+            scanned++;
+            try {
+              const result = await processConversation(client, conv, { lookbackHours });
+              if (result.posted) {
+                posted++;
+                totals.processed++;
+              } else if (result.skipped) {
+                totals.skipped++;
+                bumpSkip(result.skipped);
+              }
+            } catch (err) {
+              console.error('[HeyReachPoll] Conversation processing failed', {
+                clientId: client.id,
+                err: err.message,
+              });
+            }
+          }
+          if (conversations.length < limit) break;
         }
-        if (conversations.length < limit) break;
+      } catch (err) {
+        console.error('[HeyReachPoll] Client scan failed — other clients continue', {
+          clientId: client.id, err: err.message,
+        });
       }
       console.log('[HeyReachPoll] Client scan complete', {
-        clientId: client.id, client: client.name, scanned, posted, skipReasons: clientSkips,
+        clientId: client.id, scanned, posted, skipReasons: clientSkips,
       });
-    }
+    }));
   } catch (err) {
     console.error('[HeyReachPoll] Poll failed', { err: err.message, stack: err.stack });
   } finally {

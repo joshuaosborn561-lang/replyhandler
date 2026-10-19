@@ -3,6 +3,45 @@ const { FYI_NOTES_LINE } = require('../utils/fyi-notify');
 
 const BASE_URL = 'https://server.smartlead.ai/api/v1';
 
+const FETCH_429_RETRIES = (() => {
+  const n = parseInt(process.env.SMARTLEAD_429_RETRIES || '', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 4;
+})();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMs(res, attempt) {
+  const header = res && res.headers && typeof res.headers.get === 'function'
+    ? res.headers.get('retry-after')
+    : '';
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, 30_000);
+  }
+  const base = 1000 * (2 ** attempt);
+  return Math.min(base, 16_000);
+}
+
+/**
+ * fetch() with exponential backoff on 429. Used by poller thread fetches,
+ * webhook list/create, and listEmailAccounts — the shared master key 429s
+ * after a burst of ~11 calls 0.4s apart.
+ */
+async function fetchWith429Retry(url, opts = {}, { retries = FETCH_429_RETRIES } = {}) {
+  let lastRes;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    lastRes = await fetch(url, opts);
+    if (lastRes.status !== 429 || attempt === retries) return lastRes;
+    const wait = retryAfterMs(lastRes, attempt);
+    console.warn('[SmartLead] 429 — retry', { wait, attempt: attempt + 1, retries });
+    try { await lastRes.text(); } catch { /* ignore */ }
+    await sleep(wait);
+  }
+  return lastRes;
+}
+
 /** apiKey prefix → { fetchedAt, list } */
 const categoryListCache = new Map();
 const CATEGORY_LIST_TTL_MS = 30 * 60 * 1000;
@@ -96,7 +135,7 @@ async function getThreadHistory(apiKey, campaignId, leadId) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   const lid = toSmartleadId(leadId, 'lead_id');
   const url = `${BASE_URL}/campaigns/${cid}/leads/${lid}/message-history?api_key=${encodeURIComponent(apiKey)}&show_plain_text_response=true`;
-  const res = await fetch(url);
+  const res = await fetchWith429Retry(url);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`SmartLead getThreadHistory failed (${res.status}): ${body}`);
@@ -273,7 +312,11 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  * `cc` with the Always-forward address. `bcc` is unused.
  * Client notify is via Gmail / forwardThreadToClient, independent of this CC.
  */
-async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, cc, bcc } = {}) {
+async function sendReply(apiKey, campaignId, leadId, {
+  replyText, emailStatsId, cc, bcc,
+  recipient, toEmail, toFirstName,
+  replyMessageId, replyEmailTime, replyEmailBody,
+} = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
   let lidForLog = leadId;
@@ -303,6 +346,21 @@ async function sendReply(apiKey, campaignId, leadId, { replyText, emailStatsId, 
     email_body: emailBody,
     add_signature: true,
   };
+  // Docs (reply-email-thread): to_email (optional, defaults to lead email),
+  // to_first_name (optional), reply_message_id, reply_email_body (quoted
+  // original so the quoted line matches the TO), reply_email_time.
+  // `recipient` is rejected with 400 — never send it.
+  // https://api.smartlead.ai/api-reference/campaigns/reply-email-thread
+  const to = String(toEmail || recipient || '').trim();
+  if (to) payload.to_email = to;
+  const first = String(toFirstName || '').trim();
+  if (first && first.toLowerCase() !== 'there') payload.to_first_name = first;
+  const replyId = typeof replyMessageId === 'string' ? replyMessageId.trim() : '';
+  if (replyId) payload.reply_message_id = replyId;
+  const quoted = typeof replyEmailBody === 'string' ? replyEmailBody.trim() : '';
+  if (quoted) payload.reply_email_body = quoted;
+  const replyTime = typeof replyEmailTime === 'string' ? replyEmailTime.trim() : '';
+  if (replyTime) payload.reply_email_time = replyTime;
   // SmartLead field is `cc` (comma-separated string). Never an array.
   if (typeof cc === 'string') {
     const ccStr = cc.trim();
@@ -512,6 +570,119 @@ async function markLeadNotInterested(apiKey, campaignId, leadId) {
   return { categoryId, result };
 }
 
+const emailAccountCache = new Map();
+const EMAIL_ACCOUNT_TTL_MS = 10 * 60 * 1000;
+
+function emailsFromAccountRow(row) {
+  if (!row || typeof row !== 'object') return [];
+  const candidates = [
+    row.email, row.from_email, row.fromEmail, row.username,
+    row.smtp_user, row.smtpUser, row.imap_user, row.imapUser,
+  ];
+  const out = [];
+  for (const c of candidates) {
+    const e = String(c || '').trim().toLowerCase();
+    if (e.includes('@')) out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Sending mailboxes on this SmartLead key. Cached; misses are empty (fail-open).
+ */
+async function listEmailAccounts(apiKey) {
+  if (!apiKey) return [];
+  const cacheKey = String(apiKey).slice(0, 12);
+  const hit = emailAccountCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < EMAIL_ACCOUNT_TTL_MS) return hit.emails;
+  const emails = [];
+  try {
+    const pageSize = 100;
+    let offset = 0;
+    for (;;) {
+      const url = `${BASE_URL}/email-accounts?api_key=${encodeURIComponent(apiKey)}&offset=${offset}&limit=${pageSize}`;
+      const res = await fetchWith429Retry(url);
+      const body = await res.text();
+      if (!res.ok) {
+        console.warn('[SmartLead] listEmailAccounts failed', { status: res.status, body: body.slice(0, 200) });
+        break;
+      }
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = {}; }
+      const rows = Array.isArray(parsed) ? parsed
+        : Array.isArray(parsed?.data) ? parsed.data
+          : Array.isArray(parsed?.email_accounts) ? parsed.email_accounts
+            : [];
+      if (!rows.length) break;
+      for (const row of rows) emails.push(...emailsFromAccountRow(row));
+      if (rows.length < pageSize) break;
+      offset += pageSize;
+    }
+  } catch (err) {
+    console.warn('[SmartLead] listEmailAccounts error', { err: err.message });
+  }
+  const unique = [...new Set(emails)];
+  emailAccountCache.set(cacheKey, { at: Date.now(), emails: unique });
+  return unique;
+}
+
+async function listCampaigns(apiKey) {
+  if (!apiKey) return [];
+  const url = `${BASE_URL}/campaigns?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWith429Retry(url);
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead listCampaigns failed (${res.status}): ${body.slice(0, 300)}`);
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { parsed = {}; }
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed.data)) return parsed.data;
+  if (Array.isArray(parsed.campaigns)) return parsed.campaigns;
+  return [];
+}
+
+async function listCampaignWebhooks(apiKey, campaignId) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/campaigns/${cid}/webhooks?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWith429Retry(url);
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead list webhooks failed (${res.status}): ${body.slice(0, 300)}`);
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { parsed = []; }
+  if (Array.isArray(parsed)) return parsed;
+  return parsed?.data || parsed?.webhooks || [];
+}
+
+async function createEmailReplyWebhook(apiKey, campaignId, webhookUrl, { name = 'ReplyHandler EMAIL_REPLY' } = {}) {
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/webhook/create?api_key=${encodeURIComponent(apiKey)}`;
+  const payload = {
+    name,
+    webhook_url: webhookUrl,
+    email_campaign_id: cid,
+    association_type: 'campaign',
+    event_type_map: { EMAIL_REPLY: true },
+    force_create: true,
+  };
+  const res = await fetchWith429Retry(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const body = await res.text();
+  if (!res.ok) throw new Error(`SmartLead create webhook failed (${res.status}): ${body.slice(0, 300)}`);
+  try { return JSON.parse(body); } catch { return { ok: true, raw: body }; }
+}
+
+function webhookHasEmailReply(hook, targetUrl) {
+  if (!hook) return false;
+  const events = (hook.event_types || hook.eventTypes || []).map((e) => String(e).toUpperCase());
+  const map = hook.event_type_map || hook.eventTypeMap || {};
+  const mapHit = Object.entries(map).some(([k, v]) => String(k).toUpperCase() === 'EMAIL_REPLY' && v);
+  const hookUrl = String(hook.webhook_url || hook.webhookUrl || '').split('?')[0];
+  const want = String(targetUrl || '').split('?')[0];
+  return (events.includes('EMAIL_REPLY') || mapHit) && hookUrl === want;
+}
+
 module.exports = {
   getThreadHistory,
   sendReply,
@@ -528,4 +699,11 @@ module.exports = {
   fetchLeadCategories,
   updateLeadCategory,
   markLeadNotInterested,
+  listEmailAccounts,
+  listCampaigns,
+  listCampaignWebhooks,
+  createEmailReplyWebhook,
+  webhookHasEmailReply,
+  historyMessages,
+  fetchWith429Retry,
 };

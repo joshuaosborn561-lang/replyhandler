@@ -2,7 +2,7 @@ const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
-const { classifyAndDraft } = require('../services/classifier');
+const { classifyAndDraft, draftOnly } = require('../services/classifier');
 const slack = require('../services/slack');
 const { enrichPendingReplyPhone } = require('../services/reply-phone-enrichment');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
@@ -35,6 +35,7 @@ const {
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('../services/inbound-forward');
 const { isColdInbound } = require('../services/heyreach-poller');
+const { buildReplyAll } = require('../utils/reply-all');
 
 const router = Router();
 
@@ -346,25 +347,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       payload.lead?.first_name ||
       'Unknown';
 
-    let resolvedCampaignId = campaignId;
-    if ((!resolvedCampaignId || !leadId) && client.smartlead_api_key) {
-      try {
-        const resolved = await smartlead.resolveIdsFromMasterInbox(client.smartlead_api_key, {
-          leadId,
-          leadEmail,
-          statsId: payload.stats_id || payload.statsId || payload.email_stats_id,
-        });
-        if (resolved) {
-          resolvedCampaignId = resolvedCampaignId || resolved.campaignId;
-          leadId = leadId || resolved.leadId;
-          console.log('[Webhook] SmartLead resolved ids from master inbox', {
-            clientId, campaignId: resolvedCampaignId, leadId, via: 'master_inbox',
-          });
-        }
-      } catch (err) {
-        console.warn('[Webhook] SmartLead master inbox id resolution failed', { clientId, err: err.message });
-      }
-    }
+    const resolvedCampaignId = campaignId;
 
     if (slEnhance) {
       const ev = String(
@@ -394,212 +377,300 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       hasReplyObj: !!replyObj,
     });
 
-    if (!resolvedCampaignId || !leadId) {
-      console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId, leadId, hasEmail: !!leadEmail });
-      return res.status(200).json({ ok: true, error: 'missing required fields' });
-    }
-
     if (!client.smartlead_api_key) {
       console.warn('[Webhook] SmartLead skipped — no API key on client', { clientId, client: client.name });
       return res.status(200).json({ ok: true, skipped: true, reason: 'no_smartlead_api_key' });
     }
 
-    const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, resolvedCampaignId);
-    if (!campaignOk) {
-      console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
-        clientId, client: client.name, campaignId: resolvedCampaignId,
-      });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_account' });
+    let inboundForPersist = String(inboundMessage || '').trim();
+    if (slEnhance && inboundForPersist) {
+      inboundForPersist = cleanInboundReply(inboundForPersist) || inboundForPersist;
     }
 
-    await cancelForInboundReply({
-      clientId,
-      platform: 'smartlead',
-      campaignId: resolvedCampaignId,
-      leadId,
-      conversationId: null,
-    });
-
-    // Fetch full thread history AND resolve the email_stats_id we'll need at send time.
-    let threadContext;
-    let smartleadEmailStatsId = payload.stats_id || payload.statsId || null;
-    try {
-      threadContext = await smartlead.getThreadHistory(client.smartlead_api_key, resolvedCampaignId, leadId);
-      smartleadEmailStatsId = smartlead.extractStatsIdFromHistory(threadContext) || smartleadEmailStatsId;
-      console.log('[Webhook] SmartLead resolved stats_id', { clientId, campaignId: resolvedCampaignId, leadId, emailStatsId: smartleadEmailStatsId });
-    } catch (err) {
-      console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, client: client.name, err: err.message });
-      let fallbackMsg = String(inboundMessage || '').trim();
-      if (slEnhance && fallbackMsg) {
-        fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
-        fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
-      }
-      threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
-    }
-
-    let inboundEffective = String(inboundMessage || '').trim();
-    if (slEnhance && inboundEffective) {
-      inboundEffective = cleanInboundReply(inboundEffective) || inboundEffective;
-    }
-
-    if (slEnhance && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
-      const fromHist = latestInboundFromSmartleadHistory(threadContext, leadEmail);
-      const lastSentPlain = lastOutboundBodyFromSmartleadHistory(threadContext);
-      if (fromHist) {
-        const webhookLooksDup = lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain);
-        if (!inboundEffective || webhookLooksDup) {
-          inboundEffective = fromHist;
-          console.log('[Webhook] SmartLead inbound from message-history', {
-            clientId, campaignId: resolvedCampaignId, leadId, replacedWebhookDup: !!webhookLooksDup, len: inboundEffective.length,
-          });
-        }
-      } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
-        inboundEffective = '';
+    if (resolvedCampaignId && leadId && inboundForPersist) {
+      if (await smartleadDuplicateInDb({
+        clientId,
+        campaignId: resolvedCampaignId,
+        leadId,
+        leadEmail,
+        inboundMessage: inboundForPersist,
+      })) {
+        console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
       }
     }
 
-    if (!inboundEffective) {
-      console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName: `${leadName} (SmartLead)`,
+    const slEarly = classifyFromSmartlead(payload);
+    const placeholderClass = slEarly?.classification || 'OTHER';
+    let replyRow = null;
+    if (resolvedCampaignId && leadId && inboundForPersist) {
+      const claimed = await claimNewInbound({
+        clientId,
         platform: 'smartlead',
-        error:
-          'No usable reply body from webhook or message-history. Reply manually in SmartLead.',
+        leadId,
+        leadEmail,
+        inboundMessage: inboundForPersist,
+      }, async (conn) => {
+        const { rows: [inserted] } = await conn.query(
+          `INSERT INTO pending_replies
+            (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+          [
+            clientId, 'smartlead', resolvedCampaignId, smartleadCampaignName(payload) || null,
+            leadId, leadName, leadEmail, inboundForPersist, JSON.stringify([]),
+            placeholderClass, '', 'pending', payload.stats_id || payload.statsId || null,
+          ]
+        );
+        return inserted;
       });
-      return res.status(200).json({ ok: true, error: 'empty_inbound_after_history' });
-    }
-
-    let resolvedCampaignName = smartleadCampaignName(payload);
-    if (!resolvedCampaignName && client.smartlead_api_key && resolvedCampaignId) {
-      resolvedCampaignName = await smartlead.resolveCampaignName(
-        client.smartlead_api_key,
-        resolvedCampaignId
-      );
-    }
-    await maybeForwardInboundReply({
-      campaignId: resolvedCampaignId,
-      campaignName: resolvedCampaignName,
-      leadId,
-      leadEmail,
-      leadName,
-      inboundMessage: inboundEffective,
-      threadContext,
-    });
-
-    const campaignDisplaySl =
-      formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
-    const lastOutboundSl =
-      smartleadLastOutboundFromPayload(payload) ||
-      (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
-        ? lastOutboundBodyFromSmartleadHistory(threadContext)
-        : '');
-
-    if (await smartleadDuplicateInDb({
-      clientId,
-      campaignId: resolvedCampaignId,
-      leadId,
-      leadEmail,
-      inboundMessage: inboundEffective,
-    })) {
-      console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId, leadEmail });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
-    }
-
-    const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client);
-
-    let result;
-    try {
-      result = await classifyAndDraft(
-        threadContext,
-        inboundEffective,
-        client.voice_prompt,
-        client.booking_link,
-        schedulingPromptBlock,
-        {
-          leadName,
-          digestTimezone: client.digest_timezone,
-          platform: 'smartlead',
-          clientId,
-          leadId,
-          leadEmail,
-          clientName: client.name,
-          draftMode: 'realtime',
-        },
-      );
-    } catch (err) {
-      console.error('[Classifier] Failed for SmartLead reply', { clientId, client: client.name, err: err.message });
-      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-        leadName, platform: 'smartlead', error: err.message,
-      });
-      return res.status(200).json({ ok: true, error: 'classifier failed' });
-    }
-
-    let { classification, draft, proposed_time, reasoning } = result;
-
-    // SmartLead already categorised this reply. Prefer its answer over Gemini's
-    // for email — except mixed/conditional bodies, which we classify ourselves
-    // from the full inbound so a "hold off" opener cannot drop a conversation.
-    const slCategory = classifyFromSmartlead(payload, threadContext);
-    const applied = applySmartleadCategory({
-      slCategory, classification, inboundMessage: inboundEffective, reasoning,
-    });
-    if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead') {
-      console.log('[Webhook] Classified from full body over SmartLead category', {
-        source: applied.source,
-        smartlead: slCategory?.raw || null,
-        mappedTo: slCategory?.classification || null,
-        body: applied.classification,
-      });
-    } else if (slCategory && slCategory.classification !== classification) {
-      console.log('[Webhook] Using SmartLead category over Gemini', {
-        smartlead: slCategory.raw, mappedTo: slCategory.classification, gemini: classification,
-      });
-    }
-    classification = applied.classification;
-    reasoning = applied.reasoning;
-
-    if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
-      try {
-        const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${resolvedCampaignId}/leads/${leadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
-        await fetch(unsubUrl, { method: 'POST' });
-        console.log('[Webhook] Unsubscribed lead in SmartLead', { leadName, leadEmail, campaignId: resolvedCampaignId });
-      } catch (err) {
-        console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
+      if (claimed.duplicate) {
+        console.log('[Webhook] SmartLead duplicate suppressed (insert race)', {
+          clientId, leadId, existingId: claimed.existing?.id,
+        });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
       }
-    }
-    const suppressedReason = slackChannelSuppressionReason({
-      classification,
-      inboundMessage: inboundEffective,
-      isColdInbound: false,
-      pitchToUsProb: result.pitchToUsProb,
-    });
-    if (suppressedReason) {
-      console.log('[Webhook] SmartLead reply suppressed from Slack', { leadName, leadEmail, classification, reason: suppressedReason });
-      await recordSuppressedReply({
-        clientId, platform: 'smartlead', campaignId: resolvedCampaignId, leadId,
-        leadName, leadEmail, inboundMessage: inboundEffective,
-        classification, reason: suppressedReason, emailStatsId: smartleadEmailStatsId,
-      });
-      return res.status(200).json({ ok: true, skipped: true, reason: suppressedReason });
-    }
-    const policy = applyFactCheckToPolicy(
-      applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning }),
-      result.factCheck,
-    );
-    draft = policy.draft;
-    reasoning = policy.reasoning;
-    const isDraft = policy.isDraft;
-    const status = policy.status;
-    if (policy.skippedDraft) {
-      console.log('[Webhook] SmartLead draft skipped by client policy', {
-        leadName, leadEmail, classification, reason: policy.skipReason,
-      });
+      replyRow = claimed.reply;
     }
 
+    res.status(200).json({ ok: true, accepted: true, replyId: replyRow?.id || null });
+
+    setImmediate(() => {
+      processSmartleadWebhookAsync({
+        client,
+        clientId,
+        payload,
+        leadData,
+        campaignId: resolvedCampaignId,
+        leadId,
+        leadEmail,
+        leadName,
+        inboundMessage,
+        slEnhance,
+        replyRow,
+        smartleadEmailStatsId: payload.stats_id || payload.statsId || null,
+      }).catch((err) => {
+        console.error('[Webhook] SmartLead async handler error', {
+          clientId, err: err.message, stack: err.stack,
+        });
+      });
+    });
+    return;
+  } catch (err) {
+    console.error('[Webhook] SmartLead handler error', { clientId, err: err.message, stack: err.stack });
+    if (!res.headersSent) {
+      res.status(200).json({ ok: true, error: 'internal error' });
+    }
+    return;
+  }
+});
+
+async function processSmartleadWebhookAsync({
+  client,
+  clientId,
+  payload,
+  leadData,
+  campaignId,
+  leadId,
+  leadEmail,
+  leadName,
+  inboundMessage,
+  slEnhance,
+  replyRow,
+  smartleadEmailStatsId,
+}) {
+  let resolvedCampaignId = campaignId;
+  let resolvedLeadId = leadId;
+  if ((!resolvedCampaignId || !resolvedLeadId) && client.smartlead_api_key) {
+    try {
+      const resolved = await smartlead.resolveIdsFromMasterInbox(client.smartlead_api_key, {
+        leadId: resolvedLeadId,
+        leadEmail,
+        statsId: payload.stats_id || payload.statsId || payload.email_stats_id,
+      });
+      if (resolved) {
+        resolvedCampaignId = resolvedCampaignId || resolved.campaignId;
+        resolvedLeadId = resolvedLeadId || resolved.leadId;
+      }
+    } catch (err) {
+      console.warn('[Webhook] SmartLead master inbox id resolution failed', { clientId, err: err.message });
+    }
+  }
+
+  if (!resolvedCampaignId || !resolvedLeadId) {
+    console.error('[Webhook] SmartLead payload missing campaign_id or lead_id', { clientId, hasEmail: !!leadEmail });
+    return;
+  }
+
+  const campaignOk = await smartlead.verifyCampaignAccess(client.smartlead_api_key, resolvedCampaignId);
+  if (!campaignOk) {
+    console.warn('[Webhook] SmartLead campaign not accessible for this client (wrong URL or wrong account)', {
+      clientId, campaignId: resolvedCampaignId,
+    });
+    return;
+  }
+
+  await cancelForInboundReply({
+    clientId,
+    platform: 'smartlead',
+    campaignId: resolvedCampaignId,
+    leadId: resolvedLeadId,
+    conversationId: null,
+  });
+
+  let threadContext;
+  let statsId = smartleadEmailStatsId || null;
+  let resolvedCampaignName = smartleadCampaignName(payload);
+  try {
+    const [hist, campName] = await Promise.all([
+      smartlead.getThreadHistory(client.smartlead_api_key, resolvedCampaignId, resolvedLeadId).catch((err) => {
+        console.error('[Webhook] Failed to fetch SmartLead thread', { clientId, err: err.message });
+        return null;
+      }),
+      resolvedCampaignName
+        ? Promise.resolve(resolvedCampaignName)
+        : smartlead.resolveCampaignName(client.smartlead_api_key, resolvedCampaignId),
+    ]);
+    if (hist) {
+      threadContext = hist;
+      statsId = smartlead.extractStatsIdFromHistory(hist) || statsId;
+    }
+    if (campName) resolvedCampaignName = campName;
+  } catch (err) {
+    console.error('[Webhook] SmartLead parallel fetch failed', { clientId, err: err.message });
+  }
+  if (!threadContext) {
+    let fallbackMsg = String(inboundMessage || '').trim();
+    if (slEnhance && fallbackMsg) {
+      fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
+      fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
+    }
+    threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
+  }
+
+  let inboundEffective = String(inboundMessage || '').trim();
+  if (slEnhance && inboundEffective) {
+    inboundEffective = cleanInboundReply(inboundEffective) || inboundEffective;
+  }
+
+  if (slEnhance && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
+    const fromHist = latestInboundFromSmartleadHistory(threadContext, leadEmail);
+    const lastSentPlain = lastOutboundBodyFromSmartleadHistory(threadContext);
+    if (fromHist) {
+      const webhookLooksDup = lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain);
+      if (!inboundEffective || webhookLooksDup) {
+        inboundEffective = fromHist;
+      }
+    } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
+      inboundEffective = '';
+    }
+  }
+
+  if (!inboundEffective) {
+    console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId });
+    await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+      leadName: `${leadName} (SmartLead)`,
+      platform: 'smartlead',
+      error: 'No usable reply body from webhook or message-history. Reply manually in SmartLead.',
+    });
+    return;
+  }
+
+  const replyAll = buildReplyAll({
+    history: threadContext,
+    originalLeadEmail: leadEmail,
+    fallbackName: leadName,
+  });
+  const senderName = replyAll.senderDisplayName || leadName;
+  const greetName = replyAll.senderFirstName && replyAll.senderFirstName !== 'there'
+    ? replyAll.senderFirstName
+    : senderName;
+
+  await maybeForwardInboundReply({
+    campaignId: resolvedCampaignId,
+    campaignName: resolvedCampaignName,
+    leadId: resolvedLeadId,
+    leadEmail,
+    leadName: senderName,
+    inboundMessage: inboundEffective,
+    threadContext,
+  });
+
+  const campaignDisplaySl =
+    formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
+  const lastOutboundSl =
+    smartleadLastOutboundFromPayload(payload) ||
+    (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)
+      ? lastOutboundBodyFromSmartleadHistory(threadContext)
+      : '');
+
+  if (!replyRow && await smartleadDuplicateInDb({
+    clientId,
+    campaignId: resolvedCampaignId,
+    leadId: resolvedLeadId,
+    leadEmail,
+    inboundMessage: inboundEffective,
+  })) {
+    console.log('[Webhook] SmartLead duplicate suppressed (db, async)', { clientId, campaignId: resolvedCampaignId });
+    return;
+  }
+
+  let result;
+  try {
+    result = await classifyAndDraft(
+      threadContext,
+      inboundEffective,
+      client.voice_prompt,
+      client.booking_link,
+      '',
+      {
+        leadName: greetName,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientId,
+        leadId: resolvedLeadId,
+        leadEmail,
+        clientName: client.name,
+        draftMode: 'realtime',
+        deferDraft: true,
+      },
+    );
+  } catch (err) {
+    console.error('[Classifier] Failed for SmartLead reply', { clientId, err: err.message });
+    await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+      leadName: greetName, platform: 'smartlead', error: err.message,
+    });
+    return;
+  }
+
+  let { classification, draft, proposed_time, reasoning } = result;
+
+  const slCategory = classifyFromSmartlead(payload, threadContext);
+  const applied = applySmartleadCategory({
+    slCategory, classification, inboundMessage: inboundEffective, reasoning,
+  });
+  classification = applied.classification;
+  reasoning = applied.reasoning;
+
+  if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
+    try {
+      const unsubUrl = `https://server.smartlead.ai/api/v1/campaigns/${resolvedCampaignId}/leads/${resolvedLeadId}/unsubscribe?api_key=${encodeURIComponent(client.smartlead_api_key)}`;
+      await fetch(unsubUrl, { method: 'POST' });
+    } catch (err) {
+      console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
+    }
+  }
+  const suppressedReason = slackChannelSuppressionReason({
+    classification,
+    inboundMessage: inboundEffective,
+    isColdInbound: false,
+    pitchToUsProb: result.pitchToUsProb,
+  });
+
+  if (!replyRow) {
     const claimed = await claimNewInbound({
       clientId,
       platform: 'smartlead',
-      leadId,
+      leadId: resolvedLeadId,
       leadEmail,
       inboundMessage: inboundEffective,
     }, async (conn) => {
@@ -607,66 +678,189 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         `INSERT INTO pending_replies
           (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-        [clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null, leadId, leadName, leadEmail, inboundEffective, JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId]
+        [
+          clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null,
+          resolvedLeadId, senderName, leadEmail, inboundEffective, JSON.stringify(threadContext),
+          classification, '', suppressedReason ? 'suppressed' : 'pending', statsId,
+        ]
       );
       return inserted;
     });
     if (claimed.duplicate) {
-      console.log('[Webhook] SmartLead duplicate suppressed (insert race)', {
-        clientId, leadId, leadEmail, existingId: claimed.existing?.id,
+      console.log('[Webhook] SmartLead duplicate suppressed (insert race, async)', {
+        clientId, existingId: claimed.existing?.id,
       });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
+      return;
     }
-    const reply = claimed.reply;
-
-    if (isDraft && classification === 'MEETING_PROPOSED') {
-      await db.query(
-        `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
-         VALUES ($1, $2, $3, $4, $5, 'proposed')`,
-        [clientId, reply.id, leadName, leadEmail, proposed_time]
-      );
-    }
-
-    const slackCard = {
-      replyId: reply.id,
-      leadName,
-      leadEmail,
-      leadCompany: leadData.company_name || leadData.company || payload.company_name || payload.company || null,
-      platform: 'smartlead',
-      classification,
-      draft,
-      reasoning,
-      needsReview: policy.needsReview,
-      inboundMessage: inboundEffective,
-      campaignDisplay: campaignDisplaySl,
-      lastOutboundMessage: lastOutboundSl,
-      repliedAt: reply.created_at,
-      leadData,
-      payload,
-      linkedinUrl: leadData.linkedin_url || leadData.linkedinUrl || payload.linkedin_url || undefined,
-      leadWebsite: leadData.website || leadData.company_website || leadData.company_url || undefined,
-    };
-
-    await postProspectSlackCard({
-      token: client.slack_bot_token,
-      channelId: client.slack_channel_id,
-      clientId,
-      platform: 'smartlead',
-      campaignId: resolvedCampaignId,
-      leadId,
-      threadContext,
-      isDraft,
-      replyId: reply.id,
-      card: slackCard,
-    });
-
-    res.status(200).json({ ok: true, classification, replyId: reply.id });
-
-  } catch (err) {
-    console.error('[Webhook] SmartLead handler error', { clientId, err: err.message, stack: err.stack });
-    res.status(200).json({ ok: true, error: 'internal error' });
+    replyRow = claimed.reply;
+  } else {
+    await db.query(
+      `UPDATE pending_replies
+          SET campaign_id = $1, campaign_name = $2, lead_id = $3, lead_name = $4,
+              inbound_message = $5, thread_context = $6, classification = $7,
+              smartlead_email_stats_id = COALESCE($8, smartlead_email_stats_id),
+              updated_at = now()
+        WHERE id = $9`,
+      [
+        String(resolvedCampaignId), resolvedCampaignName || null, String(resolvedLeadId),
+        senderName, inboundEffective, JSON.stringify(threadContext), classification,
+        statsId, replyRow.id,
+      ]
+    );
   }
-});
+
+  if (suppressedReason) {
+    console.log('[Webhook] SmartLead reply suppressed from Slack', { classification, reason: suppressedReason });
+    await db.query(
+      `UPDATE pending_replies
+          SET status = 'suppressed', suppression_reason = $1, classification = $2, updated_at = now()
+        WHERE id = $3`,
+      [suppressedReason, classification, replyRow.id]
+    );
+    return;
+  }
+
+  let policy = applyFactCheckToPolicy(
+    applyClientDraftPolicy(client, leadEmail, { classification, draft: '', reasoning }),
+    null,
+  );
+  let isDraft = policy.isDraft;
+  let status = policy.status;
+
+  const slackCard = {
+    replyId: replyRow.id,
+    leadName: senderName,
+    leadEmail,
+    leadCompany: leadData.company_name || leadData.company || payload.company_name || payload.company || null,
+    platform: 'smartlead',
+    classification,
+    draft: '',
+    reasoning,
+    needsReview: false,
+    inboundMessage: inboundEffective,
+    campaignDisplay: campaignDisplaySl,
+    lastOutboundMessage: lastOutboundSl,
+    repliedAt: replyRow.created_at,
+    leadData,
+    payload,
+    linkedinUrl: leadData.linkedin_url || leadData.linkedinUrl || payload.linkedin_url || undefined,
+    leadWebsite: leadData.website || leadData.company_website || leadData.company_url || undefined,
+  };
+
+  const posted = await postProspectSlackCard({
+    token: client.slack_bot_token,
+    channelId: client.slack_channel_id,
+    clientId,
+    platform: 'smartlead',
+    campaignId: resolvedCampaignId,
+    leadId: resolvedLeadId,
+    threadContext,
+    isDraft,
+    replyId: replyRow.id,
+    card: slackCard,
+  });
+
+  if (!isDraft) {
+    await db.query(
+      `UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2`,
+      [status, replyRow.id]
+    );
+    return;
+  }
+
+  const { promptBlock, slots } = await resolveVerifiedSchedulingSlots(client);
+  let drafted = '';
+  try {
+    drafted = await draftOnly({
+      classification,
+      threadContext,
+      inboundMessage: inboundEffective,
+      leadName: greetName,
+      voicePrompt: client.voice_prompt,
+      bookingLink: client.booking_link,
+      schedulingPromptBlock: promptBlock,
+      digestTimezone: client.digest_timezone,
+      platform: 'smartlead',
+      clientName: client.name,
+      clientId,
+      draftMode: 'realtime',
+      slots,
+    });
+  } catch (err) {
+    console.error('[Webhook] SmartLead draft failed after card', { clientId, err: err.message });
+  }
+
+  const { applyFactCheckToPolicy: applyFc, enforceDraftGrounding, factSourceText } = require('../utils/draft-fact-check');
+  void applyFc;
+  policy = applyFactCheckToPolicy(
+    applyClientDraftPolicy(client, leadEmail, { classification, draft: drafted || '', reasoning }),
+    result.factCheck,
+  );
+  if (drafted) {
+    const sourceText = factSourceText({
+      inboundMessage: inboundEffective,
+      threadContext,
+      leadName: greetName,
+      clientName: client.name,
+      schedulingPromptBlock: promptBlock,
+      voicePrompt: client.voice_prompt,
+    });
+    const factCheck = await enforceDraftGrounding({
+      draft: drafted,
+      sourceText,
+      regenerate: (claims) => draftOnly({
+        classification,
+        threadContext,
+        inboundMessage: inboundEffective,
+        leadName: greetName,
+        voicePrompt: client.voice_prompt,
+        bookingLink: client.booking_link,
+        schedulingPromptBlock: promptBlock,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientName: client.name,
+        clientId,
+        draftMode: 'realtime',
+        slots,
+        factCheckRetryClaims: claims,
+      }),
+    });
+    policy = applyFactCheckToPolicy(policy, factCheck);
+    drafted = policy.draft;
+    reasoning = policy.reasoning;
+  }
+
+  await db.query(
+    `UPDATE pending_replies
+        SET draft_reply = $1, classification = $2, status = $3, updated_at = now()
+      WHERE id = $4`,
+    [drafted || '', classification, policy.status, replyRow.id]
+  );
+
+  if (posted?.ts && drafted) {
+    try {
+      await slack.updateDraftApprovalCard(client.slack_bot_token, client.slack_channel_id, posted.ts, {
+        ...slackCard,
+        draft: drafted,
+        reasoning,
+        needsReview: policy.needsReview,
+      });
+    } catch (err) {
+      console.warn('[Webhook] Slack draft update failed', { replyId: replyRow.id, err: err.message });
+    }
+  }
+
+  if (policy.isDraft && classification === 'MEETING_PROPOSED') {
+    await db.query(
+      `INSERT INTO meetings (client_id, pending_reply_id, lead_name, lead_email, proposed_time, status)
+       VALUES ($1, $2, $3, $4, $5, 'proposed')`,
+      [clientId, replyRow.id, senderName, leadEmail, proposed_time]
+    );
+  }
+
+  console.log('[Webhook] SmartLead processed async', { clientId, classification, replyId: replyRow.id });
+}
+
 
 // ─── HeyReach Webhook ────────────────────────────────────────────────
 router.post('/webhook/heyreach/:clientId', async (req, res) => {

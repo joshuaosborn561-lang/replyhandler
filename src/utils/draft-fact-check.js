@@ -14,6 +14,8 @@ const FACT_GROUNDING_RULES = [
   '- Use only facts present in the provided context (current thread, latest reply, scheduling guidance, CLIENT VOICE / CLIENT NOTES, and the names given there).',
   '- Never state or guess a location, company size, client name, pricing, result, or any other specific unless that exact fact appears in the provided context.',
   '- If they ask where you are based (or any other specific) and the context does not say, do not invent a city, state, or region. Say you do not want to guess over email and offer a short call.',
+  '- Never state a seat, section, row, venue, date, or ticket quantity — tickets get worked out after a quick call.',
+  '- Never state meeting times that did not come from the scheduling guidance / calendar. If no verified times are provided, do not invent clock times.',
 ].join('\n');
 
 const GENERIC_CAPITALIZED_TERMS = new Set([
@@ -150,6 +152,21 @@ function extractLocationClaims(draft) {
   return claims;
 }
 
+function extractTicketDetailClaims(draft) {
+  const text = String(draft || '');
+  const claims = [];
+  const patterns = [
+    /\bseats?\s*[:#-]?\s*[A-Z]?\d{1,4}[A-Z]?\b/gi,
+    /\bsec(?:tion)?\s*[:#-]?\s*[A-Z]?\d{1,4}[A-Z]?\b/gi,
+    /\brow\s*[:#-]?\s*[A-Z]?\d{1,3}[A-Z]?\b/gi,
+  ];
+  for (const re of patterns) {
+    const hits = text.match(re) || [];
+    for (const hit of hits) addClaim(claims, hit.replace(/\s+/g, ' ').trim(), 'ticket_detail');
+  }
+  return claims;
+}
+
 function extractNumberClaims(draft) {
   const text = String(draft || '');
   const claims = [];
@@ -200,6 +217,7 @@ function extractClaims(draft) {
     ...extractLocationClaims(draft),
     ...extractNumberClaims(draft),
     ...extractProperNouns(draft),
+    ...extractTicketDetailClaims(draft),
   ];
 }
 
@@ -379,6 +397,7 @@ module.exports = {
   GENERIC_CAPITALIZED_TERMS,
   US_CITIES,
   extractClaims,
+  extractTicketDetailClaims,
   findUnsupportedClaims,
   stripUnsupportedClaims,
   factSourceText,

@@ -307,11 +307,24 @@ test('positive replies include two times and the booking link', () => {
     classification: 'INTERESTED',
     digestTimezone: 'America/Chicago',
     bookingLink: link,
+    slotLabels: ['Tue, Oct 6, 10:00 AM CDT', 'Wed, Oct 7, 2:00 PM CDT'],
   });
-  assert.match(first, /mid-morning|afternoon/i,
+  assert.match(first, /Tue, Oct 6, 10:00 AM CDT/,
     reversal('two times + booking link', 'first positive reply dropped the two times'));
   assert.ok(first.includes(link),
     reversal('two times + booking link', 'first positive reply dropped the booking link'));
+
+  const noSlots = fallbackDraftText({
+    leadName: 'Dean',
+    inboundMessage: 'Sure',
+    classification: 'INTERESTED',
+    digestTimezone: 'America/Chicago',
+    bookingLink: link,
+  });
+  assert.ok(!/\b(mid-morning|early afternoon)\b/.test(noSlots),
+    reversal('never invent calendar times', 'fallback invented dayparts without calendar slots'));
+  assert.ok(noSlots.includes(link),
+    reversal('two times + booking link', 'empty-calendar fallback dropped the booking link'));
 
   const nextDay = fallbackReattempt({
     leadName: 'Dean',
@@ -369,8 +382,8 @@ test('open times come from the public booking page, not a client OAuth secret', 
     reversal('public booking page, no client OAuth', 'slot lookup still requires a Calendly PAT'));
   assert.doesNotMatch(resolve, /fetchCalendarFreeStarts/,
     reversal('public booking page, no client OAuth', 'we fell back to client calendar OAuth instead of the public page'));
-  assert.match(resolve, /4000/,
-    reversal('public booking page, no client OAuth', 'the poller/webhook quick path lost its short timeout'));
+  assert.match(resolve, /8000/,
+    reversal('public booking page, no client OAuth', 'the poller/webhook quick path lost its ~8s timeout'));
 });
 
 test('regular booking links are wrapped and the destination is kept', () => {
@@ -574,8 +587,8 @@ test('FOLLOW_UP cards post in the main channel with thread context', () => {
   const slackSrc = read('src/services/slack.js');
   assert.ok(runner.includes('postInThread: false'),
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'FOLLOW_UP cards are threading again'));
-  assert.ok(/postInThread\s*=\s*true/.test(poster) || poster.includes('postInThread = true'),
-    reversal('FOLLOW_UP cards post in the main channel with thread context', 'postProspectSlackCard lost the postInThread option'));
+  assert.ok(/postInThread\s*=\s*false/.test(poster) || poster.includes('postInThread = false'),
+    reversal('new replies post as top-level cards', 'postProspectSlackCard default is no longer false'));
   assert.ok(runner.includes('inbound_message') && runner.includes('sent_reply'),
     reversal('FOLLOW_UP cards post in the main channel with thread context', 'source reply context is no longer loaded'));
   assert.ok(runner.includes('getPermalink') || slackSrc.includes('getPermalink'),
@@ -868,10 +881,13 @@ test("SmartLead's category wins over Gemini for email", () => {
   assert.strictEqual(categoryToClassification('Not Interested'), 'NOT_INTERESTED');
   assert.strictEqual(categoryToClassification('Out Of Office'), 'OOO');
 
-  // An unrecognised category must still surface, never silently drop.
+  // Unknown numeric/name category: never OTHER — caller uses our classifier.
   const unmapped = classifyFromSmartlead({ lead_category: 'Referred to colleague' });
-  assert.strictEqual(unmapped.classification, 'OTHER',
-    reversal("SmartLead's category classifies email", 'an unknown category is no longer surfaced'));
+  assert.strictEqual(unmapped, null,
+    reversal('unknown SmartLead category uses our classifier', 'an unknown category is stamped OTHER'));
+  assert.strictEqual(categoryToClassification(1), 'INTERESTED');
+  assert.strictEqual(categoryToClassification(2), 'MEETING_PROPOSED');
+  assert.strictEqual(categoryToClassification(99), null);
 
   // No category at all → fall back to Gemini rather than guessing.
   assert.strictEqual(classifyFromSmartlead({ foo: 1 }), null);
@@ -2005,7 +2021,7 @@ test('FYI emails CC ops and invite reply to the ops inbox', () => {
 // ── Decision: /admin is keyed and fail-closed ─────────────────────────
 test('all /admin routes require ADMIN_API_KEY and fail closed', () => {
   const auth = read('src/utils/admin-auth.js');
-  const index = read('src/index.js');
+  const index = read('src/app.js');
   const admin = read('src/routes/admin.js');
   const testWh = read('src/routes/test-webhooks.js');
   const voice = read('src/routes/voice-learning.js');
@@ -2016,7 +2032,7 @@ test('all /admin routes require ADMIN_API_KEY and fail closed', () => {
   assert.match(decisions, /all \/admin routes require ADMIN_API_KEY and fail closed/,
     reversal('admin auth', 'the decision was removed from DECISIONS.md'));
   assert.match(index, /requireAdminApiKey/,
-    reversal('admin auth', 'index.js no longer mounts admin auth on /admin'));
+    reversal('admin auth', 'app.js no longer mounts admin auth on /admin'));
   assert.match(admin, /requireAdminApiKey/,
     reversal('admin auth', 'admin.js no longer requires ADMIN_API_KEY'));
   assert.match(testWh, /requireAdminApiKey/,
@@ -2211,4 +2227,31 @@ test('cold inbound pitches at 0.8 are hidden; campaign threads are not', () => {
     reversal('pitch filter', 'suppressed replies are no longer recorded'));
   assert.match(poller, /pitch_inbound|PITCH_INBOUND|pitchToUsProb/,
     reversal('pitch filter', 'the poller no longer passes pitch into the Slack gate'));
+});
+
+// ── Decision: dashboard stays open, no login ──────────────────────────
+test('the dashboard stays open with no login', () => {
+  const decisions = read('DECISIONS.md');
+  const claude = read('CLAUDE.md');
+  const html = read('src/public/index.html');
+  const app = read('src/app.js');
+  const load = html.slice(html.indexOf('async function loadClients()'), html.indexOf('function renderStats()'));
+  assert.match(decisions, /dashboard stays open with no login/,
+    reversal('open dashboard', 'the decision was removed from DECISIONS.md'));
+  assert.match(claude, /dashboard stays open with no login/,
+    reversal('open dashboard', 'CLAUDE.md no longer forbids adding dashboard auth'));
+  assert.match(app, /dashboardApiRoutes/);
+  assert.doesNotMatch(load, /window\.prompt|getAdminKey|adminFetch/,
+    reversal('open dashboard', 'page load prompts for ADMIN_API_KEY again'));
+});
+
+test('new replies post as top-level cards and link to an earlier card', () => {
+  const poster = read('src/services/slack-reply-post.js');
+  const slackSrc = read('src/services/slack.js');
+  assert.match(poster, /postInThread = false/,
+    reversal('top-level reply cards', 'new replies thread under the previous card again'));
+  assert.match(poster, /Earlier-card permalink|earlierPermalink|threadPermalink/,
+    reversal('top-level reply cards', 'the earlier-card permalink was removed'));
+  assert.match(slackSrc, /Earlier card/,
+    reversal('top-level reply cards', 'the Earlier card label was removed'));
 });

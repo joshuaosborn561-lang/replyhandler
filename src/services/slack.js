@@ -781,7 +781,8 @@ function buildDraftApprovalCard({
 
   let contextText = `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_`;
   if (threadPermalink) {
-    contextText += ` · <${threadPermalink}|Original thread>`;
+    const permalinkLabel = isFollowUp ? 'Original thread' : 'Earlier card';
+    contextText += ` · <${threadPermalink}|${permalinkLabel}>`;
   }
 
   const metaBlocks = [

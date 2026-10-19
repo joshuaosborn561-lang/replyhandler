@@ -214,8 +214,9 @@ function fallbackDraftText({
   const link = prospectBookingLink({ clientName, bookingLink });
   const msg = String(inboundMessage || '').trim();
   const labels = Array.isArray(slotLabels) ? slotLabels.filter(Boolean) : [];
-  const time1 = labels[0] || `${d1} mid-morning`;
-  const time2 = labels[1] || `${d2} early afternoon`;
+  const time1 = labels[0] || '';
+  const time2 = labels[1] || '';
+  const hasVerifiedTimes = labels.length >= 2;
 
   const {
     prefersInPersonMeeting, prefersCallbackCall, shouldIncludeBookingLink, meetingCta,
@@ -264,7 +265,7 @@ function fallbackDraftText({
       ? 'Would love to see if this is a fit.'
       : 'Happy to stop by and walk through it in person.';
     const cta = meetingCta({ voicePrompt, day1: d1, day2: d2 });
-    if (labels.length >= 2) {
+    if (hasVerifiedTimes) {
       return (
         `Hey ${name}, thanks for getting back to me. ${ack} ` +
         `Does ${time1} or ${time2} work for me to stop by in person? ` +
@@ -273,7 +274,7 @@ function fallbackDraftText({
     }
     return (
       `Hey ${name}, thanks for getting back to me. ${ack} ` +
-      `${cta.suggestLine} ${cta.neitherLine}`
+      `What time works for me to stop by in person? ${cta.neitherLine}`
     );
   }
 
@@ -303,9 +304,16 @@ function fallbackDraftText({
   const ack = clearInterest
     ? 'Would love to see if this is a fit.'
     : 'Happy to jump on a quick call and walk through it.';
+  if (hasVerifiedTimes) {
+    return (
+      `Hey ${name}, thanks for getting back to me. ${ack} ` +
+      `Does ${time1} or ${time2} work for a quick call with ${whom}?` +
+      `${linkBit}`
+    );
+  }
   return (
     `Hey ${name}, thanks for getting back to me. ${ack} ` +
-    `Does ${time1} or ${time2} work for a quick call with ${whom}?` +
+    `What time works for a quick call with ${whom}?` +
     `${linkBit}`
   );
 }
@@ -487,17 +495,15 @@ function buildTimeSuggestionBlock({
         : 'TIMES-FIRST RULE: Suggest those two verified times in plain language. Do NOT paste any booking/Calendly URL in this reply.')
     );
   }
-  const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
   if (includeBookingLink) {
     return (
-      `TIMES + BOOKING LINK: Suggest two concrete options in the next few business days ` +
-      `(e.g. ${d1} mid-morning or ${d2} early afternoon), then include the booking URL once.`
+      `NO verified calendar times were provided. Do NOT invent clock times, dayparts, or fake availability. ` +
+      `Ask what time works for a call, then include the booking URL once.`
     );
   }
   return (
-    `TIMES-FIRST RULE: Suggest two concrete options in the next few business days ` +
-    `(e.g. ${d1} mid-morning or ${d2} early afternoon). ` +
-    `Do NOT include any booking/Calendly URL or http link in this reply.`
+    `NO verified calendar times were provided. Do NOT invent clock times, dayparts, or fake availability. ` +
+    `Ask what time works for a call. Do NOT include any booking/Calendly URL or http link in this reply.`
   );
 }
 
@@ -646,6 +652,8 @@ ${bookingRules}
 ${channelNote}
 
 Do NOT hallucinate offer details, pricing, or specifics not in the thread.
+Never state a seat, section, row, venue, date, or ticket quantity — tickets get worked out after a quick call.
+Never state meeting times that did not come from the scheduling guidance.
 ${FACT_GROUNDING_RULES}
 Do NOT use em dashes. Do NOT add any sign-off, closing line, or signature — no "Best," no "Thanks," and no name at the end. The mailbox appends the real signature on send. End on the last sentence of the message itself.
 Always finish every sentence. Never cut off mid-thought.`;
@@ -777,6 +785,8 @@ async function draftOnly({
   clientId = null,
   draftMode = 'realtime',
   factCheckRetryClaims = null,
+  slotLabels = null,
+  slots = null,
 }) {
   if (!assertDraftableClassification(classification)) {
     console.warn('[Classifier] Refusing draft for non-positive classification', {
@@ -850,6 +860,10 @@ async function draftOnly({
       ? `\n\n${factCheckRetryHint(factCheckRetryClaims)}`
       : '');
 
+  const resolvedSlotLabels = Array.isArray(slotLabels) && slotLabels.length
+    ? slotLabels
+    : (Array.isArray(slots) ? slots.map((s) => (s && s.label) || s).filter(Boolean) : []);
+
   const deterministicFallback = () => finalizeDraft(fallbackDraftText({
     leadName,
     inboundMessage,
@@ -860,6 +874,7 @@ async function draftOnly({
     includeBookingLink,
     voicePrompt,
     clientName,
+    slotLabels: resolvedSlotLabels,
   }), { booking, includeBookingLink, voicePrompt, leadName, clientName });
 
   async function draftWithGemini() {
@@ -966,6 +981,9 @@ async function classifyAndDraft(
     leadName, digestTimezone, platform,
     clientId = null, leadId = null, leadEmail = null, clientName = null,
     draftMode = 'realtime',
+    deferDraft = false,
+    slots = null,
+    slotLabels = null,
   } = {},
 ) {
   // Deterministic pre-classification gates — kill drafts that should not exist.
@@ -999,6 +1017,24 @@ async function classifyAndDraft(
   const { shouldIncludeBookingLink } = require('../utils/meeting-modality');
   const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt, clientName);
 
+  if (deferDraft) {
+    const note = preGate ? ` (pre-gate: ${preGate})` : (classifySource ? ` (${classifySource})` : '');
+    return {
+      classification,
+      pitchToUsProb,
+      classifySource: preGate ? `pre-gate:${preGate}` : classifySource,
+      draft: null,
+      proposed_time: null,
+      includeBookingLink,
+      replyMode: ordinal.mode,
+      replyOrdinal: ordinal.replyOrdinal,
+      factCheck: null,
+      reasoning: needsDraft
+        ? `Classified as ${classification}; draft deferred${note}.`
+        : `Classified as ${classification}; no draft${note}.`,
+    };
+  }
+
   let draft = needsDraft
     ? await draftOnly({
       classification,
@@ -1016,6 +1052,8 @@ async function classifyAndDraft(
       clientName,
       clientId,
       draftMode,
+      slots,
+      slotLabels,
     })
     : null;
 
@@ -1052,6 +1090,8 @@ async function classifyAndDraft(
         clientId,
         draftMode,
         factCheckRetryClaims: claims,
+        slots,
+        slotLabels,
       }),
     });
     draft = factCheck.text;

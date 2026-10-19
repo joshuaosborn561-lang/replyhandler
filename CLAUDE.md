@@ -40,7 +40,7 @@ Pushing only to `main` does nothing. Keep both in sync.
 
 ## Do not lower the JSON body limit
 
-`src/index.js` sets `express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' })`.
+`src/app.js` sets `express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb' })`.
 
 On the Express default (100kb), real SmartLead reply payloads — HTML body plus
 quoted thread history plus signatures — are rejected with 413 **before the
@@ -288,6 +288,17 @@ separate things must both be true, and they fail with different errors:
    `GMAIL_CLIENT_ID`.** That project only had Gmail enabled, so Drive returned
    403 "has not been used in project ... before or it is disabled" even with a
    correctly-scoped token. Enabling the API is a one-time console action.
+
+## Dashboard stays open with no login
+
+`/dashboard` is a public read-only UI. It loads with no prompt and no
+`ADMIN_API_KEY`. Read-only data lives under `/dashboard/api/*` and never
+returns SmartLead / HeyReach / Allo keys or Slack tokens — presence is a
+boolean. `/admin/*` stays behind `requireAdminApiKey`. Edit / create /
+deactivate may prompt for the key **only when you click an edit**, never
+on page load. Do not add dashboard auth back.
+
+Guard: `the dashboard stays open with no login`
 
 ## Diagnostics
 
