@@ -69,9 +69,13 @@ test('parseDryRun defaults true; only explicit falsey flags run live', () => {
   assert.equal(parseDryRun('0'), false);
 });
 
-test('shouldResurface is mixed or QUESTION, not a clear decline', () => {
+test('shouldResurface is mixed, QUESTION, or a contact-info ask', () => {
   assert.equal(shouldResurface({ classification: 'NOT_INTERESTED', inboundMessage: MIXED }), true);
   assert.equal(shouldResurface({ classification: 'QUESTION', inboundMessage: QUESTION }), true);
+  assert.equal(shouldResurface({
+    classification: 'OTHER',
+    inboundMessage: 'Send me your contact information',
+  }), true);
   assert.equal(shouldResurface({ classification: 'NOT_INTERESTED', inboundMessage: DECLINE }), false);
   assert.equal(shouldResurface({ classification: 'INTERESTED', inboundMessage: 'Sure, let us talk next week.' }), false);
 });

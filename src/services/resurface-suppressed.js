@@ -14,6 +14,7 @@ const { classifyAndDraft } = require('./classifier');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { isPostedSlackTs } = require('./reply-dedupe');
 const { looksLikeMixedIntent, promoteMixedIntent } = require('../utils/mixed-intent');
+const { looksLikeContactInfoAsk, applyContactInfoInterest } = require('../utils/contact-info-interest');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { isColdInbound } = require('./heyreach-poller');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
@@ -55,9 +56,13 @@ function shouldResurface({
 } = {}) {
   const inbound = inboundMessage || '';
   const mixed = looksLikeMixedIntent(inbound);
-  const promoted = promoteMixedIntent(classification, inbound);
+  const contactAsk = looksLikeContactInfoAsk(inbound);
+  const promoted = applyContactInfoInterest(
+    promoteMixedIntent(classification, inbound),
+    inbound,
+  );
   const isQuestion = String(promoted || '').toUpperCase() === 'QUESTION';
-  if (!mixed && !isQuestion) return false;
+  if (!mixed && !isQuestion && !contactAsk) return false;
   return !slackChannelSuppressionReason({
     classification: promoted,
     inboundMessage: inbound,
@@ -150,7 +155,10 @@ async function resurfaceSuppressedReplies({
       continue;
     }
 
-    const classification = promoteMixedIntent(result.classification, inbound);
+    const classification = applyContactInfoInterest(
+      promoteMixedIntent(result.classification, inbound),
+      inbound,
+    );
     const cold = isColdInbound(
       { campaignId: row.campaign_id, campaign_id: row.campaign_id },
       threadContext,

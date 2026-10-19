@@ -18,6 +18,7 @@
  */
 
 const { looksLikeMixedIntent, promoteMixedIntent, SLACK_POSITIVES } = require('../utils/mixed-intent');
+const { applyContactInfoInterest } = require('../utils/contact-info-interest');
 
 const CATEGORY_FIELDS = [
   'lead_category', 'leadCategory',
@@ -134,19 +135,30 @@ function applySmartleadCategory({
     };
   }
 
+  let out;
   if (slCategory && slClass !== classification) {
-    return {
+    out = {
       classification: slClass,
       reasoning: `SmartLead category "${slCategory.raw}" → ${slClass}. ${reasoning}`.trim(),
       source: slCategory.source || 'smartlead_category',
     };
+  } else {
+    out = {
+      classification: bodyClass || classification,
+      reasoning,
+      source: slCategory ? 'smartlead_agree' : 'gemini',
+    };
   }
 
-  return {
-    classification: bodyClass || classification,
-    reasoning,
-    source: slCategory ? 'smartlead_agree' : 'gemini',
-  };
+  const afterContact = applyContactInfoInterest(out.classification, inboundMessage);
+  if (afterContact !== out.classification) {
+    return {
+      classification: afterContact,
+      reasoning: `Contact-info ask → INTERESTED. ${out.reasoning}`.trim(),
+      source: 'body_contact_info',
+    };
+  }
+  return out;
 }
 
 /**
