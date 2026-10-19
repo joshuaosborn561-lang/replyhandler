@@ -294,7 +294,9 @@ separate things must both be true, and they fail with different errors:
 `/dashboard` is a public read-only UI. It loads with no prompt and no
 `ADMIN_API_KEY`. Read-only data lives under `/dashboard/api/*` and never
 returns SmartLead / HeyReach / Allo keys or Slack tokens — presence is a
-boolean. `/admin/*` stays behind `requireAdminApiKey`. Edit / create /
+boolean. `stripSecrets` also blanks any remaining string that looks like
+a token (`xox[abposr]-`, `sk-`, `ghp_`, or a 32+ blob that is not a UUID),
+even in fields such as `slack_channel_id`. `/admin/*` stays behind `requireAdminApiKey`. Edit / create /
 deactivate may prompt for the key **only when you click an edit**, never
 on page load. Do not add dashboard auth back.
 

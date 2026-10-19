@@ -213,9 +213,12 @@ async function processInboxRow(client, row, options) {
       emailStatsId: earlyStatsId,
     });
     if (unpostedEarly) {
-      await repostReplyRowToSlack(client, unpostedEarly, {
+      const posted = await repostReplyRowToSlack(client, unpostedEarly, {
         reasoningExtra: `${unpostedEarly.classification || 'pending'} (Recovered by SmartLead inbox polling — Slack post retry.)`,
       });
+      if (!posted) {
+        return { skipped: 'already_posted', replyId: unpostedEarly.id };
+      }
       return { posted: true, replyId: unpostedEarly.id, leadName: unpostedEarly.lead_name, recovered: true };
     }
     if (await alreadyPostedToSlack({
@@ -298,9 +301,12 @@ async function processInboxRow(client, row, options) {
     emailStatsId: smartleadEmailStatsId,
   });
   if (unposted) {
-    await repostReplyRowToSlack(client, unposted, {
+    const posted = await repostReplyRowToSlack(client, unposted, {
       reasoningExtra: `${unposted.classification || 'pending'} (Recovered by SmartLead inbox polling — Slack post retry.)`,
     });
+    if (!posted) {
+      return { skipped: 'already_posted', replyId: unposted.id };
+    }
     return { posted: true, replyId: unposted.id, leadName: unposted.lead_name, recovered: true };
   }
 

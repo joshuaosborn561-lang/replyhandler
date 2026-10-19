@@ -8,7 +8,9 @@ const {
   toPublicClient,
   stripSecrets,
   assertNoSecretFields,
+  assertNoTokenValues,
   looksSecretField,
+  looksLikeTokenValue,
 } = require('../src/utils/public-client');
 
 const ROOT = path.join(__dirname, '..');
@@ -65,6 +67,40 @@ test('toPublicClient strips keys and tokens', () => {
   assert.equal(leaked.ok, true);
 });
 
+test('stripSecrets blanks token-shaped values regardless of field name', () => {
+  // Built at runtime so the file never contains a scanner-shaped token.
+  const slackBot = ['xox', 'b', '-', '1234567890-abcdefghijklmnopqrstuv'].join('');
+  const slackUser = ['xox', 'p', '-', 'not-a-real-token'].join('');
+  const vendorKey = ['sk', '-', 'live-', 'abcdefghijklmnopqrstuvwxyz'].join('');
+  const gitPat = ['ghp', '_', 'abcdefghijklmnopqrstuvwxyz012345'].join('');
+  const botInChannel = toPublicClient({
+    id: '11111111-1111-1111-1111-111111111111',
+    name: 'Example Client',
+    slack_channel_id: slackBot,
+  });
+  assert.equal(botInChannel.slack_channel_id, '');
+  assert.equal(looksLikeTokenValue(slackBot), true);
+  assert.equal(looksLikeTokenValue(slackUser), true);
+  assert.equal(looksLikeTokenValue(vendorKey), true);
+  assert.equal(looksLikeTokenValue(gitPat), true);
+
+  const blob = 'A'.repeat(32);
+  const nested = stripSecrets({
+    slack_channel_id: blob,
+    id: '11111111-1111-1111-1111-111111111111',
+    channel: 'C0123456789',
+    nested: { note: vendorKey },
+  });
+  assert.equal(nested.slack_channel_id, '');
+  assert.equal(nested.id, '11111111-1111-1111-1111-111111111111');
+  assert.equal(nested.channel, 'C0123456789');
+  assert.equal(nested.nested.note, '');
+  assert.equal(looksLikeTokenValue(blob), true);
+  assert.equal(looksLikeTokenValue('11111111-1111-1111-1111-111111111111'), false);
+  assert.equal(looksLikeTokenValue('C0123456789'), false);
+  assertNoTokenValues(nested);
+});
+
 test('/dashboard does not return 401 and open routes leak no secrets', async () => {
   const { createApp } = require('../src/app');
   const app = createApp();
@@ -85,6 +121,7 @@ test('/dashboard does not return 401 and open routes leak no secrets', async () 
     if (api.headers.get('content-type')?.includes('json')) {
       const body = await api.json();
       assertNoSecretFields(body);
+      assertNoTokenValues(body);
     }
 
     const admin = await fetch(`http://127.0.0.1:${port}/admin/clients`);

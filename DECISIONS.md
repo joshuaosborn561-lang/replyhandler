@@ -1248,6 +1248,10 @@ Guard: `Reject marks the lead Not Interested in SmartLead`
 
 `/dashboard` loads with no login prompt. Read-only `/dashboard/api/*`
 never returns SmartLead, HeyReach, or Allo keys or Slack tokens.
+Every `/dashboard/api` payload is scanned last in `stripSecrets`:
+any string that looks like a token (`xox[abposr]-`, `sk-`, `ghp_`, or a
+32+ `[A-Za-z0-9_-]` blob that is not a UUID) is blanked, even when
+stored in a non-secret column such as `slack_channel_id`.
 `window.prompt` / `getAdminKey` must not run on page load. `/admin/*`
 stays behind `requireAdminApiKey`; edits may prompt only when you click
 an edit. Do not add dashboard auth back.

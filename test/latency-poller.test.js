@@ -27,6 +27,30 @@ test('pollers run every minute, clients in parallel, skip handled rows first', (
   assert.match(hr, /Inbox fetch failed — skipping this client/);
 });
 
+test('poller recovery counts only real Slack posts', () => {
+  const sl = read('src/services/smartlead-poller.js');
+  const hr = read('src/services/heyreach-poller.js');
+  const recover = read('src/services/reply-dedupe.js');
+  const slEarlyAt = sl.indexOf('if (unpostedEarly)');
+  const slLateAt = sl.indexOf('if (unposted) {');
+  const slEarly = sl.slice(slEarlyAt, slLateAt);
+  const slLate = sl.slice(slLateAt, sl.indexOf('if (await alreadyPostedToSlack', slLateAt));
+  const hrAt = hr.indexOf('if (unposted) {');
+  const hrBlock = hr.slice(hrAt, hr.indexOf('if (await alreadyPostedToSlack', hrAt));
+  for (const block of [slEarly, slLate, hrBlock]) {
+    assert.match(block, /const posted = await repostReplyRowToSlack/);
+    assert.match(block, /if \(!posted\)/);
+    assert.match(block, /skipped: 'already_posted'/);
+  }
+  const recoverFn = recover.slice(recover.indexOf('async function recoverUnpostedSlackCards'));
+  assert.match(recoverFn, /if \(!posted\)/);
+  assert.match(recoverFn, /recovered\+\+/);
+  assert.ok(
+    recoverFn.indexOf('if (!posted)') < recoverFn.indexOf('recovered++'),
+    'recoverUnpostedSlackCards must not count a skipped already-posted card'
+  );
+});
+
 test('startup registers EMAIL_REPLY webhooks or reports missing', () => {
   const cron = read('src/cron.js');
   const svc = read('src/services/email-reply-webhooks.js');
