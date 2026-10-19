@@ -212,7 +212,7 @@ clients every OOO auto-reply and bounce, and `cc_emails` now drives CC-on-send.
 
 **Exception (campaign map only):** `inbound_forward_rules` emails a configured
 address the moment a reply arrives on a mapped campaign (Gabe Calls ids +
-`Gabe Calls%` name pattern → `gabriel.lopez@rocketbox.mx`). Never
+`Gabe Calls%` name pattern → `gabe@salesglidergrowth.com` (was gabriel.lopez@rocketbox.mx until migration 036)). Never
 `crecimiento@rocketbox.mx`. That path is not client notify. The Allo
 `Caller reply to Allo` hook on those campaigns stays. Client notify for
 everyone else is still on send.
