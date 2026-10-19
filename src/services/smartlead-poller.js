@@ -336,7 +336,7 @@ async function processInboxRow(client, row, options) {
   const applied = applySmartleadCategory({
     slCategory, classification, inboundMessage: inbound, reasoning,
   });
-  if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead') {
+  if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead' || applied.source === 'body_contact_info') {
     console.log('[SmartLeadPoll] Classified from full body over SmartLead category', {
       source: applied.source,
       smartlead: slCategory?.raw || null,

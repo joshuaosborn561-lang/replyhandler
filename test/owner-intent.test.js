@@ -2212,3 +2212,73 @@ test('cold inbound pitches at 0.8 are hidden; campaign threads are not', () => {
   assert.match(poller, /pitch_inbound|PITCH_INBOUND|pitchToUsProb/,
     reversal('pitch filter', 'the poller no longer passes pitch into the Slack gate'));
 });
+
+// ── Decision: "send me your contact information" is INTERESTED ────────
+// Shawn Formont: tickets offer → "Send me your contact information" was
+// OTHER and the interested-only Slack gate suppressed it.
+test('"send me your contact information" classifies as INTERESTED, not OTHER', () => {
+  const { applyContactInfoInterest, looksLikeContactInfoAsk } = require('../src/utils/contact-info-interest');
+  const { applySmartleadCategory } = require('../src/services/smartlead-category');
+  const { slackChannelSuppressionReason } = require('../src/utils/slack-channel-policy');
+
+  const shawn = `Send me your contact information
+
+Regards,
+Shawn D Formont
+Owner / 5 Star Electrical
+M: 813-735-5215
+O: 855-305-7827
+E: shawn@5starelectrical.net`;
+
+  assert.ok(looksLikeContactInfoAsk(shawn),
+    reversal('"send me your contact information" is INTERESTED', 'Shawn inbound no longer matches the heuristic'));
+  assert.strictEqual(applyContactInfoInterest('OTHER', shawn), 'INTERESTED',
+    reversal('"send me your contact information" is INTERESTED', 'OTHER is not upgraded'));
+  assert.strictEqual(applyContactInfoInterest('OBJECTION', shawn), 'INTERESTED');
+  assert.strictEqual(applyContactInfoInterest('NOT_INTERESTED', shawn), 'INTERESTED');
+  assert.strictEqual(applyContactInfoInterest('OOO', shawn), 'OOO',
+    reversal('"send me your contact information" is INTERESTED', 'OOO is being overridden'));
+  assert.strictEqual(applyContactInfoInterest('QUESTION', shawn), 'QUESTION',
+    reversal('"send me your contact information" is INTERESTED', 'QUESTION is being rewritten'));
+
+  const applied = applySmartleadCategory({
+    slCategory: { classification: 'OTHER', source: 'smartlead_category_unmapped', raw: 'Other' },
+    classification: 'OTHER',
+    inboundMessage: shawn,
+    reasoning: 'synthetic',
+  });
+  assert.equal(
+    applied.classification,
+    'INTERESTED',
+    reversal('"send me your contact information" is INTERESTED', 'SmartLead OTHER still wins over a contact-info ask'),
+  );
+  assert.equal(
+    slackChannelSuppressionReason({ classification: applied.classification, inboundMessage: shawn }),
+    null,
+    reversal('"send me your contact information" is INTERESTED', 'upgraded Shawn still suppressed from Slack'),
+  );
+
+  assert.ok(!looksLikeContactInfoAsk('Not interested, thanks.'));
+  assert.ok(!looksLikeContactInfoAsk('Please contact Jane instead.'));
+  assert.ok(!looksLikeContactInfoAsk('Send me your brochure.'));
+  assert.ok(looksLikeContactInfoAsk("What's your number?"));
+  assert.ok(looksLikeContactInfoAsk('How can I reach you?'));
+
+  const webhook = read('src/routes/webhooks.js');
+  const poller = read('src/services/smartlead-poller.js');
+  const classifier = read('src/services/classifier.js');
+  const jev = read('src/services/jev-classifier.js');
+  const decisions = read('DECISIONS.md');
+  assert.match(decisions, /send me your contact information/i,
+    reversal('"send me your contact information" is INTERESTED', 'the decision was removed from DECISIONS.md'));
+  assert.match(classifier, /applyContactInfoInterest/,
+    reversal('"send me your contact information" is INTERESTED', 'classifier no longer upgrades before drafting'));
+  assert.match(read('src/services/smartlead-category.js'), /applyContactInfoInterest/,
+    reversal('"send me your contact information" is INTERESTED', 'SmartLead category merge no longer upgrades contact-info asks'));
+  assert.match(webhook, /body_contact_info/,
+    reversal('"send me your contact information" is INTERESTED', 'webhook no longer logs the body_contact_info override'));
+  assert.match(poller, /body_contact_info/,
+    reversal('"send me your contact information" is INTERESTED', 'poller no longer logs the body_contact_info override'));
+  assert.match(jev, /Send me your contact information/,
+    reversal('"send me your contact information" is INTERESTED', 'Jev examples no longer include the Shawn case'));
+});

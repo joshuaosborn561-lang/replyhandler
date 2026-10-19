@@ -5,6 +5,7 @@ const {
   looksLikeWrongPerson,
 } = require('../utils/smartlead-webhook-helpers');
 const { looksLikeMixedIntent, promoteMixedIntent } = require('../utils/mixed-intent');
+const { looksLikeContactInfoAsk, applyContactInfoInterest } = require('../utils/contact-info-interest');
 const {
   looksLikeBookingLinkRequest,
   stripBookingUrls,
@@ -357,6 +358,7 @@ function buildClassifyModel() {
       `Important:\n` +
       `- Use OOO when the message is an out-of-office / vacation / automatic reply (e.g. "out of the office", "on vacation", "limited access to email", "will return on", "automatic reply", "away from my desk").\n` +
       `- If it is clearly OOO, output OOO (not OTHER).\n` +
+      `- If they ask for your contact information, phone, email, or how to reach you, that is INTERESTED, not OTHER.\n` +
       `- OUT_OF_OFFICE is legacy; prefer OOO.`,
     generationConfig: {
       // ONE WORD. Cannot truncate meaningfully.
@@ -674,7 +676,11 @@ async function classifyWithGemini(threadContext, inboundMessage) {
     const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
     if (ooo === 'OOO') classification = 'OOO';
   }
-  if (classification === 'OTHER' && !looksLikeMixedIntent(inboundMessage)) {
+  if (
+    classification === 'OTHER'
+    && !looksLikeMixedIntent(inboundMessage)
+    && !looksLikeContactInfoAsk(inboundMessage)
+  ) {
     const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
     if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
   }
@@ -988,6 +994,7 @@ async function classifyAndDraft(
   }
   if (preGate !== 'ooo' && preGate !== 'wrong_person') {
     classification = promoteMixedIntent(classification, inboundMessage);
+    classification = applyContactInfoInterest(classification, inboundMessage);
   }
 
   const { resolveReplyOrdinal } = require('../utils/reply-ordinal');

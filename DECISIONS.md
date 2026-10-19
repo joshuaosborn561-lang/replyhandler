@@ -1241,3 +1241,24 @@ Tightens the follow-up loop-in path:
 
 Guard: `FOLLOW_UP drafts continue the thread and never wait on Josh`
 Guard: `Reject marks the lead Not Interested in SmartLead`
+
+---
+
+## 2026-10-19
+
+### "Send me your contact information" is INTERESTED, not OTHER
+
+*"that shouldn't be suppressed as other"*
+
+Shawn Formont replied to a SalesGlider tickets campaign with "Send me
+your contact information." Jev/Gemini labeled it OTHER, so the
+interested-only Slack gate never posted a card. Asking for our phone,
+email, or how to reach us is a live thread — they are engaging with the
+offer, not noise.
+
+Force `INTERESTED` on that ask even when the model or SmartLead says
+OTHER, OBJECTION, or NOT_INTERESTED. Do not override OOO or unsubscribe.
+Interested-only Slack policy stays; these replies join the positive set
+instead of punching a hole in the gate.
+
+Guard: `"send me your contact information" classifies as INTERESTED, not OTHER`

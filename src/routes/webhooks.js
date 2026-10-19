@@ -543,7 +543,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     const applied = applySmartleadCategory({
       slCategory, classification, inboundMessage: inboundEffective, reasoning,
     });
-    if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead') {
+    if (applied.source === 'body_mixed_intent' || applied.source === 'body_over_smartlead' || applied.source === 'body_contact_info') {
       console.log('[Webhook] Classified from full body over SmartLead category', {
         source: applied.source,
         smartlead: slCategory?.raw || null,

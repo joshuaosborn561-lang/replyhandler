@@ -25,7 +25,7 @@ const JEV_CATEGORIES = [
 
 const CATEGORY_CRITERIA = {
   INTERESTED:
-    'They want to hear more about OUR offer, say yes, ask us to send something, or engage with a gift we offered (tickets, a game, seats, AirPods, a video, a loom). Short yeses like "sure", "tell me more", "send it" count. Ticket/event replies such as "happy to explore the tickets" are INTERESTED, not OTHER.',
+    'They want to hear more about OUR offer, say yes, ask us to send something, or engage with a gift we offered (tickets, a game, seats, AirPods, a video, a loom). Short yeses like "sure", "tell me more", "send it" count. Asking for our phone, email, or contact information ("send me your contact information") is INTERESTED, not OTHER. Ticket/event replies such as "happy to explore the tickets" are INTERESTED, not OTHER.',
   QUESTION:
     'They ask a clarifying question about OUR offer, niche, timing, pricing, or the gift we mentioned. "What game?", "what sport?", "where are the tickets?" after we offered tickets is QUESTION, not OTHER. Not for vendor/recruiter/capital questions aimed at selling to us — those are OTHER.',
   MEETING_PROPOSED:
@@ -52,6 +52,7 @@ const CATEGORY_INSTRUCTIONS =
   `If we already wrote (often with a gift hook — event tickets, a ballgame, seats, AirPods, a short video), classify THEIR reply to our offer. Ticket/event engagement is INTERESTED or QUESTION, never OTHER.\n\n` +
   `Anonymized examples:\n` +
   `- After we offered team tickets: "Happy to explore the tickets." → INTERESTED\n` +
+  `- After we offered tickets: "Send me your contact information" → INTERESTED\n` +
   `- After we offered tickets: "What sport? What game? Where are the tickets?" → QUESTION\n` +
   `- "Sure, tell me more." → INTERESTED (a short yes, even if last outbound is missing from the snippet)\n` +
   `- After our campaign: "You've got my attention, let's see what you've got?" → INTERESTED\n` +
