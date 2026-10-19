@@ -370,9 +370,12 @@ async function processConversation(client, conv, options) {
     inboundMessage: inbound.text,
   });
   if (unposted) {
-    await repostReplyRowToSlack(client, unposted, {
+    const posted = await repostReplyRowToSlack(client, unposted, {
       reasoningExtra: `${unposted.classification || 'pending'} (Recovered by HeyReach polling — Slack post retry.)`,
     });
+    if (!posted) {
+      return { skipped: 'already_posted', replyId: unposted.id };
+    }
     return { posted: true, replyId: unposted.id, leadName: unposted.lead_name, recovered: true };
   }
 

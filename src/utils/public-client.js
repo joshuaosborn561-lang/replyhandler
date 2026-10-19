@@ -32,17 +32,53 @@ function looksSecretField(key) {
   return SECRET_FIELD_RE.test(k);
 }
 
-function stripSecrets(value, depth = 0) {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TOKEN_PREFIX_RE = /^(xox[abposr]-|sk-|ghp_)/i;
+const TOKEN_BLOB_RE = /^[A-Za-z0-9_-]{32,}$/;
+
+/** True for Slack/GitHub/OpenAI-style tokens and opaque 32+ blobs that are not UUIDs. */
+function looksLikeTokenValue(value) {
+  if (typeof value !== 'string') return false;
+  const s = value.trim();
+  if (!s) return false;
+  if (TOKEN_PREFIX_RE.test(s)) return true;
+  if (UUID_RE.test(s)) return false;
+  return TOKEN_BLOB_RE.test(s);
+}
+
+function blankTokenValues(value, depth = 0) {
+  if (value == null) return value;
+  if (depth > 6) return value;
+  if (typeof value === 'string') return looksLikeTokenValue(value) ? '' : value;
+  if (Array.isArray(value)) return value.map((v) => blankTokenValues(v, depth + 1));
+  if (typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, val] of Object.entries(value)) {
+    out[key] = blankTokenValues(val, depth + 1);
+  }
+  return out;
+}
+
+function stripSecretFields(value, depth = 0) {
   if (value == null) return value;
   if (depth > 6) return undefined;
-  if (Array.isArray(value)) return value.map((v) => stripSecrets(v, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => stripSecretFields(v, depth + 1));
   if (typeof value !== 'object') return value;
   const out = {};
   for (const [key, val] of Object.entries(value)) {
     if (looksSecretField(key)) continue;
-    out[key] = stripSecrets(val, depth + 1);
+    out[key] = stripSecretFields(val, depth + 1);
   }
   return out;
+}
+
+/**
+ * Drop secret-named fields, then blank any remaining token-shaped string
+ * regardless of field name (e.g. a bot token stored in slack_channel_id).
+ * The value scan runs last on the final object.
+ */
+function stripSecrets(value) {
+  return blankTokenValues(stripSecretFields(value, 0), 0);
 }
 
 function toPublicClient(row) {
@@ -88,12 +124,34 @@ function assertNoSecretFields(payload, path = '') {
   }
 }
 
+function assertNoTokenValues(payload, path = '') {
+  if (payload == null) return;
+  if (typeof payload === 'string') {
+    if (looksLikeTokenValue(payload)) {
+      const err = new Error(`token value leaked: ${path || '(root)'}`);
+      err.code = 'TOKEN_VALUE';
+      throw err;
+    }
+    return;
+  }
+  if (Array.isArray(payload)) {
+    payload.forEach((item, i) => assertNoTokenValues(item, `${path}[${i}]`));
+    return;
+  }
+  if (typeof payload !== 'object') return;
+  for (const [key, val] of Object.entries(payload)) {
+    assertNoTokenValues(val, path ? `${path}.${key}` : key);
+  }
+}
+
 module.exports = {
   SECRET_FIELDS,
   SECRET_FIELD_RE,
   looksSecretField,
+  looksLikeTokenValue,
   stripSecrets,
   toPublicClient,
   webhookUrls,
   assertNoSecretFields,
+  assertNoTokenValues,
 };
