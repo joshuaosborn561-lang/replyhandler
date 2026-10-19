@@ -33,6 +33,59 @@ test('startup registers EMAIL_REPLY webhooks or reports missing', () => {
   assert.match(cron, /ensureEmailReplyWebhooks/);
   assert.match(svc, /EMAIL_REPLY webhook missing/);
   assert.match(svc, /createEmailReplyWebhook/);
+  assert.match(svc, /isActiveCampaign/);
+  assert.match(svc, /=== 'ACTIVE'/);
+  assert.match(svc, /unknown/);
+  assert.match(svc, /list_webhooks_failed|list_campaigns_failed/);
+  assert.match(svc, /KEY_GAP_MS/);
+  assert.ok(/1000/.test(svc), 'startup webhook check throttles to ~1 call/s per key');
+});
+
+test('poller fetches, webhook list/create, and listEmailAccounts retry 429s', () => {
+  const sl = read('src/services/smartlead.js');
+  const poller = read('src/services/smartlead-poller.js');
+  assert.match(sl, /fetchWith429Retry/);
+  assert.match(sl, /status !== 429/);
+  assert.match(poller, /fetchWith429Retry/);
+  const listAccounts = sl.slice(sl.indexOf('async function listEmailAccounts'));
+  assert.match(listAccounts, /fetchWith429Retry/);
+  const listHooks = sl.slice(sl.indexOf('async function listCampaignWebhooks'));
+  assert.match(listHooks, /fetchWith429Retry/);
+  const createHook = sl.slice(sl.indexOf('async function createEmailReplyWebhook'));
+  assert.match(createHook, /fetchWith429Retry/);
+});
+
+test('listEmailAccounts pages until empty with no 500 cap', () => {
+  const sl = read('src/services/smartlead.js');
+  const fn = sl.slice(sl.indexOf('async function listEmailAccounts'), sl.indexOf('async function listCampaigns'));
+  assert.doesNotMatch(fn, /offset < 500/);
+  assert.match(fn, /offset \+= pageSize/);
+  assert.match(fn, /if \(!rows\.length\) break/);
+});
+
+test('findUnpostedReply skips rows created in the last ~2 minutes', () => {
+  const src = read('src/services/reply-dedupe.js');
+  const unposted = src.slice(
+    src.indexOf('async function findUnpostedReply'),
+    src.indexOf('function formatCampaignDisplayFromReply')
+  );
+  assert.match(unposted, /created_at < now\(\) - interval '2 minutes'/);
+});
+
+test('webhook registration is ACTIVE-only; list failures are unknown not missing', () => {
+  const { isActiveCampaign } = require('../src/services/email-reply-webhooks');
+  assert.equal(isActiveCampaign({ id: 1, status: 'ACTIVE' }), true);
+  assert.equal(isActiveCampaign({ id: 1, status: 'active' }), true);
+  assert.equal(isActiveCampaign({ id: 1, status: 'PAUSED' }), false);
+  assert.equal(isActiveCampaign({ id: 1, status: 'STOPPED' }), false);
+  assert.equal(isActiveCampaign({ id: 1 }), false);
+  const svc = read('src/services/email-reply-webhooks.js');
+  const listFail = svc.slice(svc.indexOf('campaigns = await withKeyGap'));
+  assert.match(listFail, /unknown\.push/);
+  assert.doesNotMatch(
+    listFail.slice(0, listFail.indexOf('for (const camp of campaigns)')),
+    /missing\.push/
+  );
 });
 
 test('calendar cache TTL is 5–10 minutes with an ~8s timeout', () => {

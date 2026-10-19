@@ -1269,8 +1269,10 @@ Send to the latest inbound From. CC every other human on that message
 (to + cc), including the original lead when a colleague replied. Exclude
 our sending accounts and domains, duplicates, and auto-reply addresses.
 Loop-in client CC from #106 still applies on Send + CC client. Use
-SmartLead `recipient` and `reply_message_id`. Greeting and Slack card
-use that sender's first name.
+SmartLead `to_email` and optional `to_first_name` (`recipient` is
+rejected with 400). `reply_message_id` and `reply_email_body` keep
+the quoted line on the actual sender. Greeting and Slack card use
+that sender's first name.
 
 Guard: covered by `test/reply-all.test.js`
 
@@ -1288,8 +1290,12 @@ Slack card right after classification, then update it with the draft and
 times. Poller is the backstop: every minute, clients in parallel, skip
 already-handled rows before extra fetches, skip inactive clients.
 Parallelize thread / campaign / calendar fetches. Startup registers an
-EMAIL_REPLY webhook for every active client's campaigns or reports
-what is missing.
+EMAIL_REPLY webhook for every ACTIVE campaign, throttled to ~1 call
+per second per API key (shared keys 429 after a burst). A list-call
+failure is reported as unknown, not missing. Poller / webhook list
+and create / listEmailAccounts retry 429s with backoff. The poller
+skips findUnpostedReply rows created in the last ~2 minutes so it
+does not post a placeholder card ahead of the webhook.
 
 ### Never invent ticket details or calendar times
 

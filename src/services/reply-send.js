@@ -203,9 +203,11 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       originalLeadEmail: reply.lead_email,
       fallbackName: reply.lead_name,
     });
-    if (replyAll.recipient) sendOpts.recipient = replyAll.recipient;
+    if (replyAll.recipient) sendOpts.toEmail = replyAll.recipient;
+    if (replyAll.senderFirstName) sendOpts.toFirstName = replyAll.senderFirstName;
     if (replyAll.replyMessageId) sendOpts.replyMessageId = replyAll.replyMessageId;
     if (replyAll.replyEmailTime) sendOpts.replyEmailTime = replyAll.replyEmailTime;
+    if (replyAll.replyEmailBody) sendOpts.replyEmailBody = replyAll.replyEmailBody;
 
     if (ccClientOnProspect) {
       prospectCc = alwaysForwardEmailsForProspectCc(client);

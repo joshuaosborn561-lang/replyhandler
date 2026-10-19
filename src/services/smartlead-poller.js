@@ -154,7 +154,7 @@ async function refetchThreadHistory(client, campaignId, leadId) {
 
 async function fetchInboxReplies(apiKey, offset, limit) {
   const url = `${SL_BASE}/master-inbox/inbox-replies?api_key=${encodeURIComponent(apiKey)}&fetch_message_history=true`;
-  const res = await fetch(url, {
+  const res = await smartlead.fetchWith429Retry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

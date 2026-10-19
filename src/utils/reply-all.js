@@ -92,7 +92,7 @@ function latestInboundMessage(historyResponse) {
 
 function extractInboundHeaders(message) {
   if (!message || typeof message !== 'object') {
-    return { from: '', fromRaw: '', to: [], cc: [], messageId: '', time: '' };
+    return { from: '', fromRaw: '', to: [], cc: [], messageId: '', time: '', emailBody: '' };
   }
   const fromRaw = firstAddressField(message, [
     'from', 'from_email', 'fromEmail', 'sender', 'sender_email', 'reply_from',
@@ -104,6 +104,8 @@ function extractInboundHeaders(message) {
     || message.ccEmails || message.cc_address || '';
   const messageId = message.message_id || message.messageId || message.reply_message_id
     || message.replyMessageId || message.email_message_id || '';
+  const body = message.email_body || message.html || message.html_body
+    || message.body || message.text || message.plain || '';
   return {
     from: normalizeEmail(fromRaw),
     fromRaw: String(fromRaw || ''),
@@ -113,6 +115,7 @@ function extractInboundHeaders(message) {
     cc: emailsFromValue(ccRaw),
     messageId: messageId ? String(messageId).trim() : '',
     time: rowTime(message),
+    emailBody: body ? String(body) : '',
   };
 }
 
@@ -234,6 +237,7 @@ function buildReplyAll({
     ccCsv: cc.join(', '),
     replyMessageId: headers.messageId || '',
     replyEmailTime: headers.time || '',
+    replyEmailBody: headers.emailBody || '',
     senderEmail: headers.from || recipient || '',
     senderFirstName,
     senderDisplayName,

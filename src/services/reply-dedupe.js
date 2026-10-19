@@ -423,6 +423,10 @@ async function findUnpostedReply({
   const fullNorm = normalizeInboundText(inboundMessage);
   if (!normalized) return null;
 
+  // Skip rows created in the last ~2 minutes so the poller does not post a
+  // placeholder card ahead of the webhook (persist-then-200, then async
+  // classify/draft). After that window an unposted row is a real miss.
+  //
   // Never recover FOLLOW_UP cadence rows here. Those store the original
   // prospect text as inbound_message and post to #followups-ai-replies via
   // follow-up-runner. Matching them as "unposted" re-posts the same reply
@@ -437,6 +441,7 @@ async function findUnpostedReply({
         AND slack_message_ts IS NULL
         AND status IN ('pending', 'alert_only')
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND created_at < now() - interval '2 minutes'
         AND ${sameReplySql('$3', '$5')}
         AND (
           $4::text = ''
@@ -568,6 +573,7 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
         AND pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
         AND c.active IS DISTINCT FROM false
         AND pr.created_at > now() - interval '7 days'
+        AND pr.created_at < now() - interval '2 minutes'
       ORDER BY pr.created_at ASC
       LIMIT $1`,
     [limit]
