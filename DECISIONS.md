@@ -967,7 +967,7 @@ Guard: `every Slack reply card shows the topup ICP verdict`
 *"Anytime one of Gabe's cold call emails gets a reply I want it to forward to him same as other clients."*
 
 Then, after we could not guess the address: forward-to is
-`gabriel.lopez@rocketbox.mx`. Never `crecimiento@rocketbox.mx` (it bounced).
+`gabe@salesglidergrowth.com` (migration 036; previously gabriel.lopez@rocketbox.mx). Never `crecimiento@rocketbox.mx` (it bounced).
 
 Josh is making a **deliberate exception** to **Client notification is his
 enriched forward, on send**. The exception is only this caller-campaign path:
