@@ -29,6 +29,9 @@ function createApp() {
   app.use('/dashboard', express.static(path.join(__dirname, 'public')));
   app.get('/', (_req, res) => res.redirect('/dashboard'));
   app.use(dashboardApiRoutes);
+  // Public, read-only booking catalog. Must mount before routers that call
+  // router.use(requireAdminApiKey) at root, or it gets a 401.
+  app.use(publicBookingCatalogRoutes);
 
   app.get('/health', async (_req, res) => {
     try {
@@ -50,7 +53,6 @@ function createApp() {
   app.use(authRoutes);
   app.use(testWebhookRoutes);
   app.use(voiceLearningRoutes);
-  app.use(publicBookingCatalogRoutes);
 
   return app;
 }
