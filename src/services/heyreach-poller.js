@@ -1,3 +1,4 @@
+const { applyPositiveIntentGuard } = require('../utils/positive-intent');
 const db = require('../db');
 const heyreach = require('./heyreach');
 const { postProspectSlackCard } = require('./slack-reply-post');
@@ -454,6 +455,7 @@ async function processConversation(client, conv, options) {
   }
   let { classification, draft, proposed_time, reasoning } = result;
   const coldInbound = isColdInbound(conv, messages);
+  classification = applyPositiveIntentGuard(classification, inbound.text).classification;
 
   const suppressed = slackChannelSuppressionReason({
     classification,

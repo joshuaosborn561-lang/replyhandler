@@ -25,7 +25,9 @@ function stripHtmlToText(s) {
     // first, or "From: Name <a@b.com>" loses its address and the quote-cut in
     // stripEmailQuotePrefix — which anchors on that address — stops matching.
     .replace(/<([\w.+-]+@[\w.-]+\.[a-z]{2,})>/gi, '$1')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<style[^>]*>[\s\S]*?(<\/style>|$)/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
     // Keep block boundaries as newlines so quote/signature cutting still has anchors.
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
@@ -64,8 +66,8 @@ function normalizeSmartleadLeadId(payload = {}, leadData = {}) {
     leadData.lead_id,
     leadData.leadId,
     leadData.id,
-    payload.sl_email_lead_map_id,
-    payload.slEmailLeadMapId,
+    // sl_email_lead_map_id is a campaign-lead MAP id, not a lead id. Using it
+    // broke message-history and thread context (Oct 20). Resolve by email instead.
   ];
   for (const c of candidates) {
     if (c == null || c === '') continue;
@@ -254,12 +256,17 @@ function lastOutboundBodyFromSmartleadHistory(histResponse) {
   return last;
 }
 
+function looksLikeCss(s) {
+  const t = String(s || '');
+  return /@font-face|mso-|\{font-family|\bMsoNormal\b|<style/i.test(t.slice(0, 2000));
+}
+
 function parseInboundFromPayload(replyObj, payload) {
   const base =
     (replyObj && typeof replyObj === 'object'
       ? (replyObj.body ||
         replyObj.message ||
-        replyObj.text ||
+        (looksLikeCss(replyObj.text) ? '' : replyObj.text) ||
         replyObj.plain_text ||
         stripHtmlToText(replyObj.html || replyObj.html_body))
       : replyObj) ||

@@ -23,6 +23,7 @@ async function recordSuppressedReply({
   classification,
   reason,
   emailStatsId,
+  leadPhone,
 }) {
   try {
     await db.query(
@@ -44,10 +45,15 @@ async function recordSuppressedReply({
         emailStatsId || null,
       ]
     );
-    console.log('[Suppressed] Recorded', { client: clientId, platform, lead: leadName, leadEmail, reason });
+    console.log('[Suppressed] Recorded', { client: clientId, platform, reason });
+    if (shouldAlertOther(reason, classification)) {
+      await postOtherAlert({ clientId, platform, leadName, inboundMessage, leadPhone });
+    }
   } catch (err) {
     console.error('[Suppressed] Could not record suppressed reply', { reason, err: err.message });
   }
 }
+
+const { shouldAlertOther, postOtherAlert } = require('./other-alert');
 
 module.exports = { recordSuppressedReply };

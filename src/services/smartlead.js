@@ -467,6 +467,32 @@ async function fetchMasterInboxPage(apiKey, offset, limit) {
  * Webhooks often ship sl_email_lead_id + stats_id but omit email_campaign_id.
  * Look up the campaign (and lead) from master inbox when ids are incomplete.
  */
+/**
+ * GET /leads/?email= — the lead's real id, its campaigns, and its own phone.
+ * Used when a webhook arrives without sl_email_lead_id.
+ * @returns {Promise<{leadId:string, campaignIds:string[], lead:object}|null>}
+ */
+async function lookupLeadByEmail(apiKey, email) {
+  if (!apiKey || !email) return null;
+  const url = `${BASE_URL}/leads/?api_key=${encodeURIComponent(apiKey)}&email=${encodeURIComponent(String(email).trim())}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`SmartLead lead lookup failed (${res.status})`);
+  const lead = await res.json().catch(() => null);
+  if (!lead || !lead.id) return null;
+  const campaignIds = (Array.isArray(lead.lead_campaign_data) ? lead.lead_campaign_data : [])
+    .map((c) => c && (c.campaign_id || c.campaignId))
+    .filter((c) => c != null)
+    .map(String);
+  return { leadId: String(lead.id), campaignIds, lead };
+}
+
+/** Pick the campaign: keep the payload's if the lead is really in it, else the lead's latest. */
+function pickLeadCampaign(payloadCampaignId, campaignIds = []) {
+  const want = payloadCampaignId != null ? String(payloadCampaignId) : null;
+  if (want && (!campaignIds.length || campaignIds.includes(want))) return want;
+  return campaignIds.length ? campaignIds[campaignIds.length - 1] : want;
+}
+
 async function resolveIdsFromMasterInbox(apiKey, { leadId, leadEmail, statsId } = {}, maxPages = 6) {
   if (!apiKey) return null;
   const wantLead = leadId != null && String(leadId).trim() ? String(leadId).trim() : null;
@@ -692,6 +718,8 @@ module.exports = {
   verifyCampaignAccess,
   resolveEmailStatsId,
   resolveIdsFromMasterInbox,
+  lookupLeadByEmail,
+  pickLeadCampaign,
   extractStatsIdFromHistory,
   extractForwardAnchorFromHistory,
   formatPlainTextAsSmartleadHtml,

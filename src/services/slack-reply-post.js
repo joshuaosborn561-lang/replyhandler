@@ -1,3 +1,4 @@
+const { extractLeadPhone } = require('../utils/lead-phone');
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
@@ -154,7 +155,7 @@ function applyCardLinks(card, identity = {}, extra = {}) {
   return {
     ...card,
     leadEmail: extra.email || identity.email || card.leadEmail || undefined,
-    leadPhone: extra.phone || card.leadPhone || undefined,
+    leadPhone: extra.phone || card.leadPhone || sourcePhoneForCard(card),
     phoneProvider: extra.phoneProvider || card.phoneProvider || undefined,
     phoneEnrichmentStatus: extra.phoneEnrichmentStatus || card.phoneEnrichmentStatus || undefined,
     enrichmentReceipt: extra.enrichmentReceipt || card.enrichmentReceipt || undefined,
@@ -199,6 +200,32 @@ async function persistCardIdentity(dbClient, replyId, {
       WHERE id = $4`,
     [li, site, em, replyId]
   );
+}
+
+function sourcePhoneForCard(card = {}) {
+  return extractLeadPhone(
+    { phone: card.leadPhone },
+    card.leadData,
+    card.payload,
+    card.lead,
+  ) || undefined;
+}
+
+/** Store the lead's own phone (free, from the reply source) so later card refreshes keep it. */
+async function persistSourcePhone(dbClient, replyId, phone) {
+  if (!replyId || !dbClient || !phone) return;
+  try {
+    await dbClient.query(
+      `UPDATE pending_replies
+          SET lead_phone = COALESCE(NULLIF(lead_phone, ''), $1),
+              lead_phone_provider = COALESCE(lead_phone_provider, 'source'),
+              updated_at = now()
+        WHERE id = $2`,
+      [phone, replyId]
+    );
+  } catch (err) {
+    console.warn('[Slack] persist source phone failed', { replyId, err: err.message });
+  }
 }
 
 function firePortalNotify(card, {
@@ -465,6 +492,7 @@ async function postProspectSlackCard({
       ? (card?.leadIcpVerdict || parseStoredIcp(card?.icpVerdict) || checkingVerdict())
       : unknownVerdict('no website');
     let enrichedCard = applyCardLinks(card, identity, { icp: initialIcp });
+    await persistSourcePhone(dbClient, replyId, enrichedCard.leadPhone);
     await persistCardIdentity(dbClient, replyId, {
       linkedinUrl: identity.linkedinUrl,
       website: identity.website,
