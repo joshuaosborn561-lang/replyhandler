@@ -230,7 +230,9 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       sendOpts
     );
 
+    let clientNotifyError = null;
     if (forwardEmails) {
+    try {
       const { threadContext, extraMessages } = await resolveClientNotifyThread(client, reply);
       const notifySkip = deepRootsClientNotifySkipReason({
         clientName: client.name,
@@ -351,9 +353,16 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
           clientCcWarning = `Client copy could not be sent: ${mailErr.message}`;
         }
       }
+    } catch (notifyErr) {
+      // The prospect reply already went out. A failed notify copy must never
+      // turn a sent reply into a failed card.
+      clientNotifyError = notifyErr.message;
+      console.warn('[ReplySend] Client notify copy failed after send', { replyId: reply.id, err: notifyErr.message });
+    }
     }
 
     return {
+      clientNotifyError: clientNotifyError || undefined,
       clientCcWarning: clientCcWarning || undefined,
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,

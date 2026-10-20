@@ -432,6 +432,7 @@ async function postProspectSlackCard({
   card,
   replyId,
   postInThread = false,
+  threadTs: explicitThreadTs = null,
   slackApi = slack,
   enrichFn = enrichPendingReplyPhone,
   identityResolve = resolveCardIdentity,
@@ -500,7 +501,7 @@ async function postProspectSlackCard({
     });
 
     const earlierTs = await findSlackThreadRootTs(clientId, platform, campaignId, leadId, dbClient);
-    const threadTs = postInThread ? earlierTs : null;
+    const threadTs = explicitThreadTs || (postInThread ? earlierTs : null);
     let earlierPermalink = enrichedCard.threadPermalink || null;
     if (!postInThread && earlierTs && !earlierPermalink && token && channelId) {
       try {

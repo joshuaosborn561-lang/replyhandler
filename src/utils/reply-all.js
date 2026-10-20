@@ -245,6 +245,36 @@ function buildReplyAll({
   };
 }
 
+/**
+ * Referral replies: the prospect hands us to someone else ("I've CC'd X",
+ * "talk to X", "reach out to X", "X handles this"). These are a live
+ * conversation and always get a draft, sent reply-all so the person who was
+ * looped in (To or CC) is on it.
+ */
+const REFERRAL_PATTERNS = [
+  /\b(i(?:'|\u2019)?ve|i have|have|i)\s+(?:cc(?:'|\u2019)?d|cc'ed|ccd|copied|looped(?:\s+in)?|added|included|forwarded(?:\s+this)?\s+to)\b/i,
+  /\b(?:cc(?:'|\u2019)?ing|copying|looping in)\b/i,
+  /\b(?:talk|speak|reach out|connect|get in touch|follow up)\s+(?:to|with)\s+(?:my|our|him|her|them|[A-Z][a-z]+)/,
+  /\b(?:please\s+)?(?:contact|email|reach)\s+(?:my|our)\s+\w+/i,
+  /\b(?:is|would be)\s+the\s+(?:right|best|better)\s+(?:person|contact|one)\b/i,
+  /\b(?:handles|manages|is in charge of|oversees)\s+(?:this|that|our|all)\b/i,
+];
+
+function looksLikeReferral(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  return REFERRAL_PATTERNS.some((re) => re.test(s));
+}
+
+/** Count of extra humans a reply-all would include (To + CC, minus us/sender). */
+function replyAllExtraRecipients(opts = {}) {
+  try {
+    return buildReplyAll(opts).cc;
+  } catch {
+    return [];
+  }
+}
+
 function mergeCcLists(...lists) {
   const seen = new Set();
   const out = [];
@@ -269,4 +299,6 @@ module.exports = {
   ourIdentitiesFromThread,
   buildReplyAll,
   mergeCcLists,
+  looksLikeReferral,
+  replyAllExtraRecipients,
 };
