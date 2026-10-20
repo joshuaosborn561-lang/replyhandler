@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 /**
  * Auto-build a client ICP profile from Josh's Fireflies call transcripts.
  *
@@ -181,7 +182,7 @@ async function extractIcpFromText(sourceText, { extractFn, env = process.env } =
   if (!env.GEMINI_API_KEY) return emptyProfile();
   const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({
-    model: env.REPLY_ICP_MODEL || 'gemini-2.5-flash',
+    model: env.REPLY_ICP_MODEL || geminiModel(),
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 512,

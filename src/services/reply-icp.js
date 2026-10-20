@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 /**
  * Slack-card ICP verdict — reuse topup's site_check / icp gate, do not
  * invent a new grader.
@@ -311,7 +312,7 @@ async function gradeWithGemini(spec, domain, siteText) {
   }
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({
-    model: process.env.REPLY_ICP_MODEL || 'gemini-2.5-flash',
+    model: process.env.REPLY_ICP_MODEL || geminiModel(),
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 256,
