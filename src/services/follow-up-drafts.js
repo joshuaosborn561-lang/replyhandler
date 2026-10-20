@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 const { firstNameFromLead } = require('./classifier');
 
 /**
@@ -369,7 +370,7 @@ async function generateFollowUpGeminiDraft(opts) {
   });
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_FOLLOW_UP_MODEL || 'gemini-2.5-flash',
+    model: process.env.GEMINI_FOLLOW_UP_MODEL || geminiModel(),
     systemInstruction: system,
     generationConfig: {
       maxOutputTokens: 4096,
@@ -394,7 +395,7 @@ async function generateFollowUpGeminiDraft(opts) {
     text: parsed.draft,
     needsClient: parsed.needsClient === true,
     whatToSend: parsed.needsClient ? parsed.whatToSend : null,
-    model: 'gemini-2.5-flash',
+    model: geminiModel(),
     usage: null,
   };
 }

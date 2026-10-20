@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const db = require('../db');
 const allo = require('./allo');
@@ -32,7 +33,7 @@ async function geminiSaysBooked(transcript) {
 
   try {
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: geminiModel(),
       systemInstruction:
         'You read a sales call transcript and decide one thing: did the call end with a ' +
         'meeting, demo or call actually scheduled with the prospect — a specific agreed ' +
@@ -65,7 +66,7 @@ async function transcribeAudio(buffer, mimeType) {
   if (!process.env.GEMINI_API_KEY) return '';
   try {
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: geminiModel(),
       systemInstruction:
         'Transcribe this sales phone call. Label each turn "Us:" or "Prospect:". ' +
         'Transcript only, no commentary. If there is no intelligible speech, reply exactly: NO_SPEECH',

@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 /**
  * Weekly voice learning — the Friday routine.
  *
@@ -40,7 +41,7 @@ const voiceProfile = require('./voice-profile');
 const DEFAULT_LOOKBACK_HOURS = 8 * 24; // a week plus a day of overlap; upserts are idempotent
 const DEDUPE_SLICE = 120;
 const CONTEXT_MESSAGES = 6;
-const PROFILE_MODEL = process.env.VOICE_LEARNING_MODEL || 'gemini-2.5-flash';
+const PROFILE_MODEL = process.env.VOICE_LEARNING_MODEL || geminiModel();
 
 function numberEnv(name, fallback) {
   const n = parseInt(process.env[name] || '', 10);

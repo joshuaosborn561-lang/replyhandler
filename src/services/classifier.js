@@ -1,3 +1,4 @@
+const { geminiModel } = require('./gemini-model');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   looksLikeOutOfOffice,
@@ -357,7 +358,7 @@ function summarizeProposedTimes(text) {
 
 function buildClassifyModel() {
   return genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: geminiModel(),
     systemInstruction:
       `You classify a B2B sales reply into exactly one category.\n` +
       `Respond with ONLY the category word, nothing else.\n` +
@@ -378,7 +379,7 @@ function buildClassifyModel() {
 
 function buildOooCheckModel() {
   return genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: geminiModel(),
     systemInstruction:
       'You decide if a message is an out-of-office, vacation, or automatic reply.\n' +
       'Respond with exactly YES or NO, nothing else.\n' +
@@ -395,7 +396,7 @@ function buildOooCheckModel() {
 
 function buildNotInterestedCheckModel() {
   return genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: geminiModel(),
     systemInstruction:
       'You decide if a B2B prospect is clearly declining the offer or saying no.\n' +
       'Respond with exactly YES or NO, nothing else.\n' +
@@ -412,10 +413,10 @@ function buildNotInterestedCheckModel() {
 
 function buildDraftModel(systemInstruction) {
   return genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: geminiModel(),
     systemInstruction,
     generationConfig: {
-      // gemini-2.5-flash thinking tokens count against maxOutputTokens.
+      // Gemini thinking tokens count against maxOutputTokens.
       // 1024 was frequently exhausted by thinking and cut drafts mid-sentence.
       maxOutputTokens: 8192,
       temperature: 0.7,
