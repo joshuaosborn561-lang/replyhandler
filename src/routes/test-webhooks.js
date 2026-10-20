@@ -4,10 +4,8 @@ const { postProspectSlackCard } = require('../services/slack-reply-post');
 const { logIntegrationStatus, getIntegrationStatus } = require('../services/integration-check');
 const { sweepInterested } = require('../services/interested-sweep');
 const { refreshFollowUpSlackCards } = require('../services/refresh-followup-cards');
-const { requireAdminApiKey } = require('../utils/admin-auth');
 
 const router = Router();
-router.use(requireAdminApiKey);
 
 /**
  * Inserts a pending reply and posts the same Slack approval card as production,
