@@ -38,7 +38,39 @@ const {
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('../services/inbound-forward');
 const { isColdInbound } = require('../services/heyreach-poller');
-const { buildReplyAll } = require('../utils/reply-all');
+const { buildReplyAll, looksLikeReferral } = require('../utils/reply-all');
+
+/** Positive SmartLead classes: always drafted. */
+const SMARTLEAD_DRAFT_ALWAYS = new Set(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
+
+/**
+ * Handler result straight from SmartLead's category. No LLM call. Mixed /
+ * conditional bodies under a drop label still surface as a conversation.
+ */
+function smartleadCategoryResult(slCategory, inboundMessage) {
+  const { promoteMixedIntent } = require('../utils/mixed-intent');
+  const base = slCategory.classification;
+  const classification = base === 'NOT_INTERESTED'
+    ? (promoteMixedIntent(base, inboundMessage) || base)
+    : base;
+  return {
+    classification,
+    draft: '',
+    proposed_time: null,
+    reasoning: `SmartLead category "${slCategory.raw}" → ${classification}.`,
+    source: 'smartlead_category',
+  };
+}
+
+/** Referrals ("I've CC'd X", "talk to X") get a draft, unless it is an opt-out. */
+function promoteReferral(classification, inboundMessage) {
+  const c = String(classification || '').toUpperCase();
+  if (SMARTLEAD_DRAFT_ALWAYS.has(c) || c === 'REMOVE_ME' || c === 'OOO') {
+    return { promoted: false, classification };
+  }
+  if (!looksLikeReferral(inboundMessage)) return { promoted: false, classification };
+  return { promoted: true, classification: 'INTERESTED' };
+}
 
 const router = Router();
 
@@ -638,47 +670,66 @@ async function processSmartleadWebhookAsync({
     return;
   }
 
+  // SmartLead's own category is the source of truth for email. Only when
+  // SmartLead has not labelled the reply do we ask Jev / Gemini to classify.
+  // The LLM still writes every draft (draftOnly below).
+  const slCategory = classifyFromSmartlead(payload, threadContext);
   let result;
-  try {
-    result = await classifyAndDraft(
-      threadContext,
-      inboundEffective,
-      client.voice_prompt,
-      client.booking_link,
-      '',
-      {
-        leadName: greetName,
-        digestTimezone: client.digest_timezone,
-        platform: 'smartlead',
-        clientId,
-        leadId: resolvedLeadId,
-        leadEmail,
-        clientName: client.name,
-        draftMode: 'realtime',
-        deferDraft: true,
-      },
-    );
-  } catch (err) {
-    console.error('[Classifier] Failed for SmartLead reply', { clientId, err: err.message });
-    await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-      leadName: greetName, platform: 'smartlead', error: err.message,
-    });
-    return;
+  if (slCategory) {
+    result = smartleadCategoryResult(slCategory, inboundEffective);
+  } else {
+    try {
+      result = await classifyAndDraft(
+        threadContext,
+        inboundEffective,
+        client.voice_prompt,
+        client.booking_link,
+        '',
+        {
+          leadName: greetName,
+          digestTimezone: client.digest_timezone,
+          platform: 'smartlead',
+          clientId,
+          leadId: resolvedLeadId,
+          leadEmail,
+          clientName: client.name,
+          draftMode: 'realtime',
+          deferDraft: true,
+        },
+      );
+    } catch (err) {
+      console.error('[Classifier] Failed for SmartLead reply', { clientId, err: err.message });
+      await slack.postError(client.slack_bot_token, client.slack_channel_id, {
+        leadName: greetName, platform: 'smartlead', error: err.message,
+      });
+      return;
+    }
   }
 
   let { classification, draft, proposed_time, reasoning } = result;
 
-  const slCategory = classifyFromSmartlead(payload, threadContext);
-  const applied = applySmartleadCategory({
-    slCategory, classification, inboundMessage: inboundEffective, reasoning,
-  });
-  classification = applied.classification;
-  reasoning = applied.reasoning;
+  if (!slCategory) {
+    const applied = applySmartleadCategory({
+      slCategory: null, classification, inboundMessage: inboundEffective, reasoning,
+    });
+    classification = applied.classification;
+    reasoning = applied.reasoning;
+    {
+      const guard = applyPositiveIntentGuard(classification, inboundEffective);
+      if (guard.overridden) {
+        console.log('[Webhook] SmartLead positive-intent guard upgraded classification', { clientId, from: guard.from, to: guard.classification });
+        classification = guard.classification;
+      }
+    }
+  }
+  let referralPromoted = false;
   {
-    const guard = applyPositiveIntentGuard(classification, inboundEffective);
-    if (guard.overridden) {
-      console.log('[Webhook] SmartLead positive-intent guard upgraded classification', { clientId, from: guard.from, to: guard.classification });
-      classification = guard.classification;
+    const ref = promoteReferral(classification, inboundEffective);
+    if (ref.promoted) {
+      referralPromoted = true;
+      console.log('[Webhook] SmartLead referral reply promoted for draft', { clientId, from: classification, to: ref.classification });
+      classification = ref.classification;
+      reasoning = `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
     }
   }
 
@@ -690,12 +741,14 @@ async function processSmartleadWebhookAsync({
       console.error('[Webhook] Failed to unsubscribe in SmartLead', { err: err.message });
     }
   }
-  const suppressedReason = slackChannelSuppressionReason({
+  let suppressedReason = slackChannelSuppressionReason({
     classification,
     inboundMessage: inboundEffective,
     isColdInbound: false,
     pitchToUsProb: result.pitchToUsProb,
   });
+  // A referral ("please contact X regarding this") is a hand-off, not a dead end.
+  if (referralPromoted && suppressedReason === 'wrong_person') suppressedReason = null;
 
   if (!replyRow) {
     const claimed = await claimNewInbound({
@@ -789,6 +842,7 @@ async function processSmartleadWebhookAsync({
     payload,
     linkedinUrl: leadData.linkedin_url || leadData.linkedinUrl || payload.linkedin_url || undefined,
     leadWebsite: leadData.website || leadData.company_website || leadData.company_url || undefined,
+    replyAllCc: replyAll.cc,
   };
 
   const posted = await postProspectSlackCard({
@@ -832,6 +886,27 @@ async function processSmartleadWebhookAsync({
     });
   } catch (err) {
     console.error('[Webhook] SmartLead draft failed after card', { clientId, err: err.message });
+  }
+  if (!drafted && SMARTLEAD_DRAFT_ALWAYS.has(classification)) {
+    // Every positive SmartLead reply gets a draft: one retry before giving up.
+    try {
+      drafted = await draftOnly({
+        classification,
+        threadContext,
+        inboundMessage: inboundEffective,
+        leadName: greetName,
+        voicePrompt: client.voice_prompt,
+        bookingLink: client.booking_link,
+        schedulingPromptBlock: promptBlock,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientName: client.name,
+        clientId,
+        draftMode: 'realtime',
+      });
+    } catch (err) {
+      console.error('[Webhook] SmartLead draft retry failed', { clientId, err: err.message });
+    }
   }
 
   const { applyFactCheckToPolicy: applyFc, enforceDraftGrounding, factSourceText } = require('../utils/draft-fact-check');
@@ -1272,3 +1347,6 @@ router.post('/webhook/inbound-forward', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.smartleadCategoryResult = smartleadCategoryResult;
+module.exports.promoteReferral = promoteReferral;
+module.exports.SMARTLEAD_DRAFT_ALWAYS = SMARTLEAD_DRAFT_ALWAYS;

@@ -296,7 +296,17 @@ router.post('/admin/post-approval-card', async (req, res) => {
     lastOutboundMessage,
     classification = 'INTERESTED',
     reasoning = 'Recovered for Slack approval.',
+    thread_ts: threadTsRaw,
+    threadTs: threadTsAlt,
+    cc_client: ccClientRaw,
+    ccClient: ccClientAlt,
   } = req.body || {};
+  const threadTs = String(threadTsRaw || threadTsAlt || '').trim() || null;
+  const ccClientVal = ccClientRaw !== undefined ? ccClientRaw : ccClientAlt;
+  const ccClient = ccClientVal === true || /^(1|true|yes|on)$/i.test(String(ccClientVal || ''));
+  if (threadTs && !/^\d+\.\d+$/.test(threadTs)) {
+    return res.status(400).json({ error: 'thread_ts must look like 1234567890.123456' });
+  }
 
   if (!clientId || !leadName || !inboundMessage || !draft || !campaignId || !leadId) {
     return res.status(400).json({
@@ -349,7 +359,9 @@ router.post('/admin/post-approval-card', async (req, res) => {
       isDraft: true,
       replyId: reply.id,
       postInThread: false,
+      threadTs,
       card: {
+        showCcClientButton: ccClient,
         replyId: reply.id,
         leadName,
         leadEmail: leadEmail || null,
@@ -367,6 +379,8 @@ router.post('/admin/post-approval-card', async (req, res) => {
       ok: true,
       replyId: reply.id,
       slackMessageTs: slackResult.ts,
+      threadTs,
+      ccClientButton: ccClient,
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });

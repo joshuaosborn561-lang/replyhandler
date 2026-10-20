@@ -224,10 +224,22 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
 }
 
 /** Always-on client-notify notice — forward list + round-robin pool. */
-function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName }) {
+function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllCc }) {
   const always = String(ccEmails || '').trim();
   const rr = String(ccRoundRobinEmails || '').trim();
-  if (!always && !rr) return null;
+  const extra = (Array.isArray(replyAllCc) ? replyAllCc : String(replyAllCc || '').split(/[,;]+/))
+    .map((e) => String(e || '').trim())
+    .filter(Boolean);
+  if (!always && !rr && !extra.length) return null;
+  if (!always && !rr) {
+    return {
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: `📬 Reply-all: CC ${extra.length} other ${extra.length === 1 ? 'person' : 'people'} on the thread: ${escMrkdwn(extra.join(', '))}`,
+      }],
+    };
+  }
   const lines = [];
   if (always) {
     lines.push(isDeepRootsClient(clientName)
@@ -237,7 +249,9 @@ function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName }) {
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   const intro = isDeepRootsClient(clientName)
     ? '📬 Tyler is emailed only when they look qualified (employees + $1–10M EBITDA) and want to schedule a call — not on every send'
-    : '📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)';
+    : extra.length
+      ? `📬 Reply-all: CC ${extra.length} other ${extra.length === 1 ? 'person' : 'people'} on the thread (${escMrkdwn(extra.join(', '))}) — primary Gmail notify on Approve`
+      : '📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)';
   return {
     type: 'context',
     elements: [{
@@ -368,7 +382,7 @@ function sendCcClientActionsBlock(replyId) {
     elements: [
       {
         type: 'button',
-        text: { type: 'plain_text', text: '📬 Send + CC client' },
+        text: { type: 'plain_text', text: '📬 Approve & Send + CC client' },
         style: 'primary',
         action_id: 'approve_reply_cc_client',
         value: replyId,
@@ -764,6 +778,7 @@ function buildDraftApprovalCard({
   ccEmails, ccRoundRobinEmails, leadPhone, phoneProvider, phoneEnrichmentStatus,
   threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
   leadIcpVerdict, needsReview, needsClient = false, whatToSend = null,
+  replyAllCc = null, showCcClientButton = false,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -842,10 +857,14 @@ function buildDraftApprovalCard({
           ccEmails: ccEmails || ccEmail,
           ccRoundRobinEmails,
           clientName,
+          replyAllCc,
         })
       : null;
     if (notice) blocks.push(notice);
     blocks.push(draftApprovalActionsBlock(replyId));
+    if (showCcClientButton && platform === 'smartlead') {
+      blocks.push(sendCcClientActionsBlock(replyId));
+    }
   }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);

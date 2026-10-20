@@ -333,6 +333,16 @@ async function handleEditModalSubmit(interaction) {
   }
 }
 
+/** Plain status update on the clicked card. Never throws. */
+async function setCardStatus(token, interaction, text) {
+  try {
+    if (!token || !interaction?.channel?.id || !interaction?.message?.ts) return;
+    await slackService.updateMessage(token, interaction.channel.id, interaction.message.ts, text);
+  } catch (err) {
+    console.warn('[Slack] Card status update failed', { err: err.message });
+  }
+}
+
 async function handleApprove(replyId, interaction, { ccClientOnProspect = false } = {}) {
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
@@ -342,10 +352,24 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
 
   if (!reply) {
     console.warn('[Slack] Reply not found or already actioned', { replyId });
+    const { rows: [existing] } = await db.query(
+      `SELECT r.status, c.slack_bot_token FROM pending_replies r
+         JOIN clients c ON c.id = r.client_id WHERE r.id = $1`,
+      [replyId]
+    ).catch(() => ({ rows: [] }));
+    if (existing?.slack_bot_token) {
+      const label = existing.status === 'sent'
+        ? '✅ Already sent'
+        : existing.status === 'approved'
+          ? '⏳ Sending...'
+          : `Already handled (${existing.status})`;
+      await setCardStatus(existing.slack_bot_token, interaction, label);
+    }
     return;
   }
 
   const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  await setCardStatus(client.slack_bot_token, interaction, '⏳ Sending...');
   const ctx = await slackCardContextFromReply(reply, client);
 
   try {
@@ -361,8 +385,13 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
 
     const { rows: [sentReply] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [replyId]);
     if (!skippedDuplicate) {
-      if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
-      await learnFromApprovedReply({ reply, client, finalText: reply.draft_reply });
+      // Post-send bookkeeping must not turn a sent reply into a failed card.
+      try {
+        if (sentReply) await scheduleAfterOutboundSend(client.id, sentReply);
+        await learnFromApprovedReply({ reply, client, finalText: reply.draft_reply });
+      } catch (err) {
+        console.warn('[Slack] Post-send bookkeeping failed', { replyId, err: err.message });
+      }
     }
 
     let extraFooter = '';
@@ -382,6 +411,9 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
       if (sendResult.prospectCcEmails) {
         extraFooter += `\nProspect thread CC: ${sendResult.prospectCcEmails}`;
       }
+      if (sendResult.clientNotifyError) {
+        extraFooter += `\n⚠️ Reply sent, but the client notify copy failed: ${sendResult.clientNotifyError}`;
+      }
     }
 
     await slackService.updateSentConfirmationCard(
@@ -393,7 +425,10 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
         extraFooter: extraFooter.trim() || undefined,
         ccUsed: ccUsedLabel(reply, client, sendResult),
       })
-    );
+    ).catch(async (err) => {
+      console.warn('[Slack] Sent card render failed', { replyId, err: err.message });
+      await setCardStatus(client.slack_bot_token, interaction, skippedDuplicate ? '✅ Already sent' : '✅ Sent');
+    });
 
     console.log('[Slack] Reply approved and sent', { replyId, platform: reply.platform, lead: reply.lead_name });
   } catch (err) {
