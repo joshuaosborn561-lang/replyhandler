@@ -17,6 +17,7 @@ describe('portal positive-reply payload', () => {
     assert.equal(isPositivePortalClassification('INTERESTED'), true);
     assert.equal(isPositivePortalClassification('FOLLOW_UP'), false);
     assert.equal(isPositivePortalClassification('NOT_INTERESTED'), false);
+    assert.equal(isPositivePortalClassification('QUESTION'), false);
 
     const payload = buildPositiveReplyPayload({
       clientId: 'client-1',
@@ -155,7 +156,7 @@ describe('portal positive-reply transport', () => {
     };
     try {
       const result = await notifyPortalPositiveReply({
-        classification: 'QUESTION',
+        classification: 'MEETING_PROPOSED',
         clientId: 'client-1',
         platform: 'smartlead',
         email: 'pat@acme.com',

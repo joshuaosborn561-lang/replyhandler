@@ -13,7 +13,7 @@ const SNIPPET_MAX = 500;
 const POSITIVE_CLASSIFICATIONS = new Set([
   'INTERESTED',
   'MEETING_PROPOSED',
-  'QUESTION',
+  // QUESTION is not forwarded: clients see Interested / Meeting replies only (Josh, Oct 20).
 ]);
 
 const GENERIC_EMAIL_DOMAINS = new Set([
