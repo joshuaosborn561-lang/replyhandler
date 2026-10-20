@@ -76,22 +76,20 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
   const phone = String(leadPhone || '').trim();
   const provider = String(phoneProvider || '').trim();
   if (phone) {
-    const providerLabel = {
+    const labels = {
       getleads: 'GetLeads',
       smartlead: 'Smartlead',
       aiark: 'AI Ark',
       prospeo: 'Prospeo',
       fullenrich: 'FullEnrich',
-    }[provider.toLowerCase()] || provider;
+      source: '',
+    };
+    const pk = provider.toLowerCase();
+    const providerLabel = Object.prototype.hasOwnProperty.call(labels, pk) ? labels[pk] : provider;
     return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
   }
-  // After enrichment finishes with no cell — plain English, not provider jargon.
-  if (
-    phoneEnrichmentStatus === 'not_found' ||
-    phoneEnrichmentStatus === 'failed'
-  ) {
-    return '\n📱 _phone number not found_';
-  }
+  // No phone on file: show nothing (Josh, Oct 20) — no empty/"not found" label.
+  void phoneEnrichmentStatus;
   return '';
 }
 

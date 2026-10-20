@@ -1,3 +1,6 @@
+const { applyPositiveIntentGuard } = require('../utils/positive-intent');
+const { shouldAlertOther, postOtherAlert } = require('../services/other-alert');
+const { extractLeadPhone } = require('../utils/lead-phone');
 const { Router } = require('express');
 const db = require('../db');
 const smartlead = require('../services/smartlead');
@@ -480,6 +483,27 @@ async function processSmartleadWebhookAsync({
 }) {
   let resolvedCampaignId = campaignId;
   let resolvedLeadId = leadId;
+  let smartleadLead = null;
+  // No real lead id in the payload: look the lead up by email and trust
+  // Smartlead's own campaign membership over whatever the payload implied.
+  if (!resolvedLeadId && leadEmail && client.smartlead_api_key) {
+    try {
+      const found = await smartlead.lookupLeadByEmail(client.smartlead_api_key, leadEmail);
+      if (found) {
+        smartleadLead = found.lead;
+        resolvedLeadId = found.leadId;
+        const picked = smartlead.pickLeadCampaign(resolvedCampaignId, found.campaignIds);
+        if (picked !== resolvedCampaignId) {
+          console.log('[Webhook] SmartLead campaign corrected from lead lookup', {
+            clientId, from: resolvedCampaignId, to: picked,
+          });
+        }
+        resolvedCampaignId = picked;
+      }
+    } catch (err) {
+      console.warn('[Webhook] SmartLead lead lookup by email failed', { clientId, err: err.message });
+    }
+  }
   if ((!resolvedCampaignId || !resolvedLeadId) && client.smartlead_api_key) {
     try {
       const resolved = await smartlead.resolveIdsFromMasterInbox(client.smartlead_api_key, {
@@ -650,6 +674,13 @@ async function processSmartleadWebhookAsync({
   });
   classification = applied.classification;
   reasoning = applied.reasoning;
+  {
+    const guard = applyPositiveIntentGuard(classification, inboundEffective);
+    if (guard.overridden) {
+      console.log('[Webhook] SmartLead positive-intent guard upgraded classification', { clientId, from: guard.from, to: guard.classification });
+      classification = guard.classification;
+    }
+  }
 
   if (classification === 'REMOVE_ME' || looksLikeUnsubscribe(inboundEffective)) {
     try {
@@ -717,6 +748,12 @@ async function processSmartleadWebhookAsync({
         WHERE id = $3`,
       [suppressedReason, classification, replyRow.id]
     );
+    if (shouldAlertOther(suppressedReason, classification)) {
+      await postOtherAlert({
+        client, clientId, platform: 'smartlead', leadName: senderName, inboundMessage: inboundEffective,
+        leadPhone: extractLeadPhone(smartleadLead, leadData, payload),
+      });
+    }
     return;
   }
 
@@ -727,11 +764,18 @@ async function processSmartleadWebhookAsync({
   let isDraft = policy.isDraft;
   let status = policy.status;
 
+  if (!smartleadLead && !extractLeadPhone(leadData, payload) && leadEmail && client.smartlead_api_key) {
+    smartleadLead = await smartlead.lookupLeadByEmail(client.smartlead_api_key, leadEmail)
+      .then((f) => f && f.lead)
+      .catch(() => null);
+  }
+
   const slackCard = {
     replyId: replyRow.id,
     leadName: senderName,
     leadEmail,
     leadCompany: leadData.company_name || leadData.company || payload.company_name || payload.company || null,
+    leadPhone: extractLeadPhone(smartleadLead, leadData, payload) || undefined,
     platform: 'smartlead',
     classification,
     draft: '',
@@ -1053,6 +1097,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           ? { ...fullConv, campaignId: campaignId || fullConv.campaignId, campaign_id: campaignId || fullConv.campaign_id }
           : { campaignId, campaign_id: campaignId, campaign: payload.campaign };
         const coldInbound = isColdInbound(convForCold, threadContext);
+        classification = applyPositiveIntentGuard(classification, inboundMessage).classification;
         const hrSuppressed = slackChannelSuppressionReason({
           classification,
           inboundMessage,

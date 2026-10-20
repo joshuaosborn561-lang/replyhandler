@@ -1,3 +1,5 @@
+const { extractLeadPhone } = require('../utils/lead-phone');
+const { applyPositiveIntentGuard } = require('../utils/positive-intent');
 const db = require('../db');
 const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
@@ -395,6 +397,7 @@ async function processInboxRow(client, row, options) {
   }
   classification = applied.classification;
   reasoning = applied.reasoning;
+  classification = applyPositiveIntentGuard(classification, inbound).classification;
 
   const suppressed = slackChannelSuppressionReason({
     classification,
@@ -451,10 +454,18 @@ async function processInboxRow(client, row, options) {
   }
   const reply = claimed.reply;
 
+  let slLead = null;
+  if (!extractLeadPhone(row) && leadEmail && client.smartlead_api_key) {
+    slLead = await smartlead.lookupLeadByEmail(client.smartlead_api_key, leadEmail)
+      .then((f) => f && f.lead)
+      .catch(() => null);
+  }
+
   const card = {
     replyId: reply.id,
     leadName,
     leadEmail,
+    leadPhone: extractLeadPhone(row, slLead) || undefined,
     platform: 'smartlead',
     classification,
     draft,

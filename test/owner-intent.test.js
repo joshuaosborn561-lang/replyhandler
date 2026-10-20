@@ -929,17 +929,20 @@ test('Slack campaign field shows the campaign name', () => {
 
 // ── Decision: missing phone says "phone number not found" ─────────────
 // "and if you cant find one say phone number not found"
-test('missing phone says phone number not found on Slack', () => {
+// Josh, Oct 20 2026 (reverses the earlier "phone number not found" label):
+// "where the hell are the phone numbers on the cards" — show the phone when we
+// have one; if none is on file, show nothing rather than a blank/not-found label.
+test('missing phone shows no phone line on Slack', () => {
   const slackService = read('src/services/slack.js');
   const fnStart = slackService.indexOf('function phoneEnrichmentLine');
   const fnEnd = slackService.indexOf('/** Slack block-quote', fnStart);
   assert.ok(fnStart >= 0 && fnEnd > fnStart);
-  assert.match(
+  assert.doesNotMatch(
     slackService.slice(fnStart, fnEnd),
     /phone number not found/,
     reversal(
-      'missing phone says phone number not found on Slack',
-      'the not-found label was changed or removed'
+      'missing phone shows no phone line on Slack',
+      'a not-found phone label came back'
     )
   );
 });
