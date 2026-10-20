@@ -1122,7 +1122,7 @@ test Slack drafts, voice-learning revert, diagnostics. Require header
 and serve the route. Wrong or missing header is 401. Dashboard and
 scripts send the same header.
 
-Guard: `all /admin routes require ADMIN_API_KEY and fail closed`
+Guard: superseded on 2026-10-20, see below.
 
 ### Resurface wrongly suppressed mixed/question replies
 
@@ -1314,3 +1314,9 @@ come from the calendar.
 
 One client's HeyReach key failure must not stop polling for the others.
 Each client is try/caught (including GetConversationsV2).
+
+## No admin key checks (2026-10-20)
+
+Josh: "why is there any key checks at all, get rid of them all." The ADMIN_API_KEY gate is removed from /admin, test-webhooks and voice-learning. It had also been returning 401 on /public/booking-clients, which broke BookingBridge auto-wrap. Inbound webhook shared-secret checks stay.
+
+Guard: `no route requires ADMIN_API_KEY`

@@ -3,10 +3,8 @@ const db = require('../db');
 const { runWeeklyVoiceLearning } = require('../services/weekly-voice-learning');
 const voiceProfile = require('../services/voice-profile');
 const { renderLearnedVoiceBlock } = voiceProfile;
-const { requireAdminApiKey } = require('../utils/admin-auth');
 
 const router = Router();
-router.use(requireAdminApiKey);
 
 const PROFILE_SELECT = `
   SELECT vp.id, vp.scope, vp.client_id, c.name AS client_name, vp.week_ending::text AS week_ending, vp.profile,

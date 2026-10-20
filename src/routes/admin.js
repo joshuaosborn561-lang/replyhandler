@@ -14,11 +14,9 @@ const {
   summarizeIcpResult,
 } = require('../services/client-icp-profile');
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
-const { requireAdminApiKey } = require('../utils/admin-auth');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 
 const router = Router();
-router.use(requireAdminApiKey);
 
 function webhookUrls(clientId) {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + (process.env.PORT || 3000);

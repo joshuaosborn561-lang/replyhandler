@@ -125,8 +125,9 @@ test('/dashboard does not return 401 and open routes leak no secrets', async () 
     }
 
     const admin = await fetch(`http://127.0.0.1:${port}/admin/clients`);
-    assert.ok(admin.status === 401 || admin.status === 503,
-      '/admin must stay behind requireAdminApiKey');
+    assert.notEqual(admin.status, 401, '/admin must not require a key');
+    const cat = await fetch(`http://127.0.0.1:${port}/public/booking-clients`);
+    assert.notEqual(cat.status, 401, 'booking catalog must be public');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
