@@ -1320,3 +1320,16 @@ Each client is try/caught (including GetConversationsV2).
 Josh: "why is there any key checks at all, get rid of them all." The ADMIN_API_KEY gate is removed from /admin, test-webhooks and voice-learning. It had also been returning 401 on /public/booking-clients, which broke BookingBridge auto-wrap. Inbound webhook shared-secret checks stay.
 
 Guard: `no route requires ADMIN_API_KEY`
+
+### Every reply card shows full name, LinkedIn, website, ICP, phone, and the person's location + time zone (Oct 21)
+
+*"I need all the replies to show the person's full name, their LinkedIn… their website… ICP… phone number… and I need to know what time zone they're in… not the headquarters, the actual person… on all the AI reply channels and also on the follow-up channels… for all clients."*
+
+Root causes it only worked for some clients:
+1. Smartlead webhook posts the card with an empty draft, then the draft update and the late enrichment update both `chat.update` from their own stale copies. The draft update re-sent the pre-enrichment card, so LinkedIn / website / phone / ICP fell back to "not found" (or the late update wiped the draft). Now every update merges into the card's latest state (`patchPostedCard` / `mergeCardPayload`); an empty field never erases a found one.
+2. Website said "not found" when only the email domain was known on rebuilt cards. `leadFieldText` now derives `https://domain` from any non-free-mail email.
+3. No person location / time zone existed anywhere. `lead-location.js` reads it from lead fields; `person-profile-lookup.js` adds AI Ark reverse lookup then Serper LinkedIn search (also a LinkedIn + full-name fallback). Time zone is derived from the person's location, never company HQ. Stored in `pending_replies.lead_location / lead_timezone / lead_full_name` (migration 038).
+4. Clients without an ICP waited for the hourly weekday sweep. A card that grades `unknown (no ICP)` now triggers `ensureClientIcp` (Fireflies) for that client immediately, single-flight, then regrades its cards.
+5. No confirmed mobile showed no number at all. The non-mobile alt number now shows as "not a confirmed mobile".
+
+Guard: `test/card-person-fields.test.js`

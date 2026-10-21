@@ -73,6 +73,8 @@ async function reverseLookupByEmail(email) {
     website: website ? String(website) : null,
     phone: null,
     rawName: (data.profile && data.profile.full_name) || person.full_name || null,
+    // Full body for the card's person-profile parse (location, name). Never logged.
+    rawBody: data,
   };
 }
 

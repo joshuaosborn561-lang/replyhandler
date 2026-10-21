@@ -8,7 +8,7 @@ const heyreach = require('../services/heyreach');
 const { classifyAndDraft, draftOnly } = require('../services/classifier');
 const slack = require('../services/slack');
 const { enrichPendingReplyPhone } = require('../services/reply-phone-enrichment');
-const { postProspectSlackCard } = require('../services/slack-reply-post');
+const { postProspectSlackCard, patchPostedCard } = require('../services/slack-reply-post');
 const {
   inboundPrefix,
   inboundAlreadyRecorded,
@@ -958,11 +958,20 @@ async function processSmartleadWebhookAsync({
 
   if (posted?.ts && drafted) {
     try {
-      await slack.updateDraftApprovalCard(client.slack_bot_token, client.slack_channel_id, posted.ts, {
-        ...slackCard,
-        draft: drafted,
-        reasoning,
-        needsReview: policy.needsReview,
+      // Merge into the card's latest state: the late enrichment update may
+      // already have filled LinkedIn / website / phone / ICP / location.
+      await patchPostedCard({
+        slackApi: slack,
+        token: client.slack_bot_token,
+        channelId: client.slack_channel_id,
+        ts: posted.ts,
+        isDraft: true,
+        replyId: replyRow.id,
+        base: { ...slackCard, ...(posted.identity ? {
+          leadLinkedinUrl: posted.identity.linkedinUrl || undefined,
+          leadWebsite: posted.identity.website || undefined,
+        } : {}) },
+        patch: { draft: drafted, reasoning, needsReview: policy.needsReview },
       });
     } catch (err) {
       console.warn('[Webhook] Slack draft update failed', { replyId: replyRow.id, err: err.message });

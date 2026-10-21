@@ -101,7 +101,7 @@ function normalizeLinkedinUrl(raw) {
   return '';
 }
 
-const CONSUMER_WEBSITE_HOST = /gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com/i;
+const { CONSUMER_DOMAINS: CONSUMER_WEBSITE_HOST } = require('./prospect-enrich');
 
 function normalizeWebsiteUrl(raw) {
   const s = String(raw || '').trim();
@@ -149,23 +149,65 @@ function icpVerdictLine(leadIcpVerdict) {
   return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason}`)}`;
 }
 
+/** Prefer the enriched full name when the reply only carried a first name. */
+function bestFullName(leadName, leadFullName) {
+  const a = String(leadName || '').trim();
+  const b = String(leadFullName || '').trim();
+  if (!b) return a;
+  if (!a || /@/.test(a)) return b;
+  const words = (x) => x.split(/\s+/).filter(Boolean).length;
+  return words(b) > words(a) && b.toLowerCase().startsWith(a.split(/\s+/)[0].toLowerCase()) ? b : a;
+}
+
+/** Work-email domain → https://domain. Free-mail never counts as a website. */
+function websiteFromLeadEmail(leadEmail) {
+  const e = String(leadEmail || '').trim().toLowerCase();
+  const at = e.lastIndexOf('@');
+  if (at < 0) return '';
+  return normalizeWebsiteUrl(e.slice(at + 1));
+}
+
+/** Non-mobile number (landline / VoIP / unverified) when no confirmed mobile was found. */
+function altPhoneLine(leadPhone, leadPhoneAlt) {
+  if (String(leadPhone || '').trim()) return '';
+  const alt = String(leadPhoneAlt || '').trim();
+  return alt ? `\n☎️ ${escMrkdwn(alt)} _(not a confirmed mobile)_` : '';
+}
+
+/** The PERSON's location + local time zone (not company HQ). */
+function locationLine(leadLocation, leadTimezone) {
+  const { timezoneForLocation, timezoneLabel } = require('./lead-location');
+  const loc = String(leadLocation || '').trim();
+  const tz = String(leadTimezone || '').trim() || timezoneForLocation(loc) || '';
+  const tzText = timezoneLabel(tz);
+  if (!loc && !tzText) return '\n📍 Location: not found';
+  return `\n📍 ${escMrkdwn(loc || 'Location unknown')}${tzText ? ` · 🕒 ${escMrkdwn(tzText)}` : ' · 🕒 time zone unknown'}`;
+}
+
 function leadFieldText({
   leadName,
+  leadFullName,
   leadEmail,
   leadPhone,
+  leadPhoneAlt,
   phoneProvider,
   phoneEnrichmentStatus,
   leadLinkedinUrl,
   leadWebsite,
+  leadLocation,
+  leadTimezone,
   enrichmentReceipt,
   leadIcpVerdict,
 } = {}) {
+  const name = bestFullName(leadName, leadFullName);
   return (
-    `*${escMrkdwn(leadName || 'Unknown')}*` +
+    `*${escMrkdwn(name || 'Unknown')}*` +
     `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
+    altPhoneLine(leadPhone, leadPhoneAlt) +
     linkedinUrlLine(leadLinkedinUrl) +
-    websiteUrlLine(leadWebsite) +
+    websiteUrlLine(normalizeWebsiteUrl(leadWebsite) || websiteFromLeadEmail(leadEmail)) +
+    locationLine(leadLocation, leadTimezone) +
     icpVerdictLine(leadIcpVerdict) +
     enrichmentReceiptLine(enrichmentReceipt)
   );
@@ -562,6 +604,7 @@ function draftApprovalActionsBlock(replyId) {
 }
 
 function buildSentConfirmationBlocks({
+  leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   leadName,
   leadEmail,
   leadPhone,
@@ -592,6 +635,7 @@ function buildSentConfirmationBlocks({
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
     leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
+    leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
 
@@ -779,11 +823,13 @@ function buildDraftApprovalCard({
   threadPermalink, threadMessages, leadLinkedinUrl, leadWebsite, clientName, enrichmentReceipt,
   leadIcpVerdict, needsReview, needsClient = false, whatToSend = null,
   replyAllCc = null, showCcClientButton = false,
+  leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
     leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
+    leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const review = needsReview === true
@@ -951,6 +997,7 @@ async function updateDraftApprovalCard(token, channelId, messageTs, opts) {
 }
 
 function buildAlertCard({
+  leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   replyId, leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
   leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   platform, classification, inboundMessage, reasoning,
@@ -976,6 +1023,7 @@ function buildAlertCard({
             leadFieldText({
               leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
               leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
+              leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
             }),
         },
         { type: 'mrkdwn', text: `*Campaign*\n${escMrkdwn(campLine)}` },
@@ -1245,6 +1293,9 @@ module.exports = {
   updateDraftApprovalCard,
   buildDraftApprovalCard,
   leadFieldText,
+  bestFullName,
+  locationLine,
+  websiteFromLeadEmail,
   icpVerdictLine,
   linkedinUrlLine,
   websiteUrlLine,
