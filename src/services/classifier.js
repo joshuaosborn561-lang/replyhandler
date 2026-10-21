@@ -39,7 +39,9 @@ const NO_REPLY_NEEDED = new Set([
 /** Kept for fallback copy / tests — declines are no longer drafted for Slack. */
 const DECLINE_CLASSIFICATIONS = new Set(['NOT_INTERESTED']);
 /** Only these get an AI draft. Never expand without Josh. */
-const DRAFT_CLASSIFICATIONS = Object.freeze(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
+// OTHER is drafted too: an unclassified reply is a classifier miss, not a
+// decline, so a human should get a ready-to-send card for it.
+const DRAFT_CLASSIFICATIONS = Object.freeze(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'OTHER']);
 
 const DEFAULT_DRAFT_TZ = 'America/Chicago';
 let loggedAnthropicBulkSkip = false;

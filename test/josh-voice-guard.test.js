@@ -37,6 +37,6 @@ describe('interested-only slack channel', () => {
     assert.equal(slackChannelSuppressionReason({ classification: 'MEETING_PROPOSED' }), null);
     assert.equal(slackChannelSuppressionReason({ classification: 'NOT_INTERESTED' }), 'not_interested');
     assert.equal(slackChannelSuppressionReason({ classification: 'OOO' }), 'ooo');
-    assert.equal(slackChannelSuppressionReason({ classification: 'OTHER' }), 'not_interested_channel');
+    assert.equal(slackChannelSuppressionReason({ classification: 'OTHER' }), null);
   });
 });

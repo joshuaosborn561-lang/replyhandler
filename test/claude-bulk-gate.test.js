@@ -34,13 +34,13 @@ describe('Claude never runs on bulk / backfill', () => {
   });
 
   it('only INTERESTED / MEETING_PROPOSED / QUESTION are draftable', () => {
-    assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort());
+    assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'OTHER'].sort());
     assert.equal(assertDraftableClassification('INTERESTED'), true);
     assert.equal(assertDraftableClassification('QUESTION'), true);
     assert.equal(assertDraftableClassification('MEETING_PROPOSED'), true);
     assert.equal(assertDraftableClassification('NOT_INTERESTED'), false);
     assert.equal(assertDraftableClassification('OOO'), false);
-    assert.equal(assertDraftableClassification('OTHER'), false);
+    assert.equal(assertDraftableClassification('OTHER'), true);
     assert.equal(assertDraftableClassification('OBJECTION'), false);
   });
 
