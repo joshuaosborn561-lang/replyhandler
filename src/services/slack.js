@@ -599,6 +599,7 @@ function buildSentConfirmationBlocks({
     approved: '✅ SENT — Approved & sent',
     edited: '✏️ SENT — Edited & sent',
     rejected: '❌ Rejected — not interested',
+    skipped: '⏭️ Skipped — next follow-up still scheduled',
     disqualified: '🚫 DQ — no follow-ups',
     meeting_booked: '📅 Meeting booked — follow-ups stopped',
     failed: '⚠️ Send failed',
@@ -607,11 +608,16 @@ function buildSentConfirmationBlocks({
     approved: 'Approved & sent',
     edited: 'Edited & sent',
     rejected: 'Rejected · marked not interested',
+    skipped: 'Skipped · next follow-up still scheduled',
     disqualified: 'Disqualified · excluded from follow-up nudges',
     meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     failed: 'Send failed',
   };
-  const kind = headers[actionKind] ? actionKind : 'approved';
+  // Reject on a follow-up card skips that one send. It does not mean the
+  // lead is not interested, and the next cadence step still posts.
+  const kind = (isFollowUp && actionKind === 'rejected')
+    ? 'skipped'
+    : (headers[actionKind] ? actionKind : 'approved');
 
   const blocks = [
     {
@@ -691,7 +697,11 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
   const blocks = buildSentConfirmationBlocks(opts);
   const preview = plainTextForSlack(opts.sentReply || opts.inboundMessage).slice(0, 120);
   const lead = opts.leadName || 'prospect';
-  const textPrefix = opts.actionKind === 'rejected'
+  const followUpSkip = opts.actionKind === 'skipped'
+    || (String(opts.classification || '').toUpperCase() === 'FOLLOW_UP' && opts.actionKind === 'rejected');
+  const textPrefix = followUpSkip
+    ? 'Skipped — next follow-up still scheduled'
+    : opts.actionKind === 'rejected'
     ? 'Rejected — not interested'
     : opts.actionKind === 'disqualified'
       ? 'DQ'

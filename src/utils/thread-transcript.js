@@ -1,4 +1,5 @@
 const { stripHtmlToText } = require('./smartlead-webhook-helpers');
+const { dedupeThreadTurns } = require('./follow-up-thread-display');
 
 /**
  * Flatten SmartLead / HeyReach thread_context into chronological messages
@@ -103,7 +104,12 @@ function extractThreadMessages(platform, threadContext, {
     if (!body) continue;
     // Skip obvious system noise
     if (/^\(no new reply/i.test(body)) continue;
-    out.push({ role, body, time: timeFrom(m) });
+    out.push({
+      role,
+      body,
+      time: timeFrom(m),
+      messageId: m.message_id || m.messageId || '',
+    });
   }
 
   for (const extra of extraMessages) {
@@ -130,15 +136,19 @@ function extractThreadMessages(platform, threadContext, {
     return 0;
   });
 
-  if (out.length <= maxMessages) return out;
+  // History often repeats one email (same message_id, or the stored send
+  // plus the Smartlead copy with a signature). Collapse before trimming.
+  const deduped = dedupeThreadTurns(out).map(({ role, body, time }) => ({ role, body, time }));
+
+  if (deduped.length <= maxMessages) return deduped;
 
   if (pinStart) {
     // Keep the opening exchange + the most recent turns so the original inbound
     // is never dropped when history is long.
-    const headCount = Math.min(2, out.length);
+    const headCount = Math.min(2, deduped.length);
     const tailCount = Math.max(0, maxMessages - headCount);
-    const head = out.slice(0, headCount);
-    const tail = out.slice(out.length - tailCount);
+    const head = deduped.slice(0, headCount);
+    const tail = deduped.slice(deduped.length - tailCount);
     const seen = new Set();
     const merged = [];
     for (const m of [...head, ...tail]) {
@@ -150,7 +160,7 @@ function extractThreadMessages(platform, threadContext, {
     return merged;
   }
 
-  return out.slice(out.length - maxMessages);
+  return deduped.slice(deduped.length - maxMessages);
 }
 
 module.exports = {

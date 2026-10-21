@@ -357,8 +357,9 @@ function threadMatchParams(reply) {
 }
 
 /** Cancel every pending step for this prospect thread. */
-async function cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId }) {
-  const result = await db.query(
+async function cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId }, queryable = db) {
+  const q = queryable && typeof queryable.query === 'function' ? queryable : db;
+  const result = await q.query(
     `UPDATE outbound_follow_ups SET status = 'cancelled', updated_at = now()
      WHERE client_id = $1 AND platform = $2 AND status = 'pending'
        AND COALESCE(campaign_id, '') = COALESCE($3, '')
@@ -466,31 +467,63 @@ async function scheduleAfterOutboundSend(clientId, reply) {
   const inboundAt = reply.created_at ? new Date(reply.created_at) : sentAt;
   const steps = buildCadenceSteps(sentAt, inboundAt);
 
-  await cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId });
-
-  for (let i = 0; i < steps.length; i++) {
-    const { due, sequenceHours } = steps[i];
-    await db.query(
-      `INSERT INTO outbound_follow_ups
-        (client_id, platform, campaign_id, lead_id, conversation_id, lead_name, lead_email, linkedin_url,
-         source_pending_reply_id, sent_at, due_at, status, step, sequence_hours)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)`,
-      [
-        clientId,
-        platform,
-        campaignId,
-        leadId,
-        conversationId,
-        reply.lead_name || null,
-        reply.lead_email || null,
-        reply.linkedin_url || null,
-        reply.id,
-        sentAt,
-        due,
-        i + 1,
-        sequenceHours,
-      ]
+  // Two approves (or two replicas) used to both cancel and both insert, leaving
+  // two pending rows for the same step. The lock serializes that. The unique
+  // index is the backstop if a row was already notified.
+  const lockKey = [
+    clientId,
+    platform,
+    campaignId || '',
+    leadId || '',
+    conversationId || '',
+    String(reply.lead_email || '').trim().toLowerCase(),
+  ].join('|');
+  const conn = await db.connect();
+  try {
+    await conn.query('BEGIN');
+    await conn.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [lockKey, 'follow-up-cadence']
     );
+    await cancelPendingForThread(clientId, { platform, campaignId, leadId, conversationId }, conn);
+
+    for (let i = 0; i < steps.length; i++) {
+      const { due, sequenceHours } = steps[i];
+      try {
+        await conn.query(
+          `INSERT INTO outbound_follow_ups
+            (client_id, platform, campaign_id, lead_id, conversation_id, lead_name, lead_email, linkedin_url,
+             source_pending_reply_id, sent_at, due_at, status, step, sequence_hours)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)`,
+          [
+            clientId,
+            platform,
+            campaignId,
+            leadId,
+            conversationId,
+            reply.lead_name || null,
+            reply.lead_email || null,
+            reply.linkedin_url || null,
+            reply.id,
+            sentAt,
+            due,
+            i + 1,
+            sequenceHours,
+          ]
+        );
+      } catch (err) {
+        if (err.code !== '23505') throw err;
+        console.log('[FollowUp] Step already scheduled', {
+          replyId: reply.id, step: i + 1, lead: reply.lead_name,
+        });
+      }
+    }
+    await conn.query('COMMIT');
+  } catch (err) {
+    try { await conn.query('ROLLBACK'); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
   }
 
   console.log('[FollowUp] Scheduled cadence', {

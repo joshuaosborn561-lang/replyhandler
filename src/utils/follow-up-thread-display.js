@@ -98,10 +98,57 @@ function threadTurnLabel(role, time, timeZone = DISPLAY_TZ) {
 }
 
 /**
+ * Identity for one thread turn.
+ *
+ * Smartlead history, the stored sent_reply, and the "last outbound" extra are
+ * often the same email with a signature, a link bracket, or different
+ * whitespace. Exact body match kept all of them, so one send showed up two or
+ * three times on the follow-up card.
+ *
+ * A later turn that only adds a short tail (signature, "Miyu Suzuki / Emcor")
+ * is the same email. A rewrite that diverges in the middle is not.
+ */
+function threadTurnKey(body) {
+  let t = cleanThreadBody(body);
+  t = t.replace(/\s*\[https?:\/\/[^\]]+\]/gi, '');
+  return t.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function sameThreadTurn(a, b) {
+  if (!a || !b) return false;
+  const idA = a.messageId || a.message_id || '';
+  const idB = b.messageId || b.message_id || '';
+  if (idA && idB && idA === idB) return true;
+  const roleA = a.role === 'us' ? 'us' : 'them';
+  const roleB = b.role === 'us' ? 'us' : 'them';
+  if (roleA !== roleB) return false;
+  const ka = threadTurnKey(a.body || a.text || a.message || '');
+  const kb = threadTurnKey(b.body || b.text || b.message || '');
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  const short = ka.length <= kb.length ? ka : kb;
+  const long = ka.length <= kb.length ? kb : ka;
+  if (short.length < 60) return false;
+  if (!long.startsWith(short)) return false;
+  return (long.length - short.length) <= 180;
+}
+
+function dedupeThreadTurns(messages) {
+  const kept = [];
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m) continue;
+    if (kept.some((k) => sameThreadTurn(k, m))) continue;
+    kept.push(m);
+  }
+  return kept;
+}
+
+/**
  * Oldest → newest, signatures stripped, older turns trimmed, last two full.
+ * Repeated copies of the same email are dropped first.
  */
 function prepareFollowUpThreadTurns(threadMessages, { timeZone = DISPLAY_TZ } = {}) {
-  const raw = Array.isArray(threadMessages) ? threadMessages : [];
+  const raw = dedupeThreadTurns(threadMessages);
   const cleaned = [];
   for (const m of raw) {
     if (!m) continue;
@@ -152,6 +199,9 @@ module.exports = {
   trimThreadBody,
   formatThreadDate,
   threadTurnLabel,
+  threadTurnKey,
+  sameThreadTurn,
+  dedupeThreadTurns,
   prepareFollowUpThreadTurns,
   formatThreadForPrompt,
   daysSinceLastMessage,

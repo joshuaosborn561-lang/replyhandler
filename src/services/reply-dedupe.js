@@ -286,6 +286,195 @@ async function alreadySentSameOutbound({
   return rows.some((r) => sameOutboundText(r.sent_reply, replyText));
 }
 
+/** A sending row older than this can be claimed again (process died mid-send). */
+const STALE_SENDING_MS = 10 * 60 * 1000;
+
+/**
+ * Legacy FOLLOW_UP cards have no step id. Two of them for the same person
+ * inside this window are the double-card bug (Jeff Miller), not the next
+ * cadence step. Cards that both carry a step are compared by step instead,
+ * so approving step 1 and step 2 back to back still sends both.
+ */
+const LEGACY_FOLLOW_UP_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Whether this approve must not send.
+ *
+ * Assumes the rows are already the same person. Same text always blocks.
+ * Same follow-up step (even when the model reworded the opening) blocks.
+ * A different step of the same cadence does not.
+ */
+function outboundSendBlockedReason({ candidate, existing, now = Date.now() } = {}) {
+  if (!existing || !candidate) return null;
+  const status = String(existing.status || '');
+  if (!['sending', 'sent', 'approved'].includes(status)) return null;
+  if (status === 'sending' && existing.updatedAt) {
+    const age = now - new Date(existing.updatedAt).getTime();
+    if (Number.isFinite(age) && age > STALE_SENDING_MS) return null;
+  }
+
+  const otherText = String(existing.sentReply || existing.draftReply || '');
+  if (otherText && candidate.replyText && sameOutboundText(otherText, candidate.replyText)) {
+    return 'same_text';
+  }
+
+  const candClass = String(candidate.classification || '').toUpperCase();
+  const existClass = String(existing.classification || '').toUpperCase();
+  if (candClass !== 'FOLLOW_UP' || existClass !== 'FOLLOW_UP') return null;
+
+  if (
+    candidate.followUpId
+    && existing.followUpId
+    && String(candidate.followUpId) === String(existing.followUpId)
+  ) {
+    return 'same_follow_up';
+  }
+
+  const candStep = candidate.followUpStep == null || candidate.followUpStep === ''
+    ? null
+    : Number(candidate.followUpStep);
+  const existStep = existing.followUpStep == null || existing.followUpStep === ''
+    ? null
+    : Number(existing.followUpStep);
+  const candSource = candidate.sourcePendingReplyId ? String(candidate.sourcePendingReplyId) : '';
+  const existSource = existing.sourcePendingReplyId ? String(existing.sourcePendingReplyId) : '';
+  if (
+    candStep != null
+    && existStep != null
+    && candStep === existStep
+    && candSource
+    && candSource === existSource
+  ) {
+    return 'same_step';
+  }
+
+  const legacy = candStep == null && existStep == null;
+  if (legacy && status === 'sending') return 'in_flight';
+  if (legacy && status === 'sent' && String(existing.sentReply || '').trim() && existing.updatedAt) {
+    const age = now - new Date(existing.updatedAt).getTime();
+    if (Number.isFinite(age) && age >= 0 && age < LEGACY_FOLLOW_UP_WINDOW_MS) {
+      return 'recent_follow_up';
+    }
+  }
+  return null;
+}
+
+async function findBlockingOutbound(conn, reply, replyText) {
+  const lid = reply.lead_id != null ? String(reply.lead_id) : '';
+  const email = reply.lead_email ? String(reply.lead_email).trim().toLowerCase() : '';
+  if (!lid && !email) return null;
+  const { rows } = await conn.query(
+    `SELECT id, status, classification, draft_reply, sent_reply,
+            follow_up_step, follow_up_source_id, follow_up_id, updated_at
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND id <> $3
+        AND status IN ('sending', 'sent', 'approved')
+        AND (status <> 'sending' OR updated_at >= now() - interval '10 minutes')
+        AND ${samePersonSql('$4', '$5')}
+      ORDER BY updated_at DESC
+      LIMIT 30`,
+    [reply.client_id, reply.platform, reply.id, lid, email]
+  );
+  for (const row of rows) {
+    const reason = outboundSendBlockedReason({
+      candidate: {
+        classification: reply.classification,
+        followUpStep: reply.follow_up_step,
+        sourcePendingReplyId: reply.follow_up_source_id,
+        followUpId: reply.follow_up_id,
+        replyText,
+      },
+      existing: {
+        status: row.status,
+        classification: row.classification,
+        followUpStep: row.follow_up_step,
+        sourcePendingReplyId: row.follow_up_source_id,
+        followUpId: row.follow_up_id,
+        sentReply: row.sent_reply,
+        draftReply: row.draft_reply,
+        updatedAt: row.updated_at,
+      },
+    });
+    if (reason) return { id: row.id, reason };
+  }
+  return null;
+}
+
+/**
+ * Atomically claim a card before the platform send.
+ *
+ * Approve used to flip the row to `approved` and then look for an already
+ * `sent` copy. Two cards for one follow-up (or two clicks at once) both
+ * passed that check. The person lock plus status `sending` makes the second
+ * caller see the first one in flight. A same-step follow-up blocks even when
+ * the draft was reworded.
+ */
+async function claimOutboundSend({ replyId, replyText }) {
+  if (!replyId) return { ok: true };
+  const conn = await db.connect();
+  try {
+    await conn.query('BEGIN');
+    const { rows: [pre] } = await conn.query(
+      'SELECT * FROM pending_replies WHERE id = $1',
+      [replyId]
+    );
+    if (!pre) {
+      await conn.query('COMMIT');
+      return { ok: false, reason: 'missing_row' };
+    }
+    const keys = personLockKeys({
+      clientId: pre.client_id,
+      platform: pre.platform,
+      leadId: pre.lead_id,
+      leadEmail: pre.lead_email,
+    });
+    for (const key of keys) {
+      await conn.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        [key, 'outbound-send']
+      );
+    }
+    const { rows: [current] } = await conn.query(
+      'SELECT * FROM pending_replies WHERE id = $1 FOR UPDATE',
+      [replyId]
+    );
+    if (!current) {
+      await conn.query('COMMIT');
+      return { ok: false, reason: 'missing_row' };
+    }
+    const staleSending = current.status === 'sending'
+      && current.updated_at
+      && (Date.now() - new Date(current.updated_at).getTime()) > STALE_SENDING_MS;
+    const claimable = ['pending', 'flagged', 'approved'].includes(current.status) || staleSending;
+    if (!claimable) {
+      await conn.query('COMMIT');
+      return { ok: false, reason: 'already_actioned', status: current.status };
+    }
+    await conn.query(
+      `UPDATE pending_replies SET status = 'sending', updated_at = now() WHERE id = $1`,
+      [replyId]
+    );
+    const blocker = await findBlockingOutbound(conn, current, replyText);
+    if (blocker) {
+      await conn.query(
+        `UPDATE pending_replies SET status = 'skipped', updated_at = now() WHERE id = $1`,
+        [replyId]
+      );
+      await conn.query('COMMIT');
+      return { ok: false, reason: blocker.reason, existingId: blocker.id };
+    }
+    await conn.query('COMMIT');
+    return { ok: true, reply: { ...current, status: 'sending' } };
+  } catch (err) {
+    try { await conn.query('ROLLBACK'); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 const SLACK_CLAIM_PREFIX = 'claiming:';
 const SLACK_CLAIM_STALE_MINUTES = 2;
 
@@ -627,6 +816,10 @@ module.exports = {
   claimSlackCard,
   releaseSlackCardClaim,
   alreadySentSameOutbound,
+  outboundSendBlockedReason,
+  claimOutboundSend,
+  STALE_SENDING_MS,
+  LEGACY_FOLLOW_UP_WINDOW_MS,
   findUnpostedReply,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,

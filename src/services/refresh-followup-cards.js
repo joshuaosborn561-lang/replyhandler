@@ -50,6 +50,7 @@ function threadMessagesFor(reply, lastOutbound) {
 function actionKindFor(status) {
   switch (String(status || '')) {
     case 'rejected': return 'rejected';
+    case 'skipped': return 'skipped';
     case 'disqualified': return 'disqualified';
     case 'meeting_booked': return 'meeting_booked';
     case 'flagged': return 'failed';

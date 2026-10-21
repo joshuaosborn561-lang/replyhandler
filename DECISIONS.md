@@ -1320,3 +1320,25 @@ Each client is try/caught (including GetConversationsV2).
 Josh: "why is there any key checks at all, get rid of them all." The ADMIN_API_KEY gate is removed from /admin, test-webhooks and voice-learning. It had also been returning 401 on /public/booking-clients, which broke BookingBridge auto-wrap. Inbound webhook shared-secret checks stay.
 
 Guard: `no route requires ADMIN_API_KEY`
+
+## 2026-10-21
+
+### One card and one send per follow-up step
+
+Jeff Miller (jeff@twobearcapital.com, 2026-10-20) got two approval cards for the same follow-up. Both were approved, so the same bump went out twice. The second send was about twelve minutes later and the opening line had been reworded, so the existing "same sent text" check did not see it. Travis Shindelbower (2026-10-21) had one Smartlead send rendered three times on the follow-up card: history, the stored send, and the last-outbound extra differ by signature and link brackets.
+
+A follow-up step is claimed (`posting`) before the draft and the Slack post. One `pending_replies` row per `follow_up_id`. One open cadence row per person + step. Approve takes a person lock and sets `sending` before the provider call. The same step blocks even when the wording differs. A different numbered step still sends. Thread turns collapse on `message_id` or a cleaned-body prefix with a short signature tail. Do not dedupe on Smartlead `stats_id` — one thread shares it. FOLLOW_UP cards still skip inbound-text sibling dedupe so steps 2–4 are not swallowed.
+
+Guard: `one card and one send per follow-up step` in `test/follow-up-idempotency.test.js`, plus the existing `the same inbound cannot be carded or sent twice` (FOLLOW_UP sibling skip stays).
+
+### Reject on a follow-up card skips only that step
+
+*"the Reject button on a follow-up card should only cancel that one pending send. It must NOT stop the sequence or mark the lead as rejected/not interested. The lead's next scheduled follow-up should still be generated and sent on schedule."*
+
+Exception to "Reject also marks Not Interested in SmartLead" (2026-10-01). That decision still applies to inbox cards: classification `NOT_INTERESTED`, SmartLead category, cancel the cadence. The button label stays **❌ Reject**.
+
+On a `FOLLOW_UP` card, Reject sets that row to `skipped` and leaves the classification alone. It does not call `markLeadNotInterested` and does not call `cancelPendingForThread`. Later cadence steps stay pending and still post. The card says **Skipped — next follow-up still scheduled**.
+
+Travis Shindelbower, 2026-10-21 16:30 ET: Reject on the follow-ups card posted "Rejected — not interested", set SmartLead to Not Interested, and cancelled 3 pending nudges. That is the behavior this reverses for follow-up cards only.
+
+Guard: `Reject on a follow-up card skips only that step`

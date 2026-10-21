@@ -84,12 +84,16 @@ CREATE TABLE pending_replies (
   sent_reply TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
     'pending', 'approved', 'rejected', 'sent', 'flagged',
-    'alert_only', 'suppressed', 'disqualified', 'meeting_booked'
+    'alert_only', 'suppressed', 'disqualified', 'meeting_booked',
+    'sending', 'skipped'
   )),
   suppression_reason TEXT,
   client_note TEXT,
   slack_message_ts TEXT,
   smartlead_email_stats_id TEXT,
+  follow_up_id UUID,
+  follow_up_step INTEGER,
+  follow_up_source_id UUID,
   cc_on_send BOOLEAN NOT NULL DEFAULT false,
   pending_nudge_sent_at TIMESTAMPTZ,
   reminder_count INTEGER NOT NULL DEFAULT 0,
@@ -146,7 +150,7 @@ CREATE TABLE outbound_follow_ups (
   source_pending_reply_id UUID REFERENCES pending_replies(id) ON DELETE SET NULL,
   sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   due_at TIMESTAMPTZ NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'notified', 'cancelled', 'skipped')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'posting', 'notified', 'cancelled', 'skipped')),
   slack_message_ts TEXT,
   skip_reason TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -159,6 +163,36 @@ CREATE TABLE outbound_follow_ups (
 
 CREATE INDEX idx_outbound_follow_ups_due_pending ON outbound_follow_ups (due_at) WHERE status = 'pending';
 CREATE INDEX idx_outbound_follow_ups_match ON outbound_follow_ups (client_id, platform, campaign_id, lead_id);
+
+CREATE UNIQUE INDEX idx_pending_replies_one_follow_up_card
+  ON pending_replies (follow_up_id)
+  WHERE follow_up_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_outbound_follow_ups_step_by_email
+  ON outbound_follow_ups (
+    client_id,
+    platform,
+    COALESCE(campaign_id, ''),
+    lower(lead_email),
+    COALESCE(conversation_id, ''),
+    step,
+    COALESCE(source_pending_reply_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  )
+  WHERE status IN ('pending', 'posting', 'notified')
+    AND lead_email IS NOT NULL AND lead_email <> '';
+
+CREATE UNIQUE INDEX idx_outbound_follow_ups_step_by_lead
+  ON outbound_follow_ups (
+    client_id,
+    platform,
+    COALESCE(campaign_id, ''),
+    lead_id,
+    COALESCE(conversation_id, ''),
+    step,
+    COALESCE(source_pending_reply_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  )
+  WHERE status IN ('pending', 'posting', 'notified')
+    AND lead_id IS NOT NULL AND lead_id <> '';
 
 CREATE TABLE disqualified_prospects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
