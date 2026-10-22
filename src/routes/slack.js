@@ -451,6 +451,41 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
 }
 
 async function handleReject(replyId, interaction) {
+  const { rows: [pending] } = await db.query(
+    `SELECT * FROM pending_replies WHERE id = $1 AND status = 'pending'`,
+    [replyId]
+  );
+  if (!pending) return;
+
+  // FOLLOW_UP reject skips this step only — do not mark Not Interested
+  // and do not cancel later cadence steps. The next scheduled follow-up
+  // still posts.
+  if (String(pending.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    const { rows: [reply] } = await db.query(
+      `UPDATE pending_replies
+          SET status = 'skipped', updated_at = now()
+        WHERE id = $1 AND status = 'pending' AND classification = 'FOLLOW_UP'
+        RETURNING *`,
+      [replyId]
+    );
+    if (!reply) return;
+    const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+    const ctx = await slackCardContextFromReply(reply, client);
+    await slackService.updateSentConfirmationCard(
+      client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+      sentCardPayload(reply, ctx, {
+        sentReply: null,
+        actionKind: 'skipped',
+        userId: interaction.user.id,
+        extraFooter: 'Skipped — next follow-up still scheduled',
+      })
+    );
+    console.log('[Slack] Follow-up step skipped — cadence continues', {
+      replyId, lead: reply.lead_name, step: reply.follow_up_step,
+    });
+    return;
+  }
+
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies
         SET status = $1, classification = 'NOT_INTERESTED', updated_at = now()

@@ -1274,6 +1274,50 @@ test('Reject marks the lead Not Interested in SmartLead', () => {
   );
 });
 
+// ── Decision: FOLLOW_UP Reject skips only that step ───────────────────
+// "the Reject button on a follow-up card should only cancel that one
+// pending send. It must NOT stop the sequence or mark the lead as
+// rejected/not interested."
+// Exception to "Reject marks the lead Not Interested" — that still
+// applies to inbox cards. Travis Shindelbower 2026-10-21: Reject on the
+// follow-ups card set SmartLead to Not Interested and cancelled 3 nudges.
+test('Reject on a follow-up card skips only that step', () => {
+  const slackRoute = read('src/routes/slack.js');
+  const slackService = read('src/services/slack.js');
+  const start = slackRoute.indexOf('async function handleReject');
+  const end = slackRoute.indexOf('async function handleDisqualify');
+  const fn = slackRoute.slice(start, end);
+  const followUpBranch = fn.slice(0, fn.indexOf("classification = 'NOT_INTERESTED'"));
+
+  assert.match(followUpBranch, /FOLLOW_UP/,
+    reversal('follow-up Reject skips only that step',
+      'handleReject no longer has a FOLLOW_UP branch before the Not Interested update'));
+  assert.match(followUpBranch, /status = 'skipped'/,
+    reversal('follow-up Reject skips only that step',
+      'a follow-up Reject no longer writes status skipped'));
+  assert.match(followUpBranch, /Skipped — next follow-up still scheduled/,
+    reversal('follow-up Reject skips only that step',
+      'the follow-up Reject card no longer says the next follow-up is still scheduled'));
+  assert.doesNotMatch(followUpBranch, /markLeadNotInterested/,
+    reversal('follow-up Reject skips only that step',
+      'follow-up Reject marks the lead Not Interested in SmartLead'));
+  assert.doesNotMatch(followUpBranch, /cancelPendingForThread/,
+    reversal('follow-up Reject skips only that step',
+      'follow-up Reject cancels the rest of the cadence'));
+  assert.match(fn, /markLeadNotInterested/,
+    reversal('Reject marks Not Interested in SmartLead',
+      'inbox Reject no longer updates the SmartLead category'));
+  assert.match(fn, /cancelPendingForThread/,
+    reversal('Reject marks Not Interested in SmartLead',
+      'inbox Reject no longer cancels pending follow-ups'));
+  assert.match(slackService, /Skipped — next follow-up still scheduled/,
+    reversal('follow-up Reject skips only that step',
+      'the confirmation header no longer says the next follow-up is still scheduled'));
+  assert.match(slackService, /❌ Rejected — not interested/,
+    reversal('Reject marks Not Interested in SmartLead',
+      'inbox Reject confirmation no longer says not interested'));
+});
+
 // ── Decision: Slack DQ button excludes follow-up nudges ───────────────
 // "also add in a DQ button in slack that excludes form followup nudges"
 test('Slack DQ button excludes follow-up nudges', () => {

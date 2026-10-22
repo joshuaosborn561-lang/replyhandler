@@ -544,8 +544,15 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
       }
 
       // Same top-level FOLLOW_UP card as the timed runner (dedicated follow-ups channel).
-      await postFollowUpCard(client, fu);
-      await db.query('UPDATE outbound_follow_ups SET status = $1, updated_at = now() WHERE id = $2', ['notified', fu.id]);
+      // postFollowUpCard claims the row. A second digest/runner tick must not
+      // mark it notified out from under the worker that is still posting.
+      const card = await postFollowUpCard(client, fu);
+      if (!card) {
+        console.log('[Cron] Digest follow-up skipped — already claimed or duplicate', {
+          clientId: client.id, followUpId: fu.id, lead: fu.lead_name,
+        });
+        continue;
+      }
       posted++;
     } catch (err) {
       console.error('[Cron] Digest follow-up card failed', { followUpId: fu.id, err: err.message });
