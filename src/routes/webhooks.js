@@ -346,7 +346,7 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  *
  * Text is the identity. A SmartLead stats id is only a backup, and only with
- * the same person and campaign inside a 10-minute window (see
+ * the same person and campaign inside a 1-minute window (see
  * sameStatsWindowSql). Matching on the stats id alone dropped a genuinely new
  * reply with zero trace (2026-08-03, Doug Baden/Parlay Tech). Different text
  * after that window still always shows.

@@ -217,18 +217,23 @@ function sameReplySql(prefixParam, fullParam) {
  *
  * Not stats-id alone. That id is the latest SENT message and is shared by
  * later, genuinely different replies (Doug Baden, 2026-08-03). The campaign
- * and the 10-minute bound are what keep a second reply from disappearing.
+ * and the 1-minute bound are what keep a second reply from disappearing.
  * FOLLOW_UP rows are excluded by the caller — one thread shares this id.
+ *
+ * Equalities are bare column comparisons so
+ * idx_pending_replies_stats_dedupe can serve them. COALESCE around the
+ * column would hide that index. NULL or '' never equals a real id.
  */
-const STATS_DEDUPE_WINDOW_MINUTES = 10;
+const STATS_DEDUPE_WINDOW_MINUTES = 1;
 
 function sameStatsWindowSql(statsParam, campaignParam) {
+  const unit = STATS_DEDUPE_WINDOW_MINUTES === 1 ? 'minute' : 'minutes';
   return `(
     ${statsParam}::text <> ''
     AND ${campaignParam}::text <> ''
-    AND COALESCE(campaign_id, '') = ${campaignParam}
-    AND COALESCE(smartlead_email_stats_id, '') = ${statsParam}
-    AND created_at >= now() - interval '${STATS_DEDUPE_WINDOW_MINUTES} minutes'
+    AND smartlead_email_stats_id = ${statsParam}
+    AND campaign_id = ${campaignParam}
+    AND created_at >= now() - interval '${STATS_DEDUPE_WINDOW_MINUTES} ${unit}'
   )`;
 }
 
@@ -287,17 +292,29 @@ async function inboundAlreadyRecorded(queryable, {
   const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
   const campaign = campaignId != null ? String(campaignId).trim() : '';
 
+  // Two branches in one round trip. The text branch is the original
+  // expression. The stats branch is a separate scan so Postgres can use
+  // idx_pending_replies_stats_dedupe instead of burying the equality under
+  // the inbound_message expression.
   const { rows } = await q.query(
     `SELECT id, status
-       FROM pending_replies
-      WHERE client_id = $1
-        AND platform = $2
-        AND COALESCE(classification, '') <> 'FOLLOW_UP'
-        AND ${samePersonSql('$5', '$6')}
-        AND (
-          ${sameReplySql('$3', '$4')}
-          OR ${sameStatsWindowSql('$7', '$8')}
-        )
+       FROM (
+         SELECT id, status, created_at
+           FROM pending_replies
+          WHERE client_id = $1
+            AND platform = $2
+            AND COALESCE(classification, '') <> 'FOLLOW_UP'
+            AND ${samePersonSql('$5', '$6')}
+            AND ${sameReplySql('$3', '$4')}
+         UNION ALL
+         SELECT id, status, created_at
+           FROM pending_replies
+          WHERE client_id = $1
+            AND platform = $2
+            AND COALESCE(classification, '') <> 'FOLLOW_UP'
+            AND ${samePersonSql('$5', '$6')}
+            AND ${sameStatsWindowSql('$7', '$8')}
+       ) matches
       ORDER BY created_at DESC
       LIMIT 1`,
     [clientId, platform, normalized, fullNorm, lid, email, stats, campaign]
@@ -314,7 +331,7 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
-  // Text is the identity. Stats id is only a 10-minute backup, and only
+  // Text is the identity. Stats id is only a 1-minute backup, and only
   // together with the same person and campaign — see sameStatsWindowSql.
   const row = await inboundAlreadyRecorded(db, {
     clientId, platform, leadId, leadEmail, inboundMessage, campaignId, emailStatsId,
