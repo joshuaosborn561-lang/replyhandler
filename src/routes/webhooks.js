@@ -1249,6 +1249,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         // this already finished — webhook retries never pay twice.
         const enrichment = await enrichPendingReplyPhone(reply.id);
         const leadEmail = enrichment.email || null;
+        if (enrichment.draftVariant === 'call_now_v1' && enrichment.draftReply && isDraft) {
+          draft = enrichment.draftReply;
+        }
         if (leadEmail) {
           const latePolicy = applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
           if (latePolicy.skippedDraft) {

@@ -534,6 +534,12 @@ async function completeCardLinks({
     if (newest.reasoning) updatedPayload.reasoning = newest.reasoning;
     if (newest.needsReview != null) updatedPayload.needsReview = newest.needsReview;
   }
+  const callNowSwap = enrichment?.draftVariant === 'call_now_v1'
+    && enrichment.draftReply && enrichment.draftReply !== updatedPayload.draft;
+  if (callNowSwap) {
+    updatedPayload.draft = enrichment.draftReply;
+    updatedPayload.draftVariant = enrichment.draftVariant;
+  }
 
   await persistCardIdentity(dbClient, replyId, { linkedinUrl, website, email });
   await persistLeadLocation(dbClient, replyId, { location, timezone, fullName });
@@ -551,6 +557,7 @@ async function completeCardLinks({
     || (extra.phoneAlt && extra.phoneAlt !== (payload.leadPhoneAlt || null))
     || (location && location !== (payload.leadLocation || null))
     || (fullName && fullName !== (payload.leadFullName || null))
+    || callNowSwap
     || extra.phoneEnrichmentStatus === 'not_found'
     || extra.phoneEnrichmentStatus === 'failed'
     || !icpVerdictEquals(payload.leadIcpVerdict, icp);
