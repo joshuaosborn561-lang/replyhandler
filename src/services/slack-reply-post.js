@@ -15,6 +15,8 @@ const {
   lookupMissingLinkedin,
   linkLookupCeilingUsd,
 } = require('./reply-card-identity');
+const { resolvePersonLocation, timezoneForLocation } = require('./lead-location');
+const { lookupPersonProfile } = require('./person-profile-lookup');
 const {
   resolveReplyIcp,
   checkingVerdict,
@@ -176,7 +178,73 @@ function applyCardLinks(card, identity = {}, extra = {}) {
       || identity.icp
       || card.leadIcpVerdict
       || undefined,
+    leadFullName: extra.fullName || identity.fullName || card.leadFullName || undefined,
+    leadPhoneAlt: extra.phoneAlt || card.leadPhoneAlt || undefined,
+    leadLocation: extra.location || identity.location || card.leadLocation || undefined,
+    leadTimezone:
+      extra.timezone
+      || identity.timezone
+      || card.leadTimezone
+      || timezoneForLocation(extra.location || identity.location || card.leadLocation)
+      || undefined,
   };
+}
+
+/**
+ * Latest rendered payload per posted card. The Smartlead webhook posts with
+ * an empty draft, then the draft update and the late enrichment update race.
+ * Each used to chat.update from its own stale copy, so whichever landed last
+ * wiped the other (draft gone, or LinkedIn / website / phone / ICP back to
+ * "not found"). Every update now merges into this state.
+ */
+const latestCards = new Map();
+const LATEST_CARDS_MAX = 2000;
+const IDENTITY_FIELDS = [
+  'leadEmail', 'leadPhone', 'phoneProvider', 'leadPhoneAlt', 'leadLinkedinUrl', 'leadWebsite',
+  'leadFullName', 'leadLocation', 'leadTimezone', 'enrichmentReceipt',
+];
+
+function isPlaceholderIcp(v) {
+  return !v || (typeof v === 'object' && (v.status === 'unknown' || !v.status)
+    && /checking/i.test(String(v.reason || '')));
+}
+
+/** Patch wins, except an empty identity field never erases a found one. */
+function mergeCardPayload(base = {}, patch = {}) {
+  const out = { ...base, ...patch };
+  for (const k of IDENTITY_FIELDS) {
+    if ((patch[k] == null || patch[k] === '') && base[k]) out[k] = base[k];
+  }
+  if (base.leadIcpVerdict && isPlaceholderIcp(patch.leadIcpVerdict) && !isPlaceholderIcp(base.leadIcpVerdict)) {
+    out.leadIcpVerdict = base.leadIcpVerdict;
+  }
+  if (base.phoneEnrichmentStatus && !patch.phoneEnrichmentStatus) {
+    out.phoneEnrichmentStatus = base.phoneEnrichmentStatus;
+  }
+  return out;
+}
+
+function rememberCard(replyId, payload) {
+  if (!replyId || !payload) return payload;
+  latestCards.delete(replyId);
+  latestCards.set(replyId, payload);
+  while (latestCards.size > LATEST_CARDS_MAX) {
+    latestCards.delete(latestCards.keys().next().value);
+  }
+  return payload;
+}
+
+function latestCard(replyId) {
+  return replyId ? latestCards.get(replyId) || null : null;
+}
+
+/** chat.update a posted card with a partial patch merged over its latest state. */
+async function patchPostedCard({
+  slackApi = slack, token, channelId, ts, isDraft, replyId, base = {}, patch = {},
+}) {
+  const merged = mergeCardPayload(mergeCardPayload(base, latestCard(replyId) || {}), patch);
+  rememberCard(replyId, merged);
+  return updatePostedCard(slackApi, { token, channelId, ts, isDraft, payload: merged });
 }
 
 /**
@@ -200,6 +268,52 @@ async function persistCardIdentity(dbClient, replyId, {
       WHERE id = $4`,
     [li, site, em, replyId]
   );
+}
+
+/** Person location + time zone. Tolerates a DB without migration 038. */
+async function persistLeadLocation(dbClient, replyId, { location, timezone, fullName } = {}) {
+  if (!replyId || !dbClient || (!location && !timezone && !fullName)) return;
+  try {
+    await dbClient.query(
+      `UPDATE pending_replies
+          SET lead_location = COALESCE(lead_location, $1),
+              lead_timezone = COALESCE(lead_timezone, $2),
+              lead_full_name = COALESCE(lead_full_name, $3),
+              updated_at = now()
+        WHERE id = $4`,
+      [location || null, timezone || null, fullName || null, replyId]
+    );
+  } catch (err) {
+    if (!/lead_location|lead_timezone|lead_full_name/.test(err.message || '')) {
+      console.warn('[Slack] persist lead location failed', { replyId, err: err.message });
+    }
+  }
+}
+
+/** A client with no ICP gets one built from Fireflies right away (single-flight per client). */
+const icpBuildsInFlight = new Map();
+function triggerClientIcpBuild(clientId, dbClient, { ensureFn } = {}) {
+  if (!clientId || !dbClient || icpBuildsInFlight.has(clientId)) return icpBuildsInFlight.get(clientId) || null;
+  const run = (async () => {
+    const { rows } = await dbClient.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    if (!rows[0]) return null;
+    const ensure = ensureFn || require('./client-icp-profile').ensureClientIcp;
+    const result = await ensure(rows[0], { db: dbClient });
+    if (result?.status === 'ready' && result.reason !== 'existing_profile') {
+      const { regradeNoIcpCards } = require('./regrade-no-icp-cards');
+      await regradeNoIcpCards({ clientId, dbClient }).catch((err) => {
+        console.warn('[Icp] regrade after on-demand build failed', { err: err.message });
+      });
+    }
+    return result;
+  })().catch((err) => {
+    console.warn('[Icp] on-demand client ICP build failed', { err: err.message });
+    return null;
+  }).finally(() => {
+    setTimeout(() => icpBuildsInFlight.delete(clientId), 60 * 60 * 1000).unref?.();
+  });
+  icpBuildsInFlight.set(clientId, run);
+  return run;
 }
 
 function sourcePhoneForCard(card = {}) {
@@ -277,6 +391,7 @@ async function updatePostedCard(slackApi, {
   token, channelId, ts, isDraft, payload,
 }) {
   if (!ts) return null;
+  if (payload?.replyId) rememberCard(payload.replyId, payload);
   if (isDraft) {
     return slackApi.updateDraftApprovalCard(token, channelId, ts, payload);
   }
@@ -306,8 +421,12 @@ async function completeCardLinks({
   campaignId,
   leadId,
   evaluateIcp = resolveReplyIcp,
+  profileLookup = lookupPersonProfile,
+  icpBuild = triggerClientIcpBuild,
 }) {
   let linkedinUrl = identity.linkedinUrl || null;
+  let location = identity.location || null;
+  let fullName = identity.fullName || null;
   let website = identity.website || null;
   let email = identity.email || card.leadEmail || null;
   let enrichment = null;
@@ -348,6 +467,26 @@ async function completeCardLinks({
     }
   }
 
+  // Person profile: full name, LinkedIn fallback, and the PERSON's location.
+  const firstOnly = String(card.leadName || '').trim().split(/\s+/).filter(Boolean).length < 2;
+  if (!linkedinUrl || !location || firstOnly) {
+    try {
+      const prof = await profileLookup({
+        email,
+        leadName: card.leadName,
+        companyName: card.leadCompany,
+        linkedinUrl,
+        location,
+      });
+      if (prof?.linkedinUrl && !linkedinUrl) linkedinUrl = prof.linkedinUrl;
+      if (prof?.location && !location) location = prof.location;
+      if (prof?.fullName && !fullName) fullName = prof.fullName;
+    } catch (err) {
+      console.warn('[Slack] Person profile lookup failed', { replyId, err: err.message });
+    }
+  }
+  const timezone = identity.timezone || timezoneForLocation(location) || null;
+
   let icp = payload.leadIcpVerdict || card.leadIcpVerdict || null;
   try {
     icp = await evaluateIcp({
@@ -364,6 +503,10 @@ async function completeCardLinks({
     });
     icp = icp || unknownVerdict('grade failed');
   }
+  if (icp && icp.status === 'unknown' && /no ICP/i.test(String(icp.reason || ''))) {
+    // Build this client's ICP from its Fireflies calls now; regrade updates the card.
+    try { icpBuild(clientId, dbClient); } catch (err) { void err; }
+  }
 
   const extra = {
     email,
@@ -371,15 +514,26 @@ async function completeCardLinks({
     phoneProvider: enrichment?.provider || undefined,
     phoneEnrichmentStatus: enrichment?.status || undefined,
     enrichmentReceipt: enrichment?.receipt || undefined,
+    phoneAlt: enrichment?.phoneAlt || undefined,
     linkedinUrl,
     website,
     icp,
+    location: location || undefined,
+    timezone: timezone || undefined,
+    fullName: fullName || undefined,
   };
   const updatedCard = applyCardLinks(card, identity, extra);
-  const updatedPayload = {
-    ...payload,
-    ...updatedCard,
-  };
+  const updatedPayload = mergeCardPayload(
+    mergeCardPayload(payload, latestCard(replyId) || {}),
+    updatedCard,
+  );
+  // Keep the newest draft text if the draft update landed first.
+  const newest = latestCard(replyId);
+  if (newest && newest.draft) {
+    updatedPayload.draft = newest.draft;
+    if (newest.reasoning) updatedPayload.reasoning = newest.reasoning;
+    if (newest.needsReview != null) updatedPayload.needsReview = newest.needsReview;
+  }
   const callNowSwap = enrichment?.draftVariant === 'call_now_v1'
     && enrichment.draftReply && enrichment.draftReply !== updatedPayload.draft;
   if (callNowSwap) {
@@ -388,6 +542,7 @@ async function completeCardLinks({
   }
 
   await persistCardIdentity(dbClient, replyId, { linkedinUrl, website, email });
+  await persistLeadLocation(dbClient, replyId, { location, timezone, fullName });
   firePortalNotify(updatedCard, {
     clientId, platform, campaignId, leadId, replyId, extra, dbClient,
   });
@@ -399,6 +554,9 @@ async function completeCardLinks({
     (linkedinUrl && linkedinUrl !== beforeLi)
     || (website && website !== beforeWeb)
     || (extra.phone && extra.phone !== beforePhone)
+    || (extra.phoneAlt && extra.phoneAlt !== (payload.leadPhoneAlt || null))
+    || (location && location !== (payload.leadLocation || null))
+    || (fullName && fullName !== (payload.leadFullName || null))
     || callNowSwap
     || extra.phoneEnrichmentStatus === 'not_found'
     || extra.phoneEnrichmentStatus === 'failed'
@@ -416,7 +574,9 @@ async function completeCardLinks({
     }
   }
 
-  return { linkedinUrl, website, email, enrichment, icp, updated: changed };
+  return {
+    linkedinUrl, website, email, enrichment, icp, location, timezone, fullName, updated: changed,
+  };
 }
 
 /**
@@ -496,6 +656,12 @@ async function postProspectSlackCard({
       excludeReplyId: replyId,
     });
 
+    const personLoc = resolvePersonLocation(card?.leadData, card?.payload, card?.lead, card);
+    if (personLoc.location) {
+      identity.location = identity.location || personLoc.location;
+      identity.timezone = identity.timezone || personLoc.timezone;
+    }
+
     const initialIcp = identity.website
       ? (card?.leadIcpVerdict || parseStoredIcp(card?.icpVerdict) || checkingVerdict())
       : unknownVerdict('no website');
@@ -539,6 +705,7 @@ async function postProspectSlackCard({
       : await slackApi.postAlert(token, channelId, payload);
 
     postedTs = result.ts;
+    rememberCard(replyId, { ...payload, replyId });
     if (replyId) {
       await dbClient.query(
         'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
@@ -595,4 +762,10 @@ module.exports = {
   persistCardIdentity,
   completeCardLinks,
   updatePostedCard,
+  patchPostedCard,
+  mergeCardPayload,
+  rememberCard,
+  latestCard,
+  persistLeadLocation,
+  triggerClientIcpBuild,
 };

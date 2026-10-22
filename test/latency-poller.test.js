@@ -12,7 +12,7 @@ test('SmartLead webhook persists, returns 200, then processes async', () => {
   assert.match(src, /setImmediate/);
   assert.match(src, /processSmartleadWebhookAsync/);
   assert.match(src, /deferDraft:\s*true/);
-  assert.match(src, /updateDraftApprovalCard/);
+  assert.match(src, /updateDraftApprovalCard|patchPostedCard/);
 });
 
 test('pollers run every minute, clients in parallel, skip handled rows first', () => {
