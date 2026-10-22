@@ -345,23 +345,20 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  *
- * Text is the identity. A SmartLead stats id is only a backup, and only with
- * the same person and campaign inside a 1-minute window (see
- * sameStatsWindowSql). Matching on the stats id alone dropped a genuinely new
- * reply with zero trace (2026-08-03, Doug Baden/Parlay Tech). Different text
- * after that window still always shows.
+ * Text only — never smartlead_email_stats_id. That id is the most recent
+ * outbound SENT message and stays the same across different replies to that
+ * send. Matching on it dropped a genuinely new reply with zero trace
+ * (2026-08-03, Doug Baden/Parlay Tech). Same text is a duplicate. Different
+ * text always shows, even when that means a second card.
  */
-async function smartleadDuplicateInDb({
-  clientId, campaignId, leadId, inboundMessage, leadEmail, emailStatsId,
-}) {
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail }) {
+  void campaignId;
   return Boolean(await inboundAlreadyRecorded(db, {
     clientId,
     platform: 'smartlead',
     leadId,
     leadEmail,
     inboundMessage,
-    campaignId,
-    emailStatsId,
   }));
 }
 
@@ -471,7 +468,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         leadId,
         leadEmail,
         inboundMessage: inboundForPersist,
-        emailStatsId: earlyStatsId,
       })) {
         console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId });
         return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
@@ -488,8 +484,6 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         leadId,
         leadEmail,
         inboundMessage: inboundForPersist,
-        campaignId: resolvedCampaignId,
-        emailStatsId: earlyStatsId,
       }, async (conn) => {
         const { rows: [inserted] } = await conn.query(
           `INSERT INTO pending_replies
@@ -712,7 +706,6 @@ async function processSmartleadWebhookAsync({
     leadId: resolvedLeadId,
     leadEmail,
     inboundMessage: inboundEffective,
-    emailStatsId: statsId,
   })) {
     console.log('[Webhook] SmartLead duplicate suppressed (db, async)', { clientId, campaignId: resolvedCampaignId });
     return;
@@ -805,8 +798,6 @@ async function processSmartleadWebhookAsync({
       leadId: resolvedLeadId,
       leadEmail,
       inboundMessage: inboundEffective,
-      campaignId: resolvedCampaignId,
-      emailStatsId: statsId,
     }, async (conn) => {
       const { rows: [inserted] } = await conn.query(
         `INSERT INTO pending_replies

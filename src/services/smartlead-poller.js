@@ -435,8 +435,6 @@ async function processInboxRow(client, row, options) {
     leadId,
     leadEmail,
     inboundMessage: inbound,
-    campaignId,
-    emailStatsId: smartleadEmailStatsId,
   }, async (conn) => {
     const { rows: [inserted] } = await conn.query(
       `INSERT INTO pending_replies

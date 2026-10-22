@@ -183,15 +183,12 @@ const MIN_CONTAINMENT_LEN = 40;
  *   - divergent tails (signature, quoted headers) → compare leading slices
  *   - one rendering truncated earlier than the other → prefix containment
  *
- * Deliberately NOT time-bounded. The same text from the same person is always
- * a duplicate; different text from the same person is always a new reply that
- * must come through, however soon it arrives.
- *
- * The one exception is sameStatsWindowSql: the same person, campaign, and
- * SmartLead stats id inside STATS_DEDUPE_WINDOW_MINUTES. That catches a
- * webhook/poller pair whose bodies still differ after normalization.
- * It is not a stats-id match by itself, and it does not apply to a later
- * reply.
+ * Deliberately NOT time-bounded, and never keyed on SmartLead stats id or
+ * campaign. The same text from the same person is always a duplicate.
+ * Different text from the same person is always a new reply, however soon
+ * it arrives. A stats-id window was tried and removed: a duplicate card is
+ * preferable to swallowing a real response (Doug Baden, 2026-08-03; Josh,
+ * 2026-10-22).
  *
  * $p = 120-char prefix, $f = full normalised text.
  */
@@ -207,55 +204,6 @@ function sameReplySql(prefixParam, fullParam) {
       )
     )
   )`;
-}
-
-/**
- * Webhook and poller can still disagree after entity folding (a signature
- * the 120-char window does not reach, or a stats id that is the only stable
- * identity). Same person + campaign + SmartLead email stats id inside this
- * window is one inbound, even when the texts differ.
- *
- * Not stats-id alone. That id is the latest SENT message and is shared by
- * later, genuinely different replies (Doug Baden, 2026-08-03). The campaign
- * and the 1-minute bound are what keep a second reply from disappearing.
- * FOLLOW_UP rows are excluded by the caller — one thread shares this id.
- *
- * Equalities are bare column comparisons so
- * idx_pending_replies_stats_dedupe can serve them. COALESCE around the
- * column would hide that index. NULL or '' never equals a real id.
- */
-const STATS_DEDUPE_WINDOW_MINUTES = 1;
-
-function sameStatsWindowSql(statsParam, campaignParam) {
-  const unit = STATS_DEDUPE_WINDOW_MINUTES === 1 ? 'minute' : 'minutes';
-  return `(
-    ${statsParam}::text <> ''
-    AND ${campaignParam}::text <> ''
-    AND smartlead_email_stats_id = ${statsParam}
-    AND campaign_id = ${campaignParam}
-    AND created_at >= now() - interval '${STATS_DEDUPE_WINDOW_MINUTES} ${unit}'
-  )`;
-}
-
-/**
- * Pure mirror of sameStatsWindowSql for tests. Person is enforced by the
- * SQL AND samePersonSql, not here. Age is milliseconds between the two rows.
- */
-function inboundStatsBackupApplies({
-  campaignId,
-  otherCampaignId,
-  emailStatsId,
-  otherEmailStatsId,
-  ageMs,
-} = {}) {
-  const stats = String(emailStatsId || '').trim();
-  const otherStats = String(otherEmailStatsId || '').trim();
-  const campaign = String(campaignId || '').trim();
-  const otherCampaign = String(otherCampaignId || '').trim();
-  if (!stats || stats !== otherStats) return false;
-  if (!campaign || campaign !== otherCampaign) return false;
-  if (!Number.isFinite(ageMs) || ageMs < 0) return false;
-  return ageMs <= STATS_DEDUPE_WINDOW_MINUTES * 60 * 1000;
 }
 
 function samePersonSql(leadIdParam, leadEmailParam) {
@@ -279,8 +227,6 @@ async function inboundAlreadyRecorded(queryable, {
   leadId,
   leadEmail,
   inboundMessage,
-  campaignId,
-  emailStatsId,
 }) {
   const q = queryable && typeof queryable.query === 'function' ? queryable : db;
   const normalized = inboundPrefix(inboundMessage);
@@ -289,35 +235,18 @@ async function inboundAlreadyRecorded(queryable, {
   const lid = leadId != null ? String(leadId) : '';
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
   if (!lid && !email) return null;
-  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
-  const campaign = campaignId != null ? String(campaignId).trim() : '';
 
-  // Two branches in one round trip. The text branch is the original
-  // expression. The stats branch is a separate scan so Postgres can use
-  // idx_pending_replies_stats_dedupe instead of burying the equality under
-  // the inbound_message expression.
   const { rows } = await q.query(
     `SELECT id, status
-       FROM (
-         SELECT id, status, created_at
-           FROM pending_replies
-          WHERE client_id = $1
-            AND platform = $2
-            AND COALESCE(classification, '') <> 'FOLLOW_UP'
-            AND ${samePersonSql('$5', '$6')}
-            AND ${sameReplySql('$3', '$4')}
-         UNION ALL
-         SELECT id, status, created_at
-           FROM pending_replies
-          WHERE client_id = $1
-            AND platform = $2
-            AND COALESCE(classification, '') <> 'FOLLOW_UP'
-            AND ${samePersonSql('$5', '$6')}
-            AND ${sameStatsWindowSql('$7', '$8')}
-       ) matches
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND ${sameReplySql('$3', '$4')}
+        AND ${samePersonSql('$5', '$6')}
       ORDER BY created_at DESC
       LIMIT 1`,
-    [clientId, platform, normalized, fullNorm, lid, email, stats, campaign]
+    [clientId, platform, normalized, fullNorm, lid, email]
   );
   return rows[0] || null;
 }
@@ -331,10 +260,13 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
-  // Text is the identity. Stats id is only a 1-minute backup, and only
-  // together with the same person and campaign — see sameStatsWindowSql.
+  // Text only. A SmartLead stats id is the latest SENT message and is shared
+  // by later, different replies. Matching on it drops a real response.
+  // emailStatsId and campaignId stay in the signature for callers.
+  void emailStatsId;
+  void campaignId;
   const row = await inboundAlreadyRecorded(db, {
-    clientId, platform, leadId, leadEmail, inboundMessage, campaignId, emailStatsId,
+    clientId, platform, leadId, leadEmail, inboundMessage,
   });
   return Boolean(row);
 }
@@ -360,8 +292,6 @@ async function claimNewInbound({
   leadId,
   leadEmail,
   inboundMessage,
-  campaignId,
-  emailStatsId,
 }, insertFn) {
   const lockKeys = personLockKeys({ clientId, platform, leadId, leadEmail });
   const conn = await db.connect();
@@ -374,7 +304,7 @@ async function claimNewInbound({
       );
     }
     const existing = await inboundAlreadyRecorded(conn, {
-      clientId, platform, leadId, leadEmail, inboundMessage, campaignId, emailStatsId,
+      clientId, platform, leadId, leadEmail, inboundMessage,
     });
     if (existing) {
       await conn.query('COMMIT');
@@ -956,9 +886,6 @@ module.exports = {
   decodeInboundForStorage,
   stripEmbeddedBinaries,
   sameReplySql,
-  sameStatsWindowSql,
-  inboundStatsBackupApplies,
-  STATS_DEDUPE_WINDOW_MINUTES,
   samePersonSql,
   DASH_CODEPOINTS,
   sameOutboundText,

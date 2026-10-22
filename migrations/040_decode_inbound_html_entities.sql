@@ -121,12 +121,3 @@ UPDATE pending_replies
    AND inbound_message IS DISTINCT FROM replyhandler_decode_html_entities_040(inbound_message);
 
 DROP FUNCTION replyhandler_decode_html_entities_040(text);
-
--- Stats-id backup lookup: same client, platform, stats id, campaign, and a
--- created_at range. Migration 008 indexes smartlead_email_stats_id alone.
--- That index does not cover campaign_id or the time bound, and a COALESCE
--- around the column cannot use it. This one matches the bare equalities in
--- sameStatsWindowSql (client_id, platform, stats id, campaign_id, then the
--- created_at range).
-CREATE INDEX IF NOT EXISTS idx_pending_replies_stats_dedupe
-  ON pending_replies (client_id, platform, smartlead_email_stats_id, campaign_id, created_at);

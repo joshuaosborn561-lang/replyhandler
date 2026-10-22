@@ -19,7 +19,6 @@ const {
   normalizeInboundText,
   decodeInboundForStorage,
   inboundAlreadyRecorded,
-  inboundStatsBackupApplies,
   STORED_NORM_SQL,
   DASH_CODEPOINTS,
 } = require('../src/services/reply-dedupe');
@@ -111,26 +110,20 @@ test('stored-column SQL folds the same dashes, quotes, and entities', () => {
   assert.match(STORED_NORM_SQL, /&rsquo;/);
 });
 
-test('a stats id is a 1-minute backup, not an identity', async () => {
+test('different text is never deduped, including when the stats id matches', async () => {
   const { entity, hyphen } = billPair();
-  assert.notStrictEqual(legacyNorm(entity), legacyNorm(hyphen));
   assert.strictEqual(normalizeInboundText(entity), normalizeInboundText(hyphen));
 
-  // Three seconds apart, same person, campaign, and stats id: one inbound
-  // even if some other rendering difference survives normalization.
-  assert.strictEqual(inboundStatsBackupApplies({
-    campaignId: 'emcor-1',
-    otherCampaignId: 'emcor-1',
-    emailStatsId: 'stats-bill-hall',
-    otherEmailStatsId: 'stats-bill-hall',
-    ageMs: 3 * 1000,
-  }), true);
+  const tuesday = 'Sounds good, Tuesday works for a walkthrough at the site';
+  const wednesday = 'Sounds good, Wednesday works for a walkthrough at the site';
+  assert.notStrictEqual(normalizeInboundText(tuesday), normalizeInboundText(wednesday));
+  assert.notStrictEqual(inboundPrefix(tuesday), inboundPrefix(wednesday));
 
   let seen;
   const queryable = {
     async query(sql, params) {
       seen = { sql, params };
-      return { rows: [{ id: 'existing-webhook', status: 'pending' }] };
+      return { rows: [] };
     },
   };
   const row = await inboundAlreadyRecorded(queryable, {
@@ -140,56 +133,21 @@ test('a stats id is a 1-minute backup, not an identity', async () => {
     leadEmail: 'bill.hall@emcor.com',
     campaignId: 'emcor-1',
     emailStatsId: 'stats-bill-hall',
-    inboundMessage: entity,
+    inboundMessage: wednesday,
   });
-  assert.strictEqual(row.id, 'existing-webhook');
-  assert.match(seen.sql, /smartlead_email_stats_id = \$7/);
-  assert.match(seen.sql, /campaign_id = \$8/);
-  assert.doesNotMatch(seen.sql, /COALESCE\(smartlead_email_stats_id/);
-  assert.match(seen.sql, /UNION ALL/);
-  assert.match(seen.sql, /interval '1 minute'/);
+  assert.strictEqual(row, null);
+  assert.match(seen.sql, /lead_id/);
   assert.match(seen.sql, /<> 'FOLLOW_UP'/);
-  assert.match(seen.sql, /same person|lead_email|lead_id/);
-  assert.ok(seen.params.includes('stats-bill-hall'));
-  assert.ok(seen.params.includes('emcor-1'));
+  assert.doesNotMatch(seen.sql, /smartlead_email_stats_id/);
+  assert.doesNotMatch(seen.sql, /campaign_id/);
+  assert.doesNotMatch(seen.sql, /UNION ALL/);
+  assert.doesNotMatch(seen.sql, /interval '/);
+  assert.ok(!seen.params.includes('stats-bill-hall'));
+  assert.ok(!seen.params.includes('emcor-1'));
   assert.ok(
-    seen.params.some((p) => String(p).includes('bill hall - project executive')),
-    'the text key is still sent so a later different reply is not stats-only'
+    seen.params.some((p) => String(p).includes('wednesday works')),
+    'only the text of this reply is sent to the dedupe query'
   );
-
-  // The OR is what lets texts differ. Person is required for both branches.
-  const orAt = seen.sql.indexOf('OR (');
-  const personAt = seen.sql.indexOf('lead_id');
-  assert.ok(personAt > -1 && personAt < orAt, 'person match is outside the stats OR');
-
-  assert.strictEqual(inboundStatsBackupApplies({
-    campaignId: 'emcor-1',
-    otherCampaignId: 'emcor-1',
-    emailStatsId: 'stats-bill-hall',
-    otherEmailStatsId: 'stats-bill-hall',
-    ageMs: 61 * 1000,
-  }), false, 'a reply older than 1 minute that shares the SENT stats id must still come through');
-  assert.strictEqual(inboundStatsBackupApplies({
-    campaignId: 'emcor-1',
-    otherCampaignId: 'emcor-1',
-    emailStatsId: 'stats-bill-hall',
-    otherEmailStatsId: 'stats-bill-hall',
-    ageMs: 60 * 1000,
-  }), true);
-  assert.strictEqual(inboundStatsBackupApplies({
-    campaignId: 'emcor-1',
-    otherCampaignId: 'other-campaign',
-    emailStatsId: 'stats-bill-hall',
-    otherEmailStatsId: 'stats-bill-hall',
-    ageMs: 3000,
-  }), false);
-  assert.strictEqual(inboundStatsBackupApplies({
-    campaignId: '',
-    otherCampaignId: '',
-    emailStatsId: 'stats-bill-hall',
-    otherEmailStatsId: 'stats-bill-hall',
-    ageMs: 3000,
-  }), false);
 });
 
 test('poller and webhook store decoded inbound text', () => {
@@ -208,9 +166,11 @@ test('poller and webhook store decoded inbound text', () => {
   assert.match(early, /decodeInboundForStorage\(/);
   const asyncBody = webhook.slice(webhook.indexOf('let inboundEffective'));
   assert.match(asyncBody, /inboundEffective = decodeInboundForStorage\(inboundEffective\)/);
-  assert.match(poller, /emailStatsId: smartleadEmailStatsId/);
-  assert.match(webhook, /emailStatsId: earlyStatsId/);
-  assert.match(webhook, /emailStatsId: statsId/);
+  const dedupe = read('src/services/reply-dedupe.js');
+  assert.ok(
+    !/smartlead_email_stats_id/.test(dedupe),
+    'dedupe must not match on a SmartLead stats id'
+  );
 });
 
 test('migration 040 decodes recent inbound entities and runs on startup', () => {
@@ -230,10 +190,9 @@ test('migration 040 decodes recent inbound entities and runs on startup', () => 
   assert.match(sql, /&#\[0-9\]/);
   assert.match(sql, /&#\[xX\]/);
   assert.match(sql, /DROP FUNCTION replyhandler_decode_html_entities_040/);
-  assert.match(sql, /idx_pending_replies_stats_dedupe/);
-  assert.match(
-    sql,
-    /ON pending_replies \(client_id, platform, smartlead_email_stats_id, campaign_id, created_at\)/
+  assert.ok(
+    !/idx_pending_replies_stats_dedupe/.test(sql),
+    '040 must not add a stats-id dedupe index'
   );
   for (const name of Object.keys(NAMED_HTML_ENTITIES)) {
     assert.match(sql, new RegExp(`&${name};`), `migration must decode &${name};`);
