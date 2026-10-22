@@ -255,7 +255,8 @@ const REFERRAL_PATTERNS = [
   /\b(i(?:'|\u2019)?ve|i have|have|i)\s+(?:cc(?:'|\u2019)?d|cc'ed|ccd|copied|looped(?:\s+in)?|added|included|forwarded(?:\s+this)?\s+to)\b/i,
   /\b(?:cc(?:'|\u2019)?ing|copying|looping in)\b/i,
   /\b(?:talk|speak|reach out|connect|get in touch|follow up)\s+(?:to|with)\s+(?:my|our|him|her|them|[A-Z][a-z]+)/,
-  /\b(?:please\s+)?(?:contact|email|reach)\s+(?:my|our)\s+\w+/i,
+  // "contact our office" is a mailbox bot, not a person. A named role still counts.
+  /\b(?:please\s+)?(?:contact|email|reach)\s+(?:my|our)\s+(?!office\b|team\b|department\b|staff\b|company\b|mailbox\b|support\b)\w+/i,
   /\b(?:is|would be)\s+the\s+(?:right|best|better)\s+(?:person|contact|one)\b/i,
   /\b(?:handles|manages|is in charge of|oversees)\s+(?:this|that|our|all)\b/i,
 ];

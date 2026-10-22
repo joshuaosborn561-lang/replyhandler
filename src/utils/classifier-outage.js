@@ -10,6 +10,7 @@
 const { lastOutboundFromThread } = require('../services/jev-classifier');
 const {
   looksLikeOutOfOffice,
+  looksLikeAutomatedNotice,
   looksLikeNotInterested,
   looksLikeWrongPerson,
   looksLikeUnsubscribe,
@@ -51,6 +52,7 @@ function looksLikeInfoQuestion(text, hasOutbound) {
 function classifyDuringOutage(threadContext, inboundMessage) {
   const text = norm(inboundMessage);
   if (!text) return null;
+  if (looksLikeAutomatedNotice(text)) return 'AUTOMATED_NOTICE';
   if (looksLikeOutOfOffice(text)) return 'OOO';
   if (/^(no|nope|stop|pass)[.!]?$/i.test(text)) return 'NOT_INTERESTED';
   if (looksLikeUnsubscribe(text)) return 'REMOVE_ME';

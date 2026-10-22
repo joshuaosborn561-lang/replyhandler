@@ -311,6 +311,39 @@ function looksLikeOutOfOffice(text) {
 }
 
 /**
+ * Mailbox changes, departure auto-replies, and ticket bots. Rules only —
+ * no model — so a classifier outage cannot turn these into a draft.
+ */
+function looksLikeAutomatedNotice(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bmoved to a new server\b/.test(s)) return true;
+  if (/\bnew e-?mail address\b/.test(s)) return true;
+  if (/\bplease use the new e-?mail\b/.test(s)) return true;
+  if (/\bmailbox (is )?no longer monitored\b/.test(s)) return true;
+  if (/\bthis is an automated message\b/.test(s)) return true;
+  if (/\bticket\s*#/.test(s)) return true;
+  if (/\bwe have received your request\b/.test(s)) return true;
+  const departed = /\b(no longer employed|no longer with|has left)\b/.test(s);
+  const handoff = /\b(reach out|contact)\b/.test(s);
+  if (departed && handoff) return true;
+  return false;
+}
+
+/**
+ * A person still in the seat handing the thread to a colleague.
+ * Departure auto-replies stay wrong-person / automated notices.
+ */
+function looksLikeLiveColleagueReferral(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (looksLikeAutomatedNotice(text)) return false;
+  if (/\b(no longer employed|no longer with|no longer works?|has left)\b/.test(s)) return false;
+  if (!/\bnot (the )?right (person|contact)\b/.test(s)) return false;
+  return /\b(talk|speak) to (my|our) colleague\b/.test(s) && /\bhandles this\b/.test(s);
+}
+
+/**
  * Only skip Slack for obvious OOO/auto-replies, unsubscribe requests, and
  * wrong-person bounces. Everything else — including "not interested" and any
  * objection — must still reach Slack. Err on the side of posting.
@@ -322,6 +355,7 @@ function shouldSkipSlackForReply(text) {
 /** Which rule silenced this reply, or null if it should reach Slack. For logging. */
 function slackSuppressionReason(text) {
   if (looksLikeOutOfOffice(text)) return 'ooo';
+  if (looksLikeAutomatedNotice(text)) return 'automated_notice';
   if (looksLikeUnsubscribe(text)) return 'unsubscribe';
   if (looksLikeWrongPerson(text)) return 'wrong_person';
   return null;
@@ -344,6 +378,7 @@ function looksLikeUnsubscribe(text) {
 function looksLikeWrongPerson(text) {
   const s = normWs(text);
   if (!s) return false;
+  if (looksLikeLiveColleagueReferral(text)) return false;
   // Common "wrong person / no longer employed" / redirect phrases.
   if (/\bno longer employed\b/.test(s)) return true;
   if (/\bno longer with\b/.test(s)) return true;
@@ -411,6 +446,8 @@ module.exports = {
   envFlag,
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
+  looksLikeAutomatedNotice,
+  looksLikeLiveColleagueReferral,
   looksLikeUnsubscribe,
   shouldSkipSlackForReply,
   slackSuppressionReason,

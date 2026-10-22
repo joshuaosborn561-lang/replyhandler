@@ -2,6 +2,7 @@ const { geminiModel } = require('./gemini-model');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   looksLikeOutOfOffice,
+  looksLikeAutomatedNotice,
   looksLikeNotInterested,
   looksLikeWrongPerson,
 } = require('../utils/smartlead-webhook-helpers');
@@ -1027,7 +1028,8 @@ async function classifyAndDraft(
   let preGate = null;
   let pitchToUsProb = null;
   let classifySource = null;
-  if (looksLikeOutOfOffice(inboundMessage)) { classification = 'OOO'; preGate = 'ooo'; }
+  if (looksLikeAutomatedNotice(inboundMessage)) { classification = 'AUTOMATED_NOTICE'; preGate = 'automated_notice'; }
+  else if (looksLikeOutOfOffice(inboundMessage)) { classification = 'OOO'; preGate = 'ooo'; }
   else if (looksLikeWrongPerson(inboundMessage)) { classification = 'WRONG_PERSON'; preGate = 'wrong_person'; }
   else if (looksLikeNotInterested(inboundMessage) && !looksLikeMixedIntent(inboundMessage)) {
     classification = 'NOT_INTERESTED';
@@ -1040,7 +1042,7 @@ async function classifyAndDraft(
     pitchToUsProb = result.pitchToUsProb;
     classifySource = result.source;
   }
-  if (preGate !== 'ooo' && preGate !== 'wrong_person') {
+  if (preGate !== 'ooo' && preGate !== 'wrong_person' && preGate !== 'automated_notice') {
     classification = promoteMixedIntent(classification, inboundMessage);
   }
 

@@ -18,6 +18,7 @@
  */
 
 const { looksLikeMixedIntent, promoteMixedIntent, SLACK_POSITIVES } = require('../utils/mixed-intent');
+const { looksLikeAutomatedNotice } = require('../utils/smartlead-webhook-helpers');
 
 const CATEGORY_FIELDS = [
   'lead_category', 'leadCategory',
@@ -138,6 +139,14 @@ function applySmartleadCategory({
   inboundMessage,
   reasoning = '',
 } = {}) {
+  if (looksLikeAutomatedNotice(inboundMessage)) {
+    return {
+      classification: 'AUTOMATED_NOTICE',
+      reasoning: `Automated notice; SmartLead category not applied. ${reasoning}`.trim(),
+      source: 'automated_notice',
+    };
+  }
+
   const bodyClass = promoteMixedIntent(classification, inboundMessage);
   const mixed = looksLikeMixedIntent(inboundMessage);
 

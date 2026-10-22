@@ -1355,3 +1355,15 @@ On a `FOLLOW_UP` card, Reject sets that row to `skipped` and leaves the classifi
 Travis Shindelbower, 2026-10-21 16:30 ET: Reject on the follow-ups card posted "Rejected — not interested", set SmartLead to Not Interested, and cancelled 3 pending nudges. That is the behavior this reverses for follow-up cards only.
 
 Guard: `Reject on a follow-up card skips only that step`
+
+## 2026-10-22
+
+### Automated mailbox notices are not interested drafts
+
+Server-move notices, "please use the new email", unmonitored mailboxes, departure auto-replies ("no longer employed / no longer with / has left" plus "reach out" or "contact"), ticket confirmations, and "this is an automated message" were matching the loose referral regex (`reach out to X`, `contact our office`) and getting relabeled INTERESTED. SmartLead category 3 (Not Interested) did not stop that, and the referral path then cleared a wrong-person suppression. Frank Madrigal, Lindsey Lukas, and Harry Buchman posted as Approve-able drafts.
+
+Those bodies are suppressed with reason `automated_notice`. The check is rules-only and runs before SmartLead's category, before referral promotion, and before the classifier-outage fallback, so it still holds when Jev and Gemini are down. `promoteReferral` does not promote a WRONG_PERSON label, a NOT_INTERESTED label, or text that is OOO or wrong-person. The old line that cleared `wrong_person` after a referral promotion is gone.
+
+A person who is still there can still be drafted: "I'm not the right person, but talk to my colleague Jay, he handles this." Departure wording still wins over that carve-out. "Please contact Jane instead" and "no longer with the company" stay silent.
+
+Guard: `automated notices are not interested drafts` in `test/automated-notice.test.js`

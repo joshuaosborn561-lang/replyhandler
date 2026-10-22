@@ -39,6 +39,7 @@ function classificationSlackSuppressionReason(classification) {
   if (!c) return null;
   if (SLACK_CHANNEL_CLASSIFICATIONS.has(c)) return null;
   if (c === 'OOO' || c === 'OUT_OF_OFFICE') return 'ooo';
+  if (c === 'AUTOMATED_NOTICE') return 'automated_notice';
   if (c === 'NOT_INTERESTED') return 'not_interested';
   if (c === 'REMOVE_ME') return 'unsubscribe';
   if (c === 'WRONG_PERSON') return 'wrong_person';

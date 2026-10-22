@@ -34,6 +34,8 @@ const {
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
   looksLikeUnsubscribe,
+  looksLikeAutomatedNotice,
+  slackSuppressionReason,
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
@@ -63,10 +65,43 @@ function smartleadCategoryResult(slCategory, inboundMessage) {
   };
 }
 
-/** Referrals ("I've CC'd X", "talk to X") get a draft, unless it is an opt-out. */
+/**
+ * Mailbox changes, departure bots, and ticket confirmations. Checked before
+ * SmartLead's category and before referral promotion.
+ */
+function automatedNoticeResult(inboundMessage) {
+  if (!looksLikeAutomatedNotice(inboundMessage)) return null;
+  return {
+    classification: 'AUTOMATED_NOTICE',
+    draft: '',
+    proposed_time: null,
+    reasoning: 'Automated notice (mailbox change, departure, or ticket confirmation). No draft.',
+    source: 'automated_notice',
+  };
+}
+
+/**
+ * Referrals ("I've CC'd X", "talk to my colleague") get a draft.
+ * Declines, wrong-person labels, OOO, and automated notices do not.
+ */
 function promoteReferral(classification, inboundMessage) {
   const c = String(classification || '').toUpperCase();
-  if (SMARTLEAD_DRAFT_ALWAYS.has(c) || c === 'REMOVE_ME' || c === 'OOO') {
+  if (
+    SMARTLEAD_DRAFT_ALWAYS.has(c)
+    || c === 'REMOVE_ME'
+    || c === 'OOO'
+    || c === 'OUT_OF_OFFICE'
+    || c === 'WRONG_PERSON'
+    || c === 'NOT_INTERESTED'
+    || c === 'AUTOMATED_NOTICE'
+  ) {
+    return { promoted: false, classification };
+  }
+  if (looksLikeAutomatedNotice(inboundMessage)) {
+    return { promoted: false, classification };
+  }
+  const textReason = slackSuppressionReason(inboundMessage);
+  if (textReason === 'wrong_person' || textReason === 'ooo' || textReason === 'automated_notice') {
     return { promoted: false, classification };
   }
   if (!looksLikeReferral(inboundMessage)) return { promoted: false, classification };
@@ -671,12 +706,16 @@ async function processSmartleadWebhookAsync({
     return;
   }
 
-  // SmartLead's own category is the source of truth for email. Only when
-  // SmartLead has not labelled the reply do we ask Jev / Gemini to classify.
+  // Automated notices are suppressed before SmartLead's category. Otherwise
+  // the category is the source of truth for email. Only when SmartLead has
+  // not labelled the reply do we ask Jev / Gemini to classify.
   // The LLM still writes every draft (draftOnly below).
   const slCategory = classifyFromSmartlead(payload, threadContext);
+  const notice = automatedNoticeResult(inboundEffective);
   let result;
-  if (slCategory) {
+  if (notice) {
+    result = notice;
+  } else if (slCategory) {
     result = smartleadCategoryResult(slCategory, inboundEffective);
   } else {
     try {
@@ -709,7 +748,7 @@ async function processSmartleadWebhookAsync({
 
   let { classification, draft, proposed_time, reasoning } = result;
 
-  if (!slCategory) {
+  if (!slCategory && !notice) {
     const applied = applySmartleadCategory({
       slCategory: null, classification, inboundMessage: inboundEffective, reasoning,
     });
@@ -723,11 +762,9 @@ async function processSmartleadWebhookAsync({
       }
     }
   }
-  let referralPromoted = false;
   {
     const ref = promoteReferral(classification, inboundEffective);
     if (ref.promoted) {
-      referralPromoted = true;
       console.log('[Webhook] SmartLead referral reply promoted for draft', { clientId, from: classification, to: ref.classification });
       classification = ref.classification;
       reasoning = `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
@@ -748,8 +785,6 @@ async function processSmartleadWebhookAsync({
     isColdInbound: false,
     pitchToUsProb: result.pitchToUsProb,
   });
-  // A referral ("please contact X regarding this") is a hand-off, not a dead end.
-  if (referralPromoted && suppressedReason === 'wrong_person') suppressedReason = null;
 
   if (!replyRow) {
     const claimed = await claimNewInbound({
@@ -1361,5 +1396,6 @@ router.post('/webhook/inbound-forward', async (req, res) => {
 
 module.exports = router;
 module.exports.smartleadCategoryResult = smartleadCategoryResult;
+module.exports.automatedNoticeResult = automatedNoticeResult;
 module.exports.promoteReferral = promoteReferral;
 module.exports.SMARTLEAD_DRAFT_ALWAYS = SMARTLEAD_DRAFT_ALWAYS;
