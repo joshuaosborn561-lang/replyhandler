@@ -18,7 +18,8 @@ const {
   allowsTier,
 } = require('./reply-enrich-policy');
 
-const CONSUMER_DOMAINS = /gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com/i;
+// Free-mail hosts are never a company website. Anchored so acme.com / olive.com stay companies.
+const CONSUMER_DOMAINS = /(^|[.@/])(gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|icloud|me|mac|aol|protonmail|proton|comcast|att|sbcglobal|verizon|bellsouth|cox|charter|earthlink|gmx|zoho|mail|yandex)\.(com|net|me|co\.uk)(?=$|[/:?#])/i;
 
 const ENRICH_TIMEOUT_MS = 120_000;
 

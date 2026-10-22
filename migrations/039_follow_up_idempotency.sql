@@ -6,8 +6,8 @@
 -- cards could send. `posting` / `sending` are the claims. The unique indexes
 -- are the durable dedupe key.
 --
--- Run this on the Railway Postgres before deploying the code that writes
--- these statuses and columns.
+-- Applied on startup by scripts/run-migrations.js (039). 037 and 038 were
+-- already used for draft_variant and lead location.
 
 ALTER TABLE outbound_follow_ups
   DROP CONSTRAINT IF EXISTS outbound_follow_ups_status_check;
