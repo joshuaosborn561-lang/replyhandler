@@ -1385,3 +1385,13 @@ Recipient is the same Always-forward list. Reply-all CCs and Gmail FYI
 are unchanged.
 
 Guard: `Approve & Send + CC client is an option on every SmartLead card`
+
+### Webhook and poller HTML must compare as the same reply (Oct 22)
+
+Bill Hall at EMCOR, Oct 22 2026, 2:52 PM ET. The same inbound posted two Slack cards three seconds apart: one from the SmartLead webhook, one from the inbox poller. The bodies were the same reply. The poller kept `Bill Hall &#8211; Project Executive` and the webhook had already decoded that to a dash. The 120-character prefix diverged at the signature, so text dedupe missed.
+
+Comparison now decodes numeric (decimal and hex) and common named entities, then folds dash variants and curly quotes to ASCII, on both the JS side and the stored-column SQL. The poller and the webhook store the decoded text. Migration `040_decode_inbound_html_entities.sql` rewrites entities already sitting in `inbound_message` from the last 30 days and is in `scripts/run-migrations.js`. It does not fold dashes in the stored column and does not touch older rows.
+
+A stats-id backup (same person, campaign, and SmartLead email stats id inside a short window, even when the texts differ) was added and then removed the same day. A duplicate card is acceptable. A missed reply is not. Dedupe stays text-only. The stats id is still the latest SENT message and is shared by a later, different reply (Doug Baden, 2026-08-03). `idx_pending_replies_stats_dedupe` is not created.
+
+Guards: `Bill Hall entity renderings share a dedupe prefix` and `different text is never deduped, including when the stats id matches` in `test/inbound-entity-dedupe.test.js`. `poller dedupe never matches on stats_id alone` forbids any stats-id match in `reply-dedupe.js`.

@@ -15,6 +15,7 @@ const {
   alreadyPostedToSlack,
   findUnpostedReply,
   claimNewInbound,
+  decodeInboundForStorage,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
 } = require('./reply-dedupe');
@@ -184,7 +185,7 @@ async function processInboxRow(client, row, options) {
   // text differently (payload body vs rebuilt history), so an exact text match is not
   // a reliable identity. stats_id comes from the same thread history in both paths.
   let threadContext = historyFromRow(row);
-  let inbound = latestInboundFromHistory(threadContext, row?.lead_email);
+  let inbound = decodeInboundForStorage(latestInboundFromHistory(threadContext, row?.lead_email));
 
   // Master-inbox can ship a stale email_history while last_reply_time is already
   // current, hiding the newest reply from this poller entirely.
@@ -259,7 +260,7 @@ async function processInboxRow(client, row, options) {
           const before = newestReplyTimeFromHistory(threadContext);
           const after = newestReplyTimeFromHistory(fresh);
           threadContext = fresh;
-          inbound = latestInboundFromHistory(threadContext, row?.lead_email);
+          inbound = decodeInboundForStorage(latestInboundFromHistory(threadContext, row?.lead_email));
           console.log('[SmartLeadPoll] Master-inbox history was stale — refetched thread', {
             client: client.name,
             campaignId,

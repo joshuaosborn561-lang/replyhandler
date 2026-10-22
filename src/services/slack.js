@@ -1,5 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
+const { decodeHtmlEntities: decodeAllHtmlEntities } = require('../utils/html-entities');
 const { isDeepRootsClient } = require('../utils/meeting-modality');
 const { prepareFollowUpThreadTurns } = require('../utils/follow-up-thread-display');
 
@@ -19,13 +20,8 @@ function getClient(token) {
 }
 
 function decodeHtmlEntities(s) {
-  return String(s || '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  return decodeAllHtmlEntities(s)
+    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
 }
 
 /** Turn email HTML / messy copy into readable Slack plain text. */

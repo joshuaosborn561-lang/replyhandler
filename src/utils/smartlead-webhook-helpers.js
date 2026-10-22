@@ -2,6 +2,7 @@
  * Optional SmartLead webhook enrichment: non-reply event skip, inbound text from history,
  * dedupe of bad REPLY rows that mirror last SENT (SmartLead/Android glitches).
  */
+const { decodeHtmlEntities } = require('./html-entities');
 
 /**
  * Outlook / Word HTML often leaves stylesheet text after tags are stripped
@@ -20,10 +21,10 @@ function stripOutlookCss(s) {
 
 function stripHtmlToText(s) {
   if (!s) return '';
-  return stripOutlookCss(String(s)
-    // Angle-bracket addresses look like tags to the stripper below. Unwrap them
-    // first, or "From: Name <a@b.com>" loses its address and the quote-cut in
-    // stripEmailQuotePrefix — which anchors on that address — stops matching.
+  // Angle-bracket addresses look like tags to the stripper below. Unwrap them
+  // first, or "From: Name <a@b.com>" loses its address and the quote-cut in
+  // stripEmailQuotePrefix — which anchors on that address — stops matching.
+  const stripped = String(s)
     .replace(/<([\w.+-]+@[\w.-]+\.[a-z]{2,})>/gi, '$1')
     .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, ' ')
     .replace(/<style[^>]*>[\s\S]*?(<\/style>|$)/gi, ' ')
@@ -31,17 +32,14 @@ function stripHtmlToText(s) {
     // Keep block boundaries as newlines so quote/signature cutting still has anchors.
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&rsquo;|&apos;/gi, "'")
+    .replace(/<[^>]+>/g, ' ');
+  const decoded = decodeHtmlEntities(stripped)
+    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/[ \t]+/g, ' ')
     .replace(/[ \t]*\n[ \t]*/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .trim());
+    .trim();
+  return stripOutlookCss(decoded);
 }
 
 function normWs(s) {

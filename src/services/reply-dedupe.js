@@ -2,6 +2,15 @@ const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
+const {
+  decodeHtmlEntities,
+  foldDashAndQuotes,
+  decodeInboundForStorage,
+  DASH_CODEPOINTS,
+  SINGLE_QUOTE_CODEPOINTS,
+  DOUBLE_QUOTE_CODEPOINTS,
+  NAMED_HTML_ENTITIES,
+} = require('../utils/html-entities');
 
 /**
  * Strip embedded signature images / data-URIs before dedupe.
@@ -26,7 +35,7 @@ function stripEmbeddedBinaries(text) {
  * matches and the poller re-posts the same card every cycle.
  */
 function normalizeInboundText(text) {
-  return stripEmbeddedBinaries(text)
+  return foldDashAndQuotes(decodeHtmlEntities(stripEmbeddedBinaries(text)))
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -84,9 +93,76 @@ const STORED_STRIP_BINARIES_SQL = (
   `'<img[^>]*>', ' ', 'gi')`
 );
 
+/**
+ * Entity spellings and raw characters that must fold the same way
+ * normalizeInboundText does. Incoming text is decoded in JS; stored rows
+ * may still contain `&#8211;` until migration 040 rewrites them, and a
+ * decoded en dash must still match an ASCII hyphen.
+ *
+ * One alternation per folded result, not a replace per codepoint, so the
+ * dedupe query stays cheap on leads that already have hundreds of rows.
+ */
+function entityAlternation(codes, namesByCode) {
+  const parts = [];
+  for (const code of codes) {
+    parts.push(`&#0*${code};`);
+    parts.push(`&#x0*${code.toString(16)};`);
+    for (const name of namesByCode[code] || []) parts.push(`&${name};`);
+  }
+  return parts.join('|');
+}
+
+function regexpReplaceLiteral(expr, pattern, sqlLiteral) {
+  return `regexp_replace(${expr}, '${pattern}', ${sqlLiteral}, 'gi')`;
+}
+
+function foldCodepointsSql(expr, codes, sqlLiteral) {
+  return codes.reduce(
+    (sql, code) => `replace(${sql}, chr(${code}), ${sqlLiteral})`,
+    expr
+  );
+}
+
+const NAMED_CODEPOINTS = {};
+for (const [name, ch] of Object.entries(NAMED_HTML_ENTITIES)) {
+  const code = ch.codePointAt(0);
+  if (!NAMED_CODEPOINTS[code]) NAMED_CODEPOINTS[code] = [];
+  NAMED_CODEPOINTS[code].push(name);
+}
+
+const APOSTROPHE_ENTITY_CODES = [0x27, ...SINGLE_QUOTE_CODEPOINTS];
+const QUOTE_ENTITY_CODES = [0x22, ...DOUBLE_QUOTE_CODEPOINTS];
+
+function applyEntityFoldSql(expr) {
+  let sql = expr;
+  // Unwrap &amp; first so `&amp;ndash;` / `&amp;#8211;` become a real entity
+  // before the dash pass. Twice covers `&amp;amp;`.
+  const amp = entityAlternation([0x26], NAMED_CODEPOINTS);
+  sql = regexpReplaceLiteral(sql, amp, "'&'");
+  sql = regexpReplaceLiteral(sql, amp, "'&'");
+  sql = regexpReplaceLiteral(sql, entityAlternation(DASH_CODEPOINTS, NAMED_CODEPOINTS), "'-'");
+  sql = regexpReplaceLiteral(sql, entityAlternation(APOSTROPHE_ENTITY_CODES, NAMED_CODEPOINTS), "''''");
+  sql = regexpReplaceLiteral(sql, entityAlternation(QUOTE_ENTITY_CODES, NAMED_CODEPOINTS), `'\"'`);
+  const spaceEntityCodes = [0xA0, 0x2002, 0x2003, 0x2009];
+  sql = regexpReplaceLiteral(sql, entityAlternation(spaceEntityCodes, NAMED_CODEPOINTS), "' '");
+  for (const [code] of Object.entries(NAMED_CODEPOINTS)) {
+    const n = Number(code);
+    if (spaceEntityCodes.includes(n)) continue;
+    if (DASH_CODEPOINTS.includes(n)) continue;
+    if (APOSTROPHE_ENTITY_CODES.includes(n)) continue;
+    if (QUOTE_ENTITY_CODES.includes(n)) continue;
+    if (n === 0x26) continue;
+    sql = regexpReplaceLiteral(sql, entityAlternation([n], NAMED_CODEPOINTS), `chr(${n})`);
+  }
+  sql = foldCodepointsSql(sql, DASH_CODEPOINTS, "'-'");
+  sql = foldCodepointsSql(sql, SINGLE_QUOTE_CODEPOINTS, "''''");
+  sql = foldCodepointsSql(sql, DOUBLE_QUOTE_CODEPOINTS, `'\"'`);
+  return sql;
+}
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `${stripUnicodeSpacesSql(STORED_STRIP_BINARIES_SQL)}, ` +
+  `${stripUnicodeSpacesSql(applyEntityFoldSql(STORED_STRIP_BINARIES_SQL))}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -107,9 +183,12 @@ const MIN_CONTAINMENT_LEN = 40;
  *   - divergent tails (signature, quoted headers) → compare leading slices
  *   - one rendering truncated earlier than the other → prefix containment
  *
- * Deliberately NOT time-bounded. The same text from the same person is always
- * a duplicate; different text from the same person is always a new reply that
- * must come through, however soon it arrives.
+ * Deliberately NOT time-bounded, and never keyed on SmartLead stats id or
+ * campaign. The same text from the same person is always a duplicate.
+ * Different text from the same person is always a new reply, however soon
+ * it arrives. A stats-id window was tried and removed: a duplicate card is
+ * preferable to swallowing a real response (Doug Baden, 2026-08-03; Josh,
+ * 2026-10-22).
  *
  * $p = 120-char prefix, $f = full normalised text.
  */
@@ -181,11 +260,9 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
-  // Text only — never smartlead_email_stats_id. That id is the most recent
-  // outbound SENT stats id, identical across different replies to the same
-  // send. Matching on it silently drops a new reply (webhook fixed in #31;
-  // poller still had the OR-branch). emailStatsId kept in the signature for
-  // callers; unused for matching.
+  // Text only. A SmartLead stats id is the latest SENT message and is shared
+  // by later, different replies. Matching on it drops a real response.
+  // emailStatsId and campaignId stay in the signature for callers.
   void emailStatsId;
   void campaignId;
   const row = await inboundAlreadyRecorded(db, {
@@ -806,9 +883,11 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 module.exports = {
   inboundPrefix,
   normalizeInboundText,
+  decodeInboundForStorage,
   stripEmbeddedBinaries,
   sameReplySql,
   samePersonSql,
+  DASH_CODEPOINTS,
   sameOutboundText,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,

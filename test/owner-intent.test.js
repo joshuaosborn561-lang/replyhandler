@@ -720,12 +720,28 @@ test('Allo booking check matches the prospect phone', () => {
 });
 
 // ── Decision: poller dedupe is text-only (stats_id is not identity) ───
+// A short stats-id window was tried for Bill Hall (2026-10-22) and removed
+// the same day. Different text must always show. A duplicate card is
+// acceptable; a missed reply is not. The stats id is the latest SENT message
+// and dropped Doug Baden's next reply when it was used as identity.
 test('poller dedupe never matches on stats_id alone', () => {
   const dedupe = read('src/services/reply-dedupe.js');
+  assert.ok(!/smartlead_email_stats_id/.test(dedupe),
+    reversal('dedupe on text only', 'reply-dedupe matches on smartlead_email_stats_id'));
   assert.ok(!/COALESCE\(smartlead_email_stats_id/.test(dedupe),
     reversal('dedupe on text only', 'reply-dedupe still has a stats_id SQL branch'));
   assert.ok(!/smartlead_email_stats_id,\s*''\)\s*=\s*\$/.test(dedupe),
     reversal('dedupe on text only', 'poller still matches on stats_id equality'));
+  assert.ok(!/idx_pending_replies_stats_dedupe/.test(dedupe),
+    reversal('dedupe on text only', 'a stats-id dedupe index is still referenced'));
+  const recorded = dedupe.slice(
+    dedupe.indexOf('async function inboundAlreadyRecorded'),
+    dedupe.indexOf('async function alreadyPostedToSlack')
+  );
+  assert.doesNotMatch(recorded, /UNION ALL/,
+    reversal('dedupe on text only', 'inboundAlreadyRecorded still has a second match branch'));
+  assert.doesNotMatch(recorded, /interval '/,
+    reversal('dedupe on text only', 'inboundAlreadyRecorded is time-bounded again'));
 });
 
 // ── Decision: track both Allo lines ───────────────────────────────────

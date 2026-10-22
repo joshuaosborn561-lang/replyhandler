@@ -14,6 +14,7 @@ const {
   inboundPrefix,
   inboundAlreadyRecorded,
   claimNewInbound,
+  decodeInboundForStorage,
 } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead, applySmartleadCategory } = require('../services/smartlead-category');
@@ -344,13 +345,11 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  *
- * Text only — never smartlead_email_stats_id alone. That id is resolved from
- * thread history as "the most recent outbound SENT message" (see
- * smartlead.extractStatsIdFromHistory), which stays identical across multiple
- * *different* replies to the same send. Matching on it alone silently dropped
- * a genuinely new reply with zero trace (2026-08-03, Doug Baden/Parlay Tech —
- * no pending_replies row was ever created). Per DECISIONS.md: "dedupe on text
- * only, never on time" — same text = duplicate, different text always shows.
+ * Text only — never smartlead_email_stats_id. That id is the most recent
+ * outbound SENT message and stays the same across different replies to that
+ * send. Matching on it dropped a genuinely new reply with zero trace
+ * (2026-08-03, Doug Baden/Parlay Tech). Same text is a duplicate. Different
+ * text always shows, even when that means a second card.
  */
 async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail }) {
   void campaignId;
@@ -457,6 +456,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (slEnhance && inboundForPersist) {
       inboundForPersist = cleanInboundReply(inboundForPersist) || inboundForPersist;
     }
+    // After tag stripping. Decoding first would turn `&lt;...&gt;` into a tag
+    // and the stripper would eat it.
+    inboundForPersist = decodeInboundForStorage(inboundForPersist);
+    const earlyStatsId = payload.stats_id || payload.statsId || null;
 
     if (resolvedCampaignId && leadId && inboundForPersist) {
       if (await smartleadDuplicateInDb({
@@ -489,7 +492,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
           [
             clientId, 'smartlead', resolvedCampaignId, smartleadCampaignName(payload) || null,
             leadId, leadName, leadEmail, inboundForPersist, JSON.stringify([]),
-            placeholderClass, '', 'pending', payload.stats_id || payload.statsId || null,
+            placeholderClass, '', 'pending', earlyStatsId,
           ]
         );
         return inserted;
@@ -656,6 +659,8 @@ async function processSmartleadWebhookAsync({
       inboundEffective = '';
     }
   }
+
+  inboundEffective = decodeInboundForStorage(inboundEffective);
 
   if (!inboundEffective) {
     console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId });
