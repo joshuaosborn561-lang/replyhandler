@@ -388,6 +388,10 @@ function looksLikeNotInterested(text) {
   if (/\bremove me\b/.test(s)) return true; // often overlaps REMOVE_ME
   if (/\bnot a fit\b/.test(s)) return true;
   if (/\bwe are all set\b/.test(s)) return true;
+  // Polite brush-off. "Good luck with the search" is a no. A soft maybe
+  // ("will speak internally to our board") does not match.
+  if (/\bgood luck with (the |your )?(search|hunt|outreach)\b/.test(s)) return true;
+  if (/\bbest of luck\b/.test(s)) return true;
   return false;
 }
 

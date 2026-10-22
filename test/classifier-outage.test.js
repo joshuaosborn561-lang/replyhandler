@@ -139,6 +139,36 @@ test('CLASSIFIER_FALLBACK_GEMINI off still does not invent a label', async () =>
   });
 });
 
+test('Nutter LinkedIn replies use the same outage fallback', () => {
+  const thread = [
+    { role: 'us', message: 'Worth a look for your board?' },
+  ];
+  assert.equal(
+    classifyDuringOutage(
+      thread,
+      'Understood. I do some board work but nothing in healthcare. Good luck with the search.',
+    ),
+    'NOT_INTERESTED',
+  );
+  assert.equal(
+    slackChannelSuppressionReason({
+      classification: 'NOT_INTERESTED',
+      inboundMessage: 'Good luck with the search.',
+    }),
+    'not_interested',
+  );
+  assert.equal(
+    classifyDuringOutage(thread, 'I see. thanks for reaching out. will speak internally to our board.'),
+    'INTERESTED',
+  );
+  assert.equal(
+    classifyDuringOutage(thread, 'I was with AITP board for a few years'),
+    'INTERESTED',
+  );
+  const src = fs.readFileSync(path.join(__dirname, '../src/utils/classifier-outage.js'), 'utf8');
+  assert.doesNotMatch(src, /salesglider|clientId|client_id/i);
+});
+
 test('a short LinkedIn reply is drafted even when the thread omitted our send', () => {
   const onlyInbound = [{ role: 'prospect', message: 'I sit in the middle' }];
   assert.equal(classifyDuringOutage(onlyInbound, 'I sit in the middle'), 'INTERESTED');

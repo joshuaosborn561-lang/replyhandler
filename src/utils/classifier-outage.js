@@ -2,9 +2,9 @@
  * Label a reply when Jev and Gemini are both unreachable.
  *
  * A 401/402 used to fall through to OTHER, which posts the unclassified
- * Slack line and never drafts. Campaign replies and short answers to our
- * outreach are still conversations. Cold pitches and clear declines stay
- * out of the draft set.
+ * Slack line and never drafts. This runs for every client, email and
+ * LinkedIn. Campaign replies and short answers to our outreach are still
+ * conversations. Cold pitches and clear declines stay out of the draft set.
  */
 
 const { lastOutboundFromThread } = require('../services/jev-classifier');
