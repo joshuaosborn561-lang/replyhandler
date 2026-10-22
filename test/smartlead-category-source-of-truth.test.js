@@ -47,11 +47,13 @@ describe('referrals', () => {
     assert.ok(!looksLikeReferral('Sounds good, what times work?'));
   });
 
-  it('promotes OTHER / WRONG_PERSON referrals to a drafted class', () => {
+  it('promotes a live referral and leaves declines and wrong-person labels alone', () => {
     assert.equal(promoteReferral('OTHER', "I've CC'd our ops manager").classification, 'INTERESTED');
-    assert.equal(promoteReferral('WRONG_PERSON', 'Please talk to Sam instead').promoted, true);
+    assert.equal(promoteReferral('WRONG_PERSON', 'Please talk to Sam instead').promoted, false);
+    assert.equal(promoteReferral('NOT_INTERESTED', "I've CC'd our ops manager").promoted, false);
     assert.equal(promoteReferral('REMOVE_ME', "I've cc'd legal, stop emailing").promoted, false);
     assert.equal(promoteReferral('QUESTION', "I've cc'd X").promoted, false);
+    assert.equal(promoteReferral('OTHER', 'I am out of the office until Monday. I\'ve cc\'d our ops manager').promoted, false);
   });
 
   it('reply-all keeps people on the To line', () => {
