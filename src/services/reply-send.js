@@ -13,7 +13,7 @@ const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
-const { alreadySentSameOutbound } = require('./reply-dedupe');
+const { alreadySentSameOutbound, claimOutboundSend } = require('./reply-dedupe');
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
 const { buildReplyAll, mergeCcLists } = require('../utils/reply-all');
@@ -121,6 +121,18 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
 
   // Portal takeover: do not send if the client already claimed this lead.
   await clientClaimed.assertNotClaimedOrThrow(reply);
+
+  // Claim the person before any provider call. Two approvals of the same
+  // follow-up (overlapping replicas, or a reworded second card) both used to
+  // pass the sent-text check below — the first row was not `sent` yet, and
+  // Jeff Miller's two drafts diverged in the opening line.
+  const sendClaim = await claimOutboundSend({ replyId: reply.id, replyText });
+  if (!sendClaim.ok) {
+    console.warn('[ReplySend] Skipping outbound — duplicate or already handled', {
+      replyId: reply.id, lead: reply.lead_name, reason: sendClaim.reason,
+    });
+    return { skippedDuplicate: true, reason: sendClaim.reason };
+  }
 
   // Two Slack cards for one inbound (webhook + poller race) can both be
   // approved. Do not deliver the same outbound twice (Casey Buckstaff).

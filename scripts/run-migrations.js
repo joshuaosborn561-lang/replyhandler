@@ -45,6 +45,7 @@ const MIGRATION_FILES = [
   '036_gabe_forward_salesglider.sql',
   '037_pending_replies_draft_variant.sql',
   '038_lead_person_location.sql',
+  '039_follow_up_idempotency.sql',
 ];
 
 async function clientsTableExists(client) {

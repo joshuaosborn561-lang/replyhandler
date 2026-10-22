@@ -273,6 +273,7 @@ describe('FOLLOW_UP card refresh', () => {
     assert.equal(actionKindFor('flagged'), 'failed');
     assert.equal(actionKindFor('sent'), 'approved');
     assert.equal(actionKindFor('rejected'), 'rejected');
+    assert.equal(actionKindFor('skipped'), 'skipped');
     assert.equal(actionKindFor('meeting_booked'), 'meeting_booked');
     assert.equal(actionKindFor('disqualified'), 'disqualified');
   });

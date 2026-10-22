@@ -19,6 +19,7 @@ const { prospectBookingLink } = require('../utils/public-booking-link');
 const { resolveVerifiedSchedulingSlots, slotOffsetForFollowUpStep } = require('./scheduling-slots');
 const { prefersInPersonMeeting } = require('../utils/meeting-modality');
 const { isLeadClaimed, cancelClaimedLeadWork } = require('./client-claimed');
+const { isPostedSlackTs } = require('./reply-dedupe');
 
 /** Shared Slack channel for all FOLLOW_UP bumps (not per-client inbox channels). */
 const DEFAULT_FOLLOW_UP_SLACK_CHANNEL_ID = 'C0BRRS8DV19';
@@ -123,8 +124,95 @@ async function priorSentMessages(clientId, fu) {
   return extras;
 }
 
-/** Post one follow-up card. Returns the created pending_replies row. */
+let followUpRunActive = false;
+
+async function releaseStaleFollowUpClaims() {
+  const { rowCount } = await db.query(
+    `UPDATE outbound_follow_ups
+        SET status = 'pending', updated_at = now()
+      WHERE status = 'posting'
+        AND updated_at < now() - interval '15 minutes'`
+  );
+  return rowCount || 0;
+}
+
+function isUniqueViolation(err) {
+  return Boolean(err && err.code === '23505');
+}
+
+/**
+ * A card already exists for this cadence step (this follow-up row, or the
+ * same source reply + step + person). Later steps are a different step
+ * number, so they still post.
+ */
+async function findExistingFollowUpCard(clientId, fu) {
+  const step = Number(fu.step) || 1;
+  const { rows } = await db.query(
+    `SELECT id, slack_message_ts, status, follow_up_id
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND classification = 'FOLLOW_UP'
+        AND status IN ('pending', 'flagged', 'approved', 'sending', 'sent', 'skipped', 'rejected')
+        AND (
+          follow_up_id = $3::uuid
+          OR (
+            follow_up_step = $4
+            AND follow_up_source_id IS NOT DISTINCT FROM $5::uuid
+            AND $5::uuid IS NOT NULL
+            AND (
+              ($6::text <> '' AND COALESCE(lead_id, '') = $6)
+              OR ($7::text <> '' AND lower(COALESCE(lead_email, '')) = $7)
+            )
+          )
+        )
+      ORDER BY created_at ASC
+      LIMIT 1`,
+    [
+      clientId,
+      fu.platform,
+      fu.id,
+      step,
+      fu.source_pending_reply_id || null,
+      fu.lead_id != null ? String(fu.lead_id) : '',
+      fu.lead_email ? String(fu.lead_email).trim().toLowerCase() : '',
+    ]
+  );
+  return rows[0] || null;
+}
+
+/** Post one follow-up card. Returns the pending_replies row, or null when another worker owns the step. */
 async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
+  await releaseStaleFollowUpClaims();
+  const { rows: claimedRows } = await db.query(
+    `UPDATE outbound_follow_ups
+        SET status = 'posting', updated_at = now()
+      WHERE id = $1 AND status = 'pending'
+      RETURNING id`,
+    [fu.id]
+  );
+  if (!claimedRows[0]) {
+    console.log('[FollowUp] Skip card — step already claimed or no longer pending', {
+      followUpId: fu.id, lead: fu.lead_name, step: fu.step,
+    });
+    return null;
+  }
+
+  let slackPosted = false;
+  try {
+    const existing = await findExistingFollowUpCard(client.id, fu);
+    if (existing && String(existing.follow_up_id || '') !== String(fu.id)) {
+      await resolve(fu, 'skipped', 'duplicate_step');
+      console.log('[FollowUp] Skip card — this step already has a card', {
+        followUpId: fu.id, existingReplyId: existing.id, lead: fu.lead_name,
+      });
+      return null;
+    }
+    if (existing && isPostedSlackTs(existing.slack_message_ts)) {
+      await resolve(fu, 'notified', null);
+      return existing;
+    }
+
   let threadContext = null;
   let smartleadStatsId = null;
   let campaignName = null;
@@ -245,28 +333,72 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   const whatToSend = needsClient ? (drafted.whatToSend || 'info') : null;
   const storedContext = attachFollowUpMeta(threadContext, { needsClient, whatToSend });
 
-  const { rows: [newReply] } = await db.query(
-    `INSERT INTO pending_replies
-      (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
-       inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'FOLLOW_UP', $11, 'pending', $12)
-     RETURNING *`,
-    [
-      client.id,
-      fu.platform,
-      fu.campaign_id,
-      campaignName || null,
-      fu.lead_id,
-      fu.lead_name,
-      fu.lead_email,
-      fu.linkedin_url,
-      // Store the original prospect reply so Approve/confirm cards keep thread context.
-      inboundForCard,
-      JSON.stringify(storedContext),
-      draft,
-      smartleadStatsId,
-    ]
-  );
+  let newReply = null;
+  if (existing && String(existing.follow_up_id || '') === String(fu.id)) {
+    const { rows } = await db.query(
+      `UPDATE pending_replies
+          SET draft_reply = $2, thread_context = $3, inbound_message = $4,
+              campaign_name = COALESCE(campaign_name, $5),
+              follow_up_step = $6, follow_up_source_id = $7, updated_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [
+        existing.id,
+        draft,
+        JSON.stringify(storedContext),
+        inboundForCard,
+        campaignName || null,
+        step,
+        fu.source_pending_reply_id || null,
+      ]
+    );
+    newReply = rows[0] || null;
+  } else {
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO pending_replies
+          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
+           inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id,
+           follow_up_id, follow_up_step, follow_up_source_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'FOLLOW_UP', $11, 'pending', $12, $13, $14, $15)
+         RETURNING *`,
+        [
+          client.id,
+          fu.platform,
+          fu.campaign_id,
+          campaignName || null,
+          fu.lead_id,
+          fu.lead_name,
+          fu.lead_email,
+          fu.linkedin_url,
+          // Store the original prospect reply so Approve/confirm cards keep thread context.
+          inboundForCard,
+          JSON.stringify(storedContext),
+          draft,
+          smartleadStatsId,
+          fu.id,
+          step,
+          fu.source_pending_reply_id || null,
+        ]
+      );
+      newReply = rows[0] || null;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const { rows } = await db.query(
+        'SELECT * FROM pending_replies WHERE follow_up_id = $1 ORDER BY created_at ASC LIMIT 1',
+        [fu.id]
+      );
+      newReply = rows[0] || null;
+      if (newReply && isPostedSlackTs(newReply.slack_message_ts)) {
+        slackPosted = true;
+        await resolve(fu, 'notified', null);
+        return newReply;
+      }
+    }
+  }
+  if (!newReply) {
+    throw new Error('follow_up_card_insert_failed');
+  }
 
   const sentAt = fu.sent_at instanceof Date ? fu.sent_at.toISOString() : String(fu.sent_at || '');
   const campaignDisplay = formatCampaignDisplay(campaignName, fu.campaign_id) || undefined;
@@ -279,7 +411,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
 
   // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
   // under the original card). WILL SEND + buttons first, then the full thread.
-  await postProspectSlackCard({
+  const postedCard = await postProspectSlackCard({
     token: client.slack_bot_token,
     channelId: followUpSlackChannelId(),
     clientId: client.id,
@@ -312,8 +444,31 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       threadMessages,
     },
   });
-
+  slackPosted = true;
+  if (postedCard && postedCard.skipped && !isPostedSlackTs(postedCard.ts)) {
+    console.log('[FollowUp] Slack post skipped', {
+      followUpId: fu.id, replyId: newReply.id, reason: postedCard.reason,
+    });
+  }
+  await resolve(fu, 'notified', null);
   return newReply;
+  } catch (err) {
+    if (!slackPosted) {
+      await db.query(
+        `UPDATE outbound_follow_ups
+            SET status = 'pending', updated_at = now()
+          WHERE id = $1 AND status = 'posting'`,
+        [fu.id]
+      ).catch((revertErr) => {
+        console.warn('[FollowUp] Could not release step claim', {
+          followUpId: fu.id, err: revertErr.message,
+        });
+      });
+    } else {
+      await resolve(fu, 'notified', null).catch(() => {});
+    }
+    throw err;
+  }
 }
 
 async function resolve(fu, status, skipReason) {
@@ -412,6 +567,15 @@ async function dueFollowUps(limit) {
  * time, post a Slack card for the rest.
  */
 async function runDueFollowUps({ limit = 25 } = {}) {
+  if (followUpRunActive) {
+    console.log('[FollowUp] Previous run still active; skipping');
+    return {
+      posted: 0, skipped: 0, failed: 0, retired: 0, deferred: 0,
+      skipReasons: { overlap: 1 },
+    };
+  }
+  followUpRunActive = true;
+  try {
   resetFollowUpClaudeBudget();
   const deferred = await deferOffHoursFollowUps();
   // Do not post — and do not retire as stale — at night or on the weekend.
@@ -525,8 +689,12 @@ async function runDueFollowUps({ limit = 25 } = {}) {
         continue;
       }
 
-      await postFollowUpCard(client, fu);
-      await resolve(fu, 'notified', null);
+      const card = await postFollowUpCard(client, fu);
+      if (!card) {
+        totals.skipped++;
+        totals.skipReasons.already_claimed = (totals.skipReasons.already_claimed || 0) + 1;
+        continue;
+      }
       totals.posted++;
       console.log('[FollowUp] Posted follow-up card', {
         client: client.name, lead: fu.lead_name, step: fu.step, sequenceHours: fu.sequence_hours,
@@ -547,6 +715,9 @@ async function runDueFollowUps({ limit = 25 } = {}) {
     console.log('[FollowUp] Claude usage this run', budget);
   }
   return { ...totals, claude: budget };
+  } finally {
+    followUpRunActive = false;
+  }
 }
 
 module.exports = {
