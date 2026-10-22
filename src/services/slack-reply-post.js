@@ -380,6 +380,12 @@ async function completeCardLinks({
     ...payload,
     ...updatedCard,
   };
+  const callNowSwap = enrichment?.draftVariant === 'call_now_v1'
+    && enrichment.draftReply && enrichment.draftReply !== updatedPayload.draft;
+  if (callNowSwap) {
+    updatedPayload.draft = enrichment.draftReply;
+    updatedPayload.draftVariant = enrichment.draftVariant;
+  }
 
   await persistCardIdentity(dbClient, replyId, { linkedinUrl, website, email });
   firePortalNotify(updatedCard, {
@@ -393,6 +399,7 @@ async function completeCardLinks({
     (linkedinUrl && linkedinUrl !== beforeLi)
     || (website && website !== beforeWeb)
     || (extra.phone && extra.phone !== beforePhone)
+    || callNowSwap
     || extra.phoneEnrichmentStatus === 'not_found'
     || extra.phoneEnrichmentStatus === 'failed'
     || !icpVerdictEquals(payload.leadIcpVerdict, icp);

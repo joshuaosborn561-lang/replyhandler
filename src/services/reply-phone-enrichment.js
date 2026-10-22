@@ -41,6 +41,8 @@ function shouldSkipEnrichment(classification) {
   return SKIP_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
 }
 
+const { callNowDraft, CALL_NOW_VARIANT } = require('../utils/call-now-variant');
+
 function storedResult(reply) {
   return {
     phone: reply?.lead_phone || null,
@@ -53,6 +55,8 @@ function storedResult(reply) {
     error: reply?.phone_enrichment_error || null,
     enrichedAt: reply?.phone_enriched_at || null,
     receipt: reply?.enrichment_receipt || null,
+    draftVariant: reply?.draft_variant || null,
+    draftReply: reply?.draft_reply || null,
   };
 }
 
@@ -74,6 +78,7 @@ async function getReply(replyId) {
             pr.lead_phone, pr.lead_phone_provider, pr.lead_phone_alt, pr.lead_website,
             pr.phone_enrichment_status, pr.phone_enrichment_error, pr.phone_enriched_at,
             pr.classification, pr.status, pr.draft_reply, pr.enrichment_receipt,
+            pr.created_at, pr.draft_variant,
             c.name AS client_name,
             c.reply_enrich_ceiling_usd, c.reply_enrich_ceiling_hot_usd
        FROM pending_replies pr
@@ -323,6 +328,22 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       }
     }
 
+    // CALL_NOW_TEST: Veriphone-confirmed mobile -> short "calling you now" draft.
+    const callNow = !draftSql ? callNowDraft({
+      mobilePhone: phone,
+      classification: existing.classification,
+      draft: existing.draft_reply,
+      status: existing.status,
+      leadName: existing.lead_name,
+      createdAt: existing.created_at,
+    }) : null;
+    if (callNow) {
+      draftSql = `,
+              draft_reply = $10,
+              draft_variant = '${CALL_NOW_VARIANT}'`;
+      receipt.draftVariant = CALL_NOW_VARIANT;
+    }
+
     const { rows } = await db.query(
       `UPDATE pending_replies
           SET lead_email = COALESCE(lead_email, $1),
@@ -340,7 +361,8 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
         WHERE id = $9
         RETURNING id, lead_name, lead_email, linkedin_url, lead_phone, lead_phone_alt,
                   lead_phone_provider, lead_website, phone_enrichment_status,
-                  phone_enrichment_error, phone_enriched_at, enrichment_receipt`,
+                  phone_enrichment_error, phone_enriched_at, enrichment_receipt,
+                  draft_reply, draft_variant`,
       [
         email || null,
         phone || null,
@@ -351,6 +373,7 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
         JSON.stringify(receipt),
         status,
         replyId,
+        ...(callNow ? [callNow] : []),
       ]
     );
     logJob('complete', {
