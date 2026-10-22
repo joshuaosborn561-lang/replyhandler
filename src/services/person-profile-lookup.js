@@ -39,10 +39,13 @@ function parseAiArkPerson(data) {
   const link = data.link || person.link || {};
   const linkedinUrl = cleanLinkedin(link.linkedin || data.linkedin || person.linkedin || person.linkedin_url);
   const location = pickLocation(person, data, person.location && typeof person.location === 'object' ? person.location : null);
+  const rawTitle = person.title || person.job_title || person.jobTitle || person.headline
+    || data.title || data.job_title || data.headline || '';
   return {
     fullName: nameFromProfile(person) || nameFromProfile(data) || null,
     linkedinUrl,
     location: location || null,
+    title: typeof rawTitle === 'string' && rawTitle.trim() ? rawTitle.trim().slice(0, 120) : null,
   };
 }
 
@@ -59,7 +62,8 @@ function parseLinkedinSearchResult(item = {}) {
     const m = snippet.match(/Location:\s*([^·\n]+?)(?:\s*·|\.\s|$)/i);
     if (m) location = m[1].trim();
   }
-  return { linkedinUrl, fullName, location: location || null };
+  const { titleFromLinkedinHeadline } = require('./decision-maker');
+  return { linkedinUrl, fullName, location: location || null, title: titleFromLinkedinHeadline(title) };
 }
 
 function nameTokens(name) {
@@ -99,7 +103,7 @@ async function serperLinkedinSearch({ leadName, companyName, domain }, { fetchIm
  *   timezone:string|null, sources:object}>}
  */
 async function lookupPersonProfile({
-  email, leadName, companyName, linkedinUrl, location,
+  email, leadName, companyName, linkedinUrl, location, title,
 } = {}, {
   aiarkApi = aiark, fetchImpl = fetch, env = process.env,
 } = {}) {
@@ -107,11 +111,13 @@ async function lookupPersonProfile({
     fullName: null,
     linkedinUrl: cleanLinkedin(linkedinUrl),
     location: location || null,
+    title: title || null,
     sources: {},
   };
   const workEmail = String(email || '').trim().toLowerCase();
   const domain = domainFromEmail(workEmail);
-  const needMore = () => !out.linkedinUrl || !out.location || nameTokens(out.fullName || leadName).length < 2;
+  const needMore = () => !out.linkedinUrl || !out.location || !out.title
+    || nameTokens(out.fullName || leadName).length < 2;
 
   if (workEmail && needMore() && aiarkApi?.isConfigured?.()) {
     try {
@@ -122,6 +128,7 @@ async function lookupPersonProfile({
       if (!out.location && p.location) { out.location = p.location; out.sources.location = 'aiark'; }
       const fn = p.fullName || raw?.rawName || null;
       if (fn) { out.fullName = fn; out.sources.name = 'aiark'; }
+      if (!out.title && p.title) { out.title = p.title; out.sources.title = 'aiark'; }
     } catch (err) {
       console.warn('[PersonProfile] AI Ark lookup failed', { err: err.message });
     }
@@ -138,6 +145,7 @@ async function lookupPersonProfile({
         if (!out.linkedinUrl) { out.linkedinUrl = hit.linkedinUrl; out.sources.linkedin = 'serper'; }
         if (sameProfile && !out.location && hit.location) { out.location = hit.location; out.sources.location = 'serper'; }
         if (sameProfile && !out.fullName && hit.fullName) { out.fullName = hit.fullName; out.sources.name = 'serper'; }
+        if (sameProfile && !out.title && hit.title) { out.title = hit.title; out.sources.title = 'serper'; }
       }
     } catch (err) {
       console.warn('[PersonProfile] Serper lookup failed', { err: err.message });

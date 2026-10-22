@@ -139,14 +139,23 @@ function websiteUrlLine(leadWebsite) {
  */
 function icpVerdictLine(leadIcpVerdict) {
   const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
+  const dm = v && (v.decision_maker || v.decisionMaker);
+  const { decisionMakerText } = require('./decision-maker');
+  const dmText = decisionMakerText(dm);
+  const dmLine = dmText ? `\n👤 ${escMrkdwn(dmText)}` : '';
   if (!v || !v.status || v.status === 'unknown') {
     const why = String(v?.reason || 'unknown').replace(/[()]/g, '').trim() || 'unknown';
-    return `\n🎯 ICP: unknown (${escMrkdwn(why)})`;
+    const not = dm?.status === 'no' ? ' · not a fit: person is not a decision maker' : '';
+    return `\n🎯 ICP: unknown (${escMrkdwn(why)})${escMrkdwn(not)}${dmLine}`;
+  }
+  const pct = Number.isFinite(Number(v.confidence)) ? `${Math.round(Number(v.confidence))}% ` : '';
+  const reason = String(v.reason || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (v.status === 'qualified' && dm?.status === 'no') {
+    return `\n🎯 ${escMrkdwn(`Not a fit: company fits (${pct}${reason || 'qualified'}) but the person replying is not a decision maker`)}${dmLine}`;
   }
   const word = v.status === 'qualified' ? 'qualified' : 'disqualified';
-  const pct = Number.isFinite(Number(v.confidence)) ? `${Math.round(Number(v.confidence))}% ` : '';
-  const reason = String(v.reason || word).replace(/\s+/g, ' ').trim().slice(0, 180);
-  return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason}`)}`;
+  const tail = v.status === 'qualified' && dm?.status === 'unknown' ? ' · decision maker unconfirmed' : '';
+  return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason || word}${tail}`)}${dmLine}`;
 }
 
 /** Prefer the enriched full name when the reply only carried a first name. */
