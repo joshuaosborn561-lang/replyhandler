@@ -1368,6 +1368,24 @@ A person who is still there can still be drafted: "I'm not the right person, but
 
 Guard: `automated notices are not interested drafts` in `test/automated-notice.test.js`
 
+### CC client is an option on every SmartLead card
+
+*"I want that as an option on every card"* — after a Bill Hall EMCOR card
+that needed Myles on the prospect thread, not only a Gmail FYI.
+
+Supersedes "Send + CC only on loop-in drafts" (2026-10-19). Regular
+**Approve & Send** still omits SmartLead `cc` (deliverability). **📬 Approve
+& Send + CC client** now appears on every SmartLead draft card that has
+Always-forward addresses (`cc_emails` / `cc_email`) — INTERESTED /
+MEETING_PROPOSED / QUESTION and FOLLOW_UP alike, whether or not the draft
+says "looping in X from our side". HeyReach stays off (no email CC).
+Cards with no Always-forward (SalesGlider) still hide the button. The
+button is still the only path that passes `cc` into `sendReply()`.
+Recipient is the same Always-forward list. Reply-all CCs and Gmail FYI
+are unchanged.
+
+Guard: `Approve & Send + CC client is an option on every SmartLead card`
+
 ### Webhook and poller HTML must compare as the same reply (Oct 22)
 
 Bill Hall at EMCOR, Oct 22 2026, 2:52 PM ET. The same inbound posted two Slack cards three seconds apart: one from the SmartLead webhook, one from the inbox poller. The bodies were the same reply. The poller kept `Bill Hall &#8211; Project Executive` and the webhook had already decoded that to a dash. The 120-character prefix diverged at the signature, so text dedupe missed.

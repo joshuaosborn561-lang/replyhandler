@@ -2208,8 +2208,8 @@ test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
     reversal('FOLLOW_UP Send + CC client', 'sendReply still reads ccEmails / cc_emails instead of cc'));
   assert.match(send, /sendOpts\.cc = prospectCc/,
     reversal('FOLLOW_UP Send + CC client', 'reply-send no longer passes cc only for the CC button'));
-  assert.match(slackSrc, /draftLoopsInContact/,
-    reversal('FOLLOW_UP Send + CC client', 'Send + CC is no longer gated on the loop-in phrase'));
+  assert.match(drafts, /draftLoopsInContact/,
+    reversal('FOLLOW_UP loop-in-client', 'loop-in check was removed from follow-up drafts'));
   assert.match(claude, /copy character-for-character/,
     reversal('FOLLOW_UP contact first name is verbatim', 'Sonnet is no longer told to copy the first name exactly'));
   const rules = claude.slice(
@@ -2218,6 +2218,74 @@ test('FOLLOW_UP drafts continue the thread and never wait on Josh', () => {
   );
   assert.doesNotMatch(rules, /\bMiles\b/,
     reversal('FOLLOW_UP contact first name is verbatim', 'FOLLOW_UP_RULES hardcodes a contact first name again'));
+});
+
+// ── Decision: CC client is an option on every SmartLead card (Josh, 2026-10-22)
+test('Approve & Send + CC client is an option on every SmartLead card', () => {
+  const { buildDraftApprovalCard } = require('../src/services/slack');
+  const decisions = read('DECISIONS.md');
+  const slackSrc = read('src/services/slack.js');
+  const claude = read('CLAUDE.md');
+
+  assert.match(decisions, /CC client is an option on every SmartLead card/,
+    reversal('CC client on every card', 'the decision was removed from DECISIONS.md'));
+  assert.match(claude, /option on every SmartLead card/,
+    reversal('CC client on every card', 'CLAUDE.md still says Send + CC is loop-in only'));
+  assert.match(slackSrc, /function shouldShowCcClientButton/,
+    reversal('CC client on every card', 'shouldShowCcClientButton was removed'));
+
+  const assemble = slackSrc.slice(
+    slackSrc.indexOf('function assembleFollowUpApprovalBlocks'),
+    slackSrc.indexOf('function buildDraftApprovalCard'),
+  );
+  assert.doesNotMatch(assemble, /draftLoopsInContact/,
+    reversal('CC client on every card', 'FOLLOW_UP Send + CC is gated on the loop-in phrase again'));
+
+  const interested = buildDraftApprovalCard({
+    replyId: 'r-cc',
+    leadName: 'Bill Hall',
+    platform: 'smartlead',
+    classification: 'INTERESTED',
+    draft: 'Thanks for looping in Rebecca.',
+    inboundMessage: 'Adding Rebecca',
+    ccEmails: 'mmcantosh@emcor.net',
+  });
+  assert.match(JSON.stringify(interested.blocks), /approve_reply_cc_client/,
+    reversal('CC client on every card', 'INTERESTED cards with Always-forward no longer show Send + CC'));
+
+  const noEmail = buildDraftApprovalCard({
+    replyId: 'r-none',
+    leadName: 'Mia',
+    platform: 'smartlead',
+    classification: 'INTERESTED',
+    draft: 'Here is the video.',
+    inboundMessage: 'Just the video',
+  });
+  assert.doesNotMatch(JSON.stringify(noEmail.blocks), /approve_reply_cc_client/,
+    reversal('CC client on every card', 'cards with no Always-forward still show Send + CC'));
+
+  const heyreach = buildDraftApprovalCard({
+    replyId: 'r-hr',
+    leadName: 'Chris',
+    platform: 'heyreach',
+    classification: 'INTERESTED',
+    draft: 'Thanks.',
+    inboundMessage: 'Interested',
+    ccEmails: 'someone@example.com',
+  });
+  assert.doesNotMatch(JSON.stringify(heyreach.blocks), /approve_reply_cc_client/,
+    reversal('CC client on every card', 'HeyReach cards show SmartLead Send + CC'));
+
+  const followUp = buildDraftApprovalCard({
+    replyId: 'r-fu',
+    leadName: 'Alex',
+    platform: 'smartlead',
+    classification: 'FOLLOW_UP',
+    draft: 'Hey Alex, still open to a rooftop visit this week?',
+    ccEmails: 'mmcantosh@emcor.net',
+  });
+  assert.match(JSON.stringify(followUp.blocks), /approve_reply_cc_client/,
+    reversal('CC client on every card', 'FOLLOW_UP cards without loop-in no longer show Send + CC'));
 });
 
 // ── Decision: classification is Jev; drafts stay Claude then Gemini ───

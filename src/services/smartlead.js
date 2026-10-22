@@ -308,7 +308,7 @@ function explainSmartleadSendError(status, responseBody, campaignId, leadId, sta
  *
  * SmartLead POST /campaigns/{id}/reply-email-thread accepts `cc` and `bcc`
  * as comma-separated strings (field name `cc`, never an array). Default send
- * still omits both (deliverability); FOLLOW_UP "Send + CC client" opts into
+ * still omits both (deliverability); "Approve & Send + CC client" opts into
  * `cc` with the Always-forward address. `bcc` is unused.
  * Client notify is via Gmail / forwardThreadToClient, independent of this CC.
  */
