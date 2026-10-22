@@ -80,12 +80,17 @@ describe('card CC line', () => {
     assert.doesNotMatch(text, /has no CC/);
   });
 
-  it('shows the Approve & Send + CC client button when asked', () => {
+  it('shows the Approve & Send + CC client button when Always-forward is set', () => {
     const { blocks } = slack.buildDraftApprovalCard({
+      replyId: 'r1', leadName: 'Lead', platform: 'smartlead', classification: 'INTERESTED',
+      draft: 'Hi', inboundMessage: 'yes', ccEmails: 'mmcantosh@emcor.net',
+    });
+    assert.match(JSON.stringify(blocks), /approve_reply_cc_client/);
+    const { blocks: flagged } = slack.buildDraftApprovalCard({
       replyId: 'r1', leadName: 'Lead', platform: 'smartlead', classification: 'INTERESTED',
       draft: 'Hi', inboundMessage: 'yes', showCcClientButton: true,
     });
-    assert.match(JSON.stringify(blocks), /approve_reply_cc_client/);
+    assert.match(JSON.stringify(flagged), /approve_reply_cc_client/);
     const { blocks: plain } = slack.buildDraftApprovalCard({
       replyId: 'r1', leadName: 'Lead', platform: 'smartlead', classification: 'INTERESTED',
       draft: 'Hi', inboundMessage: 'yes',

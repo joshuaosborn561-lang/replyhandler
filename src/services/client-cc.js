@@ -30,7 +30,7 @@ function alwaysCcEmails(client) {
 }
 
 /**
- * Prospect-thread CC for FOLLOW_UP "Send + CC client".
+ * Prospect-thread CC for "Approve & Send + CC client".
  * Same Always-forward list the client already receives — not round-robin,
  * not a new field.
  */
