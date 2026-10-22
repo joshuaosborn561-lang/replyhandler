@@ -14,6 +14,7 @@ const {
   inboundPrefix,
   inboundAlreadyRecorded,
   claimNewInbound,
+  decodeInboundForStorage,
 } = require('../services/reply-dedupe');
 const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead, applySmartleadCategory } = require('../services/smartlead-category');
@@ -344,22 +345,23 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * same campaign is a redelivery, not a new reply.
  * Originally by cayden-design (e23f6b5); reworked onto the current handler.
  *
- * Text only — never smartlead_email_stats_id alone. That id is resolved from
- * thread history as "the most recent outbound SENT message" (see
- * smartlead.extractStatsIdFromHistory), which stays identical across multiple
- * *different* replies to the same send. Matching on it alone silently dropped
- * a genuinely new reply with zero trace (2026-08-03, Doug Baden/Parlay Tech —
- * no pending_replies row was ever created). Per DECISIONS.md: "dedupe on text
- * only, never on time" — same text = duplicate, different text always shows.
+ * Text is the identity. A SmartLead stats id is only a backup, and only with
+ * the same person and campaign inside a 10-minute window (see
+ * sameStatsWindowSql). Matching on the stats id alone dropped a genuinely new
+ * reply with zero trace (2026-08-03, Doug Baden/Parlay Tech). Different text
+ * after that window still always shows.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail }) {
-  void campaignId;
+async function smartleadDuplicateInDb({
+  clientId, campaignId, leadId, inboundMessage, leadEmail, emailStatsId,
+}) {
   return Boolean(await inboundAlreadyRecorded(db, {
     clientId,
     platform: 'smartlead',
     leadId,
     leadEmail,
     inboundMessage,
+    campaignId,
+    emailStatsId,
   }));
 }
 
@@ -457,6 +459,10 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     if (slEnhance && inboundForPersist) {
       inboundForPersist = cleanInboundReply(inboundForPersist) || inboundForPersist;
     }
+    // After tag stripping. Decoding first would turn `&lt;...&gt;` into a tag
+    // and the stripper would eat it.
+    inboundForPersist = decodeInboundForStorage(inboundForPersist);
+    const earlyStatsId = payload.stats_id || payload.statsId || null;
 
     if (resolvedCampaignId && leadId && inboundForPersist) {
       if (await smartleadDuplicateInDb({
@@ -465,6 +471,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         leadId,
         leadEmail,
         inboundMessage: inboundForPersist,
+        emailStatsId: earlyStatsId,
       })) {
         console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId });
         return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
@@ -481,6 +488,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         leadId,
         leadEmail,
         inboundMessage: inboundForPersist,
+        campaignId: resolvedCampaignId,
+        emailStatsId: earlyStatsId,
       }, async (conn) => {
         const { rows: [inserted] } = await conn.query(
           `INSERT INTO pending_replies
@@ -489,7 +498,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
           [
             clientId, 'smartlead', resolvedCampaignId, smartleadCampaignName(payload) || null,
             leadId, leadName, leadEmail, inboundForPersist, JSON.stringify([]),
-            placeholderClass, '', 'pending', payload.stats_id || payload.statsId || null,
+            placeholderClass, '', 'pending', earlyStatsId,
           ]
         );
         return inserted;
@@ -657,6 +666,8 @@ async function processSmartleadWebhookAsync({
     }
   }
 
+  inboundEffective = decodeInboundForStorage(inboundEffective);
+
   if (!inboundEffective) {
     console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId });
     await slack.postError(client.slack_bot_token, client.slack_channel_id, {
@@ -701,6 +712,7 @@ async function processSmartleadWebhookAsync({
     leadId: resolvedLeadId,
     leadEmail,
     inboundMessage: inboundEffective,
+    emailStatsId: statsId,
   })) {
     console.log('[Webhook] SmartLead duplicate suppressed (db, async)', { clientId, campaignId: resolvedCampaignId });
     return;
@@ -793,6 +805,8 @@ async function processSmartleadWebhookAsync({
       leadId: resolvedLeadId,
       leadEmail,
       inboundMessage: inboundEffective,
+      campaignId: resolvedCampaignId,
+      emailStatsId: statsId,
     }, async (conn) => {
       const { rows: [inserted] } = await conn.query(
         `INSERT INTO pending_replies

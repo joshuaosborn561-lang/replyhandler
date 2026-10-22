@@ -1367,3 +1367,13 @@ Those bodies are suppressed with reason `automated_notice`. The check is rules-o
 A person who is still there can still be drafted: "I'm not the right person, but talk to my colleague Jay, he handles this." Departure wording still wins over that carve-out. "Please contact Jane instead" and "no longer with the company" stay silent.
 
 Guard: `automated notices are not interested drafts` in `test/automated-notice.test.js`
+
+### Webhook and poller HTML must compare as the same reply (Oct 22)
+
+Bill Hall at EMCOR, Oct 22 2026, 2:52 PM ET. The same inbound posted two Slack cards three seconds apart: one from the SmartLead webhook, one from the inbox poller. The bodies were the same reply. The poller kept `Bill Hall &#8211; Project Executive` and the webhook had already decoded that to a dash. The 120-character prefix diverged at the signature, so text dedupe missed.
+
+Comparison now decodes numeric (decimal and hex) and common named entities, then folds dash variants and curly quotes to ASCII, on both the JS side and the stored-column SQL. The poller and the webhook store the decoded text. Migration `040_decode_inbound_html_entities.sql` rewrites entities already sitting in `inbound_message` from the last 30 days and is in `scripts/run-migrations.js`. It does not fold dashes in the stored column and does not touch older rows.
+
+Backup, only when the text still differs: the same person, same campaign, and same SmartLead email stats id, created within 10 minutes, is one inbound. That is not stats-id alone. The id is still the latest SENT message and is shared by a later, different reply (Doug Baden, 2026-08-03). A different campaign, a missing stats id, an empty stats id, or anything older than 10 minutes still has to match on the text. FOLLOW_UP rows stay out of this match. Outside the window, different text from the same person still always shows.
+
+Guards: `Bill Hall entity renderings share a dedupe prefix` and `a stats id is a 10-minute backup, not an identity` in `test/inbound-entity-dedupe.test.js`. `poller dedupe never matches on stats_id alone` still forbids a stats-id match without the person, the campaign, and the 10-minute bound.

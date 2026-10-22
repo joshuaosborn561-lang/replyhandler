@@ -46,6 +46,7 @@ const MIGRATION_FILES = [
   '037_pending_replies_draft_variant.sql',
   '038_lead_person_location.sql',
   '039_follow_up_idempotency.sql',
+  '040_decode_inbound_html_entities.sql',
 ];
 
 async function clientsTableExists(client) {

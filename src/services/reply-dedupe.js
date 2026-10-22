@@ -2,6 +2,15 @@ const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
+const {
+  decodeHtmlEntities,
+  foldDashAndQuotes,
+  decodeInboundForStorage,
+  DASH_CODEPOINTS,
+  SINGLE_QUOTE_CODEPOINTS,
+  DOUBLE_QUOTE_CODEPOINTS,
+  NAMED_HTML_ENTITIES,
+} = require('../utils/html-entities');
 
 /**
  * Strip embedded signature images / data-URIs before dedupe.
@@ -26,7 +35,7 @@ function stripEmbeddedBinaries(text) {
  * matches and the poller re-posts the same card every cycle.
  */
 function normalizeInboundText(text) {
-  return stripEmbeddedBinaries(text)
+  return foldDashAndQuotes(decodeHtmlEntities(stripEmbeddedBinaries(text)))
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -84,9 +93,76 @@ const STORED_STRIP_BINARIES_SQL = (
   `'<img[^>]*>', ' ', 'gi')`
 );
 
+/**
+ * Entity spellings and raw characters that must fold the same way
+ * normalizeInboundText does. Incoming text is decoded in JS; stored rows
+ * may still contain `&#8211;` until migration 040 rewrites them, and a
+ * decoded en dash must still match an ASCII hyphen.
+ *
+ * One alternation per folded result, not a replace per codepoint, so the
+ * dedupe query stays cheap on leads that already have hundreds of rows.
+ */
+function entityAlternation(codes, namesByCode) {
+  const parts = [];
+  for (const code of codes) {
+    parts.push(`&#0*${code};`);
+    parts.push(`&#x0*${code.toString(16)};`);
+    for (const name of namesByCode[code] || []) parts.push(`&${name};`);
+  }
+  return parts.join('|');
+}
+
+function regexpReplaceLiteral(expr, pattern, sqlLiteral) {
+  return `regexp_replace(${expr}, '${pattern}', ${sqlLiteral}, 'gi')`;
+}
+
+function foldCodepointsSql(expr, codes, sqlLiteral) {
+  return codes.reduce(
+    (sql, code) => `replace(${sql}, chr(${code}), ${sqlLiteral})`,
+    expr
+  );
+}
+
+const NAMED_CODEPOINTS = {};
+for (const [name, ch] of Object.entries(NAMED_HTML_ENTITIES)) {
+  const code = ch.codePointAt(0);
+  if (!NAMED_CODEPOINTS[code]) NAMED_CODEPOINTS[code] = [];
+  NAMED_CODEPOINTS[code].push(name);
+}
+
+const APOSTROPHE_ENTITY_CODES = [0x27, ...SINGLE_QUOTE_CODEPOINTS];
+const QUOTE_ENTITY_CODES = [0x22, ...DOUBLE_QUOTE_CODEPOINTS];
+
+function applyEntityFoldSql(expr) {
+  let sql = expr;
+  // Unwrap &amp; first so `&amp;ndash;` / `&amp;#8211;` become a real entity
+  // before the dash pass. Twice covers `&amp;amp;`.
+  const amp = entityAlternation([0x26], NAMED_CODEPOINTS);
+  sql = regexpReplaceLiteral(sql, amp, "'&'");
+  sql = regexpReplaceLiteral(sql, amp, "'&'");
+  sql = regexpReplaceLiteral(sql, entityAlternation(DASH_CODEPOINTS, NAMED_CODEPOINTS), "'-'");
+  sql = regexpReplaceLiteral(sql, entityAlternation(APOSTROPHE_ENTITY_CODES, NAMED_CODEPOINTS), "''''");
+  sql = regexpReplaceLiteral(sql, entityAlternation(QUOTE_ENTITY_CODES, NAMED_CODEPOINTS), `'\"'`);
+  const spaceEntityCodes = [0xA0, 0x2002, 0x2003, 0x2009];
+  sql = regexpReplaceLiteral(sql, entityAlternation(spaceEntityCodes, NAMED_CODEPOINTS), "' '");
+  for (const [code] of Object.entries(NAMED_CODEPOINTS)) {
+    const n = Number(code);
+    if (spaceEntityCodes.includes(n)) continue;
+    if (DASH_CODEPOINTS.includes(n)) continue;
+    if (APOSTROPHE_ENTITY_CODES.includes(n)) continue;
+    if (QUOTE_ENTITY_CODES.includes(n)) continue;
+    if (n === 0x26) continue;
+    sql = regexpReplaceLiteral(sql, entityAlternation([n], NAMED_CODEPOINTS), `chr(${n})`);
+  }
+  sql = foldCodepointsSql(sql, DASH_CODEPOINTS, "'-'");
+  sql = foldCodepointsSql(sql, SINGLE_QUOTE_CODEPOINTS, "''''");
+  sql = foldCodepointsSql(sql, DOUBLE_QUOTE_CODEPOINTS, `'\"'`);
+  return sql;
+}
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `${stripUnicodeSpacesSql(STORED_STRIP_BINARIES_SQL)}, ` +
+  `${stripUnicodeSpacesSql(applyEntityFoldSql(STORED_STRIP_BINARIES_SQL))}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -111,6 +187,12 @@ const MIN_CONTAINMENT_LEN = 40;
  * a duplicate; different text from the same person is always a new reply that
  * must come through, however soon it arrives.
  *
+ * The one exception is sameStatsWindowSql: the same person, campaign, and
+ * SmartLead stats id inside STATS_DEDUPE_WINDOW_MINUTES. That catches a
+ * webhook/poller pair whose bodies still differ after normalization.
+ * It is not a stats-id match by itself, and it does not apply to a later
+ * reply.
+ *
  * $p = 120-char prefix, $f = full normalised text.
  */
 function sameReplySql(prefixParam, fullParam) {
@@ -125,6 +207,50 @@ function sameReplySql(prefixParam, fullParam) {
       )
     )
   )`;
+}
+
+/**
+ * Webhook and poller can still disagree after entity folding (a signature
+ * the 120-char window does not reach, or a stats id that is the only stable
+ * identity). Same person + campaign + SmartLead email stats id inside this
+ * window is one inbound, even when the texts differ.
+ *
+ * Not stats-id alone. That id is the latest SENT message and is shared by
+ * later, genuinely different replies (Doug Baden, 2026-08-03). The campaign
+ * and the 10-minute bound are what keep a second reply from disappearing.
+ * FOLLOW_UP rows are excluded by the caller — one thread shares this id.
+ */
+const STATS_DEDUPE_WINDOW_MINUTES = 10;
+
+function sameStatsWindowSql(statsParam, campaignParam) {
+  return `(
+    ${statsParam}::text <> ''
+    AND ${campaignParam}::text <> ''
+    AND COALESCE(campaign_id, '') = ${campaignParam}
+    AND COALESCE(smartlead_email_stats_id, '') = ${statsParam}
+    AND created_at >= now() - interval '${STATS_DEDUPE_WINDOW_MINUTES} minutes'
+  )`;
+}
+
+/**
+ * Pure mirror of sameStatsWindowSql for tests. Person is enforced by the
+ * SQL AND samePersonSql, not here. Age is milliseconds between the two rows.
+ */
+function inboundStatsBackupApplies({
+  campaignId,
+  otherCampaignId,
+  emailStatsId,
+  otherEmailStatsId,
+  ageMs,
+} = {}) {
+  const stats = String(emailStatsId || '').trim();
+  const otherStats = String(otherEmailStatsId || '').trim();
+  const campaign = String(campaignId || '').trim();
+  const otherCampaign = String(otherCampaignId || '').trim();
+  if (!stats || stats !== otherStats) return false;
+  if (!campaign || campaign !== otherCampaign) return false;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return false;
+  return ageMs <= STATS_DEDUPE_WINDOW_MINUTES * 60 * 1000;
 }
 
 function samePersonSql(leadIdParam, leadEmailParam) {
@@ -148,6 +274,8 @@ async function inboundAlreadyRecorded(queryable, {
   leadId,
   leadEmail,
   inboundMessage,
+  campaignId,
+  emailStatsId,
 }) {
   const q = queryable && typeof queryable.query === 'function' ? queryable : db;
   const normalized = inboundPrefix(inboundMessage);
@@ -156,6 +284,8 @@ async function inboundAlreadyRecorded(queryable, {
   const lid = leadId != null ? String(leadId) : '';
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
   if (!lid && !email) return null;
+  const stats = emailStatsId != null ? String(emailStatsId).trim() : '';
+  const campaign = campaignId != null ? String(campaignId).trim() : '';
 
   const { rows } = await q.query(
     `SELECT id, status
@@ -163,11 +293,14 @@ async function inboundAlreadyRecorded(queryable, {
       WHERE client_id = $1
         AND platform = $2
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
-        AND ${sameReplySql('$3', '$4')}
         AND ${samePersonSql('$5', '$6')}
+        AND (
+          ${sameReplySql('$3', '$4')}
+          OR ${sameStatsWindowSql('$7', '$8')}
+        )
       ORDER BY created_at DESC
       LIMIT 1`,
-    [clientId, platform, normalized, fullNorm, lid, email]
+    [clientId, platform, normalized, fullNorm, lid, email, stats, campaign]
   );
   return rows[0] || null;
 }
@@ -181,15 +314,10 @@ async function alreadyPostedToSlack({
   inboundMessage,
   emailStatsId,
 }) {
-  // Text only — never smartlead_email_stats_id. That id is the most recent
-  // outbound SENT stats id, identical across different replies to the same
-  // send. Matching on it silently drops a new reply (webhook fixed in #31;
-  // poller still had the OR-branch). emailStatsId kept in the signature for
-  // callers; unused for matching.
-  void emailStatsId;
-  void campaignId;
+  // Text is the identity. Stats id is only a 10-minute backup, and only
+  // together with the same person and campaign — see sameStatsWindowSql.
   const row = await inboundAlreadyRecorded(db, {
-    clientId, platform, leadId, leadEmail, inboundMessage,
+    clientId, platform, leadId, leadEmail, inboundMessage, campaignId, emailStatsId,
   });
   return Boolean(row);
 }
@@ -215,6 +343,8 @@ async function claimNewInbound({
   leadId,
   leadEmail,
   inboundMessage,
+  campaignId,
+  emailStatsId,
 }, insertFn) {
   const lockKeys = personLockKeys({ clientId, platform, leadId, leadEmail });
   const conn = await db.connect();
@@ -227,7 +357,7 @@ async function claimNewInbound({
       );
     }
     const existing = await inboundAlreadyRecorded(conn, {
-      clientId, platform, leadId, leadEmail, inboundMessage,
+      clientId, platform, leadId, leadEmail, inboundMessage, campaignId, emailStatsId,
     });
     if (existing) {
       await conn.query('COMMIT');
@@ -806,9 +936,14 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 module.exports = {
   inboundPrefix,
   normalizeInboundText,
+  decodeInboundForStorage,
   stripEmbeddedBinaries,
   sameReplySql,
+  sameStatsWindowSql,
+  inboundStatsBackupApplies,
+  STATS_DEDUPE_WINDOW_MINUTES,
   samePersonSql,
+  DASH_CODEPOINTS,
   sameOutboundText,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,

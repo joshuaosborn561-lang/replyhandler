@@ -720,12 +720,66 @@ test('Allo booking check matches the prospect phone', () => {
 });
 
 // ── Decision: poller dedupe is text-only (stats_id is not identity) ───
+// Bill Hall, 2026-10-22: a 10-minute backup may use stats id, but only with
+// the same person and the same campaign. Stats id alone still must not match
+// — that id is the latest SENT message and dropped Doug Baden's next reply.
 test('poller dedupe never matches on stats_id alone', () => {
   const dedupe = read('src/services/reply-dedupe.js');
-  assert.ok(!/COALESCE\(smartlead_email_stats_id/.test(dedupe),
-    reversal('dedupe on text only', 'reply-dedupe still has a stats_id SQL branch'));
-  assert.ok(!/smartlead_email_stats_id,\s*''\)\s*=\s*\$/.test(dedupe),
-    reversal('dedupe on text only', 'poller still matches on stats_id equality'));
+  const {
+    inboundStatsBackupApplies,
+    STATS_DEDUPE_WINDOW_MINUTES,
+  } = require('../src/services/reply-dedupe');
+
+  const statsFn = dedupe.slice(
+    dedupe.indexOf('function sameStatsWindowSql'),
+    dedupe.indexOf('function inboundStatsBackupApplies')
+  );
+  assert.match(statsFn, /smartlead_email_stats_id/,
+    reversal('dedupe on text only', 'the stats-id backup was removed'));
+  assert.match(statsFn, /campaign_id/,
+    reversal('dedupe on text only', 'stats id is matching without the same campaign'));
+  assert.match(statsFn, /::text <> ''/,
+    reversal('dedupe on text only', 'an empty stats id can count as a duplicate'));
+  assert.match(statsFn, /STATS_DEDUPE_WINDOW_MINUTES/);
+  assert.strictEqual(STATS_DEDUPE_WINDOW_MINUTES, 10,
+    reversal('dedupe on text only', 'the stats-id window is no longer 10 minutes'));
+
+  const recorded = dedupe.slice(
+    dedupe.indexOf('async function inboundAlreadyRecorded'),
+    dedupe.indexOf('async function alreadyPostedToSlack')
+  );
+  assert.match(recorded, /sameStatsWindowSql\('\$7', '\$8'\)/);
+  assert.match(recorded, /samePersonSql/);
+  assert.match(recorded, /<> 'FOLLOW_UP'/,
+    reversal('dedupe on text only', 'FOLLOW_UP rows share a stats id and must stay out of this match'));
+  assert.ok(
+    recorded.indexOf('samePersonSql') < recorded.indexOf('OR ${sameStatsWindowSql'),
+    reversal('dedupe on text only', 'stats-id backup is no longer ANDed with the same person')
+  );
+
+  const same = {
+    campaignId: '3739758',
+    otherCampaignId: '3739758',
+    emailStatsId: 'sent-stats-1',
+    otherEmailStatsId: 'sent-stats-1',
+  };
+  assert.strictEqual(inboundStatsBackupApplies({ ...same, ageMs: 3000 }), true);
+  assert.strictEqual(inboundStatsBackupApplies({
+    ...same, otherCampaignId: '999', ageMs: 3000,
+  }), false, reversal('dedupe on text only', 'stats id matched across campaigns'));
+  assert.strictEqual(inboundStatsBackupApplies({
+    ...same, otherEmailStatsId: 'other-sent', ageMs: 3000,
+  }), false, reversal('dedupe on text only', 'different stats ids are being collapsed'));
+  assert.strictEqual(inboundStatsBackupApplies({
+    ...same, ageMs: 11 * 60 * 1000,
+  }), false, reversal('dedupe on text only', 'stats id matched with no 10-minute bound — that dropped Doug Baden'));
+  assert.strictEqual(inboundStatsBackupApplies({
+    campaignId: '3739758',
+    otherCampaignId: '3739758',
+    emailStatsId: '',
+    otherEmailStatsId: '',
+    ageMs: 1000,
+  }), false, reversal('dedupe on text only', 'empty stats id is being treated as a duplicate'));
 });
 
 // ── Decision: track both Allo lines ───────────────────────────────────
