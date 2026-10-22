@@ -190,7 +190,7 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.match(texts, /LOOP IN CLIENT/);
   });
 
-  it('hides Send + CC client when needs_client is set but the draft does not loop anyone in', () => {
+  it('shows Send + CC client when Always-forward is set even if the draft does not loop anyone in', () => {
     const { blocks } = buildDraftApprovalCard({
       replyId: 'r-no-loop',
       leadName: 'Alex Rivera',
@@ -205,7 +205,7 @@ describe('FOLLOW_UP card conversation layout', () => {
       .filter((b) => b.type === 'actions')
       .flatMap((b) => b.elements.map((e) => e.action_id));
     assert.ok(actionIds.includes('approve_reply'));
-    assert.ok(!actionIds.includes('approve_reply_cc_client'));
+    assert.ok(actionIds.includes('approve_reply_cc_client'));
   });
 
   it('still shows the last prospect turn in the thread, not as a duplicate last-message line', () => {

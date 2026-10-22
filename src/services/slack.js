@@ -780,6 +780,13 @@ function followUpClientContactEmail({ ccEmails, ccEmail } = {}) {
   return '';
 }
 
+/** SmartLead draft cards: CC option whenever Always-forward exists. */
+function shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton } = {}) {
+  if (String(platform || '').toLowerCase() !== 'smartlead') return false;
+  if (followUpClientContactEmail({ ccEmails, ccEmail })) return true;
+  return Boolean(showCcClientButton);
+}
+
 function assembleFollowUpApprovalBlocks({
   replyId,
   metaBlocks,
@@ -799,8 +806,7 @@ function assembleFollowUpApprovalBlocks({
     ...willSend,
     draftApprovalActionsBlock(replyId),
   ];
-  const { draftLoopsInContact } = require('../utils/client-loop-contact');
-  if (needsClient && canCcClient && draftLoopsInContact(draft)) {
+  if (canCcClient) {
     head.push(sendCcClientActionsBlock(replyId));
   }
   if (loop) head.push(loop);
@@ -887,8 +893,9 @@ function buildDraftApprovalCard({
       threadMessages,
       needsClient,
       whatToSend,
-      canCcClient: String(platform || '').toLowerCase() === 'smartlead'
-        && Boolean(followUpClientContactEmail({ ccEmails, ccEmail })),
+      canCcClient: shouldShowCcClientButton({
+        platform, ccEmails, ccEmail, showCcClientButton,
+      }),
       contextText,
       review,
     });
@@ -927,7 +934,7 @@ function buildDraftApprovalCard({
       : null;
     if (notice) blocks.push(notice);
     blocks.push(draftApprovalActionsBlock(replyId));
-    if (showCcClientButton && platform === 'smartlead') {
+    if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
       blocks.push(sendCcClientActionsBlock(replyId));
     }
   }
@@ -1345,4 +1352,5 @@ module.exports = {
   sendCcClientActionsBlock,
   postFollowUpHistoryThread,
   followUpClientContactEmail,
+  shouldShowCcClientButton,
 };

@@ -246,11 +246,12 @@ flag. One-pager / deck / "email me some info" → `needs_client` +
 configured client contact by first name from `voice_prompt`, copied
 character-for-character (e.g. "Myles" with a Y, never a lookalike) as
 "looping in {Name} from our side" — no title, never "founder". Default
-Approve still omits SmartLead `cc`; **Send + CC client** appears only
-when that loop-in line is in the draft, and CCs the same Always-forward
-addresses (`cc_emails` / `cc_email`) via SmartLead payload field `cc`
-(comma-separated string). FYI forward to the client and Cayden still
-runs on send. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
+Approve still omits SmartLead `cc`. **Approve & Send + CC client** is an
+option on every SmartLead card that has Always-forward addresses
+(`cc_emails` / `cc_email`), not only loop-in FOLLOW_UP drafts. That
+button CCs those addresses via SmartLead payload field `cc`
+(comma-separated string). Regular Approve still Gmail-notifies only.
+FYI forward to the client and Cayden still runs on send. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
 text) then buttons, a permalink to the original card, the full thread, and
 a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —

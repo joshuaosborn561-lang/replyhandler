@@ -1367,3 +1367,21 @@ Those bodies are suppressed with reason `automated_notice`. The check is rules-o
 A person who is still there can still be drafted: "I'm not the right person, but talk to my colleague Jay, he handles this." Departure wording still wins over that carve-out. "Please contact Jane instead" and "no longer with the company" stay silent.
 
 Guard: `automated notices are not interested drafts` in `test/automated-notice.test.js`
+
+### CC client is an option on every SmartLead card
+
+*"I want that as an option on every card"* — after a Bill Hall EMCOR card
+that needed Myles on the prospect thread, not only a Gmail FYI.
+
+Supersedes "Send + CC only on loop-in drafts" (2026-10-19). Regular
+**Approve & Send** still omits SmartLead `cc` (deliverability). **📬 Approve
+& Send + CC client** now appears on every SmartLead draft card that has
+Always-forward addresses (`cc_emails` / `cc_email`) — INTERESTED /
+MEETING_PROPOSED / QUESTION and FOLLOW_UP alike, whether or not the draft
+says "looping in X from our side". HeyReach stays off (no email CC).
+Cards with no Always-forward (SalesGlider) still hide the button. The
+button is still the only path that passes `cc` into `sendReply()`.
+Recipient is the same Always-forward list. Reply-all CCs and Gmail FYI
+are unchanged.
+
+Guard: `Approve & Send + CC client is an option on every SmartLead card`

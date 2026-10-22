@@ -172,9 +172,9 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
 
     // Deliverability: reply to the prospect with NO CC by default.
     // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
-    // Optional exception: FOLLOW_UP "Send + CC client" CCs the same Always-forward
+    // Optional exception: "Approve & Send + CC client" CCs the same Always-forward
     // addresses this client already receives (not round-robin, not a new field).
-    // FYI notify still fires.
+    // FYI notify still fires. Regular Approve still omits SmartLead cc.
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
