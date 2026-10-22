@@ -413,7 +413,9 @@ async function persistPendingIcp(db, replyId, verdict) {
   try {
     await db.query(
       `UPDATE pending_replies
-          SET icp_verdict = $1::jsonb, updated_at = now()
+          SET icp_verdict = $1::jsonb
+                || jsonb_strip_nulls(jsonb_build_object('decision_maker', icp_verdict->'decision_maker')),
+              updated_at = now()
         WHERE id = $2`,
       [JSON.stringify({
         status: verdict.status,
@@ -520,7 +522,9 @@ async function resolveReplyIcp({
 function icpVerdictEquals(a, b) {
   if (!a && !b) return true;
   if (!a || !b) return false;
+  const dm = (v) => (v.decision_maker || v.decisionMaker) ? JSON.stringify(v.decision_maker || v.decisionMaker) : '';
   return a.status === b.status
+    && dm(a) === dm(b)
     && a.confidence === b.confidence
     && String(a.reason || '') === String(b.reason || '');
 }
@@ -535,6 +539,7 @@ function parseStoredIcp(raw) {
     label: raw.label || null,
     passLabel: raw.passLabel || raw.pass_label || null,
     source: raw.source || null,
+    ...(raw.decision_maker ? { decision_maker: raw.decision_maker } : {}),
   };
 }
 

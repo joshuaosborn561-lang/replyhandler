@@ -469,7 +469,9 @@ async function completeCardLinks({
 
   // Person profile: full name, LinkedIn fallback, and the PERSON's location.
   const firstOnly = String(card.leadName || '').trim().split(/\s+/).filter(Boolean).length < 2;
-  if (!linkedinUrl || !location || firstOnly) {
+  const dmLib = require('./decision-maker');
+  let title = dmLib.extractLeadTitle(card.leadData, card.payload, card.lead, card) || null;
+  if (!linkedinUrl || !location || firstOnly || !title) {
     try {
       const prof = await profileLookup({
         email,
@@ -477,7 +479,9 @@ async function completeCardLinks({
         companyName: card.leadCompany,
         linkedinUrl,
         location,
+        title,
       });
+      if (prof?.title && !title) title = prof.title;
       if (prof?.linkedinUrl && !linkedinUrl) linkedinUrl = prof.linkedinUrl;
       if (prof?.location && !location) location = prof.location;
       if (prof?.fullName && !fullName) fullName = prof.fullName;
@@ -502,6 +506,15 @@ async function completeCardLinks({
       replyId, err: err.message,
     });
     icp = icp || unknownVerdict('grade failed');
+  }
+  // Is the PERSON replying a buyer per this client's ICP titles?
+  try {
+    const personas = await dmLib.loadClientPersonas(dbClient, clientId);
+    const dm = dmLib.judgeDecisionMaker(title, personas);
+    icp = { ...(icp || unknownVerdict('grade failed')), decision_maker: dm };
+    await dmLib.persistDecisionMaker(dbClient, replyId, dm);
+  } catch (err) {
+    console.warn('[Slack] decision-maker check failed', { replyId, err: err.message });
   }
   if (icp && icp.status === 'unknown' && /no ICP/i.test(String(icp.reason || ''))) {
     // Build this client's ICP from its Fireflies calls now; regrade updates the card.
