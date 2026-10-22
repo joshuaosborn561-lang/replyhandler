@@ -92,6 +92,25 @@ test('buildJevRequest uses env model and never hardcodes the URL', () => {
   });
 });
 
+test('SmartLead SENT history is last outbound, not a cold inbound', () => {
+  const { lastOutboundFromThread, withKnownOutbound } = require('../src/services/jev-classifier');
+  const history = {
+    history: [
+      { type: 'SENT', email_body: 'Can I send the video over?<br>Joshua' },
+      { type: 'REPLY', email_body: 'Just the video' },
+    ],
+  };
+  assert.match(lastOutboundFromThread(history), /send the video/i);
+  const body = buildJevRequest({ threadContext: history, inboundMessage: 'Just the video' });
+  assert.match(body.state.last_outbound_from_us, /send the video/i);
+  assert.doesNotMatch(body.state.last_outbound_from_us, /written first/);
+
+  const thin = [{ role: 'prospect', message: 'Can you send some info on what you do?' }];
+  const stitched = withKnownOutbound(thin, 'Hey Mia, that offer is still on the table. Can I send the video?');
+  assert.match(lastOutboundFromThread(stitched), /video/i);
+  assert.equal(withKnownOutbound(history, 'ignored because history already has a send'), history);
+});
+
 test('classifyReply uses Jev and keeps pitch_to_us_prob', async () => {
   const result = await classifyReply('thread', 'Sure, tell me more.', {
     classifyWithJev: async () => ({ classification: 'INTERESTED', pitchToUsProb: 0.12, source: 'jev' }),

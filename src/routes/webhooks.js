@@ -6,6 +6,7 @@ const db = require('../db');
 const smartlead = require('../services/smartlead');
 const heyreach = require('../services/heyreach');
 const { classifyAndDraft, draftOnly } = require('../services/classifier');
+const { withKnownOutbound } = require('../services/jev-classifier');
 const slack = require('../services/slack');
 const { enrichPendingReplyPhone } = require('../services/reply-phone-enrichment');
 const { postProspectSlackCard, patchPostedCard } = require('../services/slack-reply-post');
@@ -680,7 +681,7 @@ async function processSmartleadWebhookAsync({
   } else {
     try {
       result = await classifyAndDraft(
-        threadContext,
+        withKnownOutbound(threadContext, lastOutboundSl),
         inboundEffective,
         client.voice_prompt,
         client.booking_link,
@@ -1153,7 +1154,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         let result;
         try {
           result = await classifyAndDraft(
-            threadContext,
+            withKnownOutbound(threadContext, lastOutboundHr),
             inboundMessage,
             client.voice_prompt,
             client.booking_link,
