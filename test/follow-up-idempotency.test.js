@@ -265,6 +265,12 @@ test('a follow-up card is claimed before it is inserted', () => {
     'a null card must not be marked notified — that clobbers the worker still posting');
 
   const migration = read('migrations/037_follow_up_idempotency.sql');
+  const startup = read('scripts/run-migrations.js');
+  const list = startup.slice(startup.indexOf('const MIGRATION_FILES'), startup.indexOf('async function clientsTableExists'));
+  assert.ok(
+    list.indexOf('036_gabe_forward_salesglider.sql') < list.indexOf('037_follow_up_idempotency.sql'),
+    'startup migrations must apply 037 after 036'
+  );
   assert.match(migration, /idx_pending_replies_one_follow_up_card/);
   assert.match(migration, /idx_outbound_follow_ups_step_by_email/);
   assert.match(migration, /idx_outbound_follow_ups_step_by_lead/);

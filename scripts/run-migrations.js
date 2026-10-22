@@ -43,6 +43,7 @@ const MIGRATION_FILES = [
   '034_drop_calendly_pat.sql',
   '035_pitch_hidden_summaries.sql',
   '036_gabe_forward_salesglider.sql',
+  '037_follow_up_idempotency.sql',
 ];
 
 async function clientsTableExists(client) {
