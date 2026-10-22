@@ -688,4 +688,13 @@ module.exports = {
   hasCampaignId,
   campaignId,
   conversationMessages,
+  leadName,
+  linkedinUrl,
+  listId,
+  linkedInAccountId,
+  senderId,
+  latestInbound,
+  lastOutbound,
+  messagesForThread,
+  conversationId,
 };

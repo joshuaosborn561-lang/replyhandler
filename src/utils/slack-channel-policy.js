@@ -16,6 +16,8 @@ const SLACK_CHANNEL_CLASSIFICATIONS = new Set([
   'INTERESTED',
   'MEETING_PROPOSED',
   'QUESTION',
+  // Unclassified replies get a full drafted card (email and LinkedIn).
+  'OTHER',
 ]);
 
 const PITCH_INBOUND_THRESHOLD = 0.8;

@@ -72,7 +72,7 @@ test('Slack channels are interested-only — OOO and NOT_INTERESTED suppressed',
   assert.ok(!DRAFT_CLASSIFICATIONS.includes('NOT_INTERESTED'),
     reversal('Slack channels are interested-only', 'NOT_INTERESTED is drafting again'));
   assert.ok(!DRAFT_CLASSIFICATIONS.includes('OOO'));
-  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort());
+  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'OTHER'].sort());
 });
 
 // ── Decision: Josh drafts ack-first + first vs continuation ───────────
@@ -117,7 +117,7 @@ test('Claude never runs on bulk backfill; only positives get drafts', () => {
     reversal('Claude bulk gate', 'pollers no longer mark drafts as bulk'));
   assert.equal(shouldUseAnthropicDrafts({ draftMode: 'bulk' }), false,
     reversal('Claude bulk gate', 'bulk mode can call Claude again'));
-  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
+  assert.deepEqual([...DRAFT_CLASSIFICATIONS].sort(), ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'OTHER'].sort(),
     reversal('Claude bulk gate', 'draft classifications expanded past positives'));
 });
 

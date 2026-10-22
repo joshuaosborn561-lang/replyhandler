@@ -73,7 +73,7 @@ test('Slack channel policy posts only interested classifications', () => {
   );
   assert.strictEqual(
     slackChannelSuppressionReason({ classification: 'OTHER', inboundMessage: 'hmm' }),
-    'not_interested_channel',
+    null,
   );
   assert.strictEqual(
     slackChannelSuppressionReason({ classification: 'QUESTION', inboundMessage: 'What is the catch?' }),
@@ -89,7 +89,7 @@ test('only INTERESTED / MEETING_PROPOSED / QUESTION get drafts', () => {
   const { DRAFT_CLASSIFICATIONS } = require('../src/services/classifier');
   assert.deepEqual(
     [...DRAFT_CLASSIFICATIONS].sort(),
-    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'].sort(),
+    ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'OTHER'].sort(),
   );
 });
 
