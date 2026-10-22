@@ -159,21 +159,83 @@ function summarizeThread(threadContext) {
   }
 }
 
+function threadMessages(threadContext) {
+  if (!threadContext) return [];
+  if (Array.isArray(threadContext)) return threadContext;
+  if (typeof threadContext !== 'object') return [];
+  if (Array.isArray(threadContext.history)) return threadContext.history;
+  if (Array.isArray(threadContext.messages)) return threadContext.messages;
+  if (Array.isArray(threadContext.email_history)) return threadContext.email_history;
+  return [];
+}
+
+function plainMessageText(message) {
+  return String(message || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function messageBody(message) {
+  if (!message || typeof message !== 'object') return '';
+  return plainMessageText(
+    message.message || message.body || message.text || message.content || message.email_body || ''
+  );
+}
+
+/**
+ * SmartLead history is `{ history: [{ type: 'SENT'|'REPLY', email_body }] }`,
+ * not `{ role: 'us' }`. Missing that made Jev read last_outbound_from_us as
+ * "they may have written first" and prefer OTHER on campaign replies.
+ */
+function isOurOutboundMessage(message) {
+  if (!message || typeof message !== 'object') return false;
+  const type = String(message.type || message.direction || '').toUpperCase();
+  if (type === 'REPLY' || type === 'INBOUND' || type === 'RECEIVED') return false;
+  if (type === 'SENT' || type === 'OUTBOUND') return true;
+  const role = String(message.role || message.sender || message.from || '').toLowerCase();
+  if (role === 'prospect' || role === 'lead' || role === 'them' || role === 'inbound') return false;
+  if (role === 'us' || role === 'me' || role === 'sender' || role === 'user') return true;
+  if (message.is_reply === true || message.isReply === true) return false;
+  if (message.is_reply === false || message.isReply === false) return true;
+  return false;
+}
+
 function lastOutboundFromThread(threadContext) {
-  const list = Array.isArray(threadContext)
-    ? threadContext
-    : (Array.isArray(threadContext?.messages) ? threadContext.messages : []);
   let last = '';
-  for (const m of list) {
-    if (!m || typeof m !== 'object') continue;
-    const role = String(m.role || m.sender || m.from || '').toLowerCase();
-    const outbound = role === 'us' || role === 'me' || role === 'sender' || role === 'user'
-      || m.is_reply === false || m.isReply === false;
-    if (!outbound) continue;
-    const txt = m.message || m.body || m.text || m.content || '';
-    if (txt && String(txt).trim()) last = String(txt).trim();
+  for (const message of threadMessages(threadContext)) {
+    if (!isOurOutboundMessage(message)) continue;
+    const text = messageBody(message);
+    if (text) last = text;
   }
   return last;
+}
+
+/**
+ * Keep a known outbound (webhook sent_message) on the thread when history
+ * did not load, so classification still sees that we wrote first.
+ */
+function withKnownOutbound(threadContext, outboundText) {
+  const known = plainMessageText(outboundText);
+  if (!known || lastOutboundFromThread(threadContext)) return threadContext;
+  const outbound = { role: 'us', type: 'SENT', message: known, email_body: known };
+  if (Array.isArray(threadContext)) return [outbound, ...threadContext];
+  if (threadContext && typeof threadContext === 'object') {
+    if (Array.isArray(threadContext.history)) {
+      return { ...threadContext, history: [outbound, ...threadContext.history] };
+    }
+    if (Array.isArray(threadContext.messages)) {
+      return { ...threadContext, messages: [outbound, ...threadContext.messages] };
+    }
+    if (Array.isArray(threadContext.email_history)) {
+      return { ...threadContext, email_history: [outbound, ...threadContext.email_history] };
+    }
+  }
+  return [outbound];
 }
 
 function buildState(threadContext, inboundMessage) {
@@ -298,4 +360,7 @@ module.exports = {
   isGeminiFallbackEnabled,
   missingJevEnv,
   lastOutboundFromThread,
+  withKnownOutbound,
+  threadMessages,
+  isOurOutboundMessage,
 };

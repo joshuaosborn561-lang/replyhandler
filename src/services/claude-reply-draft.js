@@ -205,10 +205,18 @@ async function generateClaudeReply({
     ? 'CONTINUATION'
     : 'FIRST_TOUCH';
 
-  const examples = await replyExamples.matchReplies(inboundMessage, 4, {
-    clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
-    preferAckExamples: true,
-  });
+  let examples = [];
+  try {
+    examples = await replyExamples.matchReplies(inboundMessage, 4, {
+      clientName: asPrincipal ? (clientName || 'SalesGlider') : clientName,
+      preferAckExamples: true,
+    });
+  } catch (err) {
+    // Embeddings bill to Gemini. A 402 here used to skip Claude entirely and
+    // fall through to a Gemini draft that fails the same way.
+    console.warn('[ClaudeDraft] RAG match failed — drafting without examples', { err: err.message });
+    examples = [];
+  }
   const {
     prefersInPersonMeeting, prefersCallbackCall, DEEP_ROOTS_CALLER, DEEP_ROOTS_FROM_NUMBER,
   } = require('../utils/meeting-modality');

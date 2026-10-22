@@ -16,6 +16,7 @@ const {
 } = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
 const jevClassifier = require('./jev-classifier');
+const { classifyDuringOutage } = require('../utils/classifier-outage');
 const {
   FACT_GROUNDING_RULES,
   factSourceText,
@@ -672,13 +673,21 @@ async function classifyOnlyGemini(threadContext, inboundMessage) {
     return normalizeClassification(text);
   } catch (err) {
     console.error('[Classifier] Gemini classify call failed', { err: err.message });
-    return 'OTHER';
+    return null;
   }
 }
 
 /** Gemini path used only when Jev fails (CLASSIFIER_FALLBACK_GEMINI, default on). */
 async function classifyWithGemini(threadContext, inboundMessage) {
   let classification = await classifyOnlyGemini(threadContext, inboundMessage);
+  if (!classification) {
+    return {
+      classification: 'OTHER',
+      pitchToUsProb: null,
+      source: 'gemini_failed',
+      unavailable: true,
+    };
+  }
   if (classification === 'OTHER') {
     const ooo = await classifyOooSecondPass(threadContext, inboundMessage);
     if (ooo === 'OOO') classification = 'OOO';
@@ -687,7 +696,29 @@ async function classifyWithGemini(threadContext, inboundMessage) {
     const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
     if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
   }
-  return { classification, pitchToUsProb: null, source: 'gemini_fallback' };
+  return { classification, pitchToUsProb: null, source: 'gemini_fallback', unavailable: false };
+}
+
+function classificationFromOutage(threadContext, inboundMessage, source) {
+  const rescued = classifyDuringOutage(threadContext, inboundMessage);
+  if (rescued) {
+    console.warn('[Classifier] Jev and Gemini unavailable — heuristic label', {
+      source, classification: rescued,
+    });
+    return {
+      classification: rescued,
+      pitchToUsProb: null,
+      source: 'outage_heuristic',
+      unavailable: false,
+    };
+  }
+  console.warn('[Classifier] Jev and Gemini unavailable — leaving OTHER', { source });
+  return {
+    classification: 'OTHER',
+    pitchToUsProb: null,
+    source: source || 'classifier_unavailable',
+    unavailable: true,
+  };
 }
 
 /**
@@ -710,7 +741,11 @@ async function classifyReply(threadContext, inboundMessage, deps = {}) {
       return { classification: 'OTHER', pitchToUsProb: null, source: 'jev_failed' };
     }
     console.warn('[Classifier] Jev failed — falling back to Gemini', { err: err.message });
-    return runGemini(threadContext, inboundMessage);
+    const gemini = await runGemini(threadContext, inboundMessage);
+    if (gemini && gemini.unavailable) {
+      return classificationFromOutage(threadContext, inboundMessage, gemini.source || 'classifier_unavailable');
+    }
+    return gemini;
   }
 }
 
