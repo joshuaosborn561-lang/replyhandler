@@ -1,4 +1,5 @@
 const db = require('../db');
+const { phoneForFollowUp, claimDailyCallReminder, reminderLine, leadKey } = require('./follow-up-call-reminder');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { draftReattemptToBook, resetFollowUpClaudeBudget, followUpClaudeBudgetSnapshot } = require('./follow-up-drafts');
 const { attachFollowUpMeta } = require('../utils/follow-up-meta');
@@ -401,6 +402,29 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   }
 
   const sentAt = fu.sent_at instanceof Date ? fu.sent_at.toISOString() : String(fu.sent_at || '');
+  // Phone on every follow-up card, plus a once-a-day "call before sending" reminder.
+  let leadPhone = null;
+  let phoneProvider = null;
+  let callReminder = '';
+  try {
+    const found = await phoneForFollowUp(db, {
+      clientId: client.id,
+      sourceReplyId: fu.source_pending_reply_id,
+      leadEmail: fu.lead_email,
+      linkedinUrl: fu.linkedin_url,
+    });
+    leadPhone = found.phone;
+    phoneProvider = found.provider;
+    if (leadPhone && await claimDailyCallReminder(db, {
+      key: leadKey({ clientId: client.id, leadEmail: fu.lead_email, linkedinUrl: fu.linkedin_url, leadId: fu.lead_id }),
+      phone: leadPhone,
+      replyId: newReply.id,
+    })) {
+      callReminder = reminderLine(leadPhone);
+    }
+  } catch (err) {
+    console.warn('[FollowUp] Phone / call reminder lookup failed', { followUpId: fu.id, err: err.message });
+  }
   const campaignDisplay = formatCampaignDisplay(campaignName, fu.campaign_id) || undefined;
   // Permalink still points at the original card in the client's main inbox channel.
   const threadPermalink = await slack.getPermalink(
@@ -431,8 +455,10 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       platform: fu.platform,
       classification: 'FOLLOW_UP',
       draft,
-      reasoning: reasoningExtra ||
-        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)}${daysSince != null ? ` · ${daysSince}d since last message` : ''}${drafted && drafted.source && drafted.source !== 'claude' ? ` · ${drafted.source}` : ''}.`,
+      leadPhone: leadPhone || undefined,
+      phoneProvider: phoneProvider || undefined,
+      reasoning: (callReminder ? `${callReminder} · ` : '') + (reasoningExtra ||
+        `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)}${daysSince != null ? ` · ${daysSince}d since last message` : ''}${drafted && drafted.source && drafted.source !== 'claude' ? ` · ${drafted.source}` : ''}.`),
       needsClient,
       whatToSend,
       ccEmails: client.cc_emails || client.cc_email || undefined,

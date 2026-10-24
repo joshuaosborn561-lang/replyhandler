@@ -321,3 +321,11 @@ CREATE TABLE inbound_forwards (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (campaign_id, lead_key, inbound_prefix)
 );
+
+CREATE TABLE IF NOT EXISTS follow_up_call_reminders (
+  lead_key TEXT NOT NULL,
+  day DATE NOT NULL,
+  reply_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (lead_key, day)
+);
