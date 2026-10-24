@@ -430,7 +430,9 @@ function normalizeBusyIntervals(rawBusy, provider) {
     if (typeof b.start === 'string' && typeof b.end === 'string') {
       out.push({ start: new Date(b.start), end: new Date(b.end) });
     } else if (b.start?.dateTime && b.end?.dateTime) {
-      out.push({ start: new Date(b.start.dateTime), end: new Date(b.end.dateTime) });
+      // Graph returns "2026-10-26T15:00:00.0000000" with no offset; it is UTC.
+      const asUtc = (v) => (/[zZ]|[+-]\d\d:?\d\d$/.test(v) ? v : `${v}Z`);
+      out.push({ start: new Date(asUtc(b.start.dateTime)), end: new Date(asUtc(b.end.dateTime)) });
     } else if (provider === 'microsoft' && b.start && b.end) {
       const s = typeof b.start === 'string' ? b.start : (b.start.dateTime || b.start);
       const e = typeof b.end === 'string' ? b.end : (b.end.dateTime || b.end);
@@ -600,6 +602,59 @@ async function fetchCalendarFreeStarts(clientId, fromDate, toDate, { limit = 8, 
   return found;
 }
 
+const BUSY_CACHE_TTL_MS = 10 * 60 * 1000; // cron refreshes every 8 min
+/** clientId -> { at, intervals } */
+const busyCache = new Map();
+
+/**
+ * Drop booking-page starts that clash with a busy block on ANY connected
+ * calendar for the client. The public booking page only knows the calendars
+ * its owner linked there; this re-checks the live calendars at pick time.
+ *
+ * No calendar connected: starts pass through unchanged.
+ * Calendar check fails: return [] so the draft falls back to the booking link
+ * instead of offering a time that may be taken.
+ */
+async function filterBusyStarts(clientId, starts, {
+  busyLookup = (id, a, b) => calendar.checkAllBusy(id, a, b),
+  slotMinutes = 30,
+  now = Date.now(),
+  cacheOnly = false,
+  force = false,
+} = {}) {
+  if (!clientId || !Array.isArray(starts) || !starts.length) return starts || [];
+  let intervals;
+  const hit = force ? null : busyCache.get(String(clientId));
+  if (hit && now - hit.at < BUSY_CACHE_TTL_MS) {
+    intervals = hit.intervals;
+  } else if (cacheOnly) {
+    // Fast webhook/poller paths never wait on calendar HTTP; the cron below
+    // keeps this cache warm, so a miss here is rare.
+    return starts;
+  } else {
+    const dates = starts.map((x) => new Date(x)).filter((d) => !Number.isNaN(d.getTime()));
+    if (!dates.length) return [];
+    const min = new Date(Math.min(...dates.map((d) => d.getTime())));
+    const max = new Date(Math.max(...dates.map((d) => d.getTime())) + slotMinutes * 60000);
+    let raw;
+    try {
+      raw = await withTimeout(busyLookup(clientId, min, max), SLOT_FETCH_TIMEOUT_MS);
+    } catch (err) {
+      console.warn('[SchedulingSlots] Busy check failed; offering no times', { clientId, err: err.message });
+      return [];
+    }
+    if (raw == null) return starts; // no calendar connected
+    intervals = normalizeBusyIntervals(raw, 'mixed');
+    busyCache.set(String(clientId), { at: now, intervals });
+  }
+  const ms = slotMinutes * 60000;
+  return starts.filter((x) => {
+    const s0 = new Date(x);
+    const s1 = new Date(s0.getTime() + ms);
+    return !intervals.some((iv) => overlaps(s0, s1, iv.start, iv.end));
+  });
+}
+
 /**
  * Booking-link prompt (no Calendly/calendar HTTP). Keeps webhooks fast — HeyReach docs
  * note webhook delivery can lag; blocking on multi-hop Calendly + calendar scans adds seconds–minutes.
@@ -695,6 +750,13 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     }
   }
 
+  if (starts.length) {
+    starts = await filterBusyStarts(client && client.id, starts, {
+      busyLookup: options.busyLookup,
+      cacheOnly: Boolean(options.skipExternalFetch || options.cacheOnly),
+    });
+  }
+
   if (!starts.length) {
     console.warn('[SchedulingSlots] Empty open times', {
       clientId: client && client.id,
@@ -740,6 +802,8 @@ async function refreshClientSlotCache(client, { fromDate, toDate } = {}) {
       console.warn('[SchedulingSlots] Empty open times', { clientId: client.id });
     }
     writeClientSlotCache(client.id, { starts, timeZone });
+    // Warm the busy cache too so fast paths can skip taken times without HTTP.
+    await filterBusyStarts(client.id, starts, { force: true }).catch(() => {});
     return { starts, timeZone };
   } catch (err) {
     console.warn('[SchedulingSlots] Cache refresh failed', {
@@ -785,6 +849,9 @@ async function refreshAllClientSlotCaches() {
 
 module.exports = {
   resolveVerifiedSchedulingSlots,
+  filterBusyStarts,
+  normalizeBusyIntervals,
+  _resetBusyCacheForTests: () => busyCache.clear(),
   schedulingPromptBookingLinkOnly,
   refreshClientSlotCache,
   refreshAllClientSlotCaches,
