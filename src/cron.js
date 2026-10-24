@@ -177,6 +177,19 @@ function startCron() {
     }
   }
 
+  // ─── Missed call -> follow-up draft card (every 2 min, off by default) ──
+  if (/^(1|true|yes|on)$/i.test(String(process.env.MISSED_CALL_FOLLOWUPS || '').trim())) {
+    cron.schedule('*/2 * * * *', async () => {
+      try {
+        const { runMissedCallFollowUps } = require('./services/missed-call-followup');
+        const r = await runMissedCallFollowUps();
+        if (r.carded || r.matched) console.log('[Cron] Missed-call follow-ups', r);
+      } catch (err) {
+        console.error('[Cron] Missed-call follow-ups failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {

@@ -175,6 +175,13 @@ async function searchCalls(contactNumber, { page, size = 20 } = {}) {
   );
 }
 
+/** Most recent calls on one Allo line (newest first). */
+async function listRecentCalls(alloNumber, { size = 50 } = {}) {
+  const data = await alloFetch('/calls', { allo_number: alloNumber, size });
+  const results = data?.data?.results;
+  return (Array.isArray(results) ? results : []).map((c) => ({ ...c, allo_number: alloNumber }));
+}
+
 /** Flatten a call's transcript turns into plain text. */
 function transcriptText(call) {
   const turns = Array.isArray(call?.transcript) ? call.transcript : [];
@@ -191,6 +198,7 @@ function transcriptText(call) {
 
 module.exports = {
   isConfigured,
+  listRecentCalls,
   searchCalls,
   transcriptText,
   normalizeE164,
