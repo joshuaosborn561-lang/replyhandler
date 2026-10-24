@@ -14,7 +14,7 @@
  */
 
 const db = require('../db');
-const { enrichProspect, clientTagFor, enrichCallReady } = require('./prospect-enrich');
+const { enrichProspect, clientTagFor } = require('./prospect-enrich');
 const { lookupReplyIdentity } = require('./reply-contact-cache');
 const { applyClientDraftPolicy, draftSkipReason } = require('../utils/client-draft-policy');
 const {
@@ -309,50 +309,6 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       linkedinUrl = phoneStep.hit.linkedinUrl || linkedinUrl;
       website = phoneStep.hit.website || website;
       if (!email) email = phoneStep.hit.email || email;
-    }
-
-    // Positive replies: if the waterfall did not land a Veriphone mobile, run
-    // email-waterfall call-ready (FullEnrich first, then known phones, each
-    // Veriphone-checked) with whatever is left under the hot ceiling.
-    if (!phone && hot) {
-      const remaining = remainingCeiling(ceilingUsd, spentUsd);
-      if (remaining > 0.05) {
-        try {
-          const known = [claimed.lead_phone, cache.phone, phoneAlt]
-            .filter(Boolean)
-            .map((p) => ({ phone: p, source: 'reply' }));
-          const cr = await enrichCallReady({
-            clientTag,
-            leadName: claimed.lead_name,
-            email,
-            domain,
-            linkedinUrl,
-            knownPhones: known,
-            approveCostUsd: remaining,
-          });
-          const crSpent = spentFromHit(cr);
-          spentUsd += crSpent;
-          receipt.tiers.push({
-            need: 'call_ready',
-            spentUsd: crSpent,
-            hit: cr?.phone_source || null,
-            phoneType: cr?.phone_type || null,
-          });
-          if (cr?.phone && cr.phone_verified && cr.phone_type === 'mobile') {
-            phone = cr.phone;
-            phoneProvider = `call_ready:${cr.phone_source || 'unknown'}`;
-            receipt.phoneTier = phoneProvider;
-            receipt.phoneGate = null;
-          } else if (cr?.phone && cr.phone_verified && !phoneAlt) {
-            phoneAlt = cr.phone;
-          }
-          if (!linkedinUrl && cr?.linkedin_url && cr.linkedin_confidence !== 'review') {
-            linkedinUrl = cr.linkedin_url;
-          }
-        } catch (err) {
-          receipt.tiers.push({ need: 'call_ready', error: String(err.message || err).slice(0, 120) });
-        }
-      }
     }
 
     receipt.spentUsd = Number(spentUsd.toFixed(6));

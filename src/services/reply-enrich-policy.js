@@ -22,10 +22,7 @@ const LEGACY_MAX_TIER = Object.freeze({
 });
 
 const DEFAULT_CEILING_USD = 0.25;
-/** Positive replies: Josh approved up to $5/lead (Oct 24) for a callable phone. */
-const HOT_CEILING_USD = 5.0;
-/** Hard ceiling no client column or env var can raise. */
-const MAX_CEILING_USD = 5.0;
+const HOT_CEILING_USD = 1.0;
 const HOT_CLASSIFICATIONS = Object.freeze(['INTERESTED', 'MEETING_PROPOSED']);
 
 /** On-hit book prices (USD). Misses are $0. Used only to estimate before a paid call. */
@@ -81,12 +78,10 @@ function resolveReplyEnrichCeiling({ classification, client = {}, env = process.
   const envKey = hot ? 'REPLY_ENRICH_CEILING_HOT_USD' : 'REPLY_ENRICH_CEILING_USD';
   const clientKey = hot ? 'reply_enrich_ceiling_hot_usd' : 'reply_enrich_ceiling_usd';
   const fallback = hot ? HOT_CEILING_USD : DEFAULT_CEILING_USD;
-  const ceilingUsd = Math.min(
-    MAX_CEILING_USD,
+  const ceilingUsd =
     positiveNumber(client[clientKey]) ||
     positiveNumber(env[envKey]) ||
-    fallback
-  );
+    fallback;
   return { ceilingUsd, hot };
 }
 
@@ -191,7 +186,6 @@ module.exports = {
   LEGACY_MAX_TIER,
   DEFAULT_CEILING_USD,
   HOT_CEILING_USD,
-  MAX_CEILING_USD,
   HOT_CLASSIFICATIONS,
   EMAIL_ON_HIT_USD,
   PHONE_ON_HIT_USD,
