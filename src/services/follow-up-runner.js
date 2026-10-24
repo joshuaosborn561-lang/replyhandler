@@ -182,7 +182,7 @@ async function findExistingFollowUpCard(clientId, fu) {
 }
 
 /** Post one follow-up card. Returns the pending_replies row, or null when another worker owns the step. */
-async function postFollowUpCard(client, fu, { reasoningExtra, extraThreadMessages = [] } = {}) {
+async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
   await releaseStaleFollowUpClaims();
   const { rows: claimedRows } = await db.query(
     `UPDATE outbound_follow_ups
@@ -292,7 +292,6 @@ async function postFollowUpCard(client, fu, { reasoningExtra, extraThreadMessage
       ...sentExtras,
       ...(originalInbound ? [{ role: 'them', body: originalInbound }] : []),
       ...(lastOutbound ? [{ role: 'us', body: lastOutbound }] : []),
-      ...(Array.isArray(extraThreadMessages) ? extraThreadMessages : []),
     ],
   });
   const daysSince = daysSinceLastMessage(threadMessages, fu.sent_at);

@@ -177,15 +177,15 @@ function startCron() {
     }
   }
 
-  // ─── Missed call -> follow-up draft card (every 2 min, off by default) ──
-  if (/^(1|true|yes|on)$/i.test(String(process.env.MISSED_CALL_FOLLOWUPS || '').trim())) {
+  // ─── Missed inbound call -> Slack @-mention (every 2 min, off by default) ──
+  if (/^(1|true|yes|on)$/i.test(String(process.env.MISSED_CALL_ALERTS || '').trim())) {
     cron.schedule('*/2 * * * *', async () => {
       try {
-        const { runMissedCallFollowUps } = require('./services/missed-call-followup');
-        const r = await runMissedCallFollowUps();
-        if (r.carded || r.matched) console.log('[Cron] Missed-call follow-ups', r);
+        const { runMissedCallAlerts } = require('./services/missed-call-alert');
+        const r = await runMissedCallAlerts();
+        if (r.alerted) console.log('[Cron] Missed-call alerts', r);
       } catch (err) {
-        console.error('[Cron] Missed-call follow-ups failed', { err: err.message });
+        console.error('[Cron] Missed-call alerts failed', { err: err.message });
       }
     });
   }
