@@ -14,7 +14,8 @@
  */
 
 const db = require('../db');
-const { enrichProspect, clientTagFor, enrichCallReady } = require('./prospect-enrich');
+const { enrichProspect, clientTagFor } = require('./prospect-enrich');
+const { findLinkedin } = require('./linkedin-finder');
 const { lookupReplyIdentity } = require('./reply-contact-cache');
 const { applyClientDraftPolicy, draftSkipReason } = require('../utils/client-draft-policy');
 const {
@@ -149,7 +150,10 @@ async function runWaterfallStep({
  * Claims one pending row so duplicate webhook/poller paths do not spend twice.
  * Completed `not_found` rows are not retried automatically.
  */
-async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyIdentity } = {}) {
+async function enrichPendingReplyPhone(replyId, {
+  identityLookup = lookupReplyIdentity,
+  linkedinFinder = findLinkedin,
+} = {}) {
   if (!replyId) return { status: 'skipped', error: 'missing_reply_id' };
 
   const existing = await getReply(replyId);
@@ -253,6 +257,34 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       clientTag,
     };
 
+    // Positive replies (call-ready, up to $5): find the right LinkedIn first
+    // with several fallbacks. A scored LinkedIn URL goes into the email and
+    // phone steps below (FullEnrich hit rates are much higher with it). A
+    // 'review' match is not used; the phone step then runs on name + domain.
+    if (hot && !linkedinUrl) {
+      try {
+        const li = await linkedinFinder({
+          leadName: claimed.lead_name,
+          email,
+          domain,
+          linkedinUrl: null,
+        });
+        receipt.linkedin = {
+          source: li.source, confidence: li.confidence, score: li.score, tried: li.tried,
+        };
+        if (li.linkedinUrl && li.confidence !== 'review') {
+          linkedinUrl = li.linkedinUrl;
+          input.linkedinUrl = linkedinUrl;
+          receipt.linkedinSource = li.source;
+        }
+        if (li.title) receipt.title = li.title;
+      } catch (err) {
+        receipt.linkedin = { error: String(err.message || err).slice(0, 120) };
+      }
+    } else if (hot && linkedinUrl) {
+      receipt.linkedin = { source: 'reply', confidence: 'high', score: 1 };
+    }
+
     if (!email) {
       const remaining = remainingCeiling(ceilingUsd, spentUsd);
       const emailCap = resolveEmailMaxTier({ remainingUsd: remaining });
@@ -309,50 +341,6 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       linkedinUrl = phoneStep.hit.linkedinUrl || linkedinUrl;
       website = phoneStep.hit.website || website;
       if (!email) email = phoneStep.hit.email || email;
-    }
-
-    // Positive replies: if the waterfall did not land a Veriphone mobile, run
-    // email-waterfall call-ready (FullEnrich first, then known phones, each
-    // Veriphone-checked) with whatever is left under the hot ceiling.
-    if (!phone && hot) {
-      const remaining = remainingCeiling(ceilingUsd, spentUsd);
-      if (remaining > 0.05) {
-        try {
-          const known = [claimed.lead_phone, cache.phone, phoneAlt]
-            .filter(Boolean)
-            .map((p) => ({ phone: p, source: 'reply' }));
-          const cr = await enrichCallReady({
-            clientTag,
-            leadName: claimed.lead_name,
-            email,
-            domain,
-            linkedinUrl,
-            knownPhones: known,
-            approveCostUsd: remaining,
-          });
-          const crSpent = spentFromHit(cr);
-          spentUsd += crSpent;
-          receipt.tiers.push({
-            need: 'call_ready',
-            spentUsd: crSpent,
-            hit: cr?.phone_source || null,
-            phoneType: cr?.phone_type || null,
-          });
-          if (cr?.phone && cr.phone_verified && cr.phone_type === 'mobile') {
-            phone = cr.phone;
-            phoneProvider = `call_ready:${cr.phone_source || 'unknown'}`;
-            receipt.phoneTier = phoneProvider;
-            receipt.phoneGate = null;
-          } else if (cr?.phone && cr.phone_verified && !phoneAlt) {
-            phoneAlt = cr.phone;
-          }
-          if (!linkedinUrl && cr?.linkedin_url && cr.linkedin_confidence !== 'review') {
-            linkedinUrl = cr.linkedin_url;
-          }
-        } catch (err) {
-          receipt.tiers.push({ need: 'call_ready', error: String(err.message || err).slice(0, 120) });
-        }
-      }
     }
 
     receipt.spentUsd = Number(spentUsd.toFixed(6));

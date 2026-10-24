@@ -510,7 +510,17 @@ async function completeCardLinks({
   // Is the PERSON replying a buyer per this client's ICP titles?
   try {
     const personas = await dmLib.loadClientPersonas(dbClient, clientId);
-    const dm = dmLib.judgeDecisionMaker(title, personas);
+    let dm = dmLib.judgeDecisionMaker(title || enrichment?.receipt?.title || null, personas);
+    // Not a rules "no" (sales rep / junior)? Let the AI decide against the
+    // client's buyer titles; fall back to the rules verdict on any error.
+    const floorNo = dm.status === 'no' && /sales role|not a buying role/.test(dm.reason || '');
+    if (dm.title && !floorNo && dm.status !== 'yes') {
+      try {
+        const { aiDecisionMaker } = require('./lead-verdict');
+        const ai = await aiDecisionMaker({ title: dm.title, companyName: card.leadCompany, personas });
+        if (ai.verdict !== 'unknown') dm = { status: ai.verdict, title: dm.title, reason: ai.reason || dm.reason };
+      } catch (err) { void err; }
+    }
     icp = { ...(icp || unknownVerdict('grade failed')), decision_maker: dm };
     await dmLib.persistDecisionMaker(dbClient, replyId, dm);
   } catch (err) {

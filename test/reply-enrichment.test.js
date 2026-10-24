@@ -439,29 +439,29 @@ test('enrichment logs do not print lead rows', () => {
   assert.doesNotMatch(job, /console\.log\([^\)]*linkedinUrl/);
 });
 
-test('INTERESTED with no waterfall mobile falls back to call-ready under the remaining $5', async () => {
-  const prev = process.env.EMAIL_WATERFALL_URL;
-  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
-  const dbMock = installDb(baseReply({ classification: 'INTERESTED' }));
-  const fetch = installFetch(async (body) => {
-    if (body.steps === 'phone,linkedin') {
-      return okHit({ phone: '+12015550199', phone_type: 'mobile', phone_verified: true, phone_source: 'fullenrich', cost_usd: 0.6 });
-    }
-    if (body.need === 'email') return okHit({ email: 'pat@roof.co', email_tier: 'getleads', spent_usd: 0 });
-    return okHit({ phone: '+12015550100', phone_tier: 'prospeo', phone_valid: true, phone_type: 'fixed_line', spent_usd: 0.15 });
-  });
-  try {
-    const result = await enrichPendingReplyPhone(REPLY_ID, {
-      identityLookup: async () => ({ email: null, phone: null, website: null, linkedinUrl: null, domain: null, sources: {} }),
+for (const [confidence, used] of [['medium', true], ['review', false]]) {
+  test(`INTERESTED: LinkedIn finder (${confidence}) ${used ? 'feeds' : 'does not feed'} the phone lookup`, async () => {
+    const prev = process.env.EMAIL_WATERFALL_URL;
+    process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+    const dbMock = installDb(baseReply({ classification: 'INTERESTED', linkedin_url: null }));
+    const fetch = installFetch(async (body) => {
+      if (body.need === 'email') return okHit({ email: 'pat@roof.co', email_tier: 'getleads', spent_usd: 0 });
+      return okHit({ phone: '+12015550100', phone_tier: 'fullenrich', phone_valid: true, phone_type: 'mobile', spent_usd: 0.55 });
     });
-    const cr = fetch.calls.find((c) => c.url.endsWith('/enrich-call-ready'));
-    assert.ok(cr, 'call-ready was called');
-    assert.ok(cr.body.approve_cost_usd <= 5 - 0.15 + 1e-9);
-    assert.equal(result.phone, '+12015550199');
-  } finally {
-    fetch.restore();
-    dbMock.restore();
-    if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
-    else process.env.EMAIL_WATERFALL_URL = prev;
-  }
-});
+    try {
+      await enrichPendingReplyPhone(REPLY_ID, {
+        identityLookup: async () => ({ email: null, phone: null, website: null, linkedinUrl: null, domain: null, sources: {} }),
+        linkedinFinder: async () => ({ linkedinUrl: 'https://www.linkedin.com/in/pat-x', confidence, score: used ? 0.8 : 0.4, source: 'serper', tried: ['serper'] }),
+      });
+      const phoneBody = fetch.calls.find((c) => c.body.need === 'phone').body;
+      assert.equal(phoneBody.linkedin_url, used ? 'https://www.linkedin.com/in/pat-x' : '');
+      assert.equal(phoneBody.max_tier, 'fullenrich');
+      assert.ok(phoneBody.approve_cost_usd <= 5 + 1e-9);
+    } finally {
+      fetch.restore();
+      dbMock.restore();
+      if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
+      else process.env.EMAIL_WATERFALL_URL = prev;
+    }
+  });
+}
