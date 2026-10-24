@@ -120,20 +120,20 @@ test('tier order is free-first then AI Ark, no LeadMagic', () => {
   assert.ok(!TIER_ORDER.includes('leadmagic'));
 });
 
-test('ceiling is $0.25 by default and $1.00 for interested / meeting-proposed', () => {
+test('ceiling is $0.25 by default and $5.00 for interested / meeting-proposed', () => {
   assert.equal(DEFAULT_CEILING_USD, 0.25);
-  assert.equal(HOT_CEILING_USD, 1);
+  assert.equal(HOT_CEILING_USD, 5);
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'QUESTION' }),
     { ceilingUsd: 0.25, hot: false },
   );
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'INTERESTED' }),
-    { ceilingUsd: 1, hot: true },
+    { ceilingUsd: 5, hot: true },
   );
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'MEETING_PROPOSED' }),
-    { ceilingUsd: 1, hot: true },
+    { ceilingUsd: 5, hot: true },
   );
   assert.equal(
     resolveReplyEnrichCeiling({
@@ -332,7 +332,7 @@ test('QUESTION phone walk stops at Prospeo and respects the $0.25 ceiling', asyn
   }
 });
 
-test('INTERESTED can request FullEnrich mobile under the $1 ceiling', async () => {
+test('INTERESTED can request FullEnrich mobile under the $5 ceiling', async () => {
   const prev = process.env.EMAIL_WATERFALL_URL;
   process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
   const dbMock = installDb(baseReply({ classification: 'INTERESTED' }));
@@ -354,13 +354,13 @@ test('INTERESTED can request FullEnrich mobile under the $1 ceiling', async () =
     });
     const phoneBody = fetch.calls.find((c) => c.body.need === 'phone').body;
     assert.equal(phoneBody.max_tier, 'fullenrich');
-    assert.ok(phoneBody.approve_cost_usd <= 1 + 1e-9);
+    assert.ok(phoneBody.approve_cost_usd <= 5 + 1e-9);
     assert.ok(phoneBody.approve_cost_usd >= 0.55);
     assert.equal(result.phone, '+12015550100');
     const persist = dbMock.calls.find((c) => /lead_email = COALESCE/.test(c.sql));
     const receipt = JSON.parse(persist.params[6]);
     assert.equal(receipt.hot, true);
-    assert.equal(receipt.ceilingUsd, 1);
+    assert.equal(receipt.ceilingUsd, 5);
   } finally {
     fetch.restore();
     dbMock.restore();
@@ -417,7 +417,7 @@ test('HeyReach webhook acks before the background enrich job and does not call L
 
 test('reply enrichment is idempotent, ceiling-capped, Veriphone-gated', () => {
   assert.equal(DEFAULT_CEILING_USD, 0.25);
-  assert.equal(HOT_CEILING_USD, 1);
+  assert.equal(HOT_CEILING_USD, 5);
   assert.equal(resolvePhoneMaxTier({ classification: 'QUESTION', remainingUsd: 1 }), 'prospeo');
   assert.equal(
     gateMobilePhone({ phone: '+12015550100', phone_valid: true, phone_type: 'landline' }).mobile,
@@ -437,4 +437,31 @@ test('enrichment logs do not print lead rows', () => {
   assert.doesNotMatch(job, /email:\s*leadEmail/);
   assert.doesNotMatch(job, /console\.log\([^\)]*lead_email/);
   assert.doesNotMatch(job, /console\.log\([^\)]*linkedinUrl/);
+});
+
+test('INTERESTED with no waterfall mobile falls back to call-ready under the remaining $5', async () => {
+  const prev = process.env.EMAIL_WATERFALL_URL;
+  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+  const dbMock = installDb(baseReply({ classification: 'INTERESTED' }));
+  const fetch = installFetch(async (body) => {
+    if (body.steps === 'phone,linkedin') {
+      return okHit({ phone: '+12015550199', phone_type: 'mobile', phone_verified: true, phone_source: 'fullenrich', cost_usd: 0.6 });
+    }
+    if (body.need === 'email') return okHit({ email: 'pat@roof.co', email_tier: 'getleads', spent_usd: 0 });
+    return okHit({ phone: '+12015550100', phone_tier: 'prospeo', phone_valid: true, phone_type: 'fixed_line', spent_usd: 0.15 });
+  });
+  try {
+    const result = await enrichPendingReplyPhone(REPLY_ID, {
+      identityLookup: async () => ({ email: null, phone: null, website: null, linkedinUrl: null, domain: null, sources: {} }),
+    });
+    const cr = fetch.calls.find((c) => c.url.endsWith('/enrich-call-ready'));
+    assert.ok(cr, 'call-ready was called');
+    assert.ok(cr.body.approve_cost_usd <= 5 - 0.15 + 1e-9);
+    assert.equal(result.phone, '+12015550199');
+  } finally {
+    fetch.restore();
+    dbMock.restore();
+    if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
+    else process.env.EMAIL_WATERFALL_URL = prev;
+  }
 });
