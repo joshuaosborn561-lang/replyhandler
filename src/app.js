@@ -10,7 +10,6 @@ const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const voiceLearningRoutes = require('./routes/voice-learning');
 const publicBookingCatalogRoutes = require('./routes/public-booking-catalog');
-const leadVerdictRoutes = require('./routes/lead-verdict');
 
 function createApp() {
   const app = express();
@@ -51,7 +50,6 @@ function createApp() {
   app.use(authRoutes);
   app.use(testWebhookRoutes);
   app.use(voiceLearningRoutes);
-  app.use(leadVerdictRoutes);
 
   return app;
 }

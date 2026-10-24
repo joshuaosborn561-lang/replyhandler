@@ -211,40 +211,6 @@ async function enrichProspect({
   });
 }
 
-/**
- * Positive-reply call-ready lookup (email-waterfall /enrich-call-ready).
- * Phone + LinkedIn only; the card already runs ICP / DM here. Hard $5 cap.
- */
-async function enrichCallReady({
-  clientTag, leadName, email, domain, linkedinUrl, knownPhones = [], approveCostUsd,
-} = {}) {
-  const base = waterfallBaseUrl();
-  if (!base) return null;
-  const { firstName, lastName } = splitLeadName(leadName);
-  const workEmail = String(email || '').trim().toLowerCase();
-  const cap = Math.min(5, Math.max(0, Number(approveCostUsd) || 0));
-  const res = await fetch(`${base}/enrich-call-ready`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      client_tag: clientTagFor(clientTag),
-      first_name: firstName,
-      last_name: lastName,
-      full_name: String(leadName || '').trim(),
-      email: workEmail,
-      domain: String(domain || '').trim() || domainFromEmail(workEmail) || '',
-      linkedin_url: String(linkedinUrl || '').trim(),
-      known_phones: knownPhones,
-      approve_cost_usd: cap,
-      steps: 'phone,linkedin',
-    }),
-    signal: AbortSignal.timeout(ENRICH_TIMEOUT_MS),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`email-waterfall call-ready ${res.status}`);
-  try { return JSON.parse(text); } catch { return null; }
-}
-
 /** @deprecated use enrichProspect — kept for older callers */
 async function enrichCellPhone(input) {
   const r = await enrichProspect({ ...input, need: 'phone', verifyPhone: true });
@@ -254,7 +220,6 @@ async function enrichCellPhone(input) {
 module.exports = {
   enrichProspect,
   enrichCellPhone,
-  enrichCallReady,
   domainFromEmail,
   asWebsite,
   websiteFrom,
