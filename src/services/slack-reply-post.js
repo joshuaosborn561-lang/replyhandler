@@ -1,4 +1,5 @@
 const { extractLeadPhone } = require('../utils/lead-phone');
+const { pingCaller } = require('./speed-to-lead');
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
@@ -575,6 +576,14 @@ async function completeCardLinks({
     || extra.phoneEnrichmentStatus === 'failed'
     || !icpVerdictEquals(payload.leadIcpVerdict, icp);
 
+  if (extra.phone && !beforePhone) {
+    await pingCaller({
+      slackApi, token, channelId, threadTs: payload.threadTs || postedTs, replyId,
+      classification: classification || card?.classification,
+      leadName: payload.leadName, phone: extra.phone, late: true,
+    });
+  }
+
   if (changed) {
     try {
       await updatePostedCard(slackApi, {
@@ -719,6 +728,10 @@ async function postProspectSlackCard({
 
     postedTs = result.ts;
     rememberCard(replyId, { ...payload, replyId });
+    await pingCaller({
+      slackApi, token, channelId, threadTs: threadTs || result.ts, replyId,
+      classification: card?.classification, leadName: payload.leadName, phone: payload.leadPhone,
+    });
     if (replyId) {
       await dbClient.query(
         'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
