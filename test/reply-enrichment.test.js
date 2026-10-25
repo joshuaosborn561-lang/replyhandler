@@ -120,20 +120,20 @@ test('tier order is free-first then AI Ark, no LeadMagic', () => {
   assert.ok(!TIER_ORDER.includes('leadmagic'));
 });
 
-test('ceiling is $0.25 by default and $1.00 for interested / meeting-proposed', () => {
+test('ceiling is $0.25 by default and $5.00 for interested / meeting-proposed', () => {
   assert.equal(DEFAULT_CEILING_USD, 0.25);
-  assert.equal(HOT_CEILING_USD, 1);
+  assert.equal(HOT_CEILING_USD, 5);
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'QUESTION' }),
     { ceilingUsd: 0.25, hot: false },
   );
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'INTERESTED' }),
-    { ceilingUsd: 1, hot: true },
+    { ceilingUsd: 5, hot: true },
   );
   assert.deepEqual(
     resolveReplyEnrichCeiling({ classification: 'MEETING_PROPOSED' }),
-    { ceilingUsd: 1, hot: true },
+    { ceilingUsd: 5, hot: true },
   );
   assert.equal(
     resolveReplyEnrichCeiling({
@@ -332,7 +332,7 @@ test('QUESTION phone walk stops at Prospeo and respects the $0.25 ceiling', asyn
   }
 });
 
-test('INTERESTED can request FullEnrich mobile under the $1 ceiling', async () => {
+test('INTERESTED can request FullEnrich mobile under the $5 ceiling', async () => {
   const prev = process.env.EMAIL_WATERFALL_URL;
   process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
   const dbMock = installDb(baseReply({ classification: 'INTERESTED' }));
@@ -354,13 +354,13 @@ test('INTERESTED can request FullEnrich mobile under the $1 ceiling', async () =
     });
     const phoneBody = fetch.calls.find((c) => c.body.need === 'phone').body;
     assert.equal(phoneBody.max_tier, 'fullenrich');
-    assert.ok(phoneBody.approve_cost_usd <= 1 + 1e-9);
+    assert.ok(phoneBody.approve_cost_usd <= 5 + 1e-9);
     assert.ok(phoneBody.approve_cost_usd >= 0.55);
     assert.equal(result.phone, '+12015550100');
     const persist = dbMock.calls.find((c) => /lead_email = COALESCE/.test(c.sql));
     const receipt = JSON.parse(persist.params[6]);
     assert.equal(receipt.hot, true);
-    assert.equal(receipt.ceilingUsd, 1);
+    assert.equal(receipt.ceilingUsd, 5);
   } finally {
     fetch.restore();
     dbMock.restore();
@@ -417,7 +417,7 @@ test('HeyReach webhook acks before the background enrich job and does not call L
 
 test('reply enrichment is idempotent, ceiling-capped, Veriphone-gated', () => {
   assert.equal(DEFAULT_CEILING_USD, 0.25);
-  assert.equal(HOT_CEILING_USD, 1);
+  assert.equal(HOT_CEILING_USD, 5);
   assert.equal(resolvePhoneMaxTier({ classification: 'QUESTION', remainingUsd: 1 }), 'prospeo');
   assert.equal(
     gateMobilePhone({ phone: '+12015550100', phone_valid: true, phone_type: 'landline' }).mobile,
@@ -438,3 +438,30 @@ test('enrichment logs do not print lead rows', () => {
   assert.doesNotMatch(job, /console\.log\([^\)]*lead_email/);
   assert.doesNotMatch(job, /console\.log\([^\)]*linkedinUrl/);
 });
+
+for (const [confidence, used] of [['medium', true], ['review', false]]) {
+  test(`INTERESTED: LinkedIn finder (${confidence}) ${used ? 'feeds' : 'does not feed'} the phone lookup`, async () => {
+    const prev = process.env.EMAIL_WATERFALL_URL;
+    process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+    const dbMock = installDb(baseReply({ classification: 'INTERESTED', linkedin_url: null }));
+    const fetch = installFetch(async (body) => {
+      if (body.need === 'email') return okHit({ email: 'pat@roof.co', email_tier: 'getleads', spent_usd: 0 });
+      return okHit({ phone: '+12015550100', phone_tier: 'fullenrich', phone_valid: true, phone_type: 'mobile', spent_usd: 0.55 });
+    });
+    try {
+      await enrichPendingReplyPhone(REPLY_ID, {
+        identityLookup: async () => ({ email: null, phone: null, website: null, linkedinUrl: null, domain: null, sources: {} }),
+        linkedinFinder: async () => ({ linkedinUrl: 'https://www.linkedin.com/in/pat-x', confidence, score: used ? 0.8 : 0.4, source: 'serper', tried: ['serper'] }),
+      });
+      const phoneBody = fetch.calls.find((c) => c.body.need === 'phone').body;
+      assert.equal(phoneBody.linkedin_url, used ? 'https://www.linkedin.com/in/pat-x' : '');
+      assert.equal(phoneBody.max_tier, 'fullenrich');
+      assert.ok(phoneBody.approve_cost_usd <= 5 + 1e-9);
+    } finally {
+      fetch.restore();
+      dbMock.restore();
+      if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
+      else process.env.EMAIL_WATERFALL_URL = prev;
+    }
+  });
+}

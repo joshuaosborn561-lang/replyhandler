@@ -15,6 +15,7 @@
 
 const db = require('../db');
 const { enrichProspect, clientTagFor } = require('./prospect-enrich');
+const { findLinkedin } = require('./linkedin-finder');
 const { lookupReplyIdentity } = require('./reply-contact-cache');
 const { applyClientDraftPolicy, draftSkipReason } = require('../utils/client-draft-policy');
 const {
@@ -149,7 +150,10 @@ async function runWaterfallStep({
  * Claims one pending row so duplicate webhook/poller paths do not spend twice.
  * Completed `not_found` rows are not retried automatically.
  */
-async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyIdentity } = {}) {
+async function enrichPendingReplyPhone(replyId, {
+  identityLookup = lookupReplyIdentity,
+  linkedinFinder = findLinkedin,
+} = {}) {
   if (!replyId) return { status: 'skipped', error: 'missing_reply_id' };
 
   const existing = await getReply(replyId);
@@ -252,6 +256,34 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       domain,
       clientTag,
     };
+
+    // Positive replies (call-ready, up to $5): find the right LinkedIn first
+    // with several fallbacks. A scored LinkedIn URL goes into the email and
+    // phone steps below (FullEnrich hit rates are much higher with it). A
+    // 'review' match is not used; the phone step then runs on name + domain.
+    if (hot && !linkedinUrl) {
+      try {
+        const li = await linkedinFinder({
+          leadName: claimed.lead_name,
+          email,
+          domain,
+          linkedinUrl: null,
+        });
+        receipt.linkedin = {
+          source: li.source, confidence: li.confidence, score: li.score, tried: li.tried,
+        };
+        if (li.linkedinUrl && li.confidence !== 'review') {
+          linkedinUrl = li.linkedinUrl;
+          input.linkedinUrl = linkedinUrl;
+          receipt.linkedinSource = li.source;
+        }
+        if (li.title) receipt.title = li.title;
+      } catch (err) {
+        receipt.linkedin = { error: String(err.message || err).slice(0, 120) };
+      }
+    } else if (hot && linkedinUrl) {
+      receipt.linkedin = { source: 'reply', confidence: 'high', score: 1 };
+    }
 
     if (!email) {
       const remaining = remainingCeiling(ceilingUsd, spentUsd);
