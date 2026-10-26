@@ -3,6 +3,10 @@ name: CI
 # The invariant guards in test/ encode rules that have each broken production.
 # They run on every push and pull request so a change that violates one fails
 # here rather than in a client's Slack channel.
+#
+# test/inbound-canon.test.js enforces docs/INBOUND_CANON.md: full text on every
+# card, one email = one card = at most one send, and a genuinely new reply is
+# never dropped. A failure here blocks merge.
 
 on:
   push:

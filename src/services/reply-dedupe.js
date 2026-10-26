@@ -5,12 +5,12 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
 const {
   decodeHtmlEntities,
   foldDashAndQuotes,
-  decodeInboundForStorage,
   DASH_CODEPOINTS,
   SINGLE_QUOTE_CODEPOINTS,
   DOUBLE_QUOTE_CODEPOINTS,
   NAMED_HTML_ENTITIES,
 } = require('../utils/html-entities');
+const { canonicalInboundMessageId } = require('../utils/inbound-message-id');
 
 /**
  * Strip embedded signature images / data-URIs before dedupe.
@@ -34,12 +34,49 @@ function stripEmbeddedBinaries(text) {
  * If SQL keeps the NBSP and JS turns it into a normal space, dedupe never
  * matches and the poller re-posts the same card every cycle.
  */
-function normalizeInboundText(text) {
-  return foldDashAndQuotes(decodeHtmlEntities(stripEmbeddedBinaries(text)))
+/**
+ * Quote markers and SmartLead bracket expansions that differ between the
+ * HTML reply webhook and the plain-text category webhook / poller.
+ * Henry Witt, Oct 26 2026: the two bodies diverged at character 97
+ * (`> ` on the signature and `[mwitt@hmwitt.com]`), inside the 120-char prefix.
+ */
+function stripInboundRenderArtifacts(text) {
+  return String(text || '')
+    .replace(/<mailto:[^>]*>/gi, ' ')
+    .replace(/\[(?:link|email)\]/gi, ' ')
+    .replace(/\[[^\]\s]*@[^\]\s]*\]/gi, ' ')
+    .replace(/^[ \t]*>+[ \t]?/gm, '')
+    .replace(/[ \t]+>[ \t]+/g, ' ');
+}
+
+/**
+ * One normalizer for storage, dedupe, and preferFullerInbound.
+ *
+ * `forStorage` keeps case, newlines, and the decoded dash so the card still
+ * reads naturally. Comparison folds dashes and quotes, strips the same
+ * artifacts, and collapses whitespace. Both modes share this function, so
+ * the card, the stored row, and the dedupe key cannot drift apart again.
+ */
+function normalizeInboundText(text, opts = {}) {
+  const decoded = decodeHtmlEntities(stripEmbeddedBinaries(text));
+  const stripped = stripInboundRenderArtifacts(decoded);
+  if (opts && opts.forStorage) {
+    return stripped
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+  return foldDashAndQuotes(stripped)
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+/** What we persist. Decoded and artifact-stripped. Dashes stay as typed. */
+function decodeInboundForStorage(text) {
+  return normalizeInboundText(text, { forStorage: true });
 }
 
 /**
@@ -160,9 +197,22 @@ function applyEntityFoldSql(expr) {
   return sql;
 }
 
+/**
+ * Same artifact strip as stripInboundRenderArtifacts, after entity decode
+ * so `&gt;` has already become `>`.
+ */
+function applyArtifactStripSql(expr) {
+  let sql = expr;
+  sql = `regexp_replace(${sql}, '<mailto:[^>]*>', ' ', 'gi')`;
+  sql = `regexp_replace(${sql}, '\\[(link|email)\\]', ' ', 'gi')`;
+  sql = `regexp_replace(${sql}, '\\[[^]]*@[^]]*\\]', ' ', 'gi')`;
+  sql = `regexp_replace(${sql}, '(^|[[:space:]])>+[[:space:]]*', '\\1', 'g')`;
+  return sql;
+}
+
 const STORED_NORM_SQL = (
   `lower(trim(both from regexp_replace(` +
-  `${stripUnicodeSpacesSql(applyEntityFoldSql(STORED_STRIP_BINARIES_SQL))}, ` +
+  `${stripUnicodeSpacesSql(applyArtifactStripSql(applyEntityFoldSql(STORED_STRIP_BINARIES_SQL)))}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
@@ -221,32 +271,68 @@ function samePersonSql(leadIdParam, leadEmailParam) {
  * during that window and we double-carded / double-sent (Casey Buckstaff,
  * 2026-10-05 — webhook card + "polling backstop" card 2 seconds later).
  */
+const INBOUND_ROW_COLUMNS = `id, status, inbound_message, inbound_message_id, classification, slack_message_ts`;
+
+/**
+ * Text match is the fallback. A stored row that already has a different
+ * Message-ID is a different email, even when the words are identical
+ * ("Thanks" twice). A row with no id still matches on text, so a poller
+ * that missed the header cannot double-card.
+ */
+function messageIdAllowsTextSql(param) {
+  return `(
+    ${param}::text = ''
+    OR COALESCE(inbound_message_id, '') = ''
+    OR lower(inbound_message_id) = ${param}
+  )`;
+}
+
 async function inboundAlreadyRecorded(queryable, {
   clientId,
   platform,
   leadId,
   leadEmail,
   inboundMessage,
+  messageId,
 }) {
   const q = queryable && typeof queryable.query === 'function' ? queryable : db;
-  const normalized = inboundPrefix(inboundMessage);
-  const fullNorm = normalizeInboundText(inboundMessage);
-  if (!normalized) return null;
   const lid = leadId != null ? String(leadId) : '';
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
   if (!lid && !email) return null;
+  const mid = canonicalInboundMessageId(messageId);
+
+  if (mid) {
+    const byId = await q.query(
+      `SELECT ${INBOUND_ROW_COLUMNS}
+         FROM pending_replies
+        WHERE /* inbound-message-id-match */ client_id = $1
+          AND platform = $2
+          AND COALESCE(classification, '') <> 'FOLLOW_UP'
+          AND lower(COALESCE(inbound_message_id, '')) = $3
+          AND ${samePersonSql('$4', '$5')}
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [clientId, platform, mid, lid, email]
+    );
+    if (byId.rows[0]) return byId.rows[0];
+  }
+
+  const normalized = inboundPrefix(inboundMessage);
+  const fullNorm = normalizeInboundText(inboundMessage);
+  if (!normalized) return null;
 
   const { rows } = await q.query(
-    `SELECT id, status
+    `SELECT ${INBOUND_ROW_COLUMNS}
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND ${messageIdAllowsTextSql('$7')}
         AND ${sameReplySql('$3', '$4')}
         AND ${samePersonSql('$5', '$6')}
       ORDER BY created_at DESC
       LIMIT 1`,
-    [clientId, platform, normalized, fullNorm, lid, email]
+    [clientId, platform, normalized, fullNorm, lid, email, mid]
   );
   return rows[0] || null;
 }
@@ -259,14 +345,15 @@ async function alreadyPostedToSlack({
   leadEmail,
   inboundMessage,
   emailStatsId,
+  messageId,
 }) {
-  // Text only. A SmartLead stats id is the latest SENT message and is shared
-  // by later, different replies. Matching on it drops a real response.
+  // Text, or Message-ID. A SmartLead stats id is the latest SENT message and
+  // is shared by later, different replies. Matching on it drops a real response.
   // emailStatsId and campaignId stay in the signature for callers.
   void emailStatsId;
   void campaignId;
   const row = await inboundAlreadyRecorded(db, {
-    clientId, platform, leadId, leadEmail, inboundMessage,
+    clientId, platform, leadId, leadEmail, inboundMessage, messageId,
   });
   return Boolean(row);
 }
@@ -286,15 +373,54 @@ function personLockKeys({ clientId, platform, leadId, leadEmail }) {
   return keys;
 }
 
+function sameNormalizedInbound(a, b) {
+  if (!a || !b) return false;
+  if (a.slice(0, PREFIX_LEN) === b.slice(0, PREFIX_LEN)) return true;
+  return a.length >= MIN_CONTAINMENT_LEN
+    && b.length >= MIN_CONTAINMENT_LEN
+    && (a.startsWith(b) || b.startsWith(a));
+}
+
+/**
+ * The duplicate copy is the same email and strictly longer once both sides
+ * have been through normalizeInboundText. Upgrade the stored body. Do not
+ * post again.
+ */
+async function upgradeFullerInbound(conn, existing, inboundMessage, messageId) {
+  if (!existing?.id) return existing;
+  const incoming = decodeInboundForStorage(inboundMessage);
+  const mid = canonicalInboundMessageId(messageId);
+  const storedNorm = normalizeInboundText(existing.inbound_message);
+  const incomingNorm = normalizeInboundText(incoming);
+  const fuller = Boolean(incoming)
+    && incomingNorm.length > storedNorm.length
+    && sameNormalizedInbound(storedNorm, incomingNorm);
+  const backfillId = Boolean(mid) && !canonicalInboundMessageId(existing.inbound_message_id);
+  if (!fuller && !backfillId) return existing;
+  const nextText = fuller ? incoming : existing.inbound_message;
+  const { rows } = await conn.query(
+    `UPDATE pending_replies
+        SET inbound_message = $1,
+            inbound_message_id = COALESCE(NULLIF(inbound_message_id, ''), $2),
+            updated_at = now()
+      WHERE /* fuller-inbound */ id = $3
+      RETURNING *`,
+    [nextText, mid || null, existing.id]
+  );
+  return rows[0] || existing;
+}
+
 async function claimNewInbound({
   clientId,
   platform,
   leadId,
   leadEmail,
   inboundMessage,
-}, insertFn) {
+  messageId,
+}, insertFn, dbOverride) {
   const lockKeys = personLockKeys({ clientId, platform, leadId, leadEmail });
-  const conn = await db.connect();
+  const database = dbOverride || db;
+  const conn = await database.connect();
   try {
     await conn.query('BEGIN');
     for (const key of lockKeys) {
@@ -303,12 +429,14 @@ async function claimNewInbound({
         [key, 'inbound-claim']
       );
     }
+    // Message-ID first, inside the lock, before any text comparison.
     const existing = await inboundAlreadyRecorded(conn, {
-      clientId, platform, leadId, leadEmail, inboundMessage,
+      clientId, platform, leadId, leadEmail, inboundMessage, messageId,
     });
     if (existing) {
+      const upgraded = await upgradeFullerInbound(conn, existing, inboundMessage, messageId);
       await conn.query('COMMIT');
-      return { duplicate: true, existing };
+      return { duplicate: true, existing: upgraded };
     }
     const reply = await insertFn(conn);
     await conn.query('COMMIT');
@@ -390,13 +518,25 @@ function outboundSendBlockedReason({ candidate, existing, now = Date.now() } = {
     if (Number.isFinite(age) && age > STALE_SENDING_MS) return null;
   }
 
+  const candClass = String(candidate.classification || '').toUpperCase();
+  const existClass = String(existing.classification || '').toUpperCase();
+  const candMid = canonicalInboundMessageId(candidate.inboundMessageId);
+  const existMid = canonicalInboundMessageId(existing.inboundMessageId);
+  if (candClass !== 'FOLLOW_UP' && existClass !== 'FOLLOW_UP') {
+    if (candMid && existMid && candMid === existMid) return 'same_inbound';
+    const idsDiffer = Boolean(candMid && existMid && candMid !== existMid);
+    if (!idsDiffer && candidate.inboundMessage && existing.inboundMessage) {
+      const a = normalizeInboundText(candidate.inboundMessage);
+      const b = normalizeInboundText(existing.inboundMessage);
+      if (sameNormalizedInbound(a, b)) return 'same_inbound';
+    }
+  }
+
   const otherText = String(existing.sentReply || existing.draftReply || '');
   if (otherText && candidate.replyText && sameOutboundText(otherText, candidate.replyText)) {
     return 'same_text';
   }
 
-  const candClass = String(candidate.classification || '').toUpperCase();
-  const existClass = String(existing.classification || '').toUpperCase();
   if (candClass !== 'FOLLOW_UP' || existClass !== 'FOLLOW_UP') return null;
 
   if (
@@ -442,7 +582,8 @@ async function findBlockingOutbound(conn, reply, replyText) {
   if (!lid && !email) return null;
   const { rows } = await conn.query(
     `SELECT id, status, classification, draft_reply, sent_reply,
-            follow_up_step, follow_up_source_id, follow_up_id, updated_at
+            follow_up_step, follow_up_source_id, follow_up_id, updated_at,
+            inbound_message, inbound_message_id
        FROM pending_replies
       WHERE client_id = $1
         AND platform = $2
@@ -462,6 +603,8 @@ async function findBlockingOutbound(conn, reply, replyText) {
         sourcePendingReplyId: reply.follow_up_source_id,
         followUpId: reply.follow_up_id,
         replyText,
+        inboundMessage: reply.inbound_message,
+        inboundMessageId: reply.inbound_message_id,
       },
       existing: {
         status: row.status,
@@ -472,6 +615,8 @@ async function findBlockingOutbound(conn, reply, replyText) {
         sentReply: row.sent_reply,
         draftReply: row.draft_reply,
         updatedAt: row.updated_at,
+        inboundMessage: row.inbound_message,
+        inboundMessageId: row.inbound_message_id,
       },
     });
     if (reason) return { id: row.id, reason };
@@ -488,9 +633,10 @@ async function findBlockingOutbound(conn, reply, replyText) {
  * caller see the first one in flight. A same-step follow-up blocks even when
  * the draft was reworded.
  */
-async function claimOutboundSend({ replyId, replyText }) {
+async function claimOutboundSend({ replyId, replyText }, dbOverride) {
   if (!replyId) return { ok: true };
-  const conn = await db.connect();
+  const database = dbOverride || db;
+  const conn = await database.connect();
   try {
     await conn.query('BEGIN');
     const { rows: [pre] } = await conn.query(
@@ -583,12 +729,14 @@ async function siblingHasSlackCard({
   leadEmail,
   inboundMessage,
   exceptReplyId,
+  messageId,
 }) {
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
   const lid = leadId != null ? String(leadId) : '';
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
-  if (!normalized) return null;
+  const mid = canonicalInboundMessageId(messageId);
+  if (!normalized && !mid) return null;
   if (!lid && !email) return null;
 
   const { rows } = await db.query(
@@ -599,11 +747,17 @@ async function siblingHasSlackCard({
         AND id <> $3
         AND slack_message_ts IS NOT NULL
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
-        AND ${sameReplySql('$4', '$5')}
         AND ${samePersonSql('$6', '$7')}
+        AND (
+          ($8::text <> '' AND lower(COALESCE(inbound_message_id, '')) = $8)
+          OR (
+            ${messageIdAllowsTextSql('$8')}
+            AND ${sameReplySql('$4', '$5')}
+          )
+        )
       ORDER BY created_at ASC
       LIMIT 1`,
-    [clientId, platform, exceptReplyId, normalized, fullNorm, lid, email]
+    [clientId, platform, exceptReplyId, normalized, fullNorm, lid, email, mid]
   );
   return rows[0] || null;
 }
@@ -621,7 +775,7 @@ async function claimSlackCard({
   const token = slackClaimToken(replyId);
 
   const { rows: [row] } = await db.query(
-    'SELECT slack_message_ts FROM pending_replies WHERE id = $1',
+    'SELECT slack_message_ts, inbound_message_id, inbound_message FROM pending_replies WHERE id = $1',
     [replyId]
   );
   if (!row) return { claimed: false, reason: 'missing_row' };
@@ -637,7 +791,13 @@ async function claimSlackCard({
 
   if (String(classification || '').toUpperCase() !== 'FOLLOW_UP') {
     const sibling = await siblingHasSlackCard({
-      clientId, platform, leadId, leadEmail, inboundMessage, exceptReplyId: replyId,
+      clientId,
+      platform,
+      leadId,
+      leadEmail,
+      inboundMessage: inboundMessage || row.inbound_message,
+      exceptReplyId: replyId,
+      messageId: row.inbound_message_id,
     });
     if (sibling) {
       return { claimed: false, reason: 'sibling_posted' };
@@ -682,12 +842,14 @@ async function findUnpostedReply({
   leadEmail,
   inboundMessage,
   emailStatsId,
+  messageId,
 }) {
   void emailStatsId;
   void campaignId;
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
-  if (!normalized) return null;
+  const mid = canonicalInboundMessageId(messageId);
+  if (!normalized && !mid) return null;
 
   // Skip rows created in the last ~2 minutes so the poller does not post a
   // placeholder card ahead of the webhook (persist-then-200, then async
@@ -708,7 +870,13 @@ async function findUnpostedReply({
         AND status IN ('pending', 'alert_only')
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
         AND created_at < now() - interval '2 minutes'
-        AND ${sameReplySql('$3', '$5')}
+        AND (
+          ($7::text <> '' AND lower(COALESCE(inbound_message_id, '')) = $7)
+          OR (
+            ${messageIdAllowsTextSql('$7')}
+            AND ${sameReplySql('$3', '$5')}
+          )
+        )
         AND (
           $4::text = ''
           OR COALESCE(lead_id, '') = $4
@@ -723,6 +891,7 @@ async function findUnpostedReply({
       leadId != null ? String(leadId) : '',
       fullNorm,
       leadEmail ? String(leadEmail).trim().toLowerCase() : '',
+      mid,
     ]
   );
   return rows[0] || null;
@@ -881,14 +1050,18 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
 }
 
 module.exports = {
+  PREFIX_LEN,
   inboundPrefix,
   normalizeInboundText,
   decodeInboundForStorage,
+  stripInboundRenderArtifacts,
   stripEmbeddedBinaries,
+  canonicalInboundMessageId,
   sameReplySql,
   samePersonSql,
   DASH_CODEPOINTS,
   sameOutboundText,
+  sameNormalizedInbound,
   MIN_CONTAINMENT_LEN,
   STORED_PREFIX_SQL,
   STORED_NORM_SQL,
@@ -896,6 +1069,7 @@ module.exports = {
   inboundAlreadyRecorded,
   alreadyPostedToSlack,
   claimNewInbound,
+  upgradeFullerInbound,
   claimSlackCard,
   releaseSlackCardClaim,
   alreadySentSameOutbound,

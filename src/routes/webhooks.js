@@ -43,6 +43,11 @@ const {
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('../services/inbound-forward');
+const {
+  acceptInboundDelivery,
+  isLeadCategoryEvent,
+  describeSmartleadInbound,
+} = require('../services/smartlead-inbound');
 const { isColdInbound } = require('../services/heyreach-poller');
 const { buildReplyAll, looksLikeReferral } = require('../utils/reply-all');
 
@@ -353,7 +358,7 @@ async function heyreachDuplicateInDb({ clientId, campaignId, leadId, conversatio
  * (2026-08-03, Doug Baden/Parlay Tech). Same text is a duplicate. Different
  * text always shows, even when that means a second card.
  */
-async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail }) {
+async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMessage, leadEmail, messageId }) {
   void campaignId;
   return Boolean(await inboundAlreadyRecorded(db, {
     clientId,
@@ -361,6 +366,7 @@ async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMes
     leadId,
     leadEmail,
     inboundMessage,
+    messageId,
   }));
 }
 
@@ -463,51 +469,55 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     // and the stripper would eat it.
     inboundForPersist = decodeInboundForStorage(inboundForPersist);
     const earlyStatsId = payload.stats_id || payload.statsId || null;
+    const slEarly = classifyFromSmartlead(payload);
+    void slEarly;
 
-    if (resolvedCampaignId && leadId && inboundForPersist) {
-      if (await smartleadDuplicateInDb({
+    const accepted = await acceptInboundDelivery({
+      clientId,
+      payload,
+      inboundMessage: inboundForPersist,
+      leadId,
+      leadEmail,
+      leadName,
+      campaignId: resolvedCampaignId,
+      campaignName: smartleadCampaignName(payload) || null,
+      statsId: earlyStatsId,
+      patchCard: async (row) => {
+        const { patchPostedCard, latestCard } = require('../services/slack-reply-post');
+        if (!latestCard(row.id) || !client.slack_bot_token || !client.slack_channel_id) return;
+        await patchPostedCard({
+          token: client.slack_bot_token,
+          channelId: client.slack_channel_id,
+          ts: row.slack_message_ts,
+          replyId: row.id,
+          isDraft: true,
+          patch: {
+            classification: row.classification,
+            inboundMessage: row.inbound_message,
+            leadName: row.lead_name,
+            leadEmail: row.lead_email,
+            platform: 'smartlead',
+            replyId: row.id,
+          },
+        });
+      },
+    });
+    if (accepted.duplicate) {
+      console.log('[Webhook] SmartLead duplicate suppressed (db)', {
         clientId,
         campaignId: resolvedCampaignId,
         leadId,
-        leadEmail,
-        inboundMessage: inboundForPersist,
-      })) {
-        console.log('[Webhook] SmartLead duplicate suppressed (db)', { clientId, campaignId: resolvedCampaignId, leadId });
-        return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
-      }
-    }
-
-    const slEarly = classifyFromSmartlead(payload);
-    const placeholderClass = slEarly?.classification || 'OTHER';
-    let replyRow = null;
-    if (resolvedCampaignId && leadId && inboundForPersist) {
-      const claimed = await claimNewInbound({
-        clientId,
-        platform: 'smartlead',
-        leadId,
-        leadEmail,
-        inboundMessage: inboundForPersist,
-      }, async (conn) => {
-        const { rows: [inserted] } = await conn.query(
-          `INSERT INTO pending_replies
-            (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-          [
-            clientId, 'smartlead', resolvedCampaignId, smartleadCampaignName(payload) || null,
-            leadId, leadName, leadEmail, inboundForPersist, JSON.stringify([]),
-            placeholderClass, '', 'pending', earlyStatsId,
-          ]
-        );
-        return inserted;
+        existingId: accepted.existing?.id,
+        category: isLeadCategoryEvent(payload),
       });
-      if (claimed.duplicate) {
-        console.log('[Webhook] SmartLead duplicate suppressed (insert race)', {
-          clientId, leadId, existingId: claimed.existing?.id,
-        });
-        return res.status(200).json({ ok: true, skipped: true, reason: 'duplicate_db' });
-      }
-      replyRow = claimed.reply;
+      return res.status(200).json({
+        ok: true,
+        skipped: true,
+        reason: 'duplicate_db',
+        replyId: accepted.existing?.id || null,
+      });
     }
+    let replyRow = accepted.reply || null;
 
     res.status(200).json({ ok: true, accepted: true, replyId: replyRow?.id || null });
 
@@ -675,6 +685,15 @@ async function processSmartleadWebhookAsync({
   }
 
   inboundEffective = decodeInboundForStorage(inboundEffective);
+  const inboundDescribed = describeSmartleadInbound(payload);
+  let inboundMessageId = inboundDescribed.messageId || '';
+  if (threadContext && typeof threadContext === 'object') {
+    const { latestInboundReplyMeta } = require('../utils/smartlead-webhook-helpers');
+    const meta = latestInboundReplyMeta(threadContext, leadEmail);
+    if (meta.messageId) inboundMessageId = inboundMessageId || meta.messageId;
+    if (meta.body) inboundEffective = preferFullerInbound(inboundEffective, meta.body);
+    inboundEffective = decodeInboundForStorage(inboundEffective);
+  }
 
   if (!inboundEffective) {
     console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId });
@@ -696,16 +715,6 @@ async function processSmartleadWebhookAsync({
     ? replyAll.senderFirstName
     : senderName;
 
-  await maybeForwardInboundReply({
-    campaignId: resolvedCampaignId,
-    campaignName: resolvedCampaignName,
-    leadId: resolvedLeadId,
-    leadEmail,
-    leadName: senderName,
-    inboundMessage: inboundEffective,
-    threadContext,
-  });
-
   const campaignDisplaySl =
     formatCampaignDisplay(resolvedCampaignName, resolvedCampaignId) || 'Campaign (unknown)';
   const lastOutboundSl =
@@ -720,6 +729,7 @@ async function processSmartleadWebhookAsync({
     leadId: resolvedLeadId,
     leadEmail,
     inboundMessage: inboundEffective,
+    messageId: inboundMessageId,
   })) {
     console.log('[Webhook] SmartLead duplicate suppressed (db, async)', { clientId, campaignId: resolvedCampaignId });
     return;
@@ -812,15 +822,17 @@ async function processSmartleadWebhookAsync({
       leadId: resolvedLeadId,
       leadEmail,
       inboundMessage: inboundEffective,
+      messageId: inboundMessageId,
     }, async (conn) => {
       const { rows: [inserted] } = await conn.query(
         `INSERT INTO pending_replies
-          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id, inbound_message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
         [
           clientId, 'smartlead', resolvedCampaignId, resolvedCampaignName || null,
           resolvedLeadId, senderName, leadEmail, inboundEffective, JSON.stringify(threadContext),
           classification, '', suppressedReason ? 'suppressed' : 'pending', statsId,
+          inboundMessageId || null,
         ]
       );
       return inserted;
@@ -833,20 +845,45 @@ async function processSmartleadWebhookAsync({
     }
     replyRow = claimed.reply;
   } else {
+    const { rows: [fresh] } = await db.query(
+      'SELECT classification FROM pending_replies WHERE id = $1',
+      [replyRow.id]
+    );
+    if (
+      fresh
+      && fresh.classification
+      && fresh.classification !== classification
+      && !classifyFromSmartlead(payload)
+      && ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION', 'NOT_INTERESTED', 'OOO', 'WRONG_PERSON', 'REMOVE_ME'].includes(fresh.classification)
+    ) {
+      classification = fresh.classification;
+    }
     await db.query(
       `UPDATE pending_replies
           SET campaign_id = $1, campaign_name = $2, lead_id = $3, lead_name = $4,
               inbound_message = $5, thread_context = $6, classification = $7,
               smartlead_email_stats_id = COALESCE($8, smartlead_email_stats_id),
+              inbound_message_id = COALESCE(NULLIF(inbound_message_id, ''), $9),
               updated_at = now()
-        WHERE id = $9`,
+        WHERE id = $10`,
       [
         String(resolvedCampaignId), resolvedCampaignName || null, String(resolvedLeadId),
         senderName, inboundEffective, JSON.stringify(threadContext), classification,
-        statsId, replyRow.id,
+        statsId, inboundMessageId || null, replyRow.id,
       ]
     );
   }
+
+  await maybeForwardInboundReply({
+    campaignId: resolvedCampaignId,
+    campaignName: resolvedCampaignName,
+    leadId: resolvedLeadId,
+    leadEmail,
+    leadName: senderName,
+    inboundMessage: inboundEffective,
+    messageId: inboundMessageId,
+    threadContext,
+  });
 
   if (suppressedReason) {
     console.log('[Webhook] SmartLead reply suppressed from Slack', { classification, reason: suppressedReason });

@@ -7,9 +7,12 @@ have each broken production at least once.
 every push and pull request:
 
 - `test/invariants.test.js` — safety rules. Each corresponds to a change that
-  broke production. Anyone should keep these.
+ broke production. Anyone should keep these.
 - `test/owner-intent.test.js` — **Josh's product decisions.** A failure here is
-  not a bug, it is a reversal of a decision he made.
+ not a bug, it is a reversal of a decision he made.
+- `test/inbound-canon.test.js` — **`docs/INBOUND_CANON.md`.** Full text, one
+ email = one card = at most one send, and a new reply is never dropped. The
+ CI job `Invariant guards` runs this with the rest of `npm test`.
 
 When a guard fails, read the reason in the assertion and the entry in
 `DECISIONS.md`. Fix the change, not the guard.

@@ -3,6 +3,7 @@
  * dedupe of bad REPLY rows that mirror last SENT (SmartLead/Android glitches).
  */
 const { decodeHtmlEntities } = require('./html-entities');
+const { messageIdOfMessage } = require('./inbound-message-id');
 
 /**
  * Outlook / Word HTML often leaves stylesheet text after tags are stripped
@@ -187,8 +188,8 @@ const SMARTLEAD_NON_REPLY_EVENTS = new Set([
   'EMAIL_UNSUBSCRIBED',
 ]);
 
-function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
-  if (!histResponse || typeof histResponse !== 'object') return '';
+function pickLatestInboundReply(histResponse, leadEmail) {
+  if (!histResponse || typeof histResponse !== 'object') return { body: '', messageId: '' };
   const list = Array.isArray(histResponse.history)
     ? histResponse.history
     : Array.isArray(histResponse.messages)
@@ -212,7 +213,12 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
       const plain = cleanInboundReply(raw);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
-      rows.push({ time, body: plain, rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim() });
+      rows.push({
+        time,
+        body: plain,
+        messageId: messageIdOfMessage(m),
+        rawForDedupe: stripHtmlToText(raw) || String(raw || '').trim(),
+      });
     }
     rows.sort((a, b) => a.time.localeCompare(b.time));
     return rows;
@@ -231,20 +237,29 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
 
   const pickLatestNonDuplicate = (rows) => {
     for (let i = rows.length - 1; i >= 0; i--) {
-      const { body, rawForDedupe } = rows[i];
+      const { body, rawForDedupe, messageId } = rows[i];
       if (lastSentBody && isLikelyDuplicateOfOutbound(rawForDedupe || body, lastSentBody)) {
         continue;
       }
-      return body;
+      return { body, messageId: messageId || '' };
     }
-    return '';
+    return { body: '', messageId: '' };
   };
 
   const strictRows = collectRows(true);
   const strict = pickLatestNonDuplicate(strictRows);
-  if (strict) return strict;
+  if (strict.body) return strict;
   const looseRows = collectRows(false);
   return pickLatestNonDuplicate(looseRows);
+}
+
+function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
+  return latestInboundReplyMeta(histResponse, leadEmail).body;
+}
+
+function latestInboundReplyMeta(histResponse, leadEmail) {
+  const picked = pickLatestInboundReply(histResponse, leadEmail);
+  return { body: picked.body || '', messageId: picked.messageId || '' };
 }
 
 function lastOutboundBodyFromSmartleadHistory(histResponse) {
@@ -274,37 +289,23 @@ function looksLikeCss(s) {
   return /@font-face|mso-|\{font-family|\bMsoNormal\b|<style/i.test(t.slice(0, 2000));
 }
 
-function normInboundCompare(s) {
-  return String(s || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/(?:\.{3}|…)+\s*$/g, '')
-    .trim()
-    .toLowerCase();
-}
-
 /**
- * Keep the longer copy when one text is a preview of the other (the short
- * one is a prefix, or they share a long opening). A different reply is left
- * as `current` so a new short message is not replaced by an older long one.
+ * Keep the longer copy when both sides are the same reply under the shared
+ * inbound normalizer (the same rules dedupe uses). A different reply stays
+ * `current`, so a new short message is not replaced by an older long one.
  */
 function preferFullerInbound(current, candidate) {
   const cRaw = String(current || '').trim();
   const nRaw = String(candidate || '').trim();
   if (!nRaw) return cRaw;
   if (!cRaw) return nRaw;
-  const c = normInboundCompare(cRaw);
-  const n = normInboundCompare(nRaw);
+  const { normalizeInboundText, sameNormalizedInbound } = require('../services/reply-dedupe');
+  const c = normalizeInboundText(cRaw);
+  const n = normalizeInboundText(nRaw);
   if (!n) return cRaw;
   if (!c) return nRaw;
-  if (n.startsWith(c)) return nRaw;
-  if (c.startsWith(n)) return cRaw;
-  const share = Math.min(80, c.length, n.length);
-  if (share >= 40 && c.slice(0, share) === n.slice(0, share)) {
-    return n.length > c.length ? nRaw : cRaw;
-  }
-  if (n.length > c.length && c.length >= 80 && n.includes(c)) return nRaw;
-  return cRaw;
+  if (!sameNormalizedInbound(c, n)) return cRaw;
+  return n.length > c.length ? nRaw : cRaw;
 }
 
 function plainField(value) {
@@ -510,6 +511,7 @@ module.exports = {
   stripEmailArtifacts,
   cleanInboundReply,
   latestInboundFromSmartleadHistory,
+  latestInboundReplyMeta,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,

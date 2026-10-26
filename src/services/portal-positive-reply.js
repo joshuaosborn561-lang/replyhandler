@@ -157,6 +157,32 @@ async function notifyPortalPositiveReply(input = {}, deps = {}) {
     return { ok: false, skipped: true, reason: 'not_configured' };
   }
 
+  if (input.replyId && deps.db && typeof deps.db.query === 'function') {
+    try {
+      const { rows } = await deps.db.query(
+        `SELECT 1
+           FROM pending_replies me
+           JOIN pending_replies other
+             ON other.client_id = me.client_id
+            AND other.id <> me.id
+            AND COALESCE(other.classification, '') <> 'FOLLOW_UP'
+            AND lower(COALESCE(other.inbound_message_id, '')) <> ''
+            AND lower(other.inbound_message_id) = lower(COALESCE(me.inbound_message_id, ''))
+            AND other.slack_message_ts IS NOT NULL
+            AND other.slack_message_ts NOT LIKE 'claiming:%'
+          WHERE me.id = $1
+          LIMIT 1`,
+        [input.replyId]
+      );
+      if (rows[0]) return { ok: false, skipped: true, reason: 'already_forwarded' };
+    } catch (err) {
+      console.warn('[Portal] Message-id forward check failed — forwarding anyway', {
+        replyId: input.replyId,
+        err: err.message,
+      });
+    }
+  }
+
   const fetchFn = deps.fetchFn || fetch;
   const sleepFn = deps.sleepFn || sleep;
   const timeoutMs = deps.timeoutMs || TIMEOUT_MS;

@@ -24,6 +24,7 @@ const {
   stripHtmlToText,
   stripEmailQuotePrefix,
   latestInboundFromSmartleadHistory,
+  latestInboundReplyMeta,
   lastOutboundBodyFromSmartleadHistory,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
@@ -187,7 +188,11 @@ async function processInboxRow(sourceClient, row, options) {
   // text differently (payload body vs rebuilt history), so an exact text match is not
   // a reliable identity. stats_id comes from the same thread history in both paths.
   let threadContext = historyFromRow(row);
-  let inbound = decodeInboundForStorage(latestInboundFromHistory(threadContext, row?.lead_email));
+  let inboundMeta = latestInboundReplyMeta(threadContext, row?.lead_email);
+  let inbound = decodeInboundForStorage(
+    inboundMeta.body || latestInboundFromHistory(threadContext, row?.lead_email)
+  );
+  let messageId = inboundMeta.messageId || '';
 
   // Master-inbox can ship a stale email_history while last_reply_time is already
   // current, hiding the newest reply from this poller entirely.
@@ -216,6 +221,7 @@ async function processInboxRow(sourceClient, row, options) {
       leadEmail: row.lead_email || null,
       inboundMessage: inbound,
       emailStatsId: earlyStatsId,
+      messageId,
     });
     if (unpostedEarly) {
       const posted = await repostReplyRowToSlack(client, unpostedEarly, {
@@ -234,6 +240,7 @@ async function processInboxRow(sourceClient, row, options) {
       leadEmail: row.lead_email || null,
       inboundMessage: inbound,
       emailStatsId: earlyStatsId,
+      messageId,
     })) {
       return { skipped: 'already_posted' };
     }
@@ -249,6 +256,7 @@ async function processInboxRow(sourceClient, row, options) {
         leadEmail: row.lead_email || null,
         inboundMessage: inbound,
         emailStatsId: null,
+        messageId,
       })
       : false;
 
@@ -262,7 +270,11 @@ async function processInboxRow(sourceClient, row, options) {
           const before = newestReplyTimeFromHistory(threadContext);
           const after = newestReplyTimeFromHistory(fresh);
           threadContext = fresh;
-          inbound = decodeInboundForStorage(latestInboundFromHistory(threadContext, row?.lead_email));
+          inboundMeta = latestInboundReplyMeta(threadContext, row?.lead_email);
+          inbound = decodeInboundForStorage(
+            inboundMeta.body || latestInboundFromHistory(threadContext, row?.lead_email)
+          );
+          messageId = inboundMeta.messageId || messageId;
           console.log('[SmartLeadPoll] Master-inbox history was stale — refetched thread', {
             client: client.name,
             campaignId,
@@ -291,6 +303,7 @@ async function processInboxRow(sourceClient, row, options) {
     leadEmail: row.lead_email || null,
     leadName: `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown',
     inboundMessage: inbound,
+    messageId,
     threadContext,
   });
 
@@ -304,6 +317,7 @@ async function processInboxRow(sourceClient, row, options) {
     leadEmail: row.lead_email || null,
     inboundMessage: inbound,
     emailStatsId: smartleadEmailStatsId,
+    messageId,
   });
   if (unposted) {
     const posted = await repostReplyRowToSlack(client, unposted, {
@@ -323,6 +337,7 @@ async function processInboxRow(sourceClient, row, options) {
     leadEmail: row.lead_email || null,
     inboundMessage: inbound,
     emailStatsId: smartleadEmailStatsId,
+    messageId,
   })) {
     return { skipped: 'already_posted' };
   }
@@ -437,14 +452,16 @@ async function processInboxRow(sourceClient, row, options) {
     leadId,
     leadEmail,
     inboundMessage: inbound,
+    messageId,
   }, async (conn) => {
     const { rows: [inserted] } = await conn.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id)
-       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id, inbound_message_id)
+       VALUES ($1, 'smartlead', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
         client.id, String(campaignId), campaignName || null, String(leadId), leadName, leadEmail, inbound,
         JSON.stringify(threadContext), classification, draft, status, smartleadEmailStatsId,
+        messageId || null,
       ]
     );
     return inserted;

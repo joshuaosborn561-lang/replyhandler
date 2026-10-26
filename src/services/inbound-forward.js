@@ -9,7 +9,7 @@
 const db = require('../db');
 const gmail = require('./gmail-send');
 const smartlead = require('./smartlead');
-const { inboundPrefix } = require('./reply-dedupe');
+const { inboundPrefix, canonicalInboundMessageId } = require('./reply-dedupe');
 const { buildInboundForwardEmail } = require('./client-notify-email');
 const {
   matchInboundForwardRules,
@@ -22,9 +22,11 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   latestInboundFromSmartleadHistory,
+  latestInboundReplyMeta,
   preferFullerInbound,
   SMARTLEAD_NON_REPLY_EVENTS,
 } = require('../utils/smartlead-webhook-helpers');
+const { messageIdOfMessage } = require('../utils/inbound-message-id');
 
 function inboundForwardWebhookUnauthorized(req) {
   const expected = String(process.env.INBOUND_FORWARD_WEBHOOK_SECRET || '').trim();
@@ -70,7 +72,17 @@ function extractInboundForwardFields(payload = {}) {
     || null;
   let inbound = parseInboundFromPayload(replyObj, payload);
   inbound = cleanInboundReply(inbound) || String(inbound || '').trim();
-  return { campaignId, campaignName, leadId, leadEmail, leadName, inboundMessage: inbound };
+  const replyMessageId = replyObj && typeof replyObj === 'object' ? messageIdOfMessage(replyObj) : '';
+  const payloadMessageId = messageIdOfMessage(payload);
+  return {
+    campaignId,
+    campaignName,
+    leadId,
+    leadEmail,
+    leadName,
+    inboundMessage: inbound,
+    messageId: replyMessageId || payloadMessageId || '',
+  };
 }
 
 async function defaultLoadRules(query) {
@@ -90,16 +102,31 @@ async function defaultLoadRules(query) {
   }
 }
 
-async function claimForward(query, { campaignId, leadKey, prefix, toEmails }) {
-  const { rows } = await query(
-    `INSERT INTO inbound_forwards
-        (campaign_id, lead_key, inbound_prefix, to_emails, status)
-     VALUES ($1, $2, $3, $4, 'pending')
-     ON CONFLICT (campaign_id, lead_key, inbound_prefix) DO NOTHING
-     RETURNING id`,
-    [campaignId, leadKey, prefix, toEmails]
-  );
-  return rows[0] || null;
+async function claimForward(query, { campaignId, leadKey, prefix, toEmails, messageId }) {
+  const mid = canonicalInboundMessageId(messageId);
+  if (mid) {
+    const { rows: existing } = await query(
+      `SELECT id FROM inbound_forwards
+        WHERE campaign_id = $1 AND lead_key = $2 AND inbound_message_id = $3
+        LIMIT 1`,
+      [campaignId, leadKey, mid]
+    );
+    if (existing[0]) return null;
+  }
+  try {
+    const { rows } = await query(
+      `INSERT INTO inbound_forwards
+          (campaign_id, lead_key, inbound_prefix, to_emails, status, inbound_message_id)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
+       ON CONFLICT (campaign_id, lead_key, inbound_prefix) DO NOTHING
+       RETURNING id`,
+      [campaignId, leadKey, prefix, toEmails, mid || null]
+    );
+    return rows[0] || null;
+  } catch (err) {
+    if (/duplicate key|inbound_forwards_message_once/i.test(err.message || '')) return null;
+    throw err;
+  }
 }
 
 async function markForwardSent(query, id) {
@@ -176,6 +203,7 @@ async function maybeForwardInboundReply(input = {}, deps = {}) {
       leadKey,
       prefix,
       toEmails: emails.join(', '),
+      messageId: input.messageId,
     });
   } catch (err) {
     if (/inbound_forwards/i.test(err.message || '')) {
@@ -261,6 +289,8 @@ async function handleInboundForwardWebhook(req) {
     if (threadContext) {
       const fromHist = latestInboundFromSmartleadHistory(threadContext, fields.leadEmail) || '';
       fields.inboundMessage = preferFullerInbound(fields.inboundMessage, fromHist);
+      const meta = latestInboundReplyMeta(threadContext, fields.leadEmail);
+      if (!fields.messageId && meta.messageId) fields.messageId = meta.messageId;
     }
   }
   const result = await maybeForwardInboundReply({
