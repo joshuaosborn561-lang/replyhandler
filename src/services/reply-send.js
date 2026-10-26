@@ -13,7 +13,12 @@ const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
-const { alreadySentSameOutbound, claimOutboundSend } = require('./reply-dedupe');
+const {
+  alreadySentSameOutbound,
+  claimOutboundSend,
+  normalizeInboundText,
+  sameNormalizedInbound,
+} = require('./reply-dedupe');
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
 const { buildReplyAll, mergeCcLists } = require('../utils/reply-all');
@@ -111,6 +116,331 @@ async function resolveClientNotifyThread(client, reply) {
     threadContext: pickRicherThreadContext(live, reply.thread_context),
     extraMessages,
   };
+}
+
+function parseStoredThreadContext(raw) {
+  if (!raw) return {};
+  let ctx = raw;
+  if (typeof ctx === 'string') {
+    try { ctx = JSON.parse(ctx); } catch { return {}; }
+  }
+  if (Array.isArray(ctx)) return { messages: ctx, heyreach: {} };
+  if (!ctx || typeof ctx !== 'object') return {};
+  return { ...ctx, heyreach: { ...(ctx.heyreach || {}) } };
+}
+
+function heyreachMeta(reply) {
+  return parseStoredThreadContext(reply?.thread_context).heyreach || {};
+}
+
+function nonEmpty(value) {
+  const s = String(value ?? '').trim();
+  return s || null;
+}
+
+function heyreachSendReady(meta, linkedinUrl) {
+  const conversationId = nonEmpty(meta?.conversationId);
+  const linkedInAccountId = meta?.linkedinAccountId ?? meta?.linkedInAccountId ?? null;
+  const listId = meta?.listId ?? null;
+  const url = nonEmpty(meta?.linkedinUrl) || nonEmpty(linkedinUrl);
+  if (conversationId && linkedInAccountId) return true;
+  if (listId && linkedInAccountId && url) return true;
+  return false;
+}
+
+function slackFailure(message) {
+  const s = String(message || 'HeyReach send failed').replace(/\s+/g, ' ').trim();
+  return s.length > 500 ? `${s.slice(0, 497)}…` : s;
+}
+
+function redactSecret(message, secret) {
+  const text = String(message || '');
+  if (!secret) return text;
+  return text.split(String(secret)).join('[redacted]');
+}
+
+function identifiersFromSiblingRow(row) {
+  const ctx = parseStoredThreadContext(row?.thread_context);
+  const meta = ctx.heyreach || {};
+  return {
+    linkedinUrl: nonEmpty(row?.linkedin_url) || nonEmpty(meta.linkedinUrl),
+    conversationId: nonEmpty(meta.conversationId),
+    linkedinAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
+    listId: meta.listId ?? null,
+    senderId: meta.senderId ?? null,
+    inboundMessage: row?.inbound_message || '',
+    leadName: row?.lead_name || '',
+  };
+}
+
+/**
+ * A manual card can be missing HeyReach ids while the suppressed inbox row
+ * still has the LinkedIn URL (or, after this change, the conversation ids).
+ * Same inbound text wins. A name-only match is used only when every stored
+ * URL for that name is the same person.
+ */
+async function lookupStoredHeyreachIdentifiers(reply, query) {
+  const name = nonEmpty(reply?.lead_name);
+  const leadId = nonEmpty(reply?.lead_id);
+  const usableLeadId = leadId && leadId !== 'test-lead' ? leadId : '';
+  const ownUrl = nonEmpty(reply?.linkedin_url) || nonEmpty(heyreachMeta(reply).linkedinUrl);
+  if (!reply?.client_id || !reply?.id) return null;
+  if (!name && !usableLeadId && !ownUrl) return null;
+  const nameTokens = String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 1)
+    .map((token) => token.replace(/[%_\\]/g, ''));
+  const firstToken = nameTokens[0] || '';
+  const lastToken = nameTokens.length > 1 ? nameTokens[nameTokens.length - 1] : '';
+
+  const { rows } = await query(
+    `SELECT id, linkedin_url, thread_context, inbound_message, lead_name, lead_id
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'heyreach'
+        AND id <> $2
+        AND (
+          ($3::text <> '' AND COALESCE(lead_id, '') = $3)
+          OR ($4::text <> '' AND lower(COALESCE(lead_name, '')) = lower($4))
+          OR ($5::text <> '' AND lower(COALESCE(linkedin_url, '')) = lower($5))
+          OR (
+            $6::text <> '' AND $7::text <> ''
+            AND lower(COALESCE(lead_name, '')) LIKE '%' || $6 || '%'
+            AND lower(COALESCE(lead_name, '')) LIKE '%' || $7 || '%'
+          )
+        )
+      ORDER BY created_at DESC
+      LIMIT 25`,
+    [reply.client_id, reply.id, usableLeadId, name || '', ownUrl || '', firstToken, lastToken]
+  );
+
+  const parsed = (rows || []).map(identifiersFromSiblingRow).filter((row) => (
+    row.linkedinUrl || (row.conversationId && row.linkedinAccountId)
+  ));
+  if (!parsed.length) return null;
+
+  const ownSlug = heyreach.linkedinProfileSlug(ownUrl);
+  const compatible = parsed.filter((row) => {
+    const slug = heyreach.linkedinProfileSlug(row.linkedinUrl);
+    if (ownSlug && slug && ownSlug !== slug) return false;
+    return true;
+  });
+  if (!compatible.length) return null;
+
+  const wantInbound = normalizeInboundText(reply.inbound_message);
+  const inboundHits = wantInbound
+    ? compatible.filter((row) => normalizeInboundText(row.inboundMessage) === wantInbound)
+    : [];
+  if (inboundHits.length) {
+    return inboundHits.find((row) => row.conversationId && row.linkedinAccountId)
+      || inboundHits.find((row) => row.linkedinUrl)
+      || inboundHits[0];
+  }
+
+  if (usableLeadId) {
+    const byLead = compatible.find((row) => row.conversationId && row.linkedinAccountId)
+      || compatible.find((row) => row.linkedinUrl);
+    if (byLead) return byLead;
+  }
+
+  if (!name) return null;
+  const sameName = compatible.filter((row) => (
+    heyreach.namesMatch(name, { name: row.leadName })
+  ));
+  const slugs = [...new Set(sameName.map((row) => heyreach.linkedinProfileSlug(row.linkedinUrl)).filter(Boolean))];
+  if (slugs.length !== 1) return null;
+  return sameName.find((row) => heyreach.linkedinProfileSlug(row.linkedinUrl) === slugs[0]) || null;
+}
+
+async function heyreachConversationAlreadySent(reply, conversationId, query) {
+  const want = normalizeInboundText(reply?.inbound_message);
+  if (!want || !reply?.client_id || !reply?.id || !conversationId) return false;
+  const { rows } = await query(
+    `SELECT id, inbound_message
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = 'heyreach'
+        AND status = 'sent'
+        AND id <> $2
+        AND thread_context #>> '{heyreach,conversationId}' = $3
+      ORDER BY updated_at DESC
+      LIMIT 20`,
+    [reply.client_id, reply.id, String(conversationId)]
+  );
+  return (rows || []).some((row) => {
+    const got = normalizeInboundText(row.inbound_message);
+    return got === want || sameNormalizedInbound(got, want);
+  });
+}
+
+async function persistHeyreachIdentifiers(reply, patch, query) {
+  const ctx = parseStoredThreadContext(reply.thread_context);
+  const prev = ctx.heyreach || {};
+  const next = { ...prev };
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value == null || value === '') continue;
+    next[key] = value;
+  }
+  ctx.heyreach = next;
+  const linkedinUrl = nonEmpty(next.linkedinUrl) || nonEmpty(reply.linkedin_url);
+  if (linkedinUrl) {
+    next.linkedinUrl = linkedinUrl;
+    reply.linkedin_url = linkedinUrl;
+  }
+  reply.thread_context = ctx;
+  if (!reply.id) return ctx;
+  await query(
+    `UPDATE pending_replies
+        SET thread_context = $1::jsonb,
+            linkedin_url = COALESCE(NULLIF(linkedin_url, ''), $2),
+            updated_at = now()
+      WHERE id = $3`,
+    [JSON.stringify(ctx), linkedinUrl, reply.id]
+  );
+  return ctx;
+}
+
+/**
+ * Send a HeyReach reply. When the stored row has no conversationId +
+ * linkedInAccountId (suppressed inbox rows, or a manual card), look the
+ * conversation up with the server-side HeyReach key and persist the ids
+ * before sending. Lookup failure does not send.
+ */
+async function sendHeyreachReply(client, reply, replyText, deps = {}) {
+  const query = deps.query || ((sql, params) => db.query(sql, params));
+  const findConversation = deps.findConversation || heyreach.findConversation.bind(heyreach);
+  const sendMessage = deps.sendMessage || heyreach.sendMessage.bind(heyreach);
+  const lookupSibling = deps.lookupSibling
+    || ((row) => lookupStoredHeyreachIdentifiers(row, query));
+
+  const ctx = parseStoredThreadContext(reply.thread_context);
+  let meta = { ...(ctx.heyreach || {}) };
+  let linkedinUrl = nonEmpty(meta.linkedinUrl) || nonEmpty(reply.linkedin_url);
+  let filled = false;
+
+  if (!heyreachSendReady(meta, linkedinUrl)) {
+    let sibling = null;
+    try {
+      sibling = await lookupSibling(reply);
+    } catch (err) {
+      console.warn('[ReplySend] HeyReach sibling identifier lookup failed', {
+        replyId: reply.id, err: err.message,
+      });
+    }
+    if (sibling) {
+      const siblingSlug = heyreach.linkedinProfileSlug(sibling.linkedinUrl);
+      const ownSlug = heyreach.linkedinProfileSlug(linkedinUrl);
+      const slugOk = !ownSlug || !siblingSlug || ownSlug === siblingSlug;
+      if (slugOk) {
+        if (!linkedinUrl && sibling.linkedinUrl) linkedinUrl = sibling.linkedinUrl;
+        if (!nonEmpty(meta.conversationId) && sibling.conversationId) meta.conversationId = sibling.conversationId;
+        if ((meta.linkedinAccountId == null && meta.linkedInAccountId == null) && sibling.linkedinAccountId) {
+          meta.linkedinAccountId = sibling.linkedinAccountId;
+        }
+        if (meta.listId == null && sibling.listId != null) meta.listId = sibling.listId;
+        if (meta.senderId == null && sibling.senderId != null) meta.senderId = sibling.senderId;
+        if (linkedinUrl) meta.linkedinUrl = linkedinUrl;
+        filled = true;
+      }
+    }
+  }
+
+  if (!heyreachSendReady(meta, linkedinUrl)) {
+    const apiKey = client?.heyreach_api_key;
+    if (!apiKey) {
+      throw new Error('HeyReach API key is missing, so the conversation could not be looked up. Nothing was sent.');
+    }
+    let found = null;
+    try {
+      found = await findConversation(apiKey, {
+        conversationId: nonEmpty(meta.conversationId),
+        leadId: reply.lead_id,
+        linkedinUrl,
+        leadName: reply.lead_name,
+        allowNameSearch: true,
+        maxPages: 15,
+        limit: 100,
+      });
+    } catch (err) {
+      const raw = redactSecret(err.message, apiKey);
+      if (/nothing was sent/i.test(raw)) throw new Error(slackFailure(raw));
+      const status = err.status ? ` (${err.status})` : '';
+      throw new Error(slackFailure(
+        `HeyReach inbox lookup failed${status}. Nothing was sent. ${raw}`
+      ));
+    }
+    if (!found) {
+      const who = reply.lead_name || 'this lead';
+      const where = linkedinUrl ? ` (${linkedinUrl})` : '';
+      throw new Error(slackFailure(
+        `HeyReach conversation not found for ${who}${where}. Nothing was sent.`
+      ));
+    }
+    const conversationId = heyreach.extractHeyreachConversationId(found);
+    const linkedInAccountId = heyreach.extractHeyreachLinkedInAccountId(found);
+    const foundUrl = heyreach.extractHeyreachLinkedinUrl(found);
+    if (!conversationId || !linkedInAccountId) {
+      throw new Error(slackFailure(
+        'HeyReach inbox lookup found a conversation but it had no conversationId and linkedInAccountId. Nothing was sent.'
+      ));
+    }
+    if (linkedinUrl && foundUrl && !heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl)) {
+      throw new Error(slackFailure(
+        `HeyReach inbox lookup found a different LinkedIn profile than the one stored for ${reply.lead_name || 'this lead'}. Nothing was sent.`
+      ));
+    }
+    meta.conversationId = conversationId;
+    meta.linkedinAccountId = linkedInAccountId;
+    if (foundUrl && (!linkedinUrl || heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl))) {
+      linkedinUrl = foundUrl;
+    }
+    if (linkedinUrl) meta.linkedinUrl = linkedinUrl;
+    const foundList = found.listId || found.list_id || found.list?.id || null;
+    if (meta.listId == null && foundList != null) meta.listId = foundList;
+    filled = true;
+  }
+
+  if (!heyreachSendReady(meta, linkedinUrl)) {
+    throw new Error(slackFailure(
+      'HeyReach send is missing conversationId and linkedInAccountId. Nothing was sent.'
+    ));
+  }
+
+  const conversationId = nonEmpty(meta.conversationId);
+  if (conversationId && await heyreachConversationAlreadySent(reply, conversationId, query)) {
+    console.warn('[ReplySend] Skipping HeyReach send — this inbound was already sent', {
+      replyId: reply.id, conversationId,
+    });
+    return { skippedDuplicate: true, reason: 'same_heyreach_conversation' };
+  }
+
+  if (filled) {
+    try {
+      await persistHeyreachIdentifiers(reply, {
+        conversationId: meta.conversationId || null,
+        linkedinAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
+        linkedinUrl: linkedinUrl || meta.linkedinUrl || null,
+        listId: meta.listId ?? null,
+        senderId: meta.senderId ?? null,
+        campaignName: meta.campaignName || null,
+      }, query);
+    } catch (err) {
+      console.warn('[ReplySend] Could not persist HeyReach identifiers', {
+        replyId: reply.id, err: err.message,
+      });
+    }
+  }
+
+  await sendMessage(client.heyreach_api_key, {
+    conversationId: meta.conversationId || null,
+    linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
+    senderId: meta.senderId || null,
+    listId: meta.listId || null,
+    linkedinUrl: meta.linkedinUrl || linkedinUrl || reply.linkedin_url || null,
+    message: replyText,
+  });
 }
 
 async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false } = {}) {
@@ -388,17 +718,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
   }
 
   if (reply.platform === 'heyreach') {
-    const ctx = typeof reply.thread_context === 'string' ? JSON.parse(reply.thread_context) : reply.thread_context;
-    const meta = ctx?.heyreach || {};
-    await heyreach.sendMessage(client.heyreach_api_key, {
-      conversationId: meta.conversationId || null,
-      linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
-      senderId: meta.senderId || null,
-      listId: meta.listId || null,
-      linkedinUrl: meta.linkedinUrl || reply.linkedin_url || null,
-      message: replyText,
-    });
-    return;
+    return sendHeyreachReply(client, reply, replyText);
   }
 
   throw new Error(`Unknown platform: ${reply.platform}`);
@@ -446,6 +766,8 @@ async function maybeBookMeetingAfterSend(reply, client) {
 
 module.exports = {
   sendReplyToPlatform,
+  sendHeyreachReply,
+  lookupStoredHeyreachIdentifiers,
   maybeBookMeetingAfterSend,
   isSlackTestFixtureReply,
   resolveClientNotifyThread,

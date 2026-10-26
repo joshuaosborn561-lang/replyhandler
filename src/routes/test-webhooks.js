@@ -30,6 +30,8 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
     linkedinUrl = null,
     listId = null,
     linkedinAccountId = null,
+    conversationId = null,
+    senderId = null,
     campaignDisplay = null,
     lastOutboundMessage = null,
     campaignName = null,
@@ -67,6 +69,8 @@ router.post('/admin/test/slack-draft/:clientId', async (req, res) => {
           listId,
           linkedinAccountId,
           linkedinUrl,
+          conversationId,
+          senderId,
           campaignName: campaignName || 'Example Campaign',
         },
       }

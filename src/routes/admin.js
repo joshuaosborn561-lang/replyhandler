@@ -15,6 +15,7 @@ const {
 } = require('../services/client-icp-profile');
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
+const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
 
 const router = Router();
 
@@ -407,6 +408,28 @@ router.post('/admin/resurface-suppressed', async (req, res) => {
   } catch (err) {
     console.error('[Admin] resurface-suppressed error', { err: err.message });
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Turn one stored HeyReach reply into a sendable approval card.
+ * Same row, same inbound — does not insert a second card.
+ *
+ * POST /admin/heyreach/approval-card
+ * Body: { replyId, draft, classification? }
+ */
+router.post('/admin/heyreach/approval-card', async (req, res) => {
+  try {
+    const result = await postStoredHeyreachApprovalCard({
+      replyId: req.body?.replyId || req.body?.reply_id,
+      draft: req.body?.draft,
+      classification: req.body?.classification,
+      reasoning: req.body?.reasoning,
+    });
+    return res.status(result.posted ? 201 : 200).json(result);
+  } catch (err) {
+    console.error('[Admin] heyreach approval card error', { err: err.message });
+    return res.status(err.status || 500).json({ error: err.message });
   }
 });
 
