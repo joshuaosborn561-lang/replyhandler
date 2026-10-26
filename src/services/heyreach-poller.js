@@ -400,22 +400,24 @@ async function processConversation(client, conv, options) {
 
   const threadContext = messagesForThread(messages);
   const lastOut = lastOutbound(messages);
+  const hrCampaignName = campaignNameOf(conv);
+  const meta = {
+    messages: threadContext,
+    heyreach: {
+      listId: listId(conv),
+      linkedinAccountId: linkedInAccountId(conv),
+      linkedinUrl: linkedinUrl(conv),
+      conversationId: convId,
+      senderId: senderId(conv),
+      campaignName: hrCampaignName,
+    },
+  };
   if (await maybeUpdateExistingThinReply({
     clientId: client.id,
     campaignId: cid,
     leadKey,
     inboundMessage: inbound.text,
-    threadContext: {
-      messages: threadContext,
-      heyreach: {
-        listId: listId(conv),
-        linkedinAccountId: linkedInAccountId(conv),
-        linkedinUrl: linkedinUrl(conv),
-        conversationId: convId,
-        senderId: senderId(conv),
-        campaignName: conv?.campaignName || conv?.campaign_name || conv?.campaign?.name || null,
-      },
-    },
+    threadContext: meta,
     lastOutboundMessage: lastOut,
   })) {
     return { skipped: 'already_processed_enriched' };
@@ -468,10 +470,12 @@ async function processConversation(client, conv, options) {
       clientId: client.id,
       platform: 'heyreach',
       campaignId: cid,
+      campaignName: hrCampaignName,
       leadId: leadKey,
       leadName: leadName(conv),
       linkedinUrl: linkedinUrl(conv),
       inboundMessage: inbound.text,
+      threadContext: meta,
       classification,
       reason: suppressed,
     });
@@ -486,18 +490,6 @@ async function processConversation(client, conv, options) {
   reasoning = policy.reasoning;
   const isDraft = policy.isDraft;
   const status = policy.status;
-  const hrCampaignName = campaignNameOf(conv);
-  const meta = {
-    messages: threadContext,
-    heyreach: {
-      listId: listId(conv),
-      linkedinAccountId: linkedInAccountId(conv),
-      linkedinUrl: linkedinUrl(conv),
-      conversationId: convId,
-      senderId: senderId(conv),
-      campaignName: hrCampaignName,
-    },
-  };
 
   const claimed = await claimNewInbound({
     clientId: client.id,

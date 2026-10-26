@@ -15,31 +15,41 @@ async function recordSuppressedReply({
   clientId,
   platform,
   campaignId,
+  campaignName,
   leadId,
   leadName,
   leadEmail,
   linkedinUrl,
   inboundMessage,
+  threadContext,
   classification,
   reason,
   emailStatsId,
   leadPhone,
 }) {
   try {
+    // Keep HeyReach conversationId / linkedInAccountId on the row. A later
+    // manual INTERESTED card approves against this same reply, and the send
+    // path cannot invent those ids if they were discarded here.
+    const storedContext = threadContext == null
+      ? null
+      : (typeof threadContext === 'string' ? threadContext : JSON.stringify(threadContext));
     await db.query(
       `INSERT INTO pending_replies
-        (client_id, platform, campaign_id, lead_id, lead_name, lead_email, linkedin_url,
-         inbound_message, classification, status, suppression_reason, smartlead_email_stats_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'suppressed', $10, $11)`,
+        (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
+         inbound_message, thread_context, classification, status, suppression_reason, smartlead_email_stats_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, 'suppressed', $12, $13)`,
       [
         clientId,
         platform,
         campaignId != null ? String(campaignId) : null,
+        campaignName || null,
         leadId != null ? String(leadId) : null,
         leadName || null,
         leadEmail || null,
         linkedinUrl || null,
         inboundMessage || '',
+        storedContext,
         classification || null,
         reason,
         emailStatsId || null,

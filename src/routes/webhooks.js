@@ -1280,12 +1280,26 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           isColdInbound: coldInbound,
           pitchToUsProb: result.pitchToUsProb,
         });
+        const contextWithMeta = {
+          messages: threadContext,
+          heyreach: {
+            listId,
+            linkedinAccountId,
+            linkedinUrl: resolvedLinkedinUrl,
+            conversationId: hrConversationId,
+            senderId: hrSenderId,
+            campaignName: resolvedHrCampaignName,
+          },
+        };
+
         if (hrSuppressed) {
           console.log('[Webhook] HeyReach reply suppressed from Slack', { leadName: resolvedLeadName, classification, reason: hrSuppressed });
           await recordSuppressedReply({
-            clientId, platform: 'heyreach', campaignId, leadId: leadId || hrConversationId,
+            clientId, platform: 'heyreach', campaignId, campaignName: resolvedHrCampaignName,
+            leadId: leadId || hrConversationId,
             leadName: resolvedLeadName, linkedinUrl: resolvedLinkedinUrl,
-            inboundMessage, classification, reason: hrSuppressed,
+            inboundMessage, threadContext: contextWithMeta,
+            classification, reason: hrSuppressed,
           });
           return;
         }
@@ -1299,18 +1313,6 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         reasoning = policy.reasoning;
         let isDraft = policy.isDraft;
         const status = policy.status;
-
-        const contextWithMeta = {
-          messages: threadContext,
-          heyreach: {
-            listId,
-            linkedinAccountId,
-            linkedinUrl: resolvedLinkedinUrl,
-            conversationId: hrConversationId,
-            senderId: hrSenderId,
-            campaignName: resolvedHrCampaignName,
-          },
-        };
 
         const leadIdForRow = leadId || hrConversationId;
 
