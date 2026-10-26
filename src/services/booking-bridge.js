@@ -18,6 +18,7 @@ const CLIENT_SLUG_ALIASES = {
   salesglider: ['SalesGlider'],
   peterson: ['Roofs By Peterson', 'Roofs by Peterson'],
   vasco: ['Vasco Warranty', 'Vasco Warranty Management'],
+  vector: ['Vector Energy Group', 'Vector'],
 };
 
 function normalizeEmail(email) {

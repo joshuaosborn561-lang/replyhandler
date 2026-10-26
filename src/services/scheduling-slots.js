@@ -23,6 +23,110 @@ function isCalendlyUrl(url) {
   }
 }
 
+const BOOKING_BRIDGE_HOST = 'book.gosalesglider.com';
+const BOOKING_BRIDGE_CLIENTS_URL = process.env.BOOKING_BRIDGE_CLIENTS_URL || `https://${BOOKING_BRIDGE_HOST}/clients.js`;
+const PUBLIC_FETCH_TIMEOUT_MS = Number(process.env.PUBLIC_CALENDLY_TIMEOUT_MS) || 6000;
+let bridgeClientsCache = { at: 0, map: null };
+
+async function fetchWithTimeout(url, ms = PUBLIC_FETCH_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json, text/javascript, */*' } });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function isBookingBridgeUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase() === BOOKING_BRIDGE_HOST;
+  } catch {
+    return false;
+  }
+}
+
+/** Parse BookingBridge site/clients.js → { slug: bookingUrl }. */
+function parseBridgeClientsJs(src) {
+  const map = {};
+  const re = /["']?([a-z0-9_-]+)["']?\s*:\s*\{[^{}]*?bookingUrl\s*:\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(String(src || '')))) map[m[1].toLowerCase()] = m[2];
+  return map;
+}
+
+async function bridgeClientsMap() {
+  if (bridgeClientsCache.map && Date.now() - bridgeClientsCache.at < 10 * 60 * 1000) return bridgeClientsCache.map;
+  const res = await fetchWithTimeout(BOOKING_BRIDGE_CLIENTS_URL);
+  if (!res.ok) throw new Error(`BookingBridge clients.js ${res.status}`);
+  const map = parseBridgeClientsJs(await res.text());
+  bridgeClientsCache = { at: Date.now(), map };
+  return map;
+}
+
+/**
+ * The underlying Calendly scheduling URL for a booking link. Wrapped
+ * book.gosalesglider.com/<slug> links resolve through BookingBridge clients.js;
+ * raw Calendly links are returned as-is. Null when not Calendly-backed.
+ */
+async function underlyingCalendlyUrl(bookingLink) {
+  if (!bookingLink) return null;
+  if (isCalendlyUrl(bookingLink)) return bookingLink;
+  if (!isBookingBridgeUrl(bookingLink)) return null;
+  const slug = new URL(bookingLink).pathname.split('/').filter(Boolean)[0];
+  if (!slug) return null;
+  const target = (await bridgeClientsMap())[slug.toLowerCase()];
+  return target && isCalendlyUrl(target) ? target : null;
+}
+
+/**
+ * Open start times for a PUBLIC Calendly event type via Calendly's booking-page
+ * endpoints (the same ones calendly.com uses to render the picker). No PAT needed,
+ * so it works for a client's own Calendly account we don't hold a token for.
+ */
+async function fetchPublicCalendlyStarts(calendlyUrl, fromDate, toDate) {
+  const parts = new URL(calendlyUrl).pathname.split('/').filter(Boolean);
+  if (parts.length < 2) throw new Error('Calendly URL has no event type slug');
+  const [profileSlug, eventSlug] = parts;
+  const lookupRes = await fetchWithTimeout(
+    `https://calendly.com/api/booking/event_types/lookup?event_type_slug=${encodeURIComponent(eventSlug)}&profile_slug=${encodeURIComponent(profileSlug)}`
+  );
+  if (!lookupRes.ok) throw new Error(`Calendly public lookup ${lookupRes.status}`);
+  const { uuid } = await lookupRes.json();
+  if (!uuid) throw new Error('Calendly public lookup returned no uuid');
+  const day = (d) => d.toISOString().slice(0, 10);
+  const qs = new URLSearchParams({
+    timezone: 'UTC', diagnostics: 'false', range_start: day(fromDate), range_end: day(toDate),
+  });
+  const rangeRes = await fetchWithTimeout(`https://calendly.com/api/booking/event_types/${uuid}/calendar/range?${qs}`);
+  if (!rangeRes.ok) throw new Error(`Calendly public range ${rangeRes.status}`);
+  const data = await rangeRes.json();
+  const out = [];
+  for (const d of data.days || []) {
+    for (const spot of d.spots || []) {
+      if (spot.status && spot.status !== 'available') continue;
+      const st = new Date(spot.start_time);
+      if (!Number.isNaN(st.getTime()) && st >= fromDate && st <= toDate) out.push(st);
+    }
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/** Two suggestions on different days (first open slot of each of the first two days). */
+function pickTwoAcrossDays(starts, timeZone) {
+  const seen = new Set();
+  const picked = [];
+  for (const s of starts) {
+    const key = s.toLocaleDateString('en-US', { timeZone });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(s);
+    if (picked.length === 2) break;
+  }
+  return picked.length === 2 ? picked : starts.slice(0, 2);
+}
+
 async function calendlyFetch(pathWithQuery, token) {
   const res = await fetch(`${CALENDLY_API}${pathWithQuery}`, {
     headers: {
@@ -240,6 +344,24 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     starts = [];
   }
 
+  // No PAT (or PAT path empty): read the public Calendly booking page behind the
+  // client's link — including wrapped book.gosalesglider.com/<slug> links.
+  let fromPublicCalendly = false;
+  if (starts.length < 2 && client.booking_link) {
+    try {
+      const calUrl = await underlyingCalendlyUrl(client.booking_link);
+      if (calUrl) {
+        const pub = await fetchPublicCalendlyStarts(calUrl, fromDate, toDate);
+        if (pub.length) {
+          starts = pub;
+          fromPublicCalendly = true;
+        }
+      }
+    } catch (err) {
+      console.warn('[SchedulingSlots] Public Calendly availability failed', { err: err.message });
+    }
+  }
+
   if (starts.length < 2) {
     try {
       const calStarts = await fetchCalendarFreeStarts(client.id, fromDate, toDate);
@@ -254,7 +376,7 @@ async function resolveVerifiedSchedulingSlots(client, options = {}) {
     }
   }
 
-  const two = starts.slice(0, 2);
+  const two = fromPublicCalendly ? pickTwoAcrossDays(starts, timeZone) : starts.slice(0, 2);
   const lines = two.map((d) => `- ${formatSlotLabel(d, timeZone)} (${d.toISOString()})`);
 
   return {
@@ -272,4 +394,8 @@ module.exports = {
   schedulingPromptBookingLinkOnly,
   normalizeBookingUrl,
   isCalendlyUrl,
+  underlyingCalendlyUrl,
+  fetchPublicCalendlyStarts,
+  parseBridgeClientsJs,
+  pickTwoAcrossDays,
 };
