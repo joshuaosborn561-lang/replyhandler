@@ -1395,3 +1395,19 @@ Comparison now decodes numeric (decimal and hex) and common named entities, then
 A stats-id backup (same person, campaign, and SmartLead email stats id inside a short window, even when the texts differ) was added and then removed the same day. A duplicate card is acceptable. A missed reply is not. Dedupe stays text-only. The stats id is still the latest SENT message and is shared by a later, different reply (Doug Baden, 2026-08-03). `idx_pending_replies_stats_dedupe` is not created.
 
 Guards: `Bill Hall entity renderings share a dedupe prefix` and `different text is never deduped, including when the stats id matches` in `test/inbound-entity-dedupe.test.js`. `poller dedupe never matches on stats_id alone` forbids any stats-id match in `reply-dedupe.js`.
+
+### One email, one card, full text (Oct 26)
+
+PR #140 kept the full prospect email on the card. It also made the reply webhook (HTML) and the category-changed webhook (plain text with `>` quote markers and `[email]` expansions) diverge inside the 120-character prefix. Henry Witt, hwitt@hmwitt.com, SG Subs Owners Tickets 1019, Oct 26 2026 2:35 PM ET, got two cards and two portal forwards for one reply.
+
+The canon is `docs/INBOUND_CANON.md`, enforced by `test/inbound-canon.test.js` inside the CI job Invariant guards:
+
+1. FULL TEXT: every Slack card, stored inbound row and drafter input shows the prospect's full email. No silent truncation.
+2. ONE EMAIL = ONE CARD = AT MOST ONE SEND: a single inbound email must never produce two cards, two portal forwards or two sends, however many times or ways it reaches us (Smartlead reply webhook, Smartlead category-changed webhook, the SmartLead inbox polling backstop, HeyReach, retries).
+3. NEVER DROP A REAL REPLY: a genuinely new reply from the same person must always post. No time-window dedupe and no stats-id/campaign keyed dedupe (both were tried and removed on purpose).
+
+Identity is the email's Message-ID, checked inside the existing claim lock before text comparison. Text is only the fallback, and storage, dedupe, and `preferFullerInbound` share `normalizeInboundText`. A category event updates the stored row and does not open a second card. The same person saying "Thanks" in two emails with two Message-IDs is two cards. A second approve of one email cannot send twice.
+
+This does not bring back a stats-id or time-window match. A duplicate card of one email is still worse than a missed reply, and a missed reply is still not acceptable. Two different Message-IDs are two emails even when the words match. That is the correction to "the same text is always a duplicate": the same rendering of one email is a duplicate; a second email is not.
+
+Guard: `test/inbound-canon.test.js`.

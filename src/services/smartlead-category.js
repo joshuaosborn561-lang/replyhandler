@@ -37,6 +37,9 @@ function extractCategory(source) {
     if (v == null) continue;
     // Some shapes nest it: { lead_category: { name: 'Interested' } } or { id: 1 }
     if (typeof v === 'object') {
+      // LEAD_CATEGORY_UPDATED sends { new_id, new_name, old_id, old_name }.
+      if (v.new_name != null && String(v.new_name).trim()) return String(v.new_name).trim();
+      if (v.new_id != null && String(v.new_id).trim() !== '') return String(v.new_id).trim();
       const nested = v.name || v.label || v.category || v.value || v.id;
       if (nested != null && nested !== '') return String(nested).trim();
       continue;
