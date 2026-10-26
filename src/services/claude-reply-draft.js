@@ -63,10 +63,12 @@ function htmlToText(value) {
     .trim();
 }
 
+const THREAD_SUMMARY_MAX = 12000;
+
 function summarizeThread(threadContext) {
   const rows = messageList(threadContext).slice(-10);
   if (!rows.length) return '(no prior thread available)';
-  return rows
+  const parts = rows
     .map((row) => {
       const roleRaw = String(
         row?.type || row?.direction || row?.role || row?.sender || ''
@@ -77,9 +79,23 @@ function summarizeThread(threadContext) {
       );
       return body ? `${role}: ${body}` : null;
     })
-    .filter(Boolean)
-    .join('\n\n')
-    .slice(0, 12000);
+    .filter(Boolean);
+  if (!parts.length) return '(no prior thread available)';
+  // The cap drops the oldest turns. The newest message is never sliced,
+  // even when that one message is itself longer than the cap.
+  const kept = parts.slice();
+  while (kept.length > 1 && kept.join('\n\n').length > THREAD_SUMMARY_MAX) {
+    kept.shift();
+  }
+  return kept.join('\n\n');
+}
+
+/** Drafter input: full latest reply, thread trimmed from the oldest end only. */
+function threadAndLatestForDraft(threadContext, inboundMessage) {
+  return {
+    thread: summarizeThread(threadContext),
+    latest: String(inboundMessage || '').trim(),
+  };
 }
 
 function formatExamples(examples) {
@@ -283,17 +299,18 @@ async function generateClaudeReply({
       : '- This is email: a first-name-only sign-off is allowed but not required.',
   ].join('\n');
 
+  const draftedInput = threadAndLatestForDraft(threadContext, inboundMessage);
   const user = [
     `Prospect name: ${leadName || 'Unknown'}`,
     `Classification: ${classification || 'OTHER'}`,
     `Draft mode: ${mode} (inbound reply #${replyOrdinal || 1} we are answering)`,
     '',
     '<current_thread>',
-    summarizeThread(threadContext),
+    draftedInput.thread,
     '</current_thread>',
     '',
     '<latest_prospect_reply>',
-    String(inboundMessage || '').trim(),
+    draftedInput.latest,
     '</latest_prospect_reply>',
     '',
     '<scheduling_guidance>',
@@ -318,8 +335,8 @@ async function generateClaudeReply({
   // client's own sent replies, so a term from them is not an example leak.
   const currentFacts = [
     leadName,
-    summarizeThread(threadContext),
-    inboundMessage,
+    draftedInput.thread,
+    draftedInput.latest,
     schedulingPromptBlock,
     learnedVoiceBlock,
   ].filter(Boolean).join('\n');
@@ -675,6 +692,8 @@ module.exports = {
   generateClaudeReply,
   generateFollowUpClaudeDraft,
   summarizeThread,
+  threadAndLatestForDraft,
+  THREAD_SUMMARY_MAX,
   formatFollowUpThread,
   buildFollowUpPrompt,
   parseFollowUpModelJson,

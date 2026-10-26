@@ -99,19 +99,34 @@ function normalizeSmartleadCampaignId(payload = {}, leadData = {}) {
 }
 
 /**
- * Cut quoted thread history off a reply. Anchors must not require a newline:
- * HTML replies arrive as one collapsed line, which made the old \n-anchored
- * patterns never match and left the whole quoted thread in the card.
+ * Quote header: line-start "On … wrote:" and only when a date or an email
+ * follows "On". A loose "On … wrote:" match was cutting real sentences
+ * ("on our side the person who wrote:").
+ *
+ * Collapsed HTML is one line, so a header that also carries a year, a clock
+ * time, or an email is broken onto its own line first. Weekday-only prose
+ * in the middle of a sentence is left alone.
  */
+const QUOTE_DAY = '(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tues|thurs|thur|mon|tue|wed|thu|fri|sat|sun)';
+const QUOTE_MONTH = '(?:january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec|may\\s+\\d{1,2})';
+const QUOTE_DATE_OR_EMAIL = `(?:${QUOTE_DAY}|${QUOTE_MONTH}|\\d{1,4}[/.-]\\d{1,2}(?:[/.-]\\d{2,4})?|[\\w.+-]+@[\\w.-]+\\.[a-z]{2,})`;
+const QUOTE_ON_WROTE_BODY = `On[ \\t]+[^\\n]{0,220}?${QUOTE_DATE_OR_EMAIL}[^\\n]{0,180}?wrote:`;
+const QUOTE_ON_WROTE_LINE = new RegExp(`(?:^|\\n)[ \\t]*${QUOTE_ON_WROTE_BODY}`, 'i');
+const QUOTE_ON_WROTE_COLLAPSED = new RegExp(
+  `([^\\n])([ \\t]*On[ \\t]+[^\\n]{0,220}?(?:[\\w.+-]+@[\\w.-]+\\.[a-z]{2,}|\\b\\d{4}\\b|\\b\\d{1,2}:\\d{2}\\b)[^\\n]{0,180}?wrote:)`,
+  'i'
+);
+
 function stripEmailQuotePrefix(raw) {
   let t = String(raw || '').replace(/\r\n/g, '\n');
+  t = t.replace(QUOTE_ON_WROTE_COLLAPSED, '$1\n$2');
 
   const cutAt = (re) => {
     const m = t.match(re);
     if (m && m.index > 0) t = t.slice(0, m.index);
   };
 
-  cutAt(/\bOn\s.{8,200}?\bwrote:/i);
+  cutAt(QUOTE_ON_WROTE_LINE);
   cutAt(/-----\s*Original Message\s*-----/i);
   cutAt(/_{20,}/);
   // Outlook-style quoted header. Requires an address right after so a sentence
@@ -193,7 +208,7 @@ function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
       if (requireFromMatchLead && leadFrom && from && !from.includes(leadFrom) && leadFrom !== from) {
         continue;
       }
-      const raw = m.email_body || m.body || m.text || '';
+      const raw = fullestMessageText(m);
       const plain = cleanInboundReply(raw);
       if (!plain) continue;
       const time = String(m.time || m.sent_at || m.received_at || m.created_at || '');
@@ -259,24 +274,84 @@ function looksLikeCss(s) {
   return /@font-face|mso-|\{font-family|\bMsoNormal\b|<style/i.test(t.slice(0, 2000));
 }
 
-function parseInboundFromPayload(replyObj, payload) {
-  const base =
-    (replyObj && typeof replyObj === 'object'
-      ? (replyObj.body ||
-        replyObj.message ||
-        (looksLikeCss(replyObj.text) ? '' : replyObj.text) ||
-        replyObj.plain_text ||
-        stripHtmlToText(replyObj.html || replyObj.html_body))
-      : replyObj) ||
-    payload.reply_message_body ||
-    payload.replyMessageBody ||
-    payload.last_reply_body ||
-    payload.lastReplyBody ||
-    payload.reply_text ||
-    payload.message ||
-    payload.body ||
-    '';
-  return String(base || '').trim();
+function normInboundCompare(s) {
+  return String(s || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/(?:\.{3}|…)+\s*$/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Keep the longer copy when one text is a preview of the other (the short
+ * one is a prefix, or they share a long opening). A different reply is left
+ * as `current` so a new short message is not replaced by an older long one.
+ */
+function preferFullerInbound(current, candidate) {
+  const cRaw = String(current || '').trim();
+  const nRaw = String(candidate || '').trim();
+  if (!nRaw) return cRaw;
+  if (!cRaw) return nRaw;
+  const c = normInboundCompare(cRaw);
+  const n = normInboundCompare(nRaw);
+  if (!n) return cRaw;
+  if (!c) return nRaw;
+  if (n.startsWith(c)) return nRaw;
+  if (c.startsWith(n)) return cRaw;
+  const share = Math.min(80, c.length, n.length);
+  if (share >= 40 && c.slice(0, share) === n.slice(0, share)) {
+    return n.length > c.length ? nRaw : cRaw;
+  }
+  if (n.length > c.length && c.length >= 80 && n.includes(c)) return nRaw;
+  return cRaw;
+}
+
+function plainField(value) {
+  if (value == null) return '';
+  const s = String(value).trim();
+  if (!s || looksLikeCss(s)) return '';
+  if (/<[a-z!/]/i.test(s)) return stripHtmlToText(s) || '';
+  return s;
+}
+
+/**
+ * Text fields keep their old priority. HTML replaces that text only when it
+ * is the same reply and longer (a preview), not when it is a different body.
+ */
+function textThenHtml(obj, textFields) {
+  if (!obj || typeof obj !== 'object') return '';
+  let text = '';
+  for (const field of textFields) {
+    const plain = plainField(obj[field]);
+    if (plain) { text = plain; break; }
+  }
+  const htmlRaw = stripHtmlToText(obj.html || obj.html_body || obj.body_html || obj.email_html || '');
+  const html = htmlRaw && !looksLikeCss(htmlRaw) ? htmlRaw : '';
+  if (!text) return html;
+  if (!html) return text;
+  return preferFullerInbound(text, html);
+}
+
+/** HTML-converted text wins over a short webhook `text` preview of the same reply. */
+function fullestMessageText(m) {
+  return textThenHtml(m, ['email_body', 'body', 'message', 'text', 'plain_text']);
+}
+
+function parseInboundFromPayload(replyObj, payload = {}) {
+  const fromReply = replyObj && typeof replyObj === 'object'
+    ? textThenHtml(replyObj, ['body', 'message', 'text', 'plain_text', 'email_body'])
+    : plainField(replyObj);
+  const fromPayload = textThenHtml({
+    html: payload.reply_html || payload.html || payload.body_html || payload.reply_message_html,
+    html_body: payload.reply_body_html,
+    plain_text: payload.plain_text,
+    body: payload.reply_message_body || payload.replyMessageBody || payload.last_reply_body || payload.lastReplyBody,
+    message: payload.message,
+    text: payload.reply_text || payload.replyText,
+    email_body: payload.email_body,
+  }, ['body', 'message', 'text', 'plain_text', 'email_body']);
+  return preferFullerInbound(fromReply, fromPayload) || plainField(payload.body);
 }
 
 function envFlag(name, defaultTrue = true) {
@@ -438,6 +513,8 @@ module.exports = {
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
+  preferFullerInbound,
+  fullestMessageText,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,

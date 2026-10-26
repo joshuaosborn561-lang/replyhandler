@@ -22,6 +22,7 @@ const {
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   latestInboundFromSmartleadHistory,
+  preferFullerInbound,
   SMARTLEAD_NON_REPLY_EVENTS,
 } = require('../utils/smartlead-webhook-helpers');
 
@@ -67,9 +68,7 @@ function extractInboundForwardFields(payload = {}) {
     || payload.campaign_name || payload.campaignName
     || (payload.campaign && typeof payload.campaign === 'object' ? payload.campaign.name : null)
     || null;
-  let inbound = parseInboundFromPayload(replyObj, payload)
-    || (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj)
-    || payload.reply_text || payload.message || payload.body || '';
+  let inbound = parseInboundFromPayload(replyObj, payload);
   inbound = cleanInboundReply(inbound) || String(inbound || '').trim();
   return { campaignId, campaignName, leadId, leadEmail, leadName, inboundMessage: inbound };
 }
@@ -259,8 +258,9 @@ async function handleInboundForwardWebhook(req) {
   let threadContext = null;
   if (fields.leadId) {
     threadContext = await optionalThreadHistory(fields.campaignId, fields.leadId);
-    if (threadContext && !fields.inboundMessage) {
-      fields.inboundMessage = latestInboundFromSmartleadHistory(threadContext, fields.leadEmail) || '';
+    if (threadContext) {
+      const fromHist = latestInboundFromSmartleadHistory(threadContext, fields.leadEmail) || '';
+      fields.inboundMessage = preferFullerInbound(fields.inboundMessage, fromHist);
     }
   }
   const result = await maybeForwardInboundReply({

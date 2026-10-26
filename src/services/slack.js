@@ -7,10 +7,9 @@ const { prepareFollowUpThreadTurns } = require('../utils/follow-up-thread-displa
 // Cache WebClient instances per token
 const clientCache = new Map();
 
-/** Slack section block text field max is 3000 chars — stay under for safety. */
+/** Slack section block text field max is 3000 chars. Chunk under that; never slice prospect text away. */
 const SLACK_SECTION_MAX = 2900;
-const OUTBOUND_DISPLAY_MAX = 1400;
-const INBOUND_DISPLAY_MAX = 2000;
+const SLACK_TEXT_HARD_MAX = 3000;
 
 function getClient(token) {
   if (!clientCache.has(token)) {
@@ -41,12 +40,6 @@ function plainTextForSlack(raw) {
   s = s.replace(/\n{3,}/g, '\n\n');
   s = s.replace(/[ \t]{2,}/g, ' ');
   return s.trim();
-}
-
-function truncateForSlack(s, maxLen = SLACK_SECTION_MAX) {
-  const t = plainTextForSlack(s);
-  if (t.length <= maxLen) return t;
-  return `${t.slice(0, maxLen - 20).trimEnd()}… _(truncated)_`;
 }
 
 /** Slack mrkdwn: escape &, <, > so user copy does not break blocks. */
@@ -308,16 +301,76 @@ function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllC
   };
 }
 
+function sectionMrkdwn(emoji, label, chunk, isFirst) {
+  const quoted = insetQuote(chunk);
+  return isFirst ? `${emoji} *${label}*\n${quoted}` : quoted;
+}
+
+/**
+ * Largest prefix of `rest` whose rendered section stays within Slack's
+ * 3000-char text limit. Breaks on a newline or space the way chunkForSlack does.
+ */
+function takeFittingPrefix(rest, render) {
+  if (render(rest).length <= SLACK_TEXT_HARD_MAX) return rest;
+  let lo = 1;
+  let hi = rest.length - 1;
+  let best = 1;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (render(rest.slice(0, mid)).length <= SLACK_TEXT_HARD_MAX) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const preferred = chunkForSlack(rest, best)[0] || '';
+  if (
+    preferred
+    && rest.startsWith(preferred)
+    && render(preferred).length <= SLACK_TEXT_HARD_MAX
+  ) {
+    return preferred;
+  }
+  let cut = best;
+  const window = rest.slice(0, best);
+  const nl = window.lastIndexOf('\n');
+  const sp = window.lastIndexOf(' ');
+  if (nl >= Math.floor(best * 0.5)) cut = nl;
+  else if (sp >= Math.floor(best * 0.5)) cut = sp;
+  let piece = rest.slice(0, cut).trimEnd();
+  if (!piece || render(piece).length > SLACK_TEXT_HARD_MAX) {
+    piece = rest.slice(0, best).trimEnd();
+  }
+  while (piece.length > 1 && render(piece).length > SLACK_TEXT_HARD_MAX) {
+    piece = piece.slice(0, -1).trimEnd();
+  }
+  return piece || rest.slice(0, 1);
+}
+
+/** Full plain text, split so every section block is under 3000 chars. */
+function splitPlainForSections(plain, emoji, label) {
+  const chunks = [];
+  let rest = String(plain || '').trim();
+  while (rest) {
+    const isFirst = chunks.length === 0;
+    const piece = takeFittingPrefix(rest, (chunk) => sectionMrkdwn(emoji, label, chunk, isFirst));
+    chunks.push(piece);
+    if (piece.length >= rest.length) break;
+    rest = rest.slice(piece.length).trimStart();
+  }
+  return chunks;
+}
+
 /**
  * Build one or more section blocks for a conversation step.
+ * Prospect and outbound text are shown in full, chunked under 3000 chars.
  * @param {object} opts
  * @param {string} opts.emoji - e.g. 📤
  * @param {string} opts.label - e.g. "You sent"
  * @param {string} opts.body - message text
- * @param {number|null} opts.maxLen - optional display cap (null = full text, chunked)
- * @param {boolean} opts.neverTruncate - draft replies: always show full text
  */
-function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTruncate = false }) {
+function conversationStepBlocks({ emoji, label, body }) {
   const plain = plainTextForSlack(body);
   if (!plain) {
     return [{
@@ -326,31 +379,35 @@ function conversationStepBlocks({ emoji, label, body, maxLen = null, neverTrunca
     }];
   }
 
-  let display = plain;
-  if (!neverTruncate && maxLen != null && plain.length > maxLen) {
-    display = truncateForSlack(plain, maxLen);
-    const chunks = [display];
-    return chunks.map((chunk, i) => ({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: i === 0 ? `${emoji} *${label}*\n${insetQuote(chunk)}` : insetQuote(chunk),
-      },
-    }));
-  }
-
-  const chunks = chunkForSlack(display);
+  const chunks = splitPlainForSections(plain, emoji, label);
   return chunks.map((chunk, i) => ({
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: i === 0 ? `${emoji} *${label}*\n${insetQuote(chunk)}` : insetQuote(chunk),
+      text: sectionMrkdwn(emoji, label, chunk, i === 0),
     },
   }));
 }
 
-const LAST_THREAD_DISPLAY_MAX = 800;
 const SLACK_BLOCK_LIMIT = 50;
+
+/** Keep header and tail on the card. Extra body blocks go to a thread reply. */
+function fitCardBlocks(head, body, tail) {
+  const budget = SLACK_BLOCK_LIMIT - head.length - tail.length;
+  if (budget >= body.length) {
+    return { blocks: [...head, ...body, ...tail], overflowBlocks: [] };
+  }
+  if (budget <= 0) {
+    return {
+      blocks: [...head, ...tail].slice(0, SLACK_BLOCK_LIMIT),
+      overflowBlocks: body,
+    };
+  }
+  return {
+    blocks: [...head, ...body.slice(0, budget), ...tail],
+    overflowBlocks: body.slice(budget),
+  };
+}
 
 /**
  * Latest turn on the thread — quoted email history stripped so the card
@@ -410,7 +467,6 @@ function buildWillSendBlocks({
     emoji: isSent ? '📤' : '✍️',
     label: outgoingLabel,
     body: sendBody,
-    neverTruncate: true,
   });
 }
 
@@ -444,7 +500,6 @@ function followUpThreadTurnBlocks(turn) {
     emoji,
     label: turn.label,
     body: turn.display,
-    neverTruncate: true,
   });
 }
 
@@ -468,8 +523,8 @@ function buildFollowUpThreadBlocks(threadMessages, { maxBlocks = 28 } = {}) {
 
 /**
  * FOLLOW_UP layout: WILL SEND (full text), optional LOOP IN CLIENT, then
- * the full thread oldest → newest (signatures stripped; older turns ~400
- * chars; last two in full).
+ * the thread oldest → newest (signatures stripped; prospect turns in full;
+ * our older turns ~400 chars; last two in full).
  */
 function buildFollowUpConversationBlocks({
   lastOutboundMessage,
@@ -537,7 +592,6 @@ function buildConversationBlocks({
       emoji: '📤',
       label: ourLabel,
       body: lastOutboundMessage,
-      maxLen: OUTBOUND_DISPLAY_MAX,
     }),
   );
 
@@ -548,7 +602,6 @@ function buildConversationBlocks({
       emoji: '📥',
       label: theirLabel,
       body: inboundMessage,
-      maxLen: INBOUND_DISPLAY_MAX,
     }),
   );
 
@@ -559,7 +612,6 @@ function buildConversationBlocks({
         emoji: '✍️',
         label: 'Suggested reply',
         body: draft,
-        neverTruncate: true,
       }),
     );
   }
@@ -711,7 +763,6 @@ function buildSentConfirmationBlocks({
         emoji: '📤',
         label: 'Sent to prospect',
         body: sentReply,
-        neverTruncate: true,
       })
     );
   }
@@ -738,6 +789,14 @@ function buildSentConfirmationBlocks({
     elements: [{ type: 'mrkdwn', text: footerText }],
   });
 
+  if (blocks.length > SLACK_BLOCK_LIMIT) {
+    const tail = blocks.slice(-1);
+    const headRoom = SLACK_BLOCK_LIMIT - tail.length;
+    const overflowBlocks = blocks.slice(headRoom, blocks.length - 1);
+    const fitted = [...blocks.slice(0, headRoom), ...tail];
+    fitted.overflowBlocks = overflowBlocks;
+    return fitted;
+  }
   return blocks;
 }
 
@@ -759,12 +818,20 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
         : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
-  return slack.chat.update({
+  const result = await slack.chat.update({
     channel: channelId,
     ts: messageTs,
     text,
     blocks,
   });
+  if (blocks.overflowBlocks && blocks.overflowBlocks.length) {
+    try {
+      await postBlockOverflowThread(token, channelId, messageTs, blocks.overflowBlocks);
+    } catch (err) {
+      console.warn('[Slack] Confirmation overflow post failed', { err: err.message });
+    }
+  }
+  return result;
 }
 
 function followUpClientContactEmail({ ccEmails, ccEmail } = {}) {
@@ -880,6 +947,7 @@ function buildDraftApprovalCard({
   ];
 
   let overflowThread = [];
+  let overflowBlocks = [];
   let blocks;
   if (isFollowUp) {
     const assembled = assembleFollowUpApprovalBlocks({
@@ -905,17 +973,14 @@ function buildDraftApprovalCard({
       priorLabel: contextLabel || 'You sent',
       inboundLabel: 'They replied',
     });
-    blocks = [
-      ...metaBlocks,
-      dividerBlock(),
-      ...conversation,
+    const tail = [
       {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: contextText }],
       },
     ];
     if (review) {
-      blocks.splice(blocks.length, 0, {
+      tail.push({
         type: 'context',
         elements: [{ type: 'mrkdwn', text: '⚠️ *needs review* — draft stated a fact that was not in the provided context. Do not send until checked.' }],
       });
@@ -928,16 +993,19 @@ function buildDraftApprovalCard({
           replyAllCc,
         })
       : null;
-    if (notice) blocks.push(notice);
-    blocks.push(draftApprovalActionsBlock(replyId));
+    if (notice) tail.push(notice);
+    tail.push(draftApprovalActionsBlock(replyId));
     if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
-      blocks.push(sendCcClientActionsBlock(replyId));
+      tail.push(sendCcClientActionsBlock(replyId));
     }
+    const fitted = fitCardBlocks([...metaBlocks, dividerBlock()], conversation, tail);
+    blocks = fitted.blocks;
+    overflowBlocks = fitted.overflowBlocks;
   }
 
   const preview = plainTextForSlack(draft || inboundMessage).slice(0, 120);
   const text = `New ${platform} reply from ${leadName} — ${classification}${preview ? `: ${preview}` : ''}`;
-  return { blocks, text, overflowThread };
+  return { blocks, text, overflowThread, overflowBlocks };
 }
 
 function followUpHistoryOverflowBlocks(overflowTurns) {
@@ -952,7 +1020,6 @@ function followUpHistoryOverflowBlocks(overflowTurns) {
       emoji,
       label: turn.label,
       body: turn.body || turn.display,
-      neverTruncate: true,
     }));
   }
   return blocks;
@@ -987,20 +1054,54 @@ async function postFollowUpHistoryThread(token, channelId, threadTs, overflowTur
   return last;
 }
 
+async function postBlockOverflowThread(token, channelId, threadTs, blocks) {
+  if (!token || !channelId || !threadTs) return null;
+  const all = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+  if (!all.length) return null;
+  const slack = getClient(token);
+  const queue = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*Rest of the message*' },
+    },
+    ...all,
+  ];
+  let last = null;
+  for (let i = 0; i < queue.length; i += SLACK_BLOCK_LIMIT) {
+    const slice = queue.slice(i, i + SLACK_BLOCK_LIMIT);
+    last = await slack.chat.postMessage({
+      channel: channelId,
+      thread_ts: String(threadTs),
+      text: 'Rest of the message',
+      blocks: slice,
+    });
+  }
+  return last;
+}
+
 async function postDraftApproval(token, channelId, opts) {
   const slack = getClient(token);
-  const { blocks, text, overflowThread } = buildDraftApprovalCard(opts);
+  const { blocks, text, overflowThread, overflowBlocks } = buildDraftApprovalCard(opts);
   const result = await slack.chat.postMessage({
     channel: channelId,
     ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
     text,
     blocks,
   });
-  if (overflowThread && overflowThread.length && result?.ts) {
-    try {
-      await postFollowUpHistoryThread(token, channelId, result.ts, overflowThread);
-    } catch (err) {
-      console.warn('[Slack] Follow-up thread overflow post failed', { err: err.message });
+  if (result?.ts) {
+    if (overflowThread && overflowThread.length) {
+      try {
+        await postFollowUpHistoryThread(token, channelId, result.ts, overflowThread);
+      } catch (err) {
+        console.warn('[Slack] Follow-up thread overflow post failed', { err: err.message });
+      }
+    }
+    if (overflowBlocks && overflowBlocks.length) {
+      try {
+        await postBlockOverflowThread(token, channelId, result.ts, overflowBlocks);
+      } catch (err) {
+        console.warn('[Slack] Reply overflow post failed', { err: err.message });
+      }
     }
   }
   return result;
@@ -1030,7 +1131,7 @@ function buildAlertCard({
     ? `↩️ ${classification} — ${platform.toUpperCase()}`
     : `🔔 ${classification} — ${platform.toUpperCase()}`;
 
-  const blocks = [
+  const head = [
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },
@@ -1052,23 +1153,22 @@ function buildAlertCard({
       ],
     },
     dividerBlock(),
-    ...buildConversationBlocks({
-      lastOutboundMessage,
-      inboundMessage,
-      draft: null,
-      priorLabel: contextLabel || 'You sent',
-    }),
-    {
-      type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_` },
-        { type: 'mrkdwn', text: '_ℹ️ No draft — alert only_' },
-      ],
-    },
   ];
-
+  const conversation = buildConversationBlocks({
+    lastOutboundMessage,
+    inboundMessage,
+    draft: null,
+    priorLabel: contextLabel || 'You sent',
+  });
+  const tail = [{
+    type: 'context',
+    elements: [
+      { type: 'mrkdwn', text: `_${escMrkdwn(classification)}${reasoning ? ` · ${escMrkdwn(reasoning)}` : ''}_` },
+      { type: 'mrkdwn', text: '_ℹ️ No draft — alert only_' },
+    ],
+  }];
   if (replyId) {
-    blocks.push({
+    tail.push({
       type: 'actions',
       elements: [
         {
@@ -1086,33 +1186,52 @@ function buildAlertCard({
       ],
     });
   }
+  const fitted = fitCardBlocks(head, conversation, tail);
 
   return {
-    blocks,
+    blocks: fitted.blocks,
+    overflowBlocks: fitted.overflowBlocks,
     text: `${(platform || '').toUpperCase()} alert: ${classification} from ${leadName}`,
   };
 }
 
 async function postAlert(token, channelId, opts) {
   const slack = getClient(token);
-  const { blocks, text } = buildAlertCard(opts);
-  return slack.chat.postMessage({
+  const { blocks, text, overflowBlocks } = buildAlertCard(opts);
+  const result = await slack.chat.postMessage({
     channel: channelId,
     ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
     text,
     blocks,
   });
+  const threadTs = result?.ts || opts.threadTs;
+  if (overflowBlocks && overflowBlocks.length && threadTs) {
+    try {
+      await postBlockOverflowThread(token, channelId, threadTs, overflowBlocks);
+    } catch (err) {
+      console.warn('[Slack] Alert overflow post failed', { err: err.message });
+    }
+  }
+  return result;
 }
 
 async function updateAlertCard(token, channelId, messageTs, opts) {
   const slack = getClient(token);
-  const { blocks, text } = buildAlertCard(opts);
-  return slack.chat.update({
+  const { blocks, text, overflowBlocks } = buildAlertCard(opts);
+  const result = await slack.chat.update({
     channel: channelId,
     ts: messageTs,
     text,
     blocks,
   });
+  if (overflowBlocks && overflowBlocks.length) {
+    try {
+      await postBlockOverflowThread(token, channelId, messageTs, overflowBlocks);
+    } catch (err) {
+      console.warn('[Slack] Alert overflow post failed', { err: err.message });
+    }
+  }
+  return result;
 }
 
 async function postError(token, channelId, { leadName, platform, error }) {
