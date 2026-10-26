@@ -13,6 +13,7 @@ const smartlead = require('../services/smartlead');
 const { requireAdminApiKey } = require('../utils/admin-auth');
 const { webhookUrls } = require('../utils/public-client');
 const { normalizeClientBooking } = require('../utils/booking-bridge-destinations');
+const { resetCampaignRouteCache } = require('../services/campaign-routing');
 
 const SLACK_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
 
@@ -42,6 +43,7 @@ function safeView(client) {
     booking_destination_url: client.booking_destination_url,
     has_slack_bot_token: !!client.slack_bot_token,
     has_smartlead_api_key: !!client.smartlead_api_key,
+    smartlead_use_master_key: client.smartlead_use_master_key === true,
     ...webhookUrls(client.id),
   };
 }
@@ -84,6 +86,12 @@ async function upsertOnboardingClient(body, deps = {}) {
     booking_destination_url: existing?.booking_destination_url,
   });
   const slKey = body.smartlead_api_key || existing?.smartlead_api_key || null;
+  // Campaign on the shared master account: route it, use the env master key at
+  // runtime, never store that key on this client.
+  const useMaster = !slKey && !!body.smartlead_campaign_id;
+  const env = deps.env || process.env;
+  const master = String(env.SMARTLEAD_MASTER_API_KEY || '').trim();
+  if (useMaster && !master) return { status: 500, json: { error: 'SMARTLEAD_MASTER_API_KEY not set on server' } };
 
   const plan = {
     action: existing ? 'update' : 'create',
@@ -92,6 +100,8 @@ async function upsertOnboardingClient(body, deps = {}) {
     slack_channel_id: channel,
     booking_link: booked.booking_link || null,
     smartlead_campaign_id: body.smartlead_campaign_id || null,
+    smartlead_key: slKey ? 'client' : (useMaster ? 'master (runtime, not stored)' : 'none'),
+    campaign_route: useMaster ? String(body.smartlead_campaign_id) : null,
   };
   if (dryRun) return { status: 200, json: { ok: true, dry_run: true, plan } };
 
@@ -112,18 +122,32 @@ async function upsertOnboardingClient(body, deps = {}) {
     ));
   }
 
+  if (useMaster) {
+    ({ rows: [client] } = await q(
+      'UPDATE clients SET smartlead_use_master_key = true, updated_at = now() WHERE id = $1 RETURNING *',
+      [client.id]
+    ));
+    await q(
+      `INSERT INTO smartlead_campaign_routes (campaign_id, client_id) VALUES ($1, $2)
+       ON CONFLICT (campaign_id) DO UPDATE SET client_id = EXCLUDED.client_id, updated_at = now()`,
+      [String(body.smartlead_campaign_id), client.id]
+    );
+    resetCampaignRouteCache();
+  }
   const out = { ok: true, action: plan.action, client: safeView(client) };
+  if (useMaster) out.campaign_route = { campaign_id: String(body.smartlead_campaign_id), client_id: client.id };
+  const hookKey = slKey || (useMaster ? master : null);
   if (body.smartlead_campaign_id) {
     const target = webhookUrls(client.id).smartlead_webhook_url;
-    if (!slKey) {
+    if (!hookKey) {
       out.webhook = { registered: false, reason: 'no smartlead_api_key on client' };
     } else {
       try {
-        const hooks = await sl.listCampaignWebhooks(slKey, body.smartlead_campaign_id);
+        const hooks = await sl.listCampaignWebhooks(hookKey, body.smartlead_campaign_id);
         if ((hooks || []).some((h) => sl.webhookHasEmailReply(h, target))) {
           out.webhook = { registered: true, created: false, url: target };
         } else {
-          await sl.createEmailReplyWebhook(slKey, body.smartlead_campaign_id, target);
+          await sl.createEmailReplyWebhook(hookKey, body.smartlead_campaign_id, target);
           out.webhook = { registered: true, created: true, url: target };
         }
       } catch (err) {

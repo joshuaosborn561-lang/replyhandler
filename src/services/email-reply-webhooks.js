@@ -12,6 +12,7 @@
 const db = require('../db');
 const smartlead = require('./smartlead');
 const { webhookUrls } = require('../utils/public-client');
+const campaignRouting = require('./campaign-routing');
 
 const KEY_GAP_MS = (() => {
   const n = parseInt(process.env.SMARTLEAD_WEBHOOK_CHECK_GAP_MS || '', 10);
@@ -97,11 +98,15 @@ async function ensureClientEmailReplyWebhooks(client) {
     return result;
   }
   if (!Array.isArray(campaigns)) campaigns = [];
+  // Campaigns routed to a different client are hooked by onboarding, not here.
+  const routes = await campaignRouting.loadRoutes((sql, p) => db.query(sql, p));
 
   for (const camp of campaigns) {
     const campaignId = campaignIdOf(camp);
     if (campaignId == null) continue;
     if (!isActiveCampaign(camp)) continue;
+    const routedTo = routes.get(String(campaignId));
+    if (routedTo && routedTo !== client.id) continue;
     result.campaigns++;
     try {
       const hooks = await withKeyGap(key, () => smartlead.listCampaignWebhooks(key, campaignId));

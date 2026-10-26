@@ -1,3 +1,4 @@
+const { routeClientForCampaign } = require('./campaign-routing');
 const { extractLeadPhone } = require('../utils/lead-phone');
 const { applyPositiveIntentGuard } = require('../utils/positive-intent');
 const db = require('../db');
@@ -172,8 +173,9 @@ async function fetchInboxReplies(apiKey, offset, limit) {
   try { return JSON.parse(body); } catch { return {}; }
 }
 
-async function processInboxRow(client, row, options) {
+async function processInboxRow(sourceClient, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
+  const client = await routeClientForCampaign(sourceClient, campaignId);
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
 

@@ -573,7 +573,7 @@ async function dueFollowUps(limit) {
   const { rows } = await db.query(
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*, c.name AS client_name, c.slack_bot_token, c.slack_channel_id,
-            c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key,
+            c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key, c.smartlead_use_master_key,
             c.cc_email, c.cc_emails
        FROM outbound_follow_ups f
        JOIN clients c ON c.id = f.client_id
@@ -622,7 +622,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
   const totals = { posted: 0, skipped: 0, failed: 0, retired, deferred, skipReasons: {} };
 
   for (const fu of rows) {
-    const client = {
+    const client = require('./campaign-routing').withSmartleadKey({
       id: fu.client_id,
       name: fu.client_name,
       slack_bot_token: fu.slack_bot_token,
@@ -631,9 +631,10 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       booking_link: fu.booking_link,
       digest_timezone: fu.digest_timezone,
       smartlead_api_key: fu.smartlead_api_key,
+      smartlead_use_master_key: fu.smartlead_use_master_key,
       cc_email: fu.cc_email,
       cc_emails: fu.cc_emails,
-    };
+    });
 
     try {
       const { isDisqualified } = require('./disqualified-prospects');

@@ -91,7 +91,7 @@ async function getReply(replyId) {
 
 async function loadClient(clientId) {
   const { rows } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
-  return rows[0] || { id: clientId };
+  return require('./campaign-routing').withSmartleadKey(rows[0]) || { id: clientId };
 }
 
 function emptyReceipt({ ceilingUsd, hot, cache }) {

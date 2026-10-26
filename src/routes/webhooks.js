@@ -1,3 +1,4 @@
+const { withSmartleadKey, routeClientForCampaign } = require('../services/campaign-routing');
 const { applyPositiveIntentGuard } = require('../utils/positive-intent');
 const { shouldAlertOther, postOtherAlert } = require('../services/other-alert');
 const { extractLeadPhone } = require('../utils/lead-phone');
@@ -364,13 +365,13 @@ async function smartleadDuplicateInDb({ clientId, campaignId, leadId, inboundMes
 
 // ─── SmartLead Webhook ───────────────────────────────────────────────
 router.post('/webhook/smartlead/:clientId', async (req, res) => {
-  const { clientId } = req.params;
+  let { clientId } = req.params;
   const payload = req.body;
 
   console.log('[Webhook] SmartLead inbound', { clientId, payload: JSON.stringify(payload).slice(0, 4000) });
 
   try {
-    const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    let { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
     if (!client || !client.active) {
       console.warn('[Webhook] Unknown or inactive client', { clientId });
       return res.status(200).json({ ok: true, skipped: true });
@@ -390,6 +391,14 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       null;
 
     const campaignId = normalizeSmartleadCampaignId(payload, leadData);
+
+    client = withSmartleadKey(client);
+    const routedClient = await routeClientForCampaign(client, campaignId);
+    if (routedClient !== client) {
+      console.log('[Webhook] SmartLead campaign routed', { from: clientId, to: routedClient.id, campaignId });
+      client = routedClient;
+      clientId = routedClient.id;
+    }
 
     let leadId = normalizeSmartleadLeadId(payload, leadData);
 
