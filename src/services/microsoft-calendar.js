@@ -91,11 +91,15 @@ async function getAvailability(connection, timeMin, timeMax) {
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      // Ask for busy times back in UTC; the default is UTC-without-offset strings
+      // that parse as server-local time.
+      Prefer: 'outlook.timezone="UTC"',
     },
     body: JSON.stringify({
       schedules: [connection.email],
-      startTime: { dateTime: timeMin.toISOString(), timeZone: 'Eastern Standard Time' },
-      endTime: { dateTime: timeMax.toISOString(), timeZone: 'Eastern Standard Time' },
+      // ISO strings are already UTC. Labelling them Eastern shifted the window 4-5h.
+      startTime: { dateTime: timeMin.toISOString().replace(/Z$/, ''), timeZone: 'UTC' },
+      endTime: { dateTime: timeMax.toISOString().replace(/Z$/, ''), timeZone: 'UTC' },
     }),
   });
   if (!res.ok) throw new Error(`Microsoft getSchedule failed: ${await res.text()}`);

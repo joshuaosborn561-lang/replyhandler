@@ -82,8 +82,9 @@ async function getUserEmail(accessToken) {
   return data.email;
 }
 
-async function getAvailability(connection, timeMin, timeMax) {
+async function getAvailability(connection, timeMin, timeMax, { calendarIds } = {}) {
   const token = await getValidToken(connection);
+  const ids = [...new Set(['primary', ...(calendarIds || []).map((c) => String(c || '').trim()).filter(Boolean)])];
   const res = await fetch(`${CALENDAR_API}/freeBusy`, {
     method: 'POST',
     headers: {
@@ -93,12 +94,21 @@ async function getAvailability(connection, timeMin, timeMax) {
     body: JSON.stringify({
       timeMin: timeMin.toISOString(),
       timeMax: timeMax.toISOString(),
-      items: [{ id: 'primary' }],
+      items: ids.map((id) => ({ id })),
     }),
   });
   if (!res.ok) throw new Error(`Google freeBusy failed: ${await res.text()}`);
   const data = await res.json();
-  const busy = data.calendars?.primary?.busy || [];
+  // Busy from every calendar asked for. A calendar we cannot read (not shared,
+  // wrong id) throws rather than silently looking free.
+  const busy = [];
+  for (const id of ids) {
+    const cal = data.calendars?.[id];
+    if (cal?.errors?.length) {
+      throw new Error(`Google freeBusy error on a calendar: ${cal.errors.map((e) => e.reason).join(',')}`);
+    }
+    busy.push(...(cal?.busy || []));
+  }
   return busy;
 }
 
