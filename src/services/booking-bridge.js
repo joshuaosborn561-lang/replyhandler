@@ -19,6 +19,7 @@ const CLIENT_SLUG_ALIASES = {
   powergryd: ['PowerGryd', 'PowerGRYD'],
   peterson: ['Roofs By Peterson', 'Roofs by Peterson'],
   vasco: ['Vasco Warranty', 'Vasco Warranty Management'],
+  vector: ['Vector Energy Group', 'Vector'],
   emcor: ['Emcor'],
   insight: ['Insight'],
   cornerstone: ['CornerStone Earthworks', 'Cornerstone Earthworks'],
