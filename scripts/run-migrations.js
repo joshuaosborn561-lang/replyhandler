@@ -47,6 +47,7 @@ const MIGRATION_FILES = [
   '038_lead_person_location.sql',
   '039_follow_up_idempotency.sql',
   '040_decode_inbound_html_entities.sql',
+  '042_smartlead_campaign_routes.sql',
 ];
 
 async function clientsTableExists(client) {

@@ -1,3 +1,4 @@
+const { withSmartleadKey } = require('../services/campaign-routing');
 const { Router } = require('express');
 const db = require('../db');
 const slackService = require('../services/slack');
@@ -200,7 +201,7 @@ async function handleOpenEditModal(replyId, interaction) {
     return;
   }
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   await slackService.openEditReplyModal(client.slack_bot_token, interaction.trigger_id, {
     replyId,
     initialDraft: reply.draft_reply || '',
@@ -257,7 +258,7 @@ async function handleEditModalSubmit(interaction) {
     return;
   }
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
 
   const originalDraft = reply.draft_reply;
   const wasEdited = normDraft(messageText) !== normDraft(originalDraft);
@@ -372,7 +373,7 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
     return;
   }
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   await setCardStatus(client.slack_bot_token, interaction, '⏳ Sending...');
   const ctx = await slackCardContextFromReply(reply, client);
 
@@ -469,7 +470,7 @@ async function handleReject(replyId, interaction) {
       [replyId]
     );
     if (!reply) return;
-    const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+    const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
     const ctx = await slackCardContextFromReply(reply, client);
     await slackService.updateSentConfirmationCard(
       client.slack_bot_token, interaction.channel.id, interaction.message.ts,
@@ -496,7 +497,7 @@ async function handleReject(replyId, interaction) {
 
   if (!reply) return;
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   const ctx = await slackCardContextFromReply(reply, client);
 
   let extraFooter = '';
@@ -564,7 +565,7 @@ async function handleDisqualify(replyId, interaction) {
     return;
   }
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   const result = await markDisqualified({
     clientId: client.id,
     reply,
@@ -607,7 +608,7 @@ async function handleMeetingBooked(replyId, interaction) {
     return;
   }
 
-  const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id]);
+  const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   const result = await markMeetingBooked({
     clientId: client.id,
     reply,
