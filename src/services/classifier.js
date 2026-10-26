@@ -1,4 +1,5 @@
 const { geminiModel } = require('./gemini-model');
+const { anthropicModel } = require('./anthropic-model');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   looksLikeOutOfOffice,
@@ -678,9 +679,54 @@ async function classifyOnlyGemini(threadContext, inboundMessage) {
   }
 }
 
-/** Gemini path used only when Jev fails (CLASSIFIER_FALLBACK_GEMINI, default on). */
+/** Claude Sonnet one-word classify. Returns null on any error so Gemini can take over. */
+async function classifyOnlyClaude(threadContext, inboundMessage, deps = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !deps.fetch) return null;
+  const doFetch = deps.fetch || fetch;
+  try {
+    const res = await doFetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: anthropicModel(),
+        max_tokens: 16,
+        temperature: 0,
+        system:
+          `You classify a B2B sales reply into exactly one category.\n` +
+          `Respond with ONLY the category word, nothing else.\n` +
+          `Categories: ${CLASSIFICATIONS.join(', ')}.\n` +
+          `Use OOO for out-of-office / vacation / automatic replies.`,
+        messages: [{
+          role: 'user',
+          content: `Thread:\n${summarizeThread(threadContext)}\n\nLatest prospect reply:\n${inboundMessage}\n\nCategory:`,
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Anthropic classify failed (${res.status})`);
+    const data = await res.json();
+    const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+    return text ? normalizeClassification(text) : null;
+  } catch (err) {
+    console.error('[Classifier] Claude classify call failed — trying Gemini', { err: err.message });
+    return null;
+  }
+}
+
+/**
+ * Fallback used only when Jev fails (CLASSIFIER_FALLBACK_GEMINI, default on):
+ * Claude Sonnet first, Gemini if Anthropic errors.
+ */
 async function classifyWithGemini(threadContext, inboundMessage) {
-  let classification = await classifyOnlyGemini(threadContext, inboundMessage);
+  let source = 'claude_fallback';
+  let classification = await classifyOnlyClaude(threadContext, inboundMessage);
+  if (!classification) {
+    source = 'gemini_fallback';
+    classification = await classifyOnlyGemini(threadContext, inboundMessage);
+  }
   if (!classification) {
     return {
       classification: 'OTHER',
@@ -697,7 +743,7 @@ async function classifyWithGemini(threadContext, inboundMessage) {
     const no = await classifyNotInterestedSecondPass(threadContext, inboundMessage);
     if (no === 'NOT_INTERESTED') classification = 'NOT_INTERESTED';
   }
-  return { classification, pitchToUsProb: null, source: 'gemini_fallback', unavailable: false };
+  return { classification, pitchToUsProb: null, source, unavailable: false };
 }
 
 function classificationFromOutage(threadContext, inboundMessage, source) {
@@ -1171,6 +1217,7 @@ module.exports = {
   classifyOnly,
   classifyReply,
   classifyWithGemini,
+  classifyOnlyClaude,
   draftOnly,
   firstNameFromLead,
   nextBusinessDayLabel,

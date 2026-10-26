@@ -988,6 +988,18 @@ async function processSmartleadWebhookAsync({
     policy = applyFactCheckToPolicy(policy, factCheck);
     drafted = policy.draft;
     reasoning = policy.reasoning;
+    if (drafted) {
+      const { resolveSignOffName, applySignOff } = require('../utils/draft-sign-off');
+      const signOff = resolveSignOffName({
+        campaignName: resolvedCampaignName,
+        campaignId: resolvedCampaignId,
+        threadContext,
+        leadEmail,
+        voicePrompt: client.voice_prompt,
+      });
+      drafted = applySignOff(drafted, signOff);
+      policy = { ...policy, draft: drafted };
+    }
   }
 
   await db.query(
