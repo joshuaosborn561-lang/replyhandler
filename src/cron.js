@@ -86,6 +86,17 @@ function addDays(yyyyMmDd, deltaDays) {
 }
 
 function startCron() {
+  // ─── Opt-in: auto-route new SmartLead campaigns by SmartLead client_id ───
+  {
+    const { autoRouteClientCampaigns, autoRouteEnabled } = require('./services/campaign-auto-route');
+    if (autoRouteEnabled()) {
+      cron.schedule('*/15 * * * *', async () => {
+        try { await autoRouteClientCampaigns(); } catch (err) {
+          console.error('[AutoRoute] failed', { err: String(err.message).replace(/api_key=[^&\s]+/g, 'api_key=***') });
+        }
+      });
+    }
+  }
   // ─── SmartLead inbox polling backstop (webhooks are primary) ───────
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_SMARTLEAD_POLLING || '').trim())) {
     const slEvery = Number.isFinite(SMARTLEAD_POLL_MINUTES) && SMARTLEAD_POLL_MINUTES > 0

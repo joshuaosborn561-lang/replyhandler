@@ -1,6 +1,8 @@
 /**
  * Onboarding bot: create or update one replyhandler client and (optionally)
- * hook ONE SmartLead campaign's EMAIL_REPLY webhook to it.
+ * hook its SmartLead campaigns' EMAIL_REPLY webhooks to it (smartlead_campaign_id
+ * and/or campaign_ids[]). Optional smartlead_client_id enables auto-routing of
+ * new campaigns under that SmartLead client (see services/campaign-auto-route).
  *
  *   POST /admin/onboarding/client   (header ADMIN_API_KEY, required — fail closed)
  *
@@ -14,6 +16,7 @@ const { requireAdminApiKey } = require('../utils/admin-auth');
 const { webhookUrls } = require('../utils/public-client');
 const { normalizeClientBooking } = require('../utils/booking-bridge-destinations');
 const { resetCampaignRouteCache } = require('../services/campaign-routing');
+const { autoRouteClientCampaigns } = require('../services/campaign-auto-route');
 
 const SLACK_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
 
@@ -30,6 +33,16 @@ function validate(body) {
   if (body.smartlead_campaign_id != null && !/^\d+$/.test(String(body.smartlead_campaign_id))) {
     errors.push('smartlead_campaign_id must be numeric');
   }
+  if (body.campaign_ids != null) {
+    if (!Array.isArray(body.campaign_ids) || body.campaign_ids.some((c) => !/^\d+$/.test(String(c)))) {
+      errors.push('campaign_ids must be an array of numeric campaign ids');
+    } else if (body.campaign_ids.length > 100) {
+      errors.push('campaign_ids accepts at most 100 ids per call');
+    }
+  }
+  if (body.smartlead_client_id != null && body.smartlead_client_id !== '' && !/^\d+$/.test(String(body.smartlead_client_id))) {
+    errors.push('smartlead_client_id must be numeric');
+  }
   return errors;
 }
 
@@ -44,6 +57,7 @@ function safeView(client) {
     has_slack_bot_token: !!client.slack_bot_token,
     has_smartlead_api_key: !!client.smartlead_api_key,
     smartlead_use_master_key: client.smartlead_use_master_key === true,
+    smartlead_client_id: client.smartlead_client_id || null,
     ...webhookUrls(client.id),
   };
 }
@@ -56,6 +70,27 @@ async function defaultSlackToken(q) {
       ORDER BY (lower(name) = 'salesglider') DESC, created_at ASC LIMIT 1`
   );
   return rows[0]?.slack_bot_token || null;
+}
+
+/** Union of smartlead_campaign_id and campaign_ids, deduped, as strings. */
+function campaignIdsFrom(body) {
+  const ids = [];
+  if (body.smartlead_campaign_id != null && body.smartlead_campaign_id !== '') ids.push(String(body.smartlead_campaign_id));
+  for (const c of body.campaign_ids || []) ids.push(String(c));
+  return [...new Set(ids)];
+}
+
+/** Ensure one campaign's EMAIL_REPLY hook points at this client. Never throws. */
+async function ensureHook(sl, hookKey, campaignId, target) {
+  if (!hookKey) return { registered: false, reason: 'no smartlead_api_key on client' };
+  try {
+    const hooks = await sl.listCampaignWebhooks(hookKey, campaignId);
+    if ((hooks || []).some((h) => sl.webhookHasEmailReply(h, target))) return { registered: true, created: false, url: target };
+    await sl.createEmailReplyWebhook(hookKey, campaignId, target);
+    return { registered: true, created: true, url: target };
+  } catch (err) {
+    return { registered: false, error: err.message.replace(/api_key=[^&\s]+/g, 'api_key=***') };
+  }
 }
 
 async function upsertOnboardingClient(body, deps = {}) {
@@ -88,7 +123,11 @@ async function upsertOnboardingClient(body, deps = {}) {
   const slKey = body.smartlead_api_key || existing?.smartlead_api_key || null;
   // Campaign on the shared master account: route it, use the env master key at
   // runtime, never store that key on this client.
-  const useMaster = !slKey && !!body.smartlead_campaign_id;
+  const campaignIds = campaignIdsFrom(body);
+  const smartleadClientId = body.smartlead_client_id != null
+    ? (String(body.smartlead_client_id) || null)
+    : (existing?.smartlead_client_id || null);
+  const useMaster = !slKey && (campaignIds.length > 0 || !!smartleadClientId);
   const env = deps.env || process.env;
   const master = String(env.SMARTLEAD_MASTER_API_KEY || '').trim();
   if (useMaster && !master) return { status: 500, json: { error: 'SMARTLEAD_MASTER_API_KEY not set on server' } };
@@ -100,8 +139,11 @@ async function upsertOnboardingClient(body, deps = {}) {
     slack_channel_id: channel,
     booking_link: booked.booking_link || null,
     smartlead_campaign_id: body.smartlead_campaign_id || null,
+    campaign_ids: campaignIds,
+    smartlead_client_id: smartleadClientId,
     smartlead_key: slKey ? 'client' : (useMaster ? 'master (runtime, not stored)' : 'none'),
-    campaign_route: useMaster ? String(body.smartlead_campaign_id) : null,
+    campaign_route: useMaster && campaignIds.length === 1 ? campaignIds[0] : null,
+    campaign_routes: useMaster ? campaignIds : [],
   };
   if (dryRun) return { status: 200, json: { ok: true, dry_run: true, plan } };
 
@@ -127,35 +169,42 @@ async function upsertOnboardingClient(body, deps = {}) {
       'UPDATE clients SET smartlead_use_master_key = true, updated_at = now() WHERE id = $1 RETURNING *',
       [client.id]
     ));
-    await q(
-      `INSERT INTO smartlead_campaign_routes (campaign_id, client_id) VALUES ($1, $2)
-       ON CONFLICT (campaign_id) DO UPDATE SET client_id = EXCLUDED.client_id, updated_at = now()`,
-      [String(body.smartlead_campaign_id), client.id]
-    );
+  }
+  if (body.smartlead_client_id != null) {
+    ({ rows: [client] } = await q(
+      'UPDATE clients SET smartlead_client_id = $1, updated_at = now() WHERE id = $2 RETURNING *',
+      [smartleadClientId, client.id]
+    ));
+  }
+  // Routes are ADDED per campaign (campaign_id is the primary key); other
+  // campaigns already routed to this client are never removed.
+  if (useMaster && campaignIds.length) {
+    for (const cid of campaignIds) {
+      await q(
+        `INSERT INTO smartlead_campaign_routes (campaign_id, client_id) VALUES ($1, $2)
+         ON CONFLICT (campaign_id) DO UPDATE SET client_id = EXCLUDED.client_id, updated_at = now()`,
+        [cid, client.id]
+      );
+    }
     resetCampaignRouteCache();
   }
   const out = { ok: true, action: plan.action, client: safeView(client) };
-  if (useMaster) out.campaign_route = { campaign_id: String(body.smartlead_campaign_id), client_id: client.id };
+  if (useMaster && campaignIds.length === 1) out.campaign_route = { campaign_id: campaignIds[0], client_id: client.id };
   const hookKey = slKey || (useMaster ? master : null);
-  if (body.smartlead_campaign_id) {
+  if (campaignIds.length) {
     const target = webhookUrls(client.id).smartlead_webhook_url;
-    if (!hookKey) {
-      out.webhook = { registered: false, reason: 'no smartlead_api_key on client' };
-    } else {
-      try {
-        const hooks = await sl.listCampaignWebhooks(hookKey, body.smartlead_campaign_id);
-        if ((hooks || []).some((h) => sl.webhookHasEmailReply(h, target))) {
-          out.webhook = { registered: true, created: false, url: target };
-        } else {
-          await sl.createEmailReplyWebhook(hookKey, body.smartlead_campaign_id, target);
-          out.webhook = { registered: true, created: true, url: target };
-        }
-      } catch (err) {
-        out.webhook = { registered: false, error: err.message.replace(/api_key=[^&\s]+/g, 'api_key=***') };
-      }
+    const results = [];
+    for (const cid of campaignIds) {
+      results.push({ campaign_id: cid, routed: useMaster, webhook: await ensureHook(sl, hookKey, cid, target) });
     }
+    if (campaignIds.length === 1) out.webhook = results[0].webhook;
+    else out.campaigns = results;
   }
-  console.log('[Onboarding] client upsert', { id: client.id, action: plan.action, webhook: out.webhook?.registered });
+  if (useMaster) {
+    const { rows } = await q('SELECT campaign_id FROM smartlead_campaign_routes WHERE client_id = $1 ORDER BY campaign_id', [client.id]);
+    out.routed_campaign_ids = (rows || []).map((r) => String(r.campaign_id));
+  }
+  console.log('[Onboarding] client upsert', { id: client.id, action: plan.action, webhook: out.webhook?.registered, campaigns: campaignIds.length });
   return { status: existing ? 200 : 201, json: out };
 }
 
@@ -172,6 +221,29 @@ router.post('/admin/onboarding/client', requireAdminApiKey, async (req, res) => 
   }
 });
 
+router.get('/admin/onboarding/routes', requireAdminApiKey, async (req, res) => {
+  try {
+    const cid = req.query.client_id;
+    const { rows } = cid
+      ? await db.query('SELECT campaign_id, client_id, updated_at FROM smartlead_campaign_routes WHERE client_id = $1 ORDER BY campaign_id', [cid])
+      : await db.query('SELECT campaign_id, client_id, updated_at FROM smartlead_campaign_routes ORDER BY client_id, campaign_id', []);
+    res.json({ ok: true, count: rows.length, routes: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/onboarding/sync-campaigns', requireAdminApiKey, async (req, res) => {
+  try {
+    const dryRun = req.body?.dry_run === true || /^(1|true|yes)$/i.test(String(req.body?.dry_run || ''));
+    const r = await autoRouteClientCampaigns({ dryRun, clientId: req.body?.client_id || null });
+    res.json({ ok: true, dry_run: dryRun, ...r });
+  } catch (err) {
+    res.status(500).json({ error: err.message.replace(/api_key=[^&\s]+/g, 'api_key=***') });
+  }
+});
+
 module.exports = router;
 module.exports.upsertOnboardingClient = upsertOnboardingClient;
 module.exports.validate = validate;
+module.exports.campaignIdsFrom = campaignIdsFrom;
