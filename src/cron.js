@@ -177,6 +177,19 @@ function startCron() {
     }
   }
 
+  // ─── Missed inbound call -> Slack @-mention (every 2 min, off by default) ──
+  if (/^(1|true|yes|on)$/i.test(String(process.env.MISSED_CALL_ALERTS || '').trim())) {
+    cron.schedule('*/2 * * * *', async () => {
+      try {
+        const { runMissedCallAlerts } = require('./services/missed-call-alert');
+        const r = await runMissedCallAlerts();
+        if (r.alerted) console.log('[Cron] Missed-call alerts', r);
+      } catch (err) {
+        console.error('[Cron] Missed-call alerts failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
