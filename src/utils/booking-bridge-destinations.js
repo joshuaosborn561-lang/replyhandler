@@ -29,6 +29,7 @@ const FALLBACK_DESTINATIONS = Object.freeze({
   bolder: 'https://calendly.com/mike-boldercyberpartners/30min',
   salesglider: 'https://calendly.com/joshua-salesglidergrowth/30min',
   powergryd: 'https://meet.powerpsa.com/jesse/powergryd-strategy-call-2026',
+  vector: 'https://calendly.com/agancman-vectorenergygroup/new-meeting',
 });
 
 const LIVE_TTL_MS = 60 * 1000;
