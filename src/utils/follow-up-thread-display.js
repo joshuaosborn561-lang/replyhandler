@@ -1,7 +1,7 @@
 /**
  * Clean FOLLOW_UP thread turns for Slack: quoted history, signatures, and
- * legal disclaimers stripped. Older turns trim to ~400 chars; the last two
- * stay in full.
+ * legal disclaimers stripped. Prospect turns stay in full. Our older turns
+ * trim to ~400 chars; the last two stay in full.
  */
 
 const {
@@ -161,7 +161,7 @@ function prepareFollowUpThreadTurns(threadMessages, { timeZone = DISPLAY_TZ } = 
     });
   }
   return cleaned.map((m, i) => {
-    const full = i >= cleaned.length - 2;
+    const full = m.role === 'them' || i >= cleaned.length - 2;
     return {
       ...m,
       display: trimThreadBody(m.body, { full }),

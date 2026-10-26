@@ -32,6 +32,7 @@ const {
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
+  preferFullerInbound,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   SMARTLEAD_NON_REPLY_EVENTS,
@@ -438,15 +439,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       }
     }
 
-    const inboundMessage = slEnhance
-      ? parseInboundFromPayload(replyObj, payload)
-      : (
-          (replyObj && typeof replyObj === 'object' ? (replyObj.body || replyObj.message || replyObj.text) : replyObj) ||
-          payload.reply_text ||
-          payload.message ||
-          payload.body ||
-          ''
-        );
+    // HTML-converted text over the webhook `text` preview, enhancements on or off.
+    const inboundMessage = parseInboundFromPayload(replyObj, payload);
 
     console.log('[Webhook] SmartLead extracted', {
       clientId,
@@ -656,15 +650,26 @@ async function processSmartleadWebhookAsync({
     inboundEffective = cleanInboundReply(inboundEffective) || inboundEffective;
   }
 
-  if (slEnhance && threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
+  if (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
     const fromHist = latestInboundFromSmartleadHistory(threadContext, leadEmail);
     const lastSentPlain = lastOutboundBodyFromSmartleadHistory(threadContext);
     if (fromHist) {
+      const before = inboundEffective;
       const webhookLooksDup = lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain);
-      if (!inboundEffective || webhookLooksDup) {
+      if (slEnhance && (!inboundEffective || webhookLooksDup)) {
         inboundEffective = fromHist;
+      } else {
+        // History is the full reply when the webhook `text` was only a preview.
+        inboundEffective = preferFullerInbound(inboundEffective, fromHist);
       }
-    } else if (lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
+      if (inboundEffective !== before) {
+        console.log('[Webhook] SmartLead inbound expanded from message history', {
+          clientId,
+          before: before.length,
+          after: inboundEffective.length,
+        });
+      }
+    } else if (slEnhance && lastSentPlain && isLikelyDuplicateOfOutbound(inboundEffective, lastSentPlain)) {
       inboundEffective = '';
     }
   }

@@ -455,9 +455,15 @@ function looksTruncatedDraft(text) {
 
 function summarizeThread(threadContext) {
   if (!threadContext) return '(no prior thread)';
-  if (typeof threadContext === 'string') return threadContext.slice(0, 4000);
+  const cap = 4000;
+  // Keep the end of the thread. Slicing from the start dropped the newest message.
+  const keepEnd = (s) => {
+    const t = String(s || '');
+    return t.length <= cap ? t : t.slice(t.length - cap);
+  };
+  if (typeof threadContext === 'string') return keepEnd(threadContext);
   try {
-    return JSON.stringify(threadContext, null, 2).slice(0, 4000);
+    return keepEnd(JSON.stringify(threadContext, null, 2));
   } catch {
     return '(unserializable thread)';
   }
@@ -1225,6 +1231,7 @@ module.exports = {
   fallbackDraftText,
   looksLikeClearInterest,
   looksTruncatedDraft,
+  summarizeThread,
   looksLikeBookingLinkRequest,
   buildTimeSuggestionBlock,
   sanitizeDraft,
