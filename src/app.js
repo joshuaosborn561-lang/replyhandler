@@ -9,6 +9,7 @@ const clientActionRoutes = require('./routes/client-action');
 const authRoutes = require('./routes/auth');
 const testWebhookRoutes = require('./routes/test-webhooks');
 const voiceLearningRoutes = require('./routes/voice-learning');
+const onboardingRoutes = require('./routes/onboarding');
 const publicBookingCatalogRoutes = require('./routes/public-booking-catalog');
 
 function createApp() {
@@ -45,6 +46,7 @@ function createApp() {
   app.use(webhookRoutes);
   app.use(bookingBridgeRecapRoutes);
   app.use(slackRoutes);
+  app.use(onboardingRoutes);
   app.use(adminRoutes);
   app.use(clientActionRoutes);
   app.use(authRoutes);
