@@ -1,3 +1,4 @@
+const { anthropicModel } = require('./anthropic-model');
 const replyExamples = require('./reply-examples');
 const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
 const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
@@ -152,7 +153,7 @@ async function callAnthropic(system, user) {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+          model: anthropicModel(),
           max_tokens: 1200,
           system,
           messages: [{ role: 'user', content: user }],
@@ -347,7 +348,7 @@ async function generateClaudeReply({
 
   return {
     text,
-    model: data.model || process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+    model: data.model || anthropicModel(),
     examples,
     replyMode: mode,
   };
@@ -657,7 +658,7 @@ async function generateFollowUpClaudeDraft({
     text: parsed.draft,
     needsClient: parsed.needsClient === true,
     whatToSend: parsed.needsClient ? parsed.whatToSend : null,
-    model: data.model || process.env.ANTHROPIC_REPLY_MODEL || 'claude-sonnet-5',
+    model: data.model || anthropicModel(),
     examples,
     usage: data.usage || null,
   };
