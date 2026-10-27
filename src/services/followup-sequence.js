@@ -439,7 +439,7 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
     ? { id: fresh.claimed_by_slack_id, name: fresh.claimed_by_name }
     : null;
   const callers = text.parseCallers(env);
-  const caller = text.callerName(env, claimed);
+  const caller = text.callerName();
   const args = { firstName: first, callerName: caller, clientName: client.name, offerLine, proofPoint };
   const script = text.callScript(args);
   const voicemail = text.voicemailScript(step.kind, args);

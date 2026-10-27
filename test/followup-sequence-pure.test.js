@@ -83,12 +83,12 @@ test('plan covers every spec step exactly once, calls and emails typed', () => {
 
 // ─── text ────────────────────────────────────────────────────────────────────
 
-const args = { firstName: 'Pat', callerName: 'Gabe', clientName: 'Acme Co', offerLine: 'cutting your IT costs' };
+const args = { firstName: 'Pat', callerName: text.callerName(), clientName: 'Acme Co', offerLine: 'cutting your IT costs' };
 
 test('call script is the exact spec line', () => {
   assert.equal(
     text.callScript(args),
-    'Hey Pat, this is Gabe with Acme Co. We emailed you about cutting your IT costs. Did you still want to take a peek at that in the next couple days?',
+    'Hey Pat, this is (name) with Acme Co. We emailed you about cutting your IT costs. Did you still want to take a peek at that in the next couple days?',
   );
 });
 
@@ -245,7 +245,7 @@ test('Day 6 voicemail is a breakup script: recap the offer, then the real proof'
   const proof = 'Last quarter we booked 212 meetings for 14 clients.';
   assert.equal(
     text.voicemailScript('call_day6', { ...args, proofPoint: proof }),
-    "Hey Pat, Gabe with Acme Co. Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+    "Hey Pat, (name) with Acme Co. Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
   );
 });
 
@@ -253,7 +253,7 @@ test('Day 6 voicemail drops the proof sentence when there is no real proof, neve
   const none = text.voicemailScript('call_day6', { ...args, proofPoint: null });
   assert.equal(
     none,
-    "Hey Pat, Gabe with Acme Co. Last call from me. Quick recap: cutting your IT costs. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+    "Hey Pat, (name) with Acme Co. Last call from me. Quick recap: cutting your IT costs. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
   );
   assert.equal(text.voicemailScript('call_day6', { ...args, proofPoint: '   ' }), none);
   // A missing offer shows the placeholder, same as the call script.
@@ -321,7 +321,7 @@ test('callback steps are call steps with the same script and no voicemail', () =
   assert.equal(text.isCallKind('call_callback_7'), true);
   assert.equal(text.isCallKind('email_day1'), false);
   assert.equal(text.stepLabel('call_callback_2'), 'Callback call');
-  assert.equal(text.voicemailScript('call_callback_1', { firstName: 'Pat', callerName: 'Gabe', clientName: 'Acme Co', offerLine: 'x' }), null);
+  assert.equal(text.voicemailScript('call_callback_1', { firstName: 'Pat', callerName: text.callerName(), clientName: 'Acme Co', offerLine: 'x' }), null);
 });
 
 test('call card shows the callback confirmation note and no buttons', () => {
@@ -332,13 +332,13 @@ test('call card shows the callback confirmation note and no buttons', () => {
   assert.ok(JSON.stringify(blocks).includes('Callback set for'));
 });
 
-// ─── callers (Gabe or Kate) ──────────────────────────────────────────────────
+// ─── callers (Gabe and Cayden) ───────────────────────────────────────────────
 
 test('FOLLOWUP_CALLERS maps Slack ids to names (list or JSON); bad entries are dropped', () => {
-  const want = [{ id: 'UGABE1', name: 'Gabe' }, { id: 'UKATE1', name: 'Kate' }];
-  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'UGABE1:Gabe, UKATE1:Kate' }), want);
-  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: '{"UGABE1":"Gabe","UKATE1":"Kate"}' }), want);
-  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'UGABE1:Gabe,not-an-id:Bob,UGABE1:Dup,UKATE1:' }), [want[0]]);
+  const want = [{ id: 'U0CAL8ZDG92', name: 'Gabe' }, { id: 'U0BL8JT75KN', name: 'Cayden' }];
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe, U0BL8JT75KN:Cayden' }), want);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: '{"U0CAL8ZDG92":"Gabe","U0BL8JT75KN":"Cayden"}' }), want);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe,not-an-id:Bob,U0CAL8ZDG92:Dup,U0BL8JT75KN:' }), [want[0]]);
   assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'UGABE1:<b>Gabe*' }), [{ id: 'UGABE1', name: 'bGabe' }], 'markup stripped from names');
 });
 
@@ -348,23 +348,21 @@ test('without FOLLOWUP_CALLERS the legacy single caller (default Gabe) applies',
   assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'garbage' }), [{ id: null, name: 'Gabe' }]);
 });
 
-test('caller label reads "Gabe or Kate" until a caller is claimed', () => {
-  const env = { FOLLOWUP_CALLERS: 'UGABE1:Gabe,UKATE1:Kate' };
-  assert.equal(text.callerLabel([{ name: 'Gabe' }]), 'Gabe');
-  assert.equal(text.callerLabel([{ name: 'Gabe' }, { name: 'Kate' }]), 'Gabe or Kate');
-  assert.equal(text.callerLabel([{ name: 'Gabe' }, { name: 'Kate' }, { name: 'Sam' }]), 'Gabe, Kate or Sam');
-  assert.equal(text.callerName(env), 'Gabe or Kate');
-  assert.equal(text.callerName(env, { id: 'UKATE1', name: 'Kate' }), 'Kate');
-  const args = { firstName: 'Pat', clientName: 'Acme Co', offerLine: 'cutting your IT costs', proofPoint: 'We saved 14 clients $2M.' };
-  assert.ok(text.callScript({ ...args, callerName: text.callerName(env) }).startsWith('Hey Pat, this is Gabe or Kate with Acme Co.'));
-  assert.ok(text.callScript({ ...args, callerName: 'Kate' }).startsWith('Hey Pat, this is Kate with Acme Co.'));
-  assert.ok(text.voicemailScript('call_day0', { ...args, callerName: 'Kate' }).includes("it's Kate with Acme Co"));
-  assert.ok(text.voicemailScript('call_day3', { ...args, callerName: 'Kate' }).includes("it's Kate with Acme Co"));
-  assert.ok(text.voicemailScript('call_day6', { ...args, callerName: 'Kate' }).startsWith('Hey Pat, Kate with Acme Co. Last call from me.'));
+test('scripts say "(name)" literally so whoever calls says their own name', () => {
+  assert.equal(text.callerName(), '(name)');
+  assert.equal(text.CALLER_PLACEHOLDER, '(name)');
+  const a = { firstName: 'Pat', clientName: 'Acme Co', offerLine: 'cutting your IT costs', proofPoint: 'We saved 14 clients $2M.', callerName: text.callerName() };
+  assert.ok(text.callScript(a).startsWith('Hey Pat, this is (name) with Acme Co.'));
+  assert.ok(text.voicemailScript('call_day0', a).includes("it's (name) with Acme Co"));
+  assert.ok(text.voicemailScript('call_day3', a).includes("it's (name) with Acme Co"));
+  assert.ok(text.voicemailScript('call_day6', a).startsWith('Hey Pat, (name) with Acme Co. Last call from me.'));
+  for (const kind of ['call_day0', 'call_day3', 'call_day6']) {
+    assert.ok(!/Gabe|Cayden/.test(text.voicemailScript(kind, a)), `${kind} names no one`);
+  }
 });
 
 test('claim notes: a claim names the caller, a non-caller click is logged', () => {
-  assert.match(seq.claimNote({ claimed: true, caller: { id: 'UKATE1', name: 'Kate' } }), /Kate claimed this lead/);
+  assert.match(seq.claimNote({ claimed: true, caller: { id: 'U0BL8JT75KN', name: 'Cayden' } }), /Cayden claimed this lead/);
   assert.match(seq.claimNote({ claimed: false, nonCaller: true }), /not on the caller list/);
   assert.equal(seq.claimNote({ claimed: false, nonCaller: false }), null);
   assert.equal(seq.claimNote(null), null);

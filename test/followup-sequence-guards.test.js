@@ -92,5 +92,6 @@ test('the Slack route validates the callback modal before acknowledging it', () 
 test('callers are configured by env and documented', () => {
   const env = src('.env.example');
   assert.match(env, /FOLLOWUP_CALLERS=/);
-  assert.match(env, /Gabe or Kate/);
+  assert.match(env, /FOLLOWUP_CALLERS=U0CAL8ZDG92:Gabe,U0BL8JT75KN:Cayden/);
+  assert.ok(!/kate/i.test(env), 'no Kate or placeholder id');
 });

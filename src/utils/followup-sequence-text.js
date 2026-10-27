@@ -24,7 +24,7 @@ function cleanCallerName(name) {
 
 /**
  * Configured callers: FOLLOWUP_CALLERS maps Slack user id to display name, as
- * JSON ({"U1":"Gabe","U2":"Kate"}) or a list ("U1:Gabe,U2:Kate"). Without it the
+ * JSON ({"U1":"Gabe","U2":"Cayden"}) or a list ("U1:Gabe,U2:Cayden"). Without it the
  * legacy single caller (FOLLOWUP_CALLER_NAME / FOLLOWUP_CALLER_SLACK_ID, default
  * Gabe) is used. Returns [{ id, name }].
  */
@@ -55,18 +55,11 @@ function parseCallers(env = process.env) {
   return [{ id: /^[UW][A-Z0-9]{2,}$/.test(id) ? id : null, name }];
 }
 
-/** "Gabe", "Gabe or Kate", "Gabe, Kate or Sam": what {caller_name} shows until a caller claims the lead. */
-function callerLabel(callers) {
-  const names = (callers || []).map((c) => c.name).filter(Boolean);
-  if (names.length === 0) return 'Gabe';
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
-}
+/** Scripts say this literally so whoever calls says their own name. */
+const CALLER_PLACEHOLDER = '(name)';
 
-/** Display name for scripts: the claiming caller, else every configured caller. */
-function callerName(env = process.env, claimed = null) {
-  if (claimed && claimed.name) return claimed.name;
-  return callerLabel(parseCallers(env));
+function callerName() {
+  return CALLER_PLACEHOLDER;
 }
 
 function offerText(offerLine) {
@@ -181,7 +174,7 @@ module.exports = {
   firstNameOf,
   callerName,
   parseCallers,
-  callerLabel,
+  CALLER_PLACEHOLDER,
   callScript,
   voicemailScript,
   emailBody,
