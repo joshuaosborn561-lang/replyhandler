@@ -70,10 +70,16 @@ Note: wrong-person also catches "please contact Jane instead". A name with
 no email stays silent on that path. A referral whose human text contains
 the other person's email is carded, with a CC action for that address
 (see DECISIONS.md). Do not construct an address from the name, and do not
-read one out of a signature, quoted history, or disclaimer. The draft for
-any handoff is the fixed two-line template in `referralDraftText` — thank
-the replier, blank line, then address the referred person. Do not freewrite
-it. The mailbox still appends the signature on send.
+read one out of a signature, quoted history, or disclaimer. A mailbox
+notice, a departure, an auto-forward, or a clear no stays suppressed even
+when it contains an email. Do not CC the sender's own address. Do not
+greet a role or company mailbox by that local part (`ar`, `info`, `sales`,
+`estimating`, `accounting`, `paragon@paragon.com`); the second line is
+"Hey there". The draft for a real handoff is the fixed two-line template
+in `referralDraftText` — thank the replier, blank line, then address the
+referred person. Do not freewrite it. The mailbox still appends the
+signature on send. Recovery of a suppressed row does not promote
+Not Interested unless that human text is a current employee's handoff.
 
 ## Josh / SalesGlider draft voice
 

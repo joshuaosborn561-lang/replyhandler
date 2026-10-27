@@ -1453,3 +1453,15 @@ Both already-posted checks now recover a suppressed referral that contains an em
 `POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0` does not consult the poller lookback or the `already_posted` skip. A named lead or reply id is not limited to the last 30 days. Her row has no Slack ts, so the endpoint posts exactly one card: the two-line template and the CC button for Guy@orioncityscape.com. A row that already has a Slack ts is `chat.update`d on that same message. It does not send.
 
 Guard: `a suppressed email referral the poller would skip still posts once` and `the early already-posted skip recovers a suppressed email referral` in `test/referral-draft.test.js`.
+
+### A left-the-company email is not a referral (Oct 27)
+
+Cayden does not want a card when the person has left, the mailbox is dead, the reply is an auto-forward, or the reply is a no, even if the text contains an email. At 11:49 AM ET the #147 recovery promoted 15 suppressed rows (`[SmartLeadPoll] Suppressed referral with an email promoted to a card`) and posted 13 cards. The unwanted ones were mailbox notices (Wayne Klinger, John Davis, Irene Amaro, Evan Glassman, Katrina Flesher, Frank Bonanno, Andrew Murray, Christopher Hallmeyer), departures (Ricardo Polmon, Bob Reilly), an auto-forward (James Wyman), and a no sent on someone's behalf (Courtney Franklin / Fernanda, greeted "Hey Fersosa" and CC'd to the sender). Don Smith ("Please contact Greg Goodwin or Steve Schofield") was the real handoff. Ariel ("please talk to Guy at our office. Guy@") is still a handoff.
+
+Those bodies do not promote, do not recover, and do not get a referral draft or a CC. A Not Interested label, including SmartLead's category, stays suppressed unless the human text is a current employee's handoff. The sender's own address is never a CC. A role or company local part is not a greeting; the line is "Hey there". This is not a second insert and not a time-window dedupe.
+
+Cards already posted by that poll stay where they are. Nothing is deleted. They are the Slack messages for the names above, and the rows updated around 15:49 UTC on Oct 27 2026 whose inbound matches `not regularly monitored`, `no longer monitored`, `no longer active`, `no longer in use`, `no longer part of`, `no longer a sales representative`, `forward your email`, or `not seeking`, with a real `slack_message_ts`. Reject on the card is the existing Not Interested action.
+
+Ariel's row is outside the poller lookback, so startup posts her one card if she still has none (`ensureArielReferralCard`). A boot that finds a Slack timestamp does nothing. It does not send.
+
+Guard: `test/referral-departure.test.js`.

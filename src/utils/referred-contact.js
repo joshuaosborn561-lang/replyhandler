@@ -9,6 +9,7 @@ const { looksLikeReferral, normalizeEmail, isAutoReplyAddress } = require('./rep
 const {
   humanTextForClassification,
   looksLikeHtml,
+  referralTextBlockReason,
 } = require('./smartlead-webhook-helpers');
 
 const EMAIL_RE = /[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -16,7 +17,26 @@ const GENERIC_LOCAL = new Set([
   'info', 'sales', 'admin', 'support', 'hello', 'contact', 'team', 'office',
   'hr', 'billing', 'legal', 'privacy', 'noreply', 'no-reply', 'mail',
   'newsletter', 'webmaster', 'jobs', 'careers',
+  'ar', 'estimating', 'accounting', 'accounts', 'ap',
 ]);
+
+function emailLocalToken(email) {
+  return String(email || '').split('@')[0].split(/[._+-]+/).filter(Boolean)[0] || '';
+}
+
+/** Role mailboxes and company-name locals (paragon@paragon.com) are not first names. */
+function localPartIsCompanyOrRole(email) {
+  const key = emailLocalToken(email).toLowerCase().replace(/[^a-z]/g, '');
+  if (!key) return false;
+  if (GENERIC_LOCAL.has(key)) return true;
+  const domain = String(email || '').toLowerCase().split('@')[1] || '';
+  const host = domain.split('.')[0].replace(/[^a-z0-9]/g, '');
+  if (!host || key.length < 4) return false;
+  const stem = host.replace(/(group|holdings|partners|inc|llc|corp|company|team|mail|email|hq)$/i, '');
+  if (key === host || key === stem) return true;
+  if (key.length >= 5 && (host.startsWith(key) || (stem && stem.startsWith(key)))) return true;
+  return false;
+}
 
 function stripDivsMatching(html, attrRe) {
   const s = String(html || '');
@@ -248,8 +268,9 @@ function nameForEmail(text, email) {
     }
     return full;
   }
-  const token = key.split('@')[0].split(/[._-]+/)[0];
-  if (/^[A-Za-z]{2,}$/.test(token) && !GENERIC_LOCAL.has(token.toLowerCase())) {
+  if (localPartIsCompanyOrRole(email)) return '';
+  const token = emailLocalToken(email);
+  if (/^[A-Za-z]{2,}$/.test(token)) {
     return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
   }
   return '';
@@ -259,6 +280,7 @@ function nameForEmail(text, email) {
  * @returns {{ name: string, email: string }[]}
  */
 function extractReferredContacts(raw, opts = {}) {
+  if (referralTextBlockReason(raw)) return [];
   const cleanedHtml = stripSignatureAndQuoteHtml(raw);
   const human = cutTrailingSignature(humanTextForClassification(cleanedHtml), opts);
   if (!isHandoff(human)) return [];
@@ -322,9 +344,8 @@ function prospectFirstName(leadName) {
 }
 
 function firstNameFromEmail(email) {
-  const local = String(email || '').split('@')[0] || '';
-  const token = local.split(/[._+-]+/).filter(Boolean)[0] || '';
-  return looksLikeFirstName(token);
+  if (localPartIsCompanyOrRole(email)) return '';
+  return looksLikeFirstName(emailLocalToken(email));
 }
 
 /** First name the prospect typed. "talk to Guy" → Guy. Roles are not names. */
@@ -350,7 +371,10 @@ function referredGreetingName({ human, contacts } = {}) {
   const list = Array.isArray(contacts) ? contacts : [];
   for (const contact of list) {
     const named = looksLikeFirstName(String(contact?.name || '').split(/\s+/)[0]);
-    if (named) return named;
+    if (!named) continue;
+    const token = emailLocalToken(contact?.email).toLowerCase().replace(/[^a-z]/g, '');
+    if (localPartIsCompanyOrRole(contact?.email) && named.toLowerCase() === token) continue;
+    return named;
   }
   for (const contact of list) {
     const fromEmail = firstNameFromEmail(contact?.email);
@@ -372,6 +396,7 @@ function referralDraftText({
   prospectName,
   ourEmails,
 } = {}) {
+  if (inboundMessage && referralTextBlockReason(inboundMessage)) return '';
   const opts = {
     prospectEmail,
     prospectName: prospectName || leadName,
