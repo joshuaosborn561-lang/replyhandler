@@ -6,6 +6,8 @@
  * stay off the CC list. Loop-in client CC (#106) is merged at send time.
  */
 
+const { humanTextForClassification } = require('./smartlead-webhook-helpers');
+
 const AUTO_REPLY_LOCAL = /^(no[-_]?reply|do[-_]?not[-_]?reply|donotreply|mailer-daemon|postmaster|bounce|bounces|notifications?|alerts?|automated?|mailer|daemon|noreply)$/i;
 
 function historyMessages(historyResponse) {
@@ -253,7 +255,11 @@ function buildReplyAll({
  */
 const REFERRAL_PATTERNS = [
   /\b(i(?:'|\u2019)?ve|i have|have|i)\s+(?:cc(?:'|\u2019)?d|cc'ed|ccd|copied|looped(?:\s+in)?|added|included|forwarded(?:\s+this)?\s+to)\b/i,
-  /\b(?:cc(?:'|\u2019)?ing|copying|looping in)\b/i,
+  // Bare "copying" is the legal triplet "disclosure, copying, distribution".
+  // A referral names who was copied.
+  /\b(?:cc(?:'|\u2019)?ing|copying)\s+(?:in\s+)?(?:my|our|him|her|them)\b/i,
+  /\b(?:cc(?:'|\u2019)?ing|copying)\s+in\s+[A-Z][\p{L}'’.-]+/u,
+  /\blooping in\b/i,
   /\b(?:talk|speak|reach out|connect|get in touch|follow up)\s+(?:to|with)\s+(?:my|our|him|her|them|[A-Z][a-z]+)/,
   // "contact our office" is a mailbox bot, not a person. A named role still counts.
   /\b(?:please\s+)?(?:contact|email|reach)\s+(?:my|our)\s+(?!office\b|team\b|department\b|staff\b|company\b|mailbox\b|support\b)\w+/i,
@@ -262,8 +268,10 @@ const REFERRAL_PATTERNS = [
 ];
 
 function looksLikeReferral(text) {
-  const s = String(text || '');
-  if (!s.trim()) return false;
+  // Footer boilerplate is not a referral. "copying" inside
+  // "disclosure, copying, distribution" must not promote OTHER → INTERESTED.
+  const s = humanTextForClassification(text);
+  if (!String(s || '').trim()) return false;
   return REFERRAL_PATTERNS.some((re) => re.test(s));
 }
 

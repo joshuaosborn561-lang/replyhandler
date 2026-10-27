@@ -85,7 +85,7 @@ function automatedNoticeResult(inboundMessage) {
     classification: 'AUTOMATED_NOTICE',
     draft: '',
     proposed_time: null,
-    reasoning: 'Automated notice (mailbox change, departure, or ticket confirmation). No draft.',
+    reasoning: 'Automated notice (mailbox change, departure, ticket confirmation, or disclaimer/scanner footer). No draft.',
     source: 'automated_notice',
   };
 }

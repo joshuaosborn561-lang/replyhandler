@@ -430,8 +430,217 @@ function looksLikeOutOfOffice(text) {
 }
 
 /**
- * Mailbox changes, departure auto-replies, and ticket bots. Rules only —
- * no model — so a classifier outage cannot turn these into a draft.
+ * Legal disclaimers and security-gateway footers. A reply that is only these
+ * has no human text. A real reply that also carries the footer keeps the
+ * human sentences.
+ */
+const DISCLAIMER_MARKS = [
+  /the information contained in this (?:e-?mail|email|communication|message)/i,
+  /intended solely for/i,
+  /intended only for the (?:use|recipient|individual|entity)/i,
+  /if you are not the (?:intended )?recipient/i,
+  /if you have received this (?:e-?mail|email|communication|message) in error/i,
+  /disclosure,\s*copying,\s*distribution/i,
+  /privileged and confidential/i,
+  /this (?:e-?mail|email|message) and any (?:files|attachments)/i,
+  /confidentiality notice/i,
+  /unauthorized (?:review|use|disclosure)/i,
+];
+
+const BOILERPLATE_CRUMB = /\b(mimecast|proofpoint|barracuda|ironport|fortimail|sophos|avanan|disclaimer|confidential|recipient|malware|viruses|originated from outside|external sender|email security|cyber resilience)\b/i;
+
+function disclaimerScore(text) {
+  const s = String(text || '');
+  return DISCLAIMER_MARKS.reduce((n, re) => n + (re.test(s) ? 1 : 0), 0);
+}
+
+function isDisclaimerText(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  if (/^disclaimer\s*:?\s*$/i.test(s)) return true;
+  return disclaimerScore(s) >= 2;
+}
+
+function isScannerText(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return false;
+  if (/\bscanned for (?:viruses|malware|spam|threats)\b/i.test(s)) return true;
+  if (/\bthis (?:e-?mail|email|message) has been (?:scanned|checked) for\b/i.test(s)) return true;
+  if (/\bmimecast\b/i.test(s) && /\b(?:scanned|archived|malware|email security|cyber|virus)\b/i.test(s)) return true;
+  if (/\bproofpoint\b/i.test(s) && /\b(?:scanned|protected|encryption|security|virus|spam)\b/i.test(s)) return true;
+  if (/\bbarracuda\b/i.test(s) && /\b(?:scanned|email security|spam|virus|networks|sentinel)\b/i.test(s)) return true;
+  if (/\b(?:cisco\s+ironport|ironport|fortimail|sophos|avanan|abnormal security)\b/i.test(s) && /\b(?:scanned|security|protected|spam|virus)\b/i.test(s)) return true;
+  if (/\bthis (?:message|e-?mail|email) is from an external sender\b/i.test(s)) return true;
+  if (/\byou don'?t often get email from\b/i.test(s)) return true;
+  if (/\boriginated from outside\b/i.test(s)) return true;
+  if (/\bdo not click links or open attachments\b/i.test(s)) return true;
+  if (/^\[?\s*external\s*\]?$/i.test(s)) return true;
+  return false;
+}
+
+function isBoilerplateText(text) {
+  return isDisclaimerText(text) || isScannerText(text);
+}
+
+function looksLikeHumanSentence(sentence) {
+  return /\b(i|we|i'm|let's|please|can you|could you|would you|want|yes|yeah|yep|ok|okay|sure|thanks|thank you|sounds good|let me|what|when|where|how|who)\b/i.test(sentence);
+}
+
+function sentenceIsBoilerplate(sentence, paragraph) {
+  const s = String(sentence || '').trim();
+  if (!s) return true;
+  if (/^disclaimer\b/i.test(s)) return true;
+  if (isScannerText(s)) return true;
+  if (disclaimerScore(s) >= 1 && !looksLikeHumanSentence(s)) return true;
+  if (disclaimerScore(s) >= 1 && disclaimerScore(paragraph) >= 2 && !looksLikeHumanSentence(s)) return true;
+  if (/\blearn why this is important\b/i.test(s)) return true;
+  if (/\bunless you recogni[sz]e the sender\b/i.test(s)) return true;
+  return false;
+}
+
+function splitSentences(text) {
+  return String(text || '')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function stripBoilerplateChunk(chunk) {
+  const c = String(chunk || '').trim();
+  if (!c) return '';
+  const sentences = splitSentences(c);
+  const units = sentences.length ? sentences : [c];
+  let kept = units.filter((s) => !sentenceIsBoilerplate(s, c));
+  if (isBoilerplateText(c)) {
+    kept = kept.filter((s) => looksLikeHumanSentence(s) && !sentenceIsBoilerplate(s, c));
+  }
+  if (kept.length === units.length && !isBoilerplateText(c)) return c;
+  return kept.join(' ').trim();
+}
+
+function plainForBoilerplate(raw) {
+  let t = stripHtmlToText(raw);
+  if (!t && !looksLikeHtml(raw)) t = String(raw || '');
+  t = stripEmailQuotePrefix(t);
+  return String(t || '').trim();
+}
+
+/** Drop disclaimer / scanner footer text. Human sentences stay. */
+function removeSecurityBoilerplate(plain) {
+  const trimmed = String(plain || '').trim();
+  if (!trimmed) return '';
+  const paragraphs = trimmed.split(/\n{2,}/);
+  const keptParas = [];
+  let removed = false;
+  for (const para of paragraphs) {
+    const flat = para.replace(/\n+/g, ' ').replace(/[ \t]{2,}/g, ' ').trim();
+    const next = stripBoilerplateChunk(flat);
+    if (next !== flat) removed = true;
+    if (next) keptParas.push(next);
+  }
+  if (!removed) return trimmed;
+  return keptParas.join('\n\n').trim();
+}
+
+const TITLE_LINE = /^(senior|sr\.?|junior|jr\.?|lead|head|chief|director|manager|vp|vice president|president|founder|co-founder|owner|partner|principal|designer|engineer|counsel|attorney|analyst|coordinator|specialist|administrator|associate|officer|consultant)\b/i;
+
+function isHardSignatureLine(line) {
+  const l = String(line || '').trim();
+  if (!l || l.length > 120) return false;
+  if (/^--\s*$/.test(l)) return true;
+  if (/^sent from my\b/i.test(l)) return true;
+  if (/^https?:\/\/\S+$/i.test(l) || /^www\.\S+$/i.test(l)) return true;
+  if (/^[\w.+-]+@[\w.-]+\.[a-z]{2,}$/i.test(l)) return true;
+  if (/^\+?[\d\s().-]{10,}$/.test(l)) return true;
+  if (TITLE_LINE.test(l) && !/[.?!]/.test(l)) return true;
+  return false;
+}
+
+function isNameLine(line) {
+  const l = String(line || '').trim();
+  if (!l || l.length > 60 || /[.!?]/.test(l)) return false;
+  const words = l.split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;
+  return words.every((w) => /^[\p{L}][\p{L}'’.-]+$/u.test(w));
+}
+
+/** "Kayla Debiec" is a signature. "Sounds good" is a sentence. */
+function isProperName(text) {
+  const s = String(text || '').trim();
+  if (!isNameLine(s)) return false;
+  return s.split(/\s+/).every((w) => /^[\p{Lu}][\p{L}'’.-]+$/u.test(w));
+}
+
+/**
+ * A block that is only a signature: name, title, email, phone.
+ * A sentence ("See my note.") is not a signature, even with an address under it.
+ */
+function paragraphIsSignatureOnly(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return true;
+  if (looksLikeHumanSentence(s)) return false;
+  const withoutEmails = s.replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, '');
+  if (/[.!?]/.test(withoutEmails)) return false;
+  const hasContact = /@/.test(s)
+    || /\b\d{3}[\s).-]?\d{3}[\s.-]?\d{4}\b/.test(s)
+    || /\b(designer|director|manager|president|founder|engineer|counsel|partner)\b/i.test(s);
+  return hasContact && s.split(/\s+/).length <= 30;
+}
+
+/** Trailing phone / title / name block. A real sentence above it stays. */
+function withoutSignatureBlock(text) {
+  const kept = String(text || '').split('\n');
+  let sawFurniture = false;
+  while (kept.length) {
+    const last = kept[kept.length - 1].trim();
+    if (!last) {
+      kept.pop();
+      continue;
+    }
+    if (isHardSignatureLine(last)) {
+      kept.pop();
+      sawFurniture = true;
+      continue;
+    }
+    if (sawFurniture && isNameLine(last)) {
+      kept.pop();
+      continue;
+    }
+    break;
+  }
+  return kept.join('\n').trim();
+}
+
+/**
+ * Prospect text the classifier and referral check should read.
+ * Quoted history and disclaimer / scanner footers are removed.
+ * The stored reply and the Slack card keep the original full text.
+ */
+function humanTextForClassification(raw) {
+  const plain = plainForBoilerplate(raw);
+  if (!plain) return '';
+  return removeSecurityBoilerplate(plain).trim();
+}
+
+/**
+ * True when, after quoted history and a trailing signature, the only
+ * remaining content is a legal disclaimer and/or a virus-scan footer.
+ */
+function isDisclaimerOrScannerOnly(text) {
+  const plain = plainForBoilerplate(text);
+  if (!plain) return false;
+  const stripped = removeSecurityBoilerplate(plain);
+  const boilerplatePresent = isBoilerplateText(plain) || normWs(stripped) !== normWs(plain);
+  let human = withoutSignatureBlock(stripped).trim();
+  if (boilerplatePresent && (paragraphIsSignatureOnly(human) || isProperName(human))) human = '';
+  if (human) return false;
+  return boilerplatePresent;
+}
+
+/**
+ * Mailbox changes, departure auto-replies, ticket bots, and replies whose
+ * only content is a legal disclaimer or a security-gateway footer. Rules
+ * only — no model — so a classifier outage cannot turn these into a draft.
  */
 function looksLikeAutomatedNotice(text) {
   const s = normWs(text);
@@ -446,6 +655,7 @@ function looksLikeAutomatedNotice(text) {
   const departed = /\b(no longer employed|no longer with|has left)\b/.test(s);
   const handoff = /\b(reach out|contact)\b/.test(s);
   if (departed && handoff) return true;
+  if (isDisclaimerOrScannerOnly(text)) return true;
   return false;
 }
 
@@ -572,6 +782,8 @@ module.exports = {
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
   looksLikeAutomatedNotice,
+  humanTextForClassification,
+  isDisclaimerOrScannerOnly,
   looksLikeLiveColleagueReferral,
   looksLikeUnsubscribe,
   shouldSkipSlackForReply,
