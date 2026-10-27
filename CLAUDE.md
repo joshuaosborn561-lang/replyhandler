@@ -70,7 +70,10 @@ Note: wrong-person also catches "please contact Jane instead". A name with
 no email stays silent on that path. A referral whose human text contains
 the other person's email is carded, with a CC action for that address
 (see DECISIONS.md). Do not construct an address from the name, and do not
-read one out of a signature, quoted history, or disclaimer.
+read one out of a signature, quoted history, or disclaimer. The draft for
+any handoff is the fixed two-line template in `referralDraftText` — thank
+the replier, blank line, then address the referred person. Do not freewrite
+it. The mailbox still appends the signature on send.
 
 ## Josh / SalesGlider draft voice
 

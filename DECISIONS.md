@@ -1433,3 +1433,19 @@ When the human-written sentence contains the other person's email, the row is ca
 The referred person is not enrolled in a cold sequence in this change, and the domain is not blocked.
 
 Guard: `test/referral-cc.test.js`, including `a name with no email has no CC option`.
+
+### Referral drafts are Cayden's two lines (Oct 27)
+
+Any reply that hands us to another person, including a card that shows the CC action, uses this draft and no other:
+
+```
+Thank you so much for the contact, {prospect first name}!
+
+Hey {referred first name}, would this be worth meeting about for you guys?
+```
+
+The referred name comes from the human sentence ("talk to Guy" is Guy). If the sentence only has an email, the local part is used when it reads as a first name. Otherwise the second line is "Hey there," and no name is invented. The mailbox still appends its signature on send. The model does not write this draft. Deep Roots and Vasco wording does not replace it.
+
+Ariel Isaac Franco's Vector card (campaign 4242292) may already be in #vector-ai-replies with the earlier draft. `POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0` rewrites that same Slack message with `chat.update` and stores the new draft on the same row. It posts one card only when that reply has none. It does not send.
+
+Guard: `test/referral-draft.test.js`.

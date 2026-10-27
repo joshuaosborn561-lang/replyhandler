@@ -298,6 +298,106 @@ function referralCcButtonText(contacts) {
   return `Approve & send with CC (${emails.length})`;
 }
 
+const NOT_A_FIRST_NAME = new Set([
+  ...GENERIC_LOCAL,
+  'colleague', 'manager', 'management', 'ops', 'office', 'team', 'assistant',
+  'director', 'person', 'contact', 'rep', 'representative', 'someone',
+  'somebody', 'operations', 'support', 'please', 'thanks', 'thank',
+]);
+
+function looksLikeFirstName(token) {
+  const raw = String(token || '').trim();
+  const letters = raw.replace(/[^A-Za-z]/g, '');
+  if (!/^[A-Za-z]{2,}$/.test(letters)) return '';
+  if (NOT_A_FIRST_NAME.has(letters.toLowerCase())) return '';
+  if (/^[A-Z][a-z]+$/.test(raw)) return raw;
+  return letters.charAt(0).toUpperCase() + letters.slice(1).toLowerCase();
+}
+
+function prospectFirstName(leadName) {
+  const s = String(leadName || '').trim();
+  if (!s || /^(unknown|prospect|linkedin(\s+prospect)?)$/i.test(s)) return 'there';
+  const first = s.split(/\s+/)[0];
+  return looksLikeFirstName(first) || 'there';
+}
+
+function firstNameFromEmail(email) {
+  const local = String(email || '').split('@')[0] || '';
+  const token = local.split(/[._+-]+/).filter(Boolean)[0] || '';
+  return looksLikeFirstName(token);
+}
+
+/** First name the prospect typed. "talk to Guy" → Guy. Roles are not names. */
+function referredFirstNameFromText(text) {
+  const s = String(text || '');
+  const patterns = [
+    /\b(?:talk|speak|contact|email|reach(?:\s+out)?|connect|introduc(?:e|ed|ing)|loop(?:ing)?(?:\s+in)?|cc(?:'d|ed)?|copied|copying)\s+(?:to\s+|with\s+|in\s+)?(?:(?:my|our|the|a|an)\s+(?:colleague|manager|ops|team|assistant|director|person|contact)\s+)?([A-Z][\p{L}'’.-]+)/gu,
+    /\b([A-Z][\p{L}'’.-]+)\s+(?:handles|manages|oversees)\b/gu,
+  ];
+  for (const re of patterns) {
+    let match;
+    while ((match = re.exec(s))) {
+      const name = looksLikeFirstName(match[1]);
+      if (name) return name;
+    }
+  }
+  return '';
+}
+
+function referredGreetingName({ human, contacts } = {}) {
+  const fromText = referredFirstNameFromText(human);
+  if (fromText) return fromText;
+  const list = Array.isArray(contacts) ? contacts : [];
+  for (const contact of list) {
+    const named = looksLikeFirstName(String(contact?.name || '').split(/\s+/)[0]);
+    if (named) return named;
+  }
+  for (const contact of list) {
+    const fromEmail = firstNameFromEmail(contact?.email);
+    if (fromEmail) return fromEmail;
+  }
+  return '';
+}
+
+/**
+ * Cayden's referral reply. Exact two lines. No sign-off — the mailbox
+ * appends its signature on send, same as every other draft.
+ * Empty string when this is not a handoff.
+ */
+function referralDraftText({
+  leadName,
+  inboundMessage,
+  referredContacts,
+  prospectEmail,
+  prospectName,
+  ourEmails,
+} = {}) {
+  const opts = {
+    prospectEmail,
+    prospectName: prospectName || leadName,
+    ourEmails,
+  };
+  const provided = (Array.isArray(referredContacts) ? referredContacts : [])
+    .filter((c) => c && c.email);
+  const extracted = inboundMessage ? extractReferredContacts(inboundMessage, opts) : [];
+  const contacts = provided.length ? provided : extracted;
+  const human = inboundMessage ? humanReplyForReferral(inboundMessage, opts) : '';
+  const handoff = contacts.length > 0 || looksLikeReferral(human || inboundMessage || '');
+  if (!handoff) return '';
+  const prospect = prospectFirstName(leadName);
+  const who = referredGreetingName({ human, contacts });
+  const line2 = who
+    ? `Hey ${who}, would this be worth meeting about for you guys?`
+    : 'Hey there, would this be worth meeting about for you guys?';
+  return `Thank you so much for the contact, ${prospect}!\n\n${line2}`;
+}
+
+function isFixedReferralDraft(text) {
+  const s = String(text || '');
+  return s.startsWith('Thank you so much for the contact,')
+    && s.includes('would this be worth meeting about for you guys?');
+}
+
 function referralDraftNote({ leadName, contacts } = {}) {
   const list = Array.isArray(contacts) ? contacts.filter((c) => c && c.email) : [];
   if (!list.length) return '';
@@ -347,6 +447,10 @@ module.exports = {
   referralCcCsv,
   referralCcButtonText,
   referralDraftNote,
+  referralDraftText,
+  isFixedReferralDraft,
+  referredFirstNameFromText,
+  referredGreetingName,
   parseReferralCcInput,
   emailsInText,
 };

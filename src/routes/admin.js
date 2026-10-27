@@ -16,6 +16,7 @@ const {
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
+const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
 
 const router = Router();
 
@@ -418,6 +419,40 @@ router.post('/admin/resurface-suppressed', async (req, res) => {
  * POST /admin/heyreach/approval-card
  * Body: { replyId, draft, classification? }
  */
+/**
+ * Rewrite referral drafts to the fixed template.
+ * A card that already exists is chat.update'd. A missing card is posted once.
+ * Nothing is sent. dry=1 is the default. A live run needs leadEmail or replyId.
+ *
+ * Preview Ariel:
+ *   POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292
+ * Apply:
+ *   POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0
+ */
+router.post('/admin/refresh-referral-draft', async (req, res) => {
+  const dryRaw = req.query.dry ?? req.body?.dry;
+  const dry = !(dryRaw === '0' || dryRaw === 0 || dryRaw === false || dryRaw === 'false');
+  const leadEmail = req.query.leadEmail || req.query.lead_email || req.body?.leadEmail || req.body?.lead_email || '';
+  const replyId = req.query.replyId || req.query.reply_id || req.body?.replyId || req.body?.reply_id || '';
+  const campaignId = req.query.campaignId || req.query.campaign_id || req.body?.campaignId || req.body?.campaign_id || '';
+  if (!dry && !String(leadEmail).trim() && !String(replyId).trim()) {
+    return res.status(400).json({
+      error: 'Pass leadEmail or replyId when dry=0. A live run is one prospect, not every card.',
+    });
+  }
+  try {
+    const result = await refreshReferralDrafts({ dry, leadEmail, replyId, campaignId });
+    console.log('[Admin] refresh-referral-draft', {
+      dry, leadEmail: leadEmail || null, campaignId: campaignId || null,
+      updated: result.updated, posted: result.posted, skipped: result.skipped,
+    });
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Admin] refresh-referral-draft failed', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/admin/heyreach/approval-card', async (req, res) => {
   try {
     const result = await postStoredHeyreachApprovalCard({

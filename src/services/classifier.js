@@ -18,7 +18,7 @@ const {
   rewriteRawCtapperCalendly,
 } = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
-const { referralDraftNote } = require('../utils/referred-contact');
+const { referralDraftNote, referralDraftText, isFixedReferralDraft } = require('../utils/referred-contact');
 const jevClassifier = require('./jev-classifier');
 const { classifyDuringOutage } = require('../utils/classifier-outage');
 const {
@@ -177,6 +177,10 @@ function sanitizeDraft(text, { bookingLink, includeBookingLink, clientName } = {
   s = stripSignOff(s);
   if (!s) return '';
 
+  // Referral handoffs are a fixed two-line template. Do not append a booking
+  // link or a second signature under it.
+  if (isFixedReferralDraft(s)) return s;
+
   const link = prospectBookingLink({ clientName, bookingLink });
 
   // Corey Tapper's raw Calendly must never go out — public wrap only.
@@ -220,12 +224,6 @@ function fallbackDraftText({
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
   const link = prospectBookingLink({ clientName, bookingLink });
   const msg = String(inboundMessage || '').trim();
-  const handoff = Array.isArray(referredContacts) ? referredContacts.filter((c) => c && c.email) : [];
-  const handoffWho = handoff.length ? (handoff[0].name || 'there') : '';
-  const handoffAlso = handoff.slice(1).map((c) => c.name || c.email).filter(Boolean);
-  const handoffAck = handoff.length
-    ? `Hey ${name}, thanks for pointing me to ${handoffWho}${handoffAlso.length ? ` and ${handoffAlso.join(' and ')}` : ''}. ${handoffWho}, ${name} suggested I reach you. `
-    : '';
   const labels = Array.isArray(slotLabels) ? slotLabels.filter(Boolean) : [];
   const time1 = labels[0] || '';
   const time2 = labels[1] || '';
@@ -241,16 +239,12 @@ function fallbackDraftText({
     ? includeBookingLink
     : shouldIncludeBookingLink(voicePrompt, clientName);
 
-  if (handoffAck) {
-    if (callback) {
-      return `${handoffAck}${DEEP_ROOTS_CALLER} will call from ${DEEP_ROOTS_FROM_NUMBER}. What time works best?`;
-    }
-    if (inPerson) {
-      return `${handoffAck}Happy to stop by and walk through it. What time works?`;
-    }
-    const linkBit = wantLink && link ? ` Here's the booking link if easier: ${link}` : '';
-    return `${handoffAck}Happy to jump on a quick call and walk through it. What time works?${linkBit}`;
-  }
+  const templated = referralDraftText({
+    leadName,
+    inboundMessage: msg,
+    referredContacts,
+  });
+  if (templated) return templated;
 
   if (DECLINE_CLASSIFICATIONS.has(classification)) {
     return (
@@ -903,6 +897,18 @@ async function draftOnly({
       classification, leadName, draftMode,
     });
     return null;
+  }
+
+  // A handoff is not a freewritten draft. Same template the fallback uses,
+  // and the mailbox still appends the signature on send.
+  const templated = stripSignOff(referralDraftText({
+    leadName,
+    inboundMessage,
+    referredContacts,
+  }));
+  if (templated) {
+    console.log('[Classifier] Referral draft is the fixed template', { leadName });
+    return templated;
   }
 
   const booking = prospectBookingLink({ clientName, bookingLink });

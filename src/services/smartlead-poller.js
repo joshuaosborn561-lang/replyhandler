@@ -33,9 +33,9 @@ const {
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('./inbound-forward');
-const { promoteReferral } = require('../utils/referral-promotion');
+const { promoteReferral, DRAFT_ALWAYS } = require('../utils/referral-promotion');
+const { looksLikeReferral, ourIdentitiesFromThread } = require('../utils/reply-all');
 const { referralCcCsv } = require('../utils/referred-contact');
-const { ourIdentitiesFromThread } = require('../utils/reply-all');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -566,7 +566,7 @@ async function processInboxRow(sourceClient, row, options) {
         : `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
     }
   }
-  if (referredContacts.length) {
+  if (referredContacts.length || (DRAFT_ALWAYS.has(classification) && looksLikeReferral(inbound))) {
     try {
       const redraft = await draftOnly({
         classification,
