@@ -31,8 +31,8 @@ test('positive-intent guard upgrades OTHER / NOT_INTERESTED, never downgrades', 
   assert.strictEqual(positiveIntentFromText("Sure, let's set up a call"), 'INTERESTED');
 });
 
-test('OTHER gets a compact alert, other suppressions do not', () => {
-  assert.ok(shouldAlertOther('not_interested_channel', 'OTHER'));
+test('OTHER no longer gets a channel alert (Oct 27: no junk in client channels)', () => {
+  assert.ok(!shouldAlertOther('not_interested_channel', 'OTHER'));
   assert.ok(!shouldAlertOther('ooo', 'OOO'));
   assert.ok(!shouldAlertOther('not_interested', 'NOT_INTERESTED'));
   const t = compactOtherAlertText({ leadName: 'A B', platform: 'smartlead', inboundMessage: 'x'.repeat(500) });

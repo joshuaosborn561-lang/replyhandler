@@ -737,6 +737,56 @@ async function classifyOnlyClaude(threadContext, inboundMessage, deps = {}) {
 }
 
 /**
+ * Second opinion for a reply the primary classifier left as OTHER.
+ * Josh (Oct 27 2026): a reply only reaches a client channel when it is a real
+ * interest or a real question. OTHER used to post a raw "Unclassified reply"
+ * line. Now Claude Sonnet decides: INTERESTED / QUESTION / MEETING_PROPOSED
+ * upgrade the label, anything else stays OTHER and is suppressed.
+ * Returns null on any error or when the answer is junk.
+ */
+const SECOND_OPINION_POSITIVES = new Set(['INTERESTED', 'QUESTION', 'MEETING_PROPOSED']);
+async function classifyOtherSecondOpinion(threadContext, inboundMessage, deps = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !deps.fetch) return null;
+  const doFetch = deps.fetch || fetch;
+  try {
+    const res = await doFetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: anthropicModel(),
+        max_tokens: 16,
+        temperature: 0,
+        system:
+          'You screen replies to a B2B cold email before a salesperson sees them.\n' +
+          'Answer with exactly one word.\n' +
+          'INTERESTED: the person shows real interest, agrees to talk, or asks to be contacted.\n' +
+          'QUESTION: the person asks a real question about the offer, price, process, or us.\n' +
+          'MEETING_PROPOSED: the person proposes or accepts a time, or asks for a call or booking link.\n' +
+          'JUNK: anything else, including bounces, delivery failures, "message blocked" notices, auto-replies, out-of-office, ' +
+          'mailbox notices, ticket bots, unsubscribe requests, clear no, vague or unrelated text, or an empty reply.\n' +
+          'When unsure, answer JUNK.',
+        messages: [{
+          role: 'user',
+          content: `Thread:\n${summarizeThread(threadContext)}\n\nLatest reply:\n${inboundMessage}\n\nAnswer:`,
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Anthropic second opinion failed (${res.status})`);
+    const data = await res.json();
+    const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim().toUpperCase();
+    const word = (text.match(/[A-Z_]+/) || [''])[0];
+    return SECOND_OPINION_POSITIVES.has(word) ? word : null;
+  } catch (err) {
+    console.error('[Classifier] Sonnet second opinion failed — leaving OTHER (suppressed)', { err: err.message });
+    return null;
+  }
+}
+
+/**
  * Fallback used only when Jev fails (CLASSIFIER_FALLBACK_GEMINI, default on):
  * Claude Sonnet first, Gemini if Anthropic errors.
  */
@@ -1128,6 +1178,14 @@ async function classifyAndDraft(
     classification = result.classification;
     pitchToUsProb = result.pitchToUsProb;
     classifySource = result.source;
+    if (classification === 'OTHER') {
+      const second = await classifyOtherSecondOpinion(threadContext, forModel);
+      if (second) {
+        console.log('[Classifier] Sonnet second opinion upgraded OTHER', { to: second });
+        classification = second;
+        classifySource = `${classifySource || 'classifier'}+sonnet_second_opinion`;
+      }
+    }
   }
   if (preGate !== 'ooo' && preGate !== 'wrong_person' && preGate !== 'automated_notice') {
     classification = promoteMixedIntent(classification, forModel);
@@ -1259,6 +1317,7 @@ module.exports = {
   classifyReply,
   classifyWithGemini,
   classifyOnlyClaude,
+  classifyOtherSecondOpinion,
   draftOnly,
   firstNameFromLead,
   nextBusinessDayLabel,

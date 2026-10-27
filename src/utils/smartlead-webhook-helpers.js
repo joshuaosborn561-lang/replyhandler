@@ -725,6 +725,33 @@ function isDisclaimerOrScannerOnly(text) {
   return boilerplatePresent;
 }
 
+/**
+ * A bounce, NDR, or "Message blocked" notice from a mail server (Exchange,
+ * Gmail, mailer-daemon, postmaster). Never a person. Rules only, no model.
+ * Smartlead owns bounce handling for the lead; replyhandler just keeps these
+ * out of the client channels.
+ */
+function looksLikeBounceNotice(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bmailer-daemon\b/.test(s)) return true;
+  if (/\bpostmaster@/.test(s)) return true;
+  if (/\bmail delivery (subsystem|system|failed|failure)\b/.test(s)) return true;
+  if (/\bdelivery status notification\b/.test(s)) return true;
+  if (/\bdelivery (has )?failed\b/.test(s)) return true;
+  if (/\bundeliverable\b/.test(s) || /\bundelivered mail\b/.test(s)) return true;
+  if (/\bmessage blocked\b/.test(s)) return true;
+  if (/\byour message (to [^ ]+ )?(has been blocked|couldn'?t be delivered|could not be delivered|wasn'?t delivered|was not delivered|has not been delivered)\b/.test(s)) return true;
+  if (/\b(message|email|e-mail) (could not|couldn'?t|can ?not|cannot|was not|wasn'?t) (be )?delivered\b/.test(s)) return true;
+  if (/aka\.ms\/exosmtperrors|aka\.ms\/ndr/.test(s)) return true;
+  if (/\bthe response from the remote server was\b/.test(s)) return true;
+  if (/\b(5\d\d)[ -]5\.\d{1,3}\.\d{1,3}\b/.test(s)) return true;
+  if (/\b(diagnostic-code|final-recipient|action: failed)\b/.test(s)) return true;
+  if (/\b(recipient address rejected|address not found|user unknown|no such user|mailbox unavailable|mailbox (is )?full|over quota)\b/.test(s)) return true;
+  if (/\b(email|e-mail) account that you tried to reach (does not exist|is disabled|is inactive)\b/.test(s)) return true;
+  return false;
+}
+
 /** Mailbox is dead: not monitored, no longer active, no longer in use. */
 function looksLikeUnmonitoredMailbox(text) {
   const s = normWs(text);
@@ -785,6 +812,7 @@ function referralTextBlockReason(text) {
 function looksLikeAutomatedNotice(text) {
   const s = normWs(text);
   if (!s) return false;
+  if (looksLikeBounceNotice(text)) return true;
   if (looksLikeUnmonitoredMailbox(text)) return true;
   if (looksLikeAutoForward(text)) return true;
   if (/\bmoved to a new server\b/.test(s)) return true;
@@ -794,8 +822,12 @@ function looksLikeAutomatedNotice(text) {
   if (/\bthis is an automated message\b/.test(s)) return true;
   if (/\bticket\s*#/.test(s)) return true;
   if (/\bwe have received your request\b/.test(s)) return true;
-  const departed = /\b(no longer employed|no longer with|has left)\b/.test(s);
-  const handoff = /\b(reach out|contact)\b/.test(s);
+  // Dead or unwatched mailbox: "this email account is no longer active",
+  // "the address is no longer in use", "inbox is not regularly monitored".
+  if (/\b(e-?mail|inbox|mailbox|account|address|box)\b[^.!?]{0,60}\b(is |are )?no longer (in use|active|valid|in service|being used|checked|monitored|being monitored)\b/.test(s)) return true;
+  if (/\b(e-?mail|inbox|mailbox|account|address|box)\b[^.!?]{0,40}\b(is |are )?(not|isn'?t) (regularly |actively |being )?(monitored|checked|attended)\b/.test(s)) return true;
+  const departed = /\b(no longer employed|no longer with|has left|no longer part of|no longer a (sales )?(rep|representative|employee|member)|is no longer (at|employed at))\b/.test(s);
+  const handoff = /\b(reach out|contact|e-?mail|direct|forward|send|inquiries)\b/.test(s);
   if (departed && handoff) return true;
   if (isDisclaimerOrScannerOnly(text)) return true;
   return false;
@@ -827,6 +859,7 @@ function shouldSkipSlackForReply(text) {
 /** Which rule silenced this reply, or null if it should reach Slack. For logging. */
 function slackSuppressionReason(text) {
   if (looksLikeOutOfOffice(text)) return 'ooo';
+  if (looksLikeBounceNotice(text)) return 'bounce';
   if (looksLikeAutomatedNotice(text)) return 'automated_notice';
   if (looksLikeUnsubscribe(text)) return 'unsubscribe';
   if (looksLikeWrongPerson(text)) return 'wrong_person';
@@ -930,6 +963,7 @@ module.exports = {
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
   looksLikeAutomatedNotice,
+  looksLikeBounceNotice,
   looksLikeUnmonitoredMailbox,
   looksLikeAutoForward,
   looksLikeDeparture,

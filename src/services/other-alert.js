@@ -1,6 +1,9 @@
 /**
- * OTHER replies are no longer hidden silently. They get one compact line in
- * the client's Slack channel so a classifier miss is still visible.
+ * Retired Oct 27 2026 (Josh: "if it's not a legit interested or question I
+ * don't wanna see junk"). OTHER / unclassified replies used to get a compact
+ * "Unclassified reply" line in the client's channel. They are now recorded as
+ * suppressed rows only (reason `not_interested_channel`) and never posted.
+ * `postOtherAlert` stays for manual use; nothing calls it on the live paths.
  */
 
 const db = require('../db');
@@ -8,9 +11,9 @@ const { cleanInboundOrRaw } = require('../utils/smartlead-webhook-helpers');
 
 const OTHER_ALERT_REASON = 'not_interested_channel';
 
+// eslint-disable-next-line no-unused-vars
 function shouldAlertOther(reason, classification) {
-  return reason === OTHER_ALERT_REASON
-    && String(classification || 'OTHER').toUpperCase() !== 'FOLLOW_UP';
+  return false;
 }
 
 function compactOtherAlertText({ leadName, platform, inboundMessage, leadPhone } = {}) {
