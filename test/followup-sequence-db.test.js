@@ -105,7 +105,7 @@ test('full Day 0 path: call card, No answer queues the voicemail email 5 min lat
   const callPost = calls.posts[0];
   assert.equal(callPost.channel, 'C0BRRS8DV19', 'follow-ups channel');
   const blockText = JSON.stringify(callPost.blocks);
-  assert.ok(blockText.includes('Hey Pat, this is Gabe with Acme Co. We emailed you about cutting your IT costs.'));
+  assert.ok(blockText.includes('Hey Pat, this is (name) with Acme Co. We emailed you about cutting your IT costs.'));
   assert.ok(blockText.includes('+15555550100'));
   assert.ok(blockText.includes('fseq_no_answer'));
 
@@ -121,6 +121,10 @@ test('full Day 0 path: call card, No answer queues the voicemail email 5 min lat
   // Clicking twice does nothing.
   assert.equal((await svc.applyCallOutcome({ stepId: step.id, outcome: 'no_answer', now: clickAt, slackApi, env: ENV })).applied, false);
 
+  // The email is queued by the click itself, due 5 minutes out. No second click needed.
+  const { rows: [queued] } = await pg.query(`SELECT status, due_at FROM followup_sequence_steps WHERE kind = 'email_vm'`);
+  assert.equal(queued.status, 'pending');
+  assert.equal(new Date(queued.due_at).getTime() - clickAt.getTime(), 5 * MIN);
   // 4 min after the click: not yet.
   await svc.runSequenceTick({ now: new Date(clickAt.getTime() + 4 * MIN), slackApi, deps, env: ENV });
   assert.equal(calls.cards.length, 0);
@@ -129,7 +133,7 @@ test('full Day 0 path: call card, No answer queues the voicemail email 5 min lat
   assert.equal(calls.cards.length, 1);
   const card = calls.cards[0];
   assert.equal(card.channelId, 'C0BRRS8DV19');
-  assert.match(card.card.draft, /^Hey Pat, just tried you and left you a voicemail\./);
+  assert.match(card.card.draft, /^Hey Pat, just tried you, left you a voicemail\. Still want to take a peek at this\?\n\nDoes Slot1A or Slot1B work for a quick call\?/);
   assert.match(card.card.draft, /Slot1A or Slot1B/);
   assert.equal(card.card.classification, 'FOLLOW_UP');
   const { rows: [pr] } = await pg.query('SELECT status, classification, draft_reply FROM pending_replies WHERE id = $1', [card.replyId]);
@@ -372,4 +376,286 @@ test('a bare "connected" outcome no longer exists', { skip }, async () => {
   const { svc } = await setup();
   assert.equal(Object.values(svc.OUTCOME_BY_ACTION).includes('connected'), false);
   assert.equal(svc.OUTCOME_BY_ACTION.fseq_connected, undefined);
+});
+
+async function day6Voicemail(proofPoint) {
+  const { pg, svc, clientId } = await setup();
+  await addReply(pg, clientId);
+  const { slackApi, deps, calls } = fakes();
+  deps.resolveCopy = async () => ({ offerLine: 'cutting your IT costs', proofPoint });
+  await svc.runSequenceTick({ now: NOW, slackApi, deps, env: ENV });
+  const { rows: [seq] } = await pg.query('SELECT * FROM followup_sequences');
+  await pg.query(`UPDATE followup_sequence_steps SET status = 'skipped' WHERE sequence_id = $1 AND kind <> 'call_day6'`, [seq.id]);
+  const d6 = new Date('2026-11-03T18:00:00Z'); // Tue 12:00 CT
+  await pg.query(`UPDATE followup_sequence_steps SET due_at = $1 WHERE kind = 'call_day6'`, [new Date(d6.getTime() - MIN)]);
+  const before = calls.posts.length;
+  await svc.runSequenceTick({ now: d6, slackApi, deps, env: ENV });
+  assert.equal(calls.posts.length, before + 1);
+  return JSON.stringify(calls.posts[calls.posts.length - 1].blocks);
+}
+
+test('Day 6 call card voicemail is the breakup script with offer and real proof', { skip }, async () => {
+  const blocks = await day6Voicemail('Last quarter we booked 212 meetings for 14 clients.');
+  assert.ok(blocks.includes('Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it'));
+  assert.ok(blocks.includes('reply to my email and we'));
+});
+
+test('Day 6 call card voicemail omits the proof sentence when there is none', { skip }, async () => {
+  const blocks = await day6Voicemail(null);
+  assert.ok(blocks.includes('Quick recap: cutting your IT costs. If it'));
+  assert.ok(!blocks.includes('212'));
+});
+
+// ─── call back later: time picker + scheduled callback card ──────────────────
+
+const CB_SECS = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+const cbSubmission = (stepId, iso, tz = 'America/Chicago', user = 'U7') => ({
+  user: { id: user },
+  view: {
+    private_metadata: JSON.stringify({ stepId, tz }),
+    state: { values: { when_block: { when: { selected_date_time: CB_SECS(iso) } } } },
+  },
+});
+
+test('clicking Call back later opens the picker and records nothing yet', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, slackApi } = await postedCallStep(pg, svc, clientId);
+  const opened = [];
+  const api = { ...slackApi, getClient: () => ({ ...slackApi.getClient(), views: { open: async (a) => { opened.push(a); return { ok: true }; } } }) };
+  await svc.handleCallButton({ action_id: 'fseq_call_back', value: step.id },
+    { user: { id: 'U7' }, trigger_id: 'trig1', channel: { id: 'C0BRRS8DV19' }, message: { ts: '2000.1' } },
+    { slackApi: api });
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].trigger_id, 'trig1');
+  assert.equal(opened[0].view.callback_id, 'fseq_callback_modal');
+  assert.ok(JSON.stringify(opened[0].view).includes('America/Chicago'));
+  const { rows: [st] } = await pg.query('SELECT outcome FROM followup_sequence_steps WHERE id = $1', [step.id]);
+  assert.equal(st.outcome, null, 'outcome is recorded on submit, not on click');
+});
+
+test('submitting a time schedules a callback card, confirms on the card, and posts at that time', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi, deps, calls } = await postedCallStep(pg, svc, clientId);
+  const when = '2026-10-27T20:00:00Z'; // 3pm CT, same day, before the Day 0 second call
+  const res = await svc.handleCallbackSubmit(cbSubmission(step.id, when), { slackApi, now: new Date(NOW.getTime() + 2 * MIN) });
+  assert.equal(res.scheduled, true);
+
+  const { rows: [cb] } = await pg.query(`SELECT * FROM followup_sequence_steps WHERE kind = 'call_callback_1'`);
+  assert.equal(cb.status, 'pending');
+  assert.equal(new Date(cb.due_at).toISOString(), new Date(when).toISOString());
+  assert.equal(cb.sequence_id, seq.id, 'logged on the sequence');
+  const { rows: [orig] } = await pg.query('SELECT outcome, outcome_by FROM followup_sequence_steps WHERE id = $1', [step.id]);
+  assert.deepEqual([orig.outcome, orig.outcome_by], ['call_back', 'U7']);
+
+  const redraw = calls.updates.find((u) => u[0] === 'chat.update');
+  const redrawText = JSON.stringify(redraw[1].blocks);
+  assert.ok(redrawText.includes('Callback set for'));
+  assert.ok(redrawText.includes('Tue, Oct 27, 3:00 PM'), 'lead-time confirmation');
+  assert.ok(!redrawText.includes('fseq_booked'), 'buttons are gone');
+
+  // Not before the time...
+  const posts0 = calls.posts.length;
+  await svc.runSequenceTick({ now: new Date('2026-10-27T19:58:00Z'), slackApi, deps, env: ENV });
+  assert.ok(!calls.posts.slice(posts0).some((p) => /Callback call/.test(p.text)));
+  // ...and at the time the callback card posts with the same script and buttons.
+  await svc.runSequenceTick({ now: new Date('2026-10-27T20:01:00Z'), slackApi, deps, env: ENV });
+  const cbPost = calls.posts.find((p) => /Callback call/.test(p.text));
+  assert.ok(cbPost, 'callback card posted');
+  const blocks = JSON.stringify(cbPost.blocks);
+  assert.ok(blocks.includes('Hey Pat, this is (name) with Acme Co. We emailed you about cutting your IT costs.'));
+  for (const id of ['fseq_booked', 'fseq_no_answer', 'fseq_not_interested', 'fseq_call_back', 'fseq_wrong_number']) assert.ok(blocks.includes(id), id);
+  const states = await stepStates(pg, seq.id);
+  assert.equal(states.call_callback_1, 'posted');
+});
+
+test('the normal sequence carries on after a callback', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi } = await postedCallStep(pg, svc, clientId);
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T20:00:00Z'), { slackApi, now: NOW });
+  const states = await stepStates(pg, seq.id);
+  for (const k of ['call_day0_late', 'call_day1', 'email_day1', 'call_day3', 'email_proof', 'email_thoughts', 'email_breakup', 'call_day6']) {
+    assert.equal(states[k], 'pending', `${k} untouched`);
+  }
+  const { rows: [s] } = await pg.query('SELECT status FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.status, 'active');
+});
+
+test('a second "call back later" on the callback card queues callback 2', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi, deps, calls } = await postedCallStep(pg, svc, clientId);
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T20:00:00Z'), { slackApi, now: NOW });
+  await svc.runSequenceTick({ now: new Date('2026-10-27T20:01:00Z'), slackApi, deps, env: ENV });
+  const { rows: [cb1] } = await pg.query(`SELECT * FROM followup_sequence_steps WHERE kind = 'call_callback_1'`);
+  const res = await svc.handleCallbackSubmit(cbSubmission(cb1.id, '2026-10-28T15:00:00Z'), { slackApi, now: new Date('2026-10-27T20:05:00Z') });
+  assert.equal(res.kind, 'call_callback_2');
+  void seq; void calls;
+});
+
+test('a booking, reply, unsubscribe or DQ cancels the pending callback', { skip }, async () => {
+  for (const cancel of ['booked', 'reply', 'unsub', 'dq']) {
+    const { pg, svc, clientId } = await setup();
+    const { step, seq, slackApi, deps, calls } = await postedCallStep(pg, svc, clientId, { lead_email: `cb-${cancel}@x.co` });
+    const { rows: [src] } = await pg.query('SELECT * FROM pending_replies WHERE id = $1', [seq.source_reply_id]);
+    await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T22:00:00Z'), { slackApi, now: NOW });
+    assert.equal((await stepStates(pg, seq.id)).call_callback_1, 'pending');
+
+    let reason;
+    if (cancel === 'booked') {
+      reason = 'booked';
+      await require('../src/services/meeting-booked').markMeetingBooked({ clientId, reply: src, slackUserId: 'U1' });
+    } else if (cancel === 'dq') {
+      reason = 'disqualified';
+      await require('../src/services/disqualified-prospects').markDisqualified({ clientId, reply: src, slackUserId: 'U1' });
+    } else {
+      reason = 'inbound_reply';
+      const msg = cancel === 'unsub' ? 'please unsubscribe me' : 'Actually, call me tomorrow instead';
+      await addReply(pg, clientId, { lead_email: `cb-${cancel}@x.co`, inbound_message: msg, classification: cancel === 'unsub' ? 'UNSUBSCRIBE' : 'QUESTION', created_at: new Date(NOW.getTime() + 5 * MIN) });
+      await svc.runSequenceTick({ now: new Date(NOW.getTime() + 10 * MIN), slackApi, deps, env: ENV });
+    }
+    assert.equal((await stepStates(pg, seq.id)).call_callback_1, `cancelled/sequence_${reason}`, cancel);
+    const before = calls.posts.length;
+    await svc.runSequenceTick({ now: new Date('2026-10-27T22:05:00Z'), slackApi, deps, env: ENV });
+    assert.equal(calls.posts.length, before, `${cancel}: no callback card posts`);
+  }
+});
+
+test('a callback set after the last step still fires (completed sequence is reopened)', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi, deps, calls } = await postedCallStep(pg, svc, clientId);
+  await pg.query(`UPDATE followup_sequence_steps SET status = 'skipped' WHERE sequence_id = $1 AND id <> $2`, [seq.id, step.id]);
+  await svc.runSequenceTick({ now: new Date(NOW.getTime() + MIN), slackApi, deps, env: ENV });
+  assert.equal((await pg.query('SELECT status FROM followup_sequences WHERE id = $1', [seq.id])).rows[0].status, 'completed');
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T20:00:00Z'), { slackApi, now: new Date(NOW.getTime() + 2 * MIN) });
+  assert.equal((await pg.query('SELECT status FROM followup_sequences WHERE id = $1', [seq.id])).rows[0].status, 'active');
+  await svc.runSequenceTick({ now: new Date('2026-10-27T20:01:00Z'), slackApi, deps, env: ENV });
+  assert.ok(calls.posts.some((p) => /Callback call/.test(p.text)));
+});
+
+test('wrong number cancels a pending callback too', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi } = await postedCallStep(pg, svc, clientId);
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-28T15:00:00Z'), { slackApi, now: NOW });
+  const { rows: [late] } = await pg.query(`SELECT id FROM followup_sequence_steps WHERE kind = 'call_day0_late'`);
+  await pg.query(`UPDATE followup_sequence_steps SET status = 'posted', slack_channel = 'C0BRRS8DV19', slack_ts = '2000.9' WHERE id = $1`, [late.id]);
+  await svc.applyCallOutcome({ stepId: late.id, outcome: 'wrong_number', now: new Date(NOW.getTime() + MIN), slackApi, env: ENV });
+  assert.equal((await stepStates(pg, seq.id)).call_callback_1, 'cancelled/wrong_number');
+});
+
+test('submitting twice does not schedule two callbacks', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, slackApi } = await postedCallStep(pg, svc, clientId);
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T20:00:00Z'), { slackApi, now: NOW });
+  const again = await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T21:00:00Z'), { slackApi, now: NOW });
+  assert.equal(again.applied, false);
+  assert.equal((await pg.query(`SELECT count(*)::int AS n FROM followup_sequence_steps WHERE kind LIKE 'call\\_callback\\_%'`)).rows[0].n, 1);
+});
+
+// ─── callers: Gabe and Cayden, first click claims the lead ───────────────────────
+
+const ENV2 = { ...ENV, FOLLOWUP_CALLERS: 'UGABE1:Gabe,UCAYD1:Cayden' };
+delete ENV2.FOLLOWUP_CALLER_NAME;
+
+async function twoCallers(over = {}) {
+  const { pg, svc, clientId } = await setup();
+  await addReply(pg, clientId, over);
+  const { slackApi, deps, calls } = fakes();
+  await svc.runSequenceTick({ now: NOW, slackApi, deps, env: ENV2 });
+  const { rows: [step] } = await pg.query(`SELECT * FROM followup_sequence_steps WHERE kind = 'call_day0'`);
+  const { rows: [seq] } = await pg.query('SELECT * FROM followup_sequences');
+  return { pg, svc, step, seq, slackApi, deps, calls };
+}
+const lastPost = (calls) => JSON.stringify(calls.posts[calls.posts.length - 1].blocks);
+async function postNextCall(pg, svc, kind, ctx, now) {
+  await pg.query(`UPDATE followup_sequence_steps SET due_at = $2 WHERE kind = $1`, [kind, new Date(now.getTime() - MIN)]);
+  const before = ctx.calls.posts.length;
+  await svc.runSequenceTick({ now, slackApi: ctx.slackApi, deps: ctx.deps, env: ENV2 });
+  assert.equal(ctx.calls.posts.length, before + 1, `${kind} posted`);
+  return lastPost(ctx.calls);
+}
+
+test('before anyone claims the lead, cards say "(name)" and mention both callers', { skip }, async () => {
+  const ctx = await twoCallers();
+  const blocks = lastPost(ctx.calls);
+  assert.ok(blocks.includes('Hey Pat, this is (name) with Acme Co.'));
+  assert.ok(blocks.includes("it's (name) with Acme Co"), 'voicemail too');
+  assert.ok(!blocks.includes('Gabe') && !blocks.includes('Cayden'), 'no name baked into the script');
+  assert.ok(blocks.includes('<@UGABE1> <@UCAYD1>'));
+});
+
+test('the first caller to click an outcome claims the lead; later cards use and mention them', { skip }, async () => {
+  const ctx = await twoCallers();
+  const { pg, svc, step, seq, slackApi, calls } = ctx;
+  await svc.handleCallButton({ action_id: 'fseq_no_answer', value: step.id }, { user: { id: 'UCAYD1' } }, { slackApi, env: ENV2 });
+  const { rows: [after] } = await pg.query('SELECT claimed_by_slack_id, claimed_by_name FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.deepEqual([after.claimed_by_slack_id, after.claimed_by_name], ['UCAYD1', 'Cayden']);
+  assert.ok(JSON.stringify(calls.updates.find((u) => u[0] === 'chat.update')[1].blocks).includes('Cayden claimed this lead'));
+
+  const next = await postNextCall(pg, svc, 'call_day0_late', ctx, new Date('2026-10-27T18:30:00Z'));
+  assert.ok(next.includes('Hey Pat, this is (name) with Acme Co.'), 'still says (name)');
+  assert.ok(next.includes('<@UCAYD1>'));
+  assert.ok(!next.includes('UGABE1'), 'Gabe is no longer mentioned');
+  assert.ok(next.includes('*Caller:* Cayden'));
+
+  // Voicemail scripts and the Day 6 breakup use the claimed caller too.
+  const d3 = await postNextCall(pg, svc, 'call_day3', ctx, new Date('2026-10-30T18:00:00Z'));
+  assert.ok(d3.includes("it's (name) with Acme Co"));
+  const d6 = await postNextCall(pg, svc, 'call_day6', ctx, new Date('2026-11-03T18:00:00Z'));
+  assert.ok(d6.includes('Hey Pat, (name) with Acme Co. Last call from me.'));
+  assert.ok(d6.includes('<@UCAYD1>') && !d6.includes('UGABE1'));
+});
+
+test('a later outcome click by the other caller does not take the lead away', { skip }, async () => {
+  const ctx = await twoCallers();
+  const { pg, svc, step, seq, slackApi } = ctx;
+  await svc.applyCallOutcome({ stepId: step.id, outcome: 'no_answer', slackUserId: 'UGABE1', now: NOW, slackApi, env: ENV2 });
+  const late = await postNextCall(pg, svc, 'call_day0_late', ctx, new Date('2026-10-27T18:30:00Z'));
+  assert.ok(late.includes('this is (name) with Acme Co') && late.includes('*Caller:* Gabe') && late.includes('<@UGABE1>'));
+  const { rows: [lateStep] } = await pg.query(`SELECT id FROM followup_sequence_steps WHERE kind = 'call_day0_late'`);
+  await svc.applyCallOutcome({ stepId: lateStep.id, outcome: 'no_answer', slackUserId: 'UCAYD1', now: new Date('2026-10-27T18:35:00Z'), slackApi, env: ENV2 });
+  const { rows: [s] } = await pg.query('SELECT claimed_by_name FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.claimed_by_name, 'Gabe');
+});
+
+test('a click by a non-caller is applied and logged, and claims nothing', { skip }, async () => {
+  const ctx = await twoCallers();
+  const { pg, svc, step, seq, slackApi } = ctx;
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => { warns.push(a.join(' ')); };
+  let res;
+  try {
+    res = await svc.applyCallOutcome({ stepId: step.id, outcome: 'no_answer', slackUserId: 'UJOSH1', now: NOW, slackApi, env: ENV2 });
+  } finally { console.warn = origWarn; }
+  assert.equal(res.applied, true, 'outcome still recorded');
+  assert.ok(warns.some((w) => w.includes('not a configured caller')), 'logged');
+  const { rows: [st] } = await pg.query('SELECT outcome, outcome_by, payload FROM followup_sequence_steps WHERE id = $1', [step.id]);
+  assert.deepEqual([st.outcome, st.outcome_by, JSON.parse(JSON.stringify(st.payload)).nonCaller], ['no_answer', 'UJOSH1', true]);
+  const { rows: [s] } = await pg.query('SELECT claimed_by_slack_id FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.claimed_by_slack_id, null);
+  const late = await postNextCall(pg, svc, 'call_day0_late', ctx, new Date('2026-10-27T18:30:00Z'));
+  assert.ok(late.includes('this is (name) with Acme Co') && late.includes('<@UGABE1> <@UCAYD1>') && !late.includes('*Caller:*'));
+});
+
+test('setting a callback counts as an outcome and claims the lead', { skip }, async () => {
+  const ctx = await twoCallers();
+  const { pg, svc, step, seq, slackApi } = ctx;
+  await svc.handleCallbackSubmit(cbSubmission(step.id, '2026-10-27T20:00:00Z', 'America/Chicago', 'UCAYD1'), { slackApi, now: NOW, env: ENV2 });
+  const { rows: [s] } = await pg.query('SELECT claimed_by_name FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.claimed_by_name, 'Cayden');
+  await pg.query(`UPDATE followup_sequence_steps SET due_at = $1 WHERE kind = 'call_callback_1'`, [new Date('2026-10-27T19:59:00Z')]);
+  const before = ctx.calls.posts.length;
+  await svc.runSequenceTick({ now: new Date('2026-10-27T20:01:00Z'), slackApi, deps: ctx.deps, env: ENV2 });
+  assert.equal(ctx.calls.posts.length, before + 1);
+  const cb = lastPost(ctx.calls);
+  assert.ok(cb.includes('this is (name) with Acme Co') && cb.includes('<@UCAYD1>') && !cb.includes('UGABE1'));
+});
+
+test('claiming is first-come: a second claim attempt is a no-op', { skip }, async () => {
+  const ctx = await twoCallers();
+  const a = await ctx.svc.claimLead({ seqId: ctx.seq.id, slackUserId: 'UGABE1', env: ENV2 });
+  const b = await ctx.svc.claimLead({ seqId: ctx.seq.id, slackUserId: 'UCAYD1', env: ENV2 });
+  assert.equal(a.claimed, true);
+  assert.equal(b.claimed, false);
+  const { rows: [s] } = await ctx.pg.query('SELECT claimed_by_name FROM followup_sequences WHERE id = $1', [ctx.seq.id]);
+  assert.equal(s.claimed_by_name, 'Gabe');
 });

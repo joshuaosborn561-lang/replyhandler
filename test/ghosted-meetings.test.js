@@ -19,7 +19,7 @@ for (const k of ['ALLO_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'FIREFLI
 
 const MIN = 60000;
 const NOW = new Date('2026-10-27T17:00:00Z'); // Tue 12:00 CT
-const ENV_DEFAULT = { GHOSTED_MEETING_ENABLED: 'true', FOLLOWUP_CALLER_NAME: 'Gabe' };
+const ENV_DEFAULT = { GHOSTED_MEETING_ENABLED: 'true', FOLLOWUP_CALLER_NAME: 'Gabe', FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe,U0BL8JT75KN:Cayden' };
 // Existing flow tests exercise the opt-in full sequence (calls, day 2, breakup).
 const ENV = { ...ENV_DEFAULT, GHOSTED_MEETING_FULL_SEQUENCE: 'true' };
 const MEET_START = new Date('2026-10-27T15:00:00Z'); // 10:00 CT, ended 90 min before NOW
@@ -277,6 +277,8 @@ test('ghosted meeting is enrolled, posts its cards, and is traceable end to end'
     const blocks = JSON.stringify(calls.posts[0].blocks);
     assert.match(blocks, /We had a meeting on the calendar and it looks like we missed each other/);
     assert.match(blocks, /fseq_booked/);
+    assert.match(blocks, /this is \(name\) with Acme Co/, 'callers say their own name: the script literally says (name)');
+    assert.match(blocks, /<@U0CAL8ZDG92>/, 'call card tags the configured callers until one claims');
 
     // The trail names every stage, and each stage was logged as one line.
     const [done] = await checks(pg);

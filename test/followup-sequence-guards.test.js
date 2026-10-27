@@ -64,6 +64,9 @@ test('the old cadence yields to the sequence for positive replies only when the 
 
 test('migration is listed and creates the three tables', () => {
   assert.match(src('scripts/run-migrations.js'), /045_followup_sequences\.sql/);
+  assert.match(src('scripts/run-migrations.js'), /046_followup_sequence_caller\.sql/);
+  assert.match(src('migrations/046_followup_sequence_caller.sql'), /claimed_by_slack_id/);
+  assert.match(src('schema.sql'), /claimed_by_slack_id TEXT/);
   const m = src('migrations/045_followup_sequences.sql');
   for (const t of ['followup_sequences', 'followup_sequence_steps', 'followup_sequence_copy']) {
     assert.match(m, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`));
@@ -75,4 +78,20 @@ test('admin copy override exists and, like every admin route, takes no key', () 
   const admin = src('src/routes/admin.js');
   assert.match(admin, /'\/admin\/followup-sequence\/copy', async/);
   assert.doesNotMatch(admin, /requireAdminApiKey/);
+});
+
+test('the Slack route validates the callback modal before acknowledging it', () => {
+  const r = src('src/routes/slack.js');
+  const i = r.indexOf("callback_id === 'fseq_callback_modal'");
+  assert.ok(i > 0);
+  const block = r.slice(i, i + 700);
+  assert.ok(block.indexOf('validateCallbackSubmission') < block.indexOf("response_action: 'clear'"));
+  assert.match(block, /response_action: 'errors'/);
+});
+
+test('callers are configured by env and documented', () => {
+  const env = src('.env.example');
+  assert.match(env, /FOLLOWUP_CALLERS=/);
+  assert.match(env, /FOLLOWUP_CALLERS=U0CAL8ZDG92:Gabe,U0BL8JT75KN:Cayden/);
+  assert.ok(!/kate/i.test(env), 'no Kate or placeholder id');
 });

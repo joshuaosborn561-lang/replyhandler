@@ -51,6 +51,7 @@ const MIGRATION_FILES = [
   '043_inbound_message_id.sql',
   '044_referral_cc.sql',
   '045_followup_sequences.sql',
+  '046_followup_sequence_caller.sql',
   '047_ghosted_meetings.sql',
 ];
 
