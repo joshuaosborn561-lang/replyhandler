@@ -389,26 +389,40 @@ function buildClientNotifyEmail({
   return { subject, htmlBody, textBody };
 }
 
+const BOOKED_NOTES_LINE =
+  'If you have any notes before the meeting, just hit reply all. Our operations team sees it.';
+
+function highlightSections(h) {
+  if (!h) return [];
+  const out = [];
+  if (h.painPoints && h.painPoints.length) out.push({ label: 'Pain points', items: h.painPoints });
+  if (h.currentSetup) out.push({ label: 'Current setup', items: [h.currentSetup] });
+  if (h.objections && h.objections.length) out.push({ label: 'Objections', items: h.objections });
+  if (h.nextStep) out.push({ label: 'Next step', items: [h.nextStep] });
+  return out;
+}
+
 /**
  * Same layout as the prospect-reply notify email (FYI line, notes line, Prospect table, a card
- * for the body) for a meeting a caller booked on a call. The card carries Allo's call summary.
+ * for the body) for a meeting a caller booked on a cold call. The card carries Allo's short
+ * summary plus, when available, structured highlights from the transcript.
  */
 function buildBookedMeetingNotifyEmail({
   prospect,
   clientName,
-  listName,
-  callerFirstName,
   callAtLabel,
   summary,
+  highlights,
   noSummaryText,
 }) {
   const p = prospect || {};
-  const name = String(p.name || p.company || 'Prospect').trim() || 'Prospect';
-  const by = String(callerFirstName || '').trim();
+  const person = String(p.name || '').trim();
+  const company = String(p.company || '').trim();
+  const name = person || company || 'Prospect';
   const subject = `Meeting booked: ${name}${clientName ? ` · ${clientName}` : ''}`;
-  const list = String(listName || '').trim();
-  const body = String(summary || '').trim() || noSummaryText;
-  const status = ['Booked on the call', callAtLabel].filter(Boolean).join(' · ');
+  const sections = highlightSections(highlights);
+  const short = String(summary || '').trim();
+  const status = ['Booked on a cold call', callAtLabel].filter(Boolean).join(' · ');
   const rows = [
     ['Name', p.name],
     ['Company', p.company],
@@ -416,25 +430,37 @@ function buildBookedMeetingNotifyEmail({
     ['Email', p.email],
     ['Cell', p.phone],
   ];
+  const withCompany = person && company ? ` at ${company}` : '';
+  const openerText = `FYI, we just booked a meeting with ${name}${withCompany} through a cold call.`;
+  const openerHtml = `FYI, we just booked a meeting with <strong>${escapeHtml(name)}</strong>${
+    withCompany ? ` at <strong>${escapeHtml(company)}</strong>` : ''
+  } through a cold call.`;
+
+  const bodyHtml = [
+    short ? `<div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(short)}</div>` : '',
+    ...sections.map((sec) => (
+      `<div style="margin:${short ? '12px' : '0'} 0 0 0;"><div style="font-weight:600;margin:0 0 4px 0;">${escapeHtml(sec.label)}</div>` +
+      `<ul style="margin:0;padding-left:18px;line-height:1.45;">${sec.items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul></div>`
+    )),
+    !short && !sections.length ? `<div style="color:#111;">${escapeHtml(noSummaryText)}</div>` : '',
+  ].join('');
 
   const htmlBody = `
 <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
-  <p>FYI — ${by ? `${escapeHtml(by)} just` : 'We just'} booked a meeting with <strong>${escapeHtml(name)}</strong>${list ? ` (${escapeHtml(list)})` : ''}.</p>
-  <p>${escapeHtml(FYI_NOTES_LINE)}</p>
+  <p>${openerHtml}</p>
+  <p>${escapeHtml(BOOKED_NOTES_LINE)}</p>
   <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
   <table style="border-collapse:collapse;font-size:14px;">${labelRowsHtml(rows)}</table>
   <h3 style="margin:22px 0 8px;font-size:14px;">Call summary</h3>
   <div style="margin:0 0 16px 0;">
     <div style="font-size:12px;color:#666;margin:0 0 6px 0;">${escapeHtml(status)}</div>
-    <div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">
-      <div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(body)}</div>
-    </div>
+    <div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">${bodyHtml}</div>
   </div>
 </div>`.trim();
 
   const textBody = [
-    `FYI — ${by ? `${by} just` : 'We just'} booked a meeting with ${name}${list ? ` (${list})` : ''}.`,
-    FYI_NOTES_LINE,
+    openerText,
+    BOOKED_NOTES_LINE,
     '',
     'Prospect',
     ...rows.map(([k, v]) => `${k}: ${v || 'not found'}`),
@@ -442,8 +468,10 @@ function buildBookedMeetingNotifyEmail({
     'Call summary',
     status,
     '',
-    body,
-  ].join('\n');
+    ...(short ? [short, ''] : []),
+    ...sections.flatMap((sec) => [`${sec.label}:`, ...sec.items.map((i) => `- ${i}`), '']),
+    ...(!short && !sections.length ? [noSummaryText] : []),
+  ].join('\n').trimEnd();
 
   return { subject, htmlBody, textBody };
 }
@@ -492,6 +520,7 @@ function buildInboundForwardEmail({
 module.exports = {
   buildClientNotifyEmail,
   buildBookedMeetingNotifyEmail,
+  BOOKED_NOTES_LINE,
   buildInboundForwardEmail,
   normalizeThreadSteps,
   pickRicherThreadContext,

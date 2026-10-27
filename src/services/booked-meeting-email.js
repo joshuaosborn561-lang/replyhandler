@@ -7,8 +7,9 @@
  * Recipients are never taken from the request:
  *   To  = the booked client's always-CC list (clients.cc_emails / cc_email), the same list the
  *         positive-reply notify email goes to
- *   CC  = Josh (BOOKED_MEETING_EMAIL_TO, default joshua@salesglidergrowth.com)
- *   no always-CC configured (or the client cannot be resolved) = To Josh only.
+ *   CC  = Josh (BOOKED_MEETING_EMAIL_TO, default joshua@salesglidergrowth.com) plus the ops
+ *         address the positive-reply email CCs (FYI_CC_EMAILS, default Cayden)
+ *   no always-CC configured (or the client cannot be resolved) = To Josh, CC ops.
  * Layout, subject style and notes line match the positive-reply notify email
  * (buildBookedMeetingNotifyEmail in client-notify-email.js). Reply-To is the same FYI reply-to.
  */
@@ -18,7 +19,8 @@ const db = require('../db');
 const { buildBookedMeetingNotifyEmail } = require('./client-notify-email');
 const { alwaysCcEmails, parseEmailList } = require('./client-cc');
 const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
-const { fyiReplyTo } = require('../utils/fyi-notify');
+const { fyiReplyTo, fyiCcEmails, mergeEmailLists } = require('../utils/fyi-notify');
+const { generateHighlights } = require('./booked-meeting-highlights');
 
 const DEFAULT_TO = 'joshua@salesglidergrowth.com';
 const EVENT = 'booked_meeting_email';
@@ -50,6 +52,7 @@ function parseBookedMeetingPayload(body) {
     callAt: str(b.call_at, 60),
     summary: String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000),
     summarySource: str(b.summary_source, 40),
+    transcript: String(b.transcript || '').replace(/\r\n/g, '\n').trim().slice(0, 12000),
     prospect: {
       name: str(p.name, 200),
       company: str(p.company, 200),
@@ -77,15 +80,13 @@ function whenLabel(iso) {
 
 const NO_SUMMARY = 'Allo has not produced a summary for this call yet.';
 
-function buildBookedMeetingEmail(m) {
-  const first = m.caller ? m.caller.split(/\s+/)[0] : '';
+function buildBookedMeetingEmail(m, highlights = null) {
   return buildBookedMeetingNotifyEmail({
     prospect: m.prospect,
     clientName: m.client,
-    listName: m.list,
-    callerFirstName: first,
     callAtLabel: whenLabel(m.callAt),
     summary: m.summary,
+    highlights,
     noSummaryText: NO_SUMMARY,
   });
 }
@@ -115,13 +116,16 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
 }
 
 /**
- * To = client always-CC (else Josh), CC = Josh when the client is on To. Josh is never dropped.
+ * To = client always-CC (else Josh). CC = Josh when the client is on To, plus the ops FYI CC.
+ * Josh and ops are never dropped or duplicated.
  */
-function buildRecipients({ always, josh }) {
+function buildRecipients({ always, josh, ops = [] }) {
   const owner = parseEmailList(josh);
-  const clientList = (always || []).filter((e) => !owner.includes(e));
-  if (!clientList.length) return { to: owner, cc: [] };
-  return { to: clientList, cc: owner };
+  const opsList = parseEmailList(Array.isArray(ops) ? ops.join(',') : ops);
+  const clientList = (always || []).filter((e) => !owner.includes(e) && !opsList.includes(e));
+  const to = clientList.length ? clientList : owner;
+  const cc = mergeEmailLists(clientList.length ? owner : [], opsList).filter((e) => !to.includes(e));
+  return { to, cc };
 }
 
 function alreadySent(key, now = Date.now()) {
@@ -134,6 +138,7 @@ async function handleBookedMeetingEmail(body, {
   now = Date.now(),
   env = process.env,
   resolveCc = resolveClientAlwaysCc,
+  highlightsFn = generateHighlights,
 } = {}) {
   const parsed = parseBookedMeetingPayload(body);
   if (!parsed.ok) return { status: 400, body: { ok: false, error: parsed.error } };
@@ -148,8 +153,9 @@ async function handleBookedMeetingEmail(body, {
     // Never lose Josh's copy because the client lookup failed.
     console.warn('[BookedMeetingEmail] client always-CC lookup failed, sending to Josh only', { err: err.message });
   }
-  const { to, cc } = buildRecipients({ always, josh: recipient(env) });
-  const { subject, textBody, htmlBody } = buildBookedMeetingEmail(m);
+  const { to, cc } = buildRecipients({ always, josh: recipient(env), ops: fyiCcEmails(env) });
+  const highlights = await highlightsFn({ transcript: m.transcript, summary: m.summary });
+  const { subject, textBody, htmlBody } = buildBookedMeetingEmail(m, highlights);
   try {
     await send({ to, cc, replyTo: fyiReplyTo(env), subject, htmlBody, textBody });
   } catch (err) {

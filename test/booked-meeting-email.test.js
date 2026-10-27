@@ -5,8 +5,9 @@ const express = require('express');
 
 const gmail = require('../src/services/gmail-send');
 const db = require('../src/db');
-const { FYI_NOTES_LINE } = require('../src/utils/fyi-notify');
-const { buildClientNotifyEmail } = require('../src/services/client-notify-email');
+const { DEFAULT_FYI_CC_EMAILS } = require('../src/utils/fyi-notify');
+const { buildClientNotifyEmail, BOOKED_NOTES_LINE } = require('../src/services/client-notify-email');
+const { normalizeHighlights, generateHighlights } = require('../src/services/booked-meeting-highlights');
 const {
   DEFAULT_TO,
   NO_SUMMARY,
@@ -19,6 +20,8 @@ const {
   _resetSeenForTests,
 } = require('../src/services/booked-meeting-email');
 
+const OPS = DEFAULT_FYI_CC_EMAILS;
+
 function payload(over = {}) {
   return {
     event: 'booked_meeting_email',
@@ -28,6 +31,7 @@ function payload(over = {}) {
     client: 'Acme Client',
     client_slug: 'acmeclient',
     list: 'Acme Central Owners',
+    transcript: 'USER: hi\nEXTERNAL: hello',
     call_at: '2026-10-27T15:30:00Z',
     summary: 'Pat agreed to a demo Thursday.\nSend the calendar invite.',
     summary_source: 'allo_calls',
@@ -42,6 +46,7 @@ function payload(over = {}) {
   };
 }
 
+const noHighlights = async () => null;
 const noCc = async () => ({ clients: [], always: [] });
 const withCc = (...emails) => async () => ({ clients: ['Acme Client'], always: emails });
 
@@ -85,14 +90,25 @@ describe('booked meeting email: content matches the positive-reply notify email'
     assert.equal(booked.subject, 'Meeting booked: Pat Example · Acme Client');
   });
 
-  it('shares the wrapper style, FYI line, notes line, and Prospect/section headings', () => {
+  it('shares the wrapper, section headings and card styling; opener and notes line are for bookings', () => {
     const wrapper = reply.htmlBody.match(/^<div style="[^"]+">/)[0];
     assert.ok(booked.htmlBody.startsWith(wrapper), 'same outer container style');
-    assert.ok(booked.htmlBody.includes('<p>FYI — Gabe just booked a meeting with <strong>Pat Example</strong> (Acme Central Owners).</p>'));
-    assert.ok(reply.htmlBody.includes(`<p>${FYI_NOTES_LINE}</p>`) && booked.htmlBody.includes(`<p>${FYI_NOTES_LINE}</p>`));
+    assert.ok(booked.htmlBody.includes('<p>FYI, we just booked a meeting with <strong>Pat Example</strong> at <strong>Example Mechanical</strong> through a cold call.</p>'));
+    assert.ok(booked.textBody.startsWith('FYI, we just booked a meeting with Pat Example at Example Mechanical through a cold call.'));
+    assert.ok(!booked.htmlBody.includes('Acme Central Owners') && !booked.textBody.includes('Acme Central Owners'), 'internal list name is not in the email');
+    assert.ok(!booked.textBody.includes('Gabe'), 'no caller name in the opener');
+    assert.ok(BOOKED_NOTES_LINE.includes('before the meeting'));
+    assert.ok(booked.htmlBody.includes(`<p>${BOOKED_NOTES_LINE}</p>`) && booked.textBody.includes(BOOKED_NOTES_LINE));
+    assert.ok(!booked.textBody.includes('notes on this reply'));
     assert.ok(booked.htmlBody.includes('<h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>'));
     assert.ok(booked.htmlBody.includes('border:1px solid #e5e7eb;border-radius:6px'), 'same card style as Thread');
-    assert.ok(booked.textBody.includes(FYI_NOTES_LINE));
+  });
+
+  it('drops "at <company>" when either part is missing', () => {
+    const noCompany = buildBookedMeetingEmail(parseBookedMeetingPayload(payload({ prospect: { name: 'Pat Example', company: '' } })).value);
+    assert.ok(noCompany.textBody.startsWith('FYI, we just booked a meeting with Pat Example through a cold call.'));
+    const noName = buildBookedMeetingEmail(parseBookedMeetingPayload(payload({ prospect: { name: '', company: 'Example Mechanical' } })).value);
+    assert.ok(noName.textBody.startsWith('FYI, we just booked a meeting with Example Mechanical through a cold call.'));
   });
 
   it('lists name, company, title, email, cell and the Allo summary', () => {
@@ -100,7 +116,7 @@ describe('booked meeting email: content matches the positive-reply notify email'
       assert.ok(booked.textBody.includes(want), `text has ${want}`);
     }
     assert.ok(booked.textBody.includes('Pat agreed to a demo Thursday.\nSend the calendar invite.'));
-    assert.ok(booked.textBody.includes('Booked on the call · Tue, Oct 27, 10:30 AM CT'));
+    assert.ok(booked.textBody.includes('Booked on a cold call · Tue, Oct 27, 10:30 AM CT'));
     assert.ok(booked.htmlBody.includes('Pat agreed to a demo Thursday.\nSend the calendar invite.'));
   });
 
@@ -133,24 +149,85 @@ describe('booked meeting email: content matches the positive-reply notify email'
   });
 });
 
+describe('booked meeting email: highlights', () => {
+  const m = parseBookedMeetingPayload(payload()).value;
+  const h = {
+    painPoints: ['Past lead vendors never produced work.'],
+    currentSetup: 'All work comes from referrals after 30 years in business.',
+    objections: ['Does not trust paid lead services.'],
+    nextStep: 'Phone call tomorrow at 4:30 PM.',
+  };
+
+  it('renders the short summary first, then Pain points / Current setup / Objections / Next step', () => {
+    const b = buildBookedMeetingEmail(m, h);
+    const t = b.textBody;
+    assert.ok(t.indexOf('Pat agreed to a demo') < t.indexOf('Pain points:'));
+    for (const want of ['Pain points:', '- Past lead vendors never produced work.', 'Current setup:', 'Objections:', 'Next step:', '- Phone call tomorrow at 4:30 PM.']) {
+      assert.ok(t.includes(want), `text has ${want}`);
+    }
+    assert.ok(b.htmlBody.includes('<li>Past lead vendors never produced work.</li>'));
+    assert.ok(b.htmlBody.indexOf('Pain points') < b.htmlBody.indexOf('Next step'));
+  });
+
+  it('falls back to the short summary alone without highlights, and says so with neither', () => {
+    const b = buildBookedMeetingEmail(m, null);
+    assert.ok(b.textBody.includes('Pat agreed to a demo') && !b.textBody.includes('Pain points'));
+    const none = buildBookedMeetingEmail(parseBookedMeetingPayload(payload({ summary: '' })).value, null);
+    assert.ok(none.textBody.includes(NO_SUMMARY));
+  });
+
+  it('highlights alone (no short summary) still render', () => {
+    const b = buildBookedMeetingEmail(parseBookedMeetingPayload(payload({ summary: '' })).value, h);
+    assert.ok(b.textBody.includes('Next step:') && !b.textBody.includes(NO_SUMMARY));
+  });
+
+  it('normalizeHighlights trims, caps, drops contact details and empty results', () => {
+    const n = normalizeHighlights({
+      pain_points: ['  a  ', '', 'call me at 555-111-2222', 'b', 'c', 'd', 'e'],
+      current_setup: 'mail me at x@example.test',
+      objections: [],
+      next_step: ' Tomorrow 4:30 ',
+    });
+    assert.deepEqual(n.painPoints, ['a', 'b', 'c', 'd']);
+    assert.equal(n.currentSetup, null);
+    assert.equal(n.nextStep, 'Tomorrow 4:30');
+    assert.equal(normalizeHighlights({ pain_points: [], current_setup: null, objections: [], next_step: null }), null);
+    assert.equal(normalizeHighlights(null), null);
+  });
+
+  it('generateHighlights parses model JSON, and returns null without a transcript, on bad JSON, or on error', async () => {
+    const seen = [];
+    const llm = async (args) => { seen.push(args); return 'ok {"pain_points":["p"],"current_setup":null,"objections":[],"next_step":"n"} done'; };
+    const r = await generateHighlights({ transcript: 'USER: hi', summary: 'short' }, { llm });
+    assert.deepEqual(r, { painPoints: ['p'], currentSetup: null, objections: [], nextStep: 'n' });
+    assert.ok(seen[0].user.includes('USER: hi') && seen[0].user.includes('short'));
+    assert.equal(await generateHighlights({ transcript: '', summary: 's' }, { llm }), null);
+    assert.equal(seen.length, 1, 'no LLM call without a transcript');
+    assert.equal(await generateHighlights({ transcript: 't' }, { llm: async () => 'not json' }), null);
+    assert.equal(await generateHighlights({ transcript: 't' }, { llm: async () => { throw new Error('boom'); } }), null);
+    assert.equal(await generateHighlights({ transcript: 't' }, { llm: async () => null }), null);
+  });
+});
+
 describe('booked meeting email: recipients', () => {
-  it('To = client always-CC, CC = Josh', () => {
+  it('To = client always-CC, CC = Josh then the ops address', () => {
     assert.deepEqual(
-      buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO }),
-      { to: ['client@example.test', 'second@example.test'], cc: [DEFAULT_TO] },
+      buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO, ops: [OPS] }),
+      { to: ['client@example.test', 'second@example.test'], cc: [DEFAULT_TO, OPS] },
     );
   });
 
-  it('no always-CC means Josh only', () => {
-    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO }), { to: [DEFAULT_TO], cc: [] });
+  it('no always-CC means To Josh, CC ops', () => {
+    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, ops: [OPS] }), { to: [DEFAULT_TO], cc: [OPS] });
+    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, ops: [] }), { to: [DEFAULT_TO], cc: [] });
   });
 
-  it('Josh is never duplicated or dropped when he is on the client list', () => {
+  it('Josh and ops are never duplicated or dropped when they are on the client list', () => {
     assert.deepEqual(
-      buildRecipients({ always: [DEFAULT_TO, 'client@example.test'], josh: DEFAULT_TO }),
-      { to: ['client@example.test'], cc: [DEFAULT_TO] },
+      buildRecipients({ always: [DEFAULT_TO, OPS, 'client@example.test'], josh: DEFAULT_TO, ops: [OPS] }),
+      { to: ['client@example.test'], cc: [DEFAULT_TO, OPS] },
     );
-    assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO }), { to: [DEFAULT_TO], cc: [] });
+    assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO, ops: [OPS] }), { to: [DEFAULT_TO], cc: [OPS] });
   });
 
   it('honors BOOKED_MEETING_EMAIL_TO', () => {
@@ -199,26 +276,40 @@ describe('booked meeting email: sending', () => {
     const send = async (m) => { sent.push(m); };
     const a = await handleBookedMeetingEmail(
       payload({ to: 'attacker@example.test', cc: 'attacker@example.test' }),
-      { send, env: {}, resolveCc: withCc('client@example.test') },
+      { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights },
     );
-    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: [DEFAULT_TO] } });
+    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: [DEFAULT_TO, OPS] } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, [DEFAULT_TO]);
+    assert.deepEqual(sent[0].cc, [DEFAULT_TO, OPS]);
     assert.equal(sent[0].replyTo, 'joshua@salesglidergrowth.com');
     assert.ok(sent[0].subject.startsWith('Meeting booked:'));
     assert.ok(sent[0].htmlBody && sent[0].textBody);
   });
 
+  it('includes highlights from the transcript in the sent email, and still sends when generation fails', async () => {
+    const sent = [];
+    const send = async (m) => { sent.push(m); };
+    const seen = [];
+    const hl = { painPoints: ['Wants fewer vendor calls.'], currentSetup: null, objections: [], nextStep: 'Call tomorrow.' };
+    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async (a) => { seen.push(a); return hl; } });
+    assert.equal(seen[0].transcript, 'USER: hi\nEXTERNAL: hello');
+    assert.ok(sent[0].textBody.includes('Pain points:') && sent[0].textBody.includes('- Call tomorrow.'));
+    _resetSeenForTests();
+    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async () => null });
+    assert.equal(sent.length, 2);
+    assert.ok(!sent[1].textBody.includes('Pain points:') && sent[1].textBody.includes('Pat agreed to a demo'));
+  });
+
   it('sends to Josh only when the client has no always-CC, and dedupes a repeat', async () => {
     const sent = [];
     const send = async (m) => { sent.push(m); };
-    const a = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc });
-    const b = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc });
-    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: [] });
+    const a = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
+    const b = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
+    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: [OPS] });
     assert.deepEqual(b, { status: 200, body: { ok: true, deduped: true } });
     assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0].cc, []);
+    assert.deepEqual(sent[0].cc, [OPS]);
   });
 
   it('a failed client lookup still sends Josh his copy', async () => {
@@ -226,6 +317,7 @@ describe('booked meeting email: sending', () => {
     const r = await handleBookedMeetingEmail(payload(), {
       send: async (m) => { sent.push(m); },
       env: {},
+      highlightsFn: noHighlights,
       resolveCc: async () => { throw new Error('db down'); },
     });
     assert.equal(r.status, 200);
@@ -238,16 +330,17 @@ describe('booked meeting email: sending', () => {
       send: async () => { calls.push('fail'); throw new Error('Gmail send failed (403)'); },
       env: {},
       resolveCc: noCc,
+      highlightsFn: noHighlights,
     });
     assert.deepEqual(bad, { status: 502, body: { ok: false, error: 'send_failed' } });
-    const ok = await handleBookedMeetingEmail(payload(), { send: async () => { calls.push('ok'); }, env: {}, resolveCc: noCc });
+    const ok = await handleBookedMeetingEmail(payload(), { send: async () => { calls.push('ok'); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
     assert.equal(ok.status, 200);
     assert.deepEqual(calls, ['fail', 'ok']);
   });
 
   it('400s a bad payload without sending', async () => {
     let called = false;
-    const r = await handleBookedMeetingEmail({ event: 'nope' }, { send: async () => { called = true; }, env: {}, resolveCc: noCc });
+    const r = await handleBookedMeetingEmail({ event: 'nope' }, { send: async () => { called = true; }, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
     assert.equal(r.status, 400);
     assert.equal(called, false);
   });
@@ -257,6 +350,7 @@ describe('booked meeting email: route', () => {
   const realSend = gmail.sendMail;
   const realQuery = db.query;
   const realSecret = process.env.BOOKING_BRIDGE_WEBHOOK_SECRET;
+  const realAnthropic = process.env.ANTHROPIC_API_KEY;
   let server;
   let base;
   let sent;
@@ -267,6 +361,7 @@ describe('booked meeting email: route', () => {
     gmail.sendMail = async (m) => { sent.push(m); return { ok: true }; };
     db.query = async () => ({ rows: [{ name: 'Acme Client', cc_emails: 'client@example.test', cc_email: 'client@example.test' }] });
     process.env.BOOKING_BRIDGE_WEBHOOK_SECRET = 'test-secret-value';
+    delete process.env.ANTHROPIC_API_KEY; // never call the LLM from a test
     const app = express();
     app.use(express.json());
     app.use(require('../src/routes/booking-bridge-recap'));
@@ -277,6 +372,7 @@ describe('booked meeting email: route', () => {
   afterEach(async () => {
     gmail.sendMail = realSend;
     db.query = realQuery;
+    if (realAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = realAnthropic;
     if (realSecret === undefined) delete process.env.BOOKING_BRIDGE_WEBHOOK_SECRET;
     else process.env.BOOKING_BRIDGE_WEBHOOK_SECRET = realSecret;
     await new Promise((r) => server.close(r));
@@ -304,6 +400,6 @@ describe('booked meeting email: route', () => {
     assert.equal(res.status, 200);
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, [DEFAULT_TO]);
+    assert.deepEqual(sent[0].cc, [DEFAULT_TO, OPS]);
   });
 });
