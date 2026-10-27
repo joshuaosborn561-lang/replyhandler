@@ -4,6 +4,7 @@ const time = require('../src/utils/followup-sequence-time');
 const text = require('../src/utils/followup-sequence-text');
 const copy = require('../src/services/followup-sequence-copy');
 const { callNowDraft } = require('../src/utils/call-now-variant');
+const seq = require('../src/services/followup-sequence');
 
 const TZ = 'America/Chicago';
 
@@ -82,12 +83,12 @@ test('plan covers every spec step exactly once, calls and emails typed', () => {
 
 // ─── text ────────────────────────────────────────────────────────────────────
 
-const args = { firstName: 'Pat', callerName: 'Gabe', clientName: 'Acme Co', offerLine: 'cutting your IT costs' };
+const args = { firstName: 'Pat', callerName: text.callerName(), clientName: 'Acme Co', offerLine: 'cutting your IT costs' };
 
 test('call script is the exact spec line', () => {
   assert.equal(
     text.callScript(args),
-    'Hey Pat, this is Gabe with Acme Co. We emailed you about cutting your IT costs. Did you still want to take a peek at that in the next couple days?',
+    'Hey Pat, this is (name) with Acme Co. We emailed you about cutting your IT costs. Did you still want to take a peek at that in the next couple days?',
   );
 });
 
@@ -103,13 +104,13 @@ test('voicemails: Day 0, Day 3 and Day 6 leave one; the other calls leave none',
   const d3 = text.voicemailScript('call_day3', args);
   assert.ok(/calling about cutting your IT costs/.test(d3));
   assert.ok(/one more email/.test(d3) && /if you're still interested/i.test(d3) && /scheduled/.test(d3));
-  assert.ok(/sent you an email/.test(text.voicemailScript('call_day6', args)));
+  assert.ok(text.voicemailScript('call_day6', args));
 });
 
 test('email bodies match the spec wording', () => {
   const slots = [{ label: 'Wed, Oct 28, 11:00 AM CDT' }, { label: 'Thu, Oct 29, 2:00 PM CDT' }];
   const vm = text.emailBody('email_vm', { firstName: 'Pat', slots, link: '' });
-  assert.ok(vm.startsWith('Hey Pat, just tried you and left you a voicemail.'));
+  assert.ok(vm.startsWith('Hey Pat, just tried you, left you a voicemail. Still want to take a peek at this?\n\n'));
   assert.ok(vm.includes('Wed, Oct 28, 11:00 AM CDT') && vm.includes('Thu, Oct 29, 2:00 PM CDT'));
   const d1 = text.emailBody('email_day1', { firstName: 'Pat', slots, link: '' });
   assert.ok(/those times got taken/i.test(d1) && d1.includes('Thu, Oct 29, 2:00 PM CDT'));
@@ -238,4 +239,131 @@ test('no calls on a holiday, and a holiday reply starts the next business day', 
   const next = time.nextCallWindowStart(new Date('2026-11-26T17:00:00Z'), TZ);
   assert.equal(next.toISOString(), '2026-11-30T15:00:00.000Z', 'Mon Nov 30, 9am CST');
   assert.equal(time.inCallWindow(new Date('2026-11-25T17:00:00Z'), TZ), true);
+});
+
+test('Day 6 voicemail is a breakup script: recap the offer, then the real proof', () => {
+  const proof = 'Last quarter we booked 212 meetings for 14 clients.';
+  assert.equal(
+    text.voicemailScript('call_day6', { ...args, proofPoint: proof }),
+    "Hey Pat, (name) with Acme Co. Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+  );
+});
+
+test('Day 6 voicemail drops the proof sentence when there is no real proof, never invents one', () => {
+  const none = text.voicemailScript('call_day6', { ...args, proofPoint: null });
+  assert.equal(
+    none,
+    "Hey Pat, (name) with Acme Co. Last call from me. Quick recap: cutting your IT costs. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+  );
+  assert.equal(text.voicemailScript('call_day6', { ...args, proofPoint: '   ' }), none);
+  // A missing offer shows the placeholder, same as the call script.
+  assert.ok(text.voicemailScript('call_day6', { ...args, offerLine: null }).includes(text.OFFER_MISSING));
+});
+
+test('Day 6 proof without trailing punctuation still reads as a sentence', () => {
+  const v = text.voicemailScript('call_day6', { ...args, proofPoint: 'We cut costs 40%' });
+  assert.ok(v.includes('Quick recap: cutting your IT costs. We cut costs 40%. If it'));
+});
+
+// ─── callback modal ──────────────────────────────────────────────────────────
+
+const PT = 'America/Los_Angeles';
+const secs = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+const submit = (iso, tz = PT) => ({
+  view: {
+    private_metadata: JSON.stringify({ stepId: 's1', tz }),
+    state: { values: { when_block: { when: { selected_date_time: secs(iso) } } } },
+  },
+});
+
+test('callback modal shows the lead time zone and a datetime picker defaulting to their business hours', () => {
+  const now = new Date('2026-10-27T14:30:00Z'); // 7:30am PT, before their call hours
+  const view = seq.buildCallbackModal({ stepId: 's1', channel: 'C1', ts: '1.2', leadName: 'Pat Smith', tz: PT, now });
+  assert.equal(view.callback_id, 'fseq_callback_modal');
+  assert.deepEqual(JSON.parse(view.private_metadata), { stepId: 's1', channel: 'C1', ts: '1.2', tz: PT });
+  const intro = view.blocks[0].text.text;
+  assert.ok(intro.includes('America/Los_Angeles'), 'names the lead time zone');
+  assert.ok(/7:30 AM/.test(intro), "shows the lead's current local time");
+  assert.ok(/9:00 AM to 5:00 PM/.test(intro));
+  const picker = view.blocks[1].element;
+  assert.equal(picker.type, 'datetimepicker');
+  assert.equal(picker.action_id, 'when');
+  // Default lands inside their business hours: 9am PT.
+  assert.equal(picker.initial_date_time, secs('2026-10-27T16:00:00Z'));
+});
+
+test('default callback time: an hour out, rounded up, never outside call hours or on a holiday', () => {
+  assert.equal(seq.defaultCallbackTime(new Date('2026-10-27T17:05:00Z'), TZ).toISOString(), '2026-10-27T18:15:00.000Z', '12:05 CT -> 1:15 CT');
+  assert.equal(seq.defaultCallbackTime(new Date('2026-10-27T21:30:00Z'), TZ).toISOString(), '2026-10-28T14:00:00.000Z', '4:30pm CT -> next morning 9am');
+  assert.equal(seq.defaultCallbackTime(new Date('2026-11-25T22:30:00Z'), TZ).toISOString(), '2026-11-30T15:00:00.000Z', 'day before Thanksgiving evening -> Monday');
+});
+
+test('callback time must be in the future and inside the lead call hours', () => {
+  const now = new Date('2026-10-27T17:00:00Z');
+  assert.equal(seq.callbackTimeError(new Date('2026-10-27T20:00:00Z'), PT, now), null, '1pm PT Tue');
+  assert.match(seq.callbackTimeError(new Date('2026-10-27T16:30:00Z'), PT, now), /passed/);
+  assert.match(seq.callbackTimeError(new Date('2026-10-28T14:00:00Z'), PT, now), /9:00 to 17:00 their time/, '7am PT');
+  assert.match(seq.callbackTimeError(new Date('2026-10-31T19:00:00Z'), PT, now), /Mon-Fri/, 'Saturday');
+  assert.match(seq.callbackTimeError(new Date('2026-11-26T19:00:00Z'), PT, now), /holidays/, 'Thanksgiving');
+  assert.match(seq.callbackTimeError(null, PT, now), /Pick a date/);
+});
+
+test('modal submission is validated against the lead zone before it is acknowledged', () => {
+  const now = new Date('2026-10-27T17:00:00Z');
+  assert.equal(seq.validateCallbackSubmission(submit('2026-10-27T21:00:00Z'), { now }), null);
+  const bad = seq.validateCallbackSubmission(submit('2026-10-28T13:00:00Z'), { now });
+  assert.ok(bad && bad.when_block, 'error is attached to the picker');
+  assert.ok(seq.validateCallbackSubmission({ view: { private_metadata: '{}', state: { values: {} } } }, { now }).when_block);
+});
+
+test('callback steps are call steps with the same script and no voicemail', () => {
+  assert.equal(text.isCallKind('call_callback_1'), true);
+  assert.equal(text.isCallKind('call_callback_7'), true);
+  assert.equal(text.isCallKind('email_day1'), false);
+  assert.equal(text.stepLabel('call_callback_2'), 'Callback call');
+  assert.equal(text.voicemailScript('call_callback_1', { firstName: 'Pat', callerName: text.callerName(), clientName: 'Acme Co', offerLine: 'x' }), null);
+});
+
+test('call card shows the callback confirmation note and no buttons', () => {
+  const blocks = seq.buildCallCardBlocks({
+    label: 'Day 0 call', leadName: 'Pat', phone: '+15555550100', clientName: 'Acme', script: 's', voicemail: null,
+  }, 'step-1', { outcome: 'call_back', outcomeBy: 'U1', note: '🔁 *Callback set for* Tue, Oct 27, 1:00 PM PDT' });
+  assert.ok(!blocks.some((b) => b.type === 'actions'));
+  assert.ok(JSON.stringify(blocks).includes('Callback set for'));
+});
+
+// ─── callers (Gabe and Cayden) ───────────────────────────────────────────────
+
+test('FOLLOWUP_CALLERS maps Slack ids to names (list or JSON); bad entries are dropped', () => {
+  const want = [{ id: 'U0CAL8ZDG92', name: 'Gabe' }, { id: 'U0BL8JT75KN', name: 'Cayden' }];
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe, U0BL8JT75KN:Cayden' }), want);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: '{"U0CAL8ZDG92":"Gabe","U0BL8JT75KN":"Cayden"}' }), want);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe,not-an-id:Bob,U0CAL8ZDG92:Dup,U0BL8JT75KN:' }), [want[0]]);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'UGABE1:<b>Gabe*' }), [{ id: 'UGABE1', name: 'bGabe' }], 'markup stripped from names');
+});
+
+test('without FOLLOWUP_CALLERS the legacy single caller (default Gabe) applies', () => {
+  assert.deepEqual(text.parseCallers({}), [{ id: null, name: 'Gabe' }]);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLER_NAME: 'Sam', FOLLOWUP_CALLER_SLACK_ID: 'USAM12' }), [{ id: 'USAM12', name: 'Sam' }]);
+  assert.deepEqual(text.parseCallers({ FOLLOWUP_CALLERS: 'garbage' }), [{ id: null, name: 'Gabe' }]);
+});
+
+test('scripts say "(name)" literally so whoever calls says their own name', () => {
+  assert.equal(text.callerName(), '(name)');
+  assert.equal(text.CALLER_PLACEHOLDER, '(name)');
+  const a = { firstName: 'Pat', clientName: 'Acme Co', offerLine: 'cutting your IT costs', proofPoint: 'We saved 14 clients $2M.', callerName: text.callerName() };
+  assert.ok(text.callScript(a).startsWith('Hey Pat, this is (name) with Acme Co.'));
+  assert.ok(text.voicemailScript('call_day0', a).includes("it's (name) with Acme Co"));
+  assert.ok(text.voicemailScript('call_day3', a).includes("it's (name) with Acme Co"));
+  assert.ok(text.voicemailScript('call_day6', a).startsWith('Hey Pat, (name) with Acme Co. Last call from me.'));
+  for (const kind of ['call_day0', 'call_day3', 'call_day6']) {
+    assert.ok(!/Gabe|Cayden/.test(text.voicemailScript(kind, a)), `${kind} names no one`);
+  }
+});
+
+test('claim notes: a claim names the caller, a non-caller click is logged', () => {
+  assert.match(seq.claimNote({ claimed: true, caller: { id: 'U0BL8JT75KN', name: 'Cayden' } }), /Cayden claimed this lead/);
+  assert.match(seq.claimNote({ claimed: false, nonCaller: true }), /not on the caller list/);
+  assert.equal(seq.claimNote({ claimed: false, nonCaller: false }), null);
+  assert.equal(seq.claimNote(null), null);
 });

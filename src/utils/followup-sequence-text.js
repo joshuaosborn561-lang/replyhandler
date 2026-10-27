@@ -18,8 +18,48 @@ function firstNameOf(name) {
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
-function callerName(env = process.env) {
-  return String(env.FOLLOWUP_CALLER_NAME || '').trim() || 'Gabe';
+function cleanCallerName(name) {
+  return String(name || '').replace(/[<>|&*_`~\n\r]/g, '').trim().slice(0, 40);
+}
+
+/**
+ * Configured callers: FOLLOWUP_CALLERS maps Slack user id to display name, as
+ * JSON ({"U1":"Gabe","U2":"Cayden"}) or a list ("U1:Gabe,U2:Cayden"). Without it the
+ * legacy single caller (FOLLOWUP_CALLER_NAME / FOLLOWUP_CALLER_SLACK_ID, default
+ * Gabe) is used. Returns [{ id, name }].
+ */
+function parseCallers(env = process.env) {
+  const raw = String(env.FOLLOWUP_CALLERS || '').trim();
+  const out = [];
+  const add = (id, name) => {
+    const cleanId = String(id || '').trim();
+    const cleanName = cleanCallerName(name);
+    if (!cleanName || !/^[UW][A-Z0-9]{2,}$/.test(cleanId)) return;
+    if (out.some((c) => c.id === cleanId)) return;
+    out.push({ id: cleanId, name: cleanName });
+  };
+  if (raw) {
+    try {
+      const j = JSON.parse(raw);
+      if (j && typeof j === 'object' && !Array.isArray(j)) for (const [id, name] of Object.entries(j)) add(id, name);
+    } catch {
+      for (const part of raw.split(',')) {
+        const i = part.indexOf(':');
+        if (i > 0) add(part.slice(0, i), part.slice(i + 1));
+      }
+    }
+    if (out.length) return out;
+  }
+  const name = cleanCallerName(env.FOLLOWUP_CALLER_NAME) || 'Gabe';
+  const id = String(env.FOLLOWUP_CALLER_SLACK_ID || '').trim();
+  return [{ id: /^[UW][A-Z0-9]{2,}$/.test(id) ? id : null, name }];
+}
+
+/** Scripts say this literally so whoever calls says their own name. */
+const CALLER_PLACEHOLDER = '(name)';
+
+function callerName() {
+  return CALLER_PLACEHOLDER;
 }
 
 function offerText(offerLine) {
@@ -42,7 +82,7 @@ const CALL_KINDS = {
 };
 
 /** Voicemail script for a call step, or null when the call leaves none. */
-function voicemailScript(kind, { firstName, callerName: caller, clientName, offerLine }) {
+function voicemailScript(kind, { firstName, callerName: caller, clientName, offerLine, proofPoint }) {
   const type = CALL_KINDS[kind]?.voicemail;
   if (!type) return null;
   const first = firstName || 'there';
@@ -53,7 +93,10 @@ function voicemailScript(kind, { firstName, callerName: caller, clientName, offe
   if (type === 'day3') {
     return `Hey ${first}, it's ${caller} with ${clientName}, calling about ${offer}. I'll send you one more email. If you're still interested, we can get this scheduled.`;
   }
-  return `Hey ${first}, it's ${caller} with ${clientName}. I sent you an email about ${offer}. Take a look, and if it's still of interest just reply and we'll get it scheduled.`;
+  // Day 6: breakup voicemail. Recaps the offer and, only when real proof exists, the proof.
+  const proof = String(proofPoint || '').trim().replace(/[.!\s]+$/, '');
+  const proofSentence = proof ? ` ${proof}.` : '';
+  return `Hey ${first}, ${caller} with ${clientName}. Last call from me. Quick recap: ${offer}.${proofSentence} If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.`;
 }
 
 function timesSentence(slots, link) {
@@ -77,7 +120,7 @@ function emailBody(kind, { firstName, slots, link, proofPoint, askForTimes = fal
     case 'email_vm': {
       const body = times || (askForTimes ? noTimesAsk : null);
       if (!body) return null;
-      return `Hey ${first}, just tried you and left you a voicemail.\n\n${body}`;
+      return `Hey ${first}, just tried you, left you a voicemail. Still want to take a peek at this?\n\n${body}`;
     }
     case 'email_day1': {
       if (!times && !askForTimes) return null;
@@ -110,16 +153,28 @@ const EMAIL_KINDS = {
   email_breakup: 'Day 5 breakup email',
 };
 
+/** Callback steps are call_callback_1, call_callback_2, ... (one per "call back later"). */
+const CALLBACK_PREFIX = 'call_callback_';
+
+function isCallKind(kind) {
+  return Object.prototype.hasOwnProperty.call(CALL_KINDS, kind) || String(kind || '').startsWith(CALLBACK_PREFIX);
+}
+
 function stepLabel(kind) {
+  if (String(kind || '').startsWith(CALLBACK_PREFIX)) return 'Callback call';
   return CALL_KINDS[kind]?.label || EMAIL_KINDS[kind] || kind;
 }
 
 module.exports = {
   OFFER_MISSING,
   CALL_KINDS,
+  CALLBACK_PREFIX,
+  isCallKind,
   EMAIL_KINDS,
   firstNameOf,
   callerName,
+  parseCallers,
+  CALLER_PLACEHOLDER,
   callScript,
   voicemailScript,
   emailBody,
