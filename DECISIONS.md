@@ -1453,3 +1453,11 @@ Both already-posted checks now recover a suppressed referral that contains an em
 `POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0` does not consult the poller lookback or the `already_posted` skip. A named lead or reply id is not limited to the last 30 days. Her row has no Slack ts, so the endpoint posts exactly one card: the two-line template and the CC button for Guy@orioncityscape.com. A row that already has a Slack ts is `chat.update`d on that same message. It does not send.
 
 Guard: `a suppressed email referral the poller would skip still posts once` and `the early already-posted skip recovers a suppressed email referral` in `test/referral-draft.test.js`.
+
+### Dead-mailbox and departure auto-replies never become referral cards (Oct 27)
+
+After the email-referral change, the first poller pass re-carded a week of suppressed replies in one second (13 cards across five channels, 7 of them auto-replies: "this email account is no longer active", "the address is no longer in use", "this inbox is no longer being monitored", "no longer part of our team, mailbox not monitored", "no longer a sales representative"). The automated-notice check only knew "mailbox no longer monitored" and "no longer employed / with / has left" plus the words reach out / contact, so these slipped through and a typed address promoted them to INTERESTED with a "Thanks so much for the contact" draft.
+
+A dead or unwatched mailbox, or a departure notice, is an automated notice even when it names an address or a department mailbox. It does not card, draft, or promote. A live person handing us to a colleague with the colleague's address still cards.
+
+Guard: `test/dead-mailbox-notices.test.js`.
