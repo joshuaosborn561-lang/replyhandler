@@ -253,7 +253,9 @@ async function sendMessage(apiKey, { conversationId, linkedInAccountId, senderId
   console.log('[HeyReach] Response', { status: res.status, body: responseBody });
 
   if (!res.ok) {
-    throw new Error(`HeyReach sendMessage failed (${res.status}): ${responseBody}`);
+    const failure = new Error(`HeyReach sendMessage failed (${res.status}): ${responseBody}`);
+    failure.status = res.status;
+    throw failure;
   }
   try { return JSON.parse(responseBody); } catch { return { raw: responseBody }; }
 }
