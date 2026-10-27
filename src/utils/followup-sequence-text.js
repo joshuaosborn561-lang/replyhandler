@@ -18,8 +18,55 @@ function firstNameOf(name) {
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
-function callerName(env = process.env) {
-  return String(env.FOLLOWUP_CALLER_NAME || '').trim() || 'Gabe';
+function cleanCallerName(name) {
+  return String(name || '').replace(/[<>|&*_`~\n\r]/g, '').trim().slice(0, 40);
+}
+
+/**
+ * Configured callers: FOLLOWUP_CALLERS maps Slack user id to display name, as
+ * JSON ({"U1":"Gabe","U2":"Kate"}) or a list ("U1:Gabe,U2:Kate"). Without it the
+ * legacy single caller (FOLLOWUP_CALLER_NAME / FOLLOWUP_CALLER_SLACK_ID, default
+ * Gabe) is used. Returns [{ id, name }].
+ */
+function parseCallers(env = process.env) {
+  const raw = String(env.FOLLOWUP_CALLERS || '').trim();
+  const out = [];
+  const add = (id, name) => {
+    const cleanId = String(id || '').trim();
+    const cleanName = cleanCallerName(name);
+    if (!cleanName || !/^[UW][A-Z0-9]{2,}$/.test(cleanId)) return;
+    if (out.some((c) => c.id === cleanId)) return;
+    out.push({ id: cleanId, name: cleanName });
+  };
+  if (raw) {
+    try {
+      const j = JSON.parse(raw);
+      if (j && typeof j === 'object' && !Array.isArray(j)) for (const [id, name] of Object.entries(j)) add(id, name);
+    } catch {
+      for (const part of raw.split(',')) {
+        const i = part.indexOf(':');
+        if (i > 0) add(part.slice(0, i), part.slice(i + 1));
+      }
+    }
+    if (out.length) return out;
+  }
+  const name = cleanCallerName(env.FOLLOWUP_CALLER_NAME) || 'Gabe';
+  const id = String(env.FOLLOWUP_CALLER_SLACK_ID || '').trim();
+  return [{ id: /^[UW][A-Z0-9]{2,}$/.test(id) ? id : null, name }];
+}
+
+/** "Gabe", "Gabe or Kate", "Gabe, Kate or Sam": what {caller_name} shows until a caller claims the lead. */
+function callerLabel(callers) {
+  const names = (callers || []).map((c) => c.name).filter(Boolean);
+  if (names.length === 0) return 'Gabe';
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
+}
+
+/** Display name for scripts: the claiming caller, else every configured caller. */
+function callerName(env = process.env, claimed = null) {
+  if (claimed && claimed.name) return claimed.name;
+  return callerLabel(parseCallers(env));
 }
 
 function offerText(offerLine) {
@@ -133,6 +180,8 @@ module.exports = {
   EMAIL_KINDS,
   firstNameOf,
   callerName,
+  parseCallers,
+  callerLabel,
   callScript,
   voicemailScript,
   emailBody,

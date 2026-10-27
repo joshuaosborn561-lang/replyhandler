@@ -64,6 +64,9 @@ test('the old cadence yields to the sequence for positive replies only when the 
 
 test('migration is listed and creates the three tables', () => {
   assert.match(src('scripts/run-migrations.js'), /045_followup_sequences\.sql/);
+  assert.match(src('scripts/run-migrations.js'), /046_followup_sequence_caller\.sql/);
+  assert.match(src('migrations/046_followup_sequence_caller.sql'), /claimed_by_slack_id/);
+  assert.match(src('schema.sql'), /claimed_by_slack_id TEXT/);
   const m = src('migrations/045_followup_sequences.sql');
   for (const t of ['followup_sequences', 'followup_sequence_steps', 'followup_sequence_copy']) {
     assert.match(m, new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`));
@@ -84,4 +87,10 @@ test('the Slack route validates the callback modal before acknowledging it', () 
   const block = r.slice(i, i + 700);
   assert.ok(block.indexOf('validateCallbackSubmission') < block.indexOf("response_action: 'clear'"));
   assert.match(block, /response_action: 'errors'/);
+});
+
+test('callers are configured by env and documented', () => {
+  const env = src('.env.example');
+  assert.match(env, /FOLLOWUP_CALLERS=/);
+  assert.match(env, /Gabe or Kate/);
 });

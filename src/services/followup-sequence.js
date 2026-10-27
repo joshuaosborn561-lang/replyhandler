@@ -327,6 +327,7 @@ function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, s
   const facts = [
     `*Phone:* ${card.phone}`,
     `*Client:* ${card.clientName}`,
+    card.claimedBy ? `*Caller:* ${card.claimedBy}` : null,
     card.localTime ? `*Their time now:* ${card.localTime}` : null,
     card.campaignDisplay ? `*Campaign:* ${card.campaignDisplay}` : null,
     card.linkedinUrl ? `*LinkedIn:* ${card.linkedinUrl}` : null,
@@ -431,7 +432,14 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
 
   const { offerLine, proofPoint } = await offerFor(client, source, deps);
   const first = text.firstNameOf(source.lead_full_name || source.lead_name);
-  const caller = text.callerName(env);
+  // The caller who claimed this lead (first to click an outcome) owns later cards.
+  const { rows: [fresh] } = await dbClient.query(
+    'SELECT claimed_by_slack_id, claimed_by_name FROM followup_sequences WHERE id = $1', [seq.id]);
+  const claimed = fresh && fresh.claimed_by_slack_id
+    ? { id: fresh.claimed_by_slack_id, name: fresh.claimed_by_name }
+    : null;
+  const callers = text.parseCallers(env);
+  const caller = text.callerName(env, claimed);
   const args = { firstName: first, callerName: caller, clientName: client.name, offerLine, proofPoint };
   const script = text.callScript(args);
   const voicemail = text.voicemailScript(step.kind, args);
@@ -439,7 +447,7 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   try {
     permalink = await slackApi.getPermalink(client.slack_bot_token, client.slack_channel_id, source.slack_message_ts);
   } catch { /* link is optional */ }
-  const mention = String(env.FOLLOWUP_CALLER_SLACK_ID || '').trim();
+  const mentionIds = claimed ? [claimed.id] : callers.map((c) => c.id).filter(Boolean);
   const card = {
     label: text.stepLabel(step.kind),
     leadName: source.lead_full_name || source.lead_name,
@@ -451,7 +459,8 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
     permalink,
     script,
     voicemail,
-    mention: mention ? `<@${mention}>` : null,
+    mention: mentionIds.length ? mentionIds.map((id) => `<@${id}>`).join(' ') : null,
+    claimedBy: claimed ? claimed.name : null,
   };
   const channel = followUpSlackChannelId();
   const blocks = buildCallCardBlocks(card, step.id);
@@ -791,6 +800,39 @@ const OUTCOME_BY_ACTION = Object.fromEntries(OUTCOME_BUTTONS.map((b) => [b.actio
  *  - Call back later: logged, sequence continues.
  *  - Wrong number: no more call cards for this lead; email steps continue.
  */
+/**
+ * The first configured caller to click an outcome on a lead claims it. Later
+ * cards for that lead use their name and @-mention them. A click by someone who
+ * is not a configured caller is still applied but is logged and never claims.
+ * Returns { claimed, nonCaller, caller }.
+ */
+async function claimLead({ seqId, slackUserId, dbClient = db, env = process.env }) {
+  if (!slackUserId) return { claimed: false, nonCaller: false, caller: null };
+  const caller = text.parseCallers(env).find((c) => c.id === slackUserId) || null;
+  if (!caller) {
+    console.warn('[FollowupSeq] outcome clicked by a user who is not a configured caller', { seqId, slackUserId });
+    return { claimed: false, nonCaller: true, caller: null };
+  }
+  const { rows } = await dbClient.query(
+    `UPDATE followup_sequences
+        SET claimed_by_slack_id = $2, claimed_by_name = $3, claimed_at = now(), updated_at = now()
+      WHERE id = $1 AND claimed_by_slack_id IS NULL
+      RETURNING id`,
+    [seqId, caller.id, caller.name],
+  );
+  return { claimed: rows.length > 0, nonCaller: false, caller };
+}
+
+/** Card line about who now owns the lead, or a log note for a non-caller click. */
+function claimNote(claim) {
+  if (!claim) return null;
+  if (claim.claimed && claim.caller) {
+    return `🙋 *${claim.caller.name} claimed this lead.* Later calls for them show ${claim.caller.name}'s name and @-mention ${claim.caller.name}.`;
+  }
+  if (claim.nonCaller) return '📝 Clicked by someone who is not on the caller list. Logged, and the lead stays unclaimed.';
+  return null;
+}
+
 async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new Date(), dbClient = db, slackApi = slack, env = process.env }) {
   const { rows: [step] } = await dbClient.query(
     `UPDATE followup_sequence_steps
@@ -802,6 +844,13 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
   if (!step) return { applied: false };
   const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
   if (!seq) return { applied: true, step };
+
+  const claim = await claimLead({ seqId: seq.id, slackUserId, dbClient, env });
+  if (claim.nonCaller) {
+    await dbClient.query(
+      `UPDATE followup_sequence_steps SET payload = COALESCE(payload, '{}'::jsonb) || '{"nonCaller": true}'::jsonb WHERE id = $1`,
+      [step.id]);
+  }
 
   if (outcome === 'booked') {
     try {
@@ -835,11 +884,11 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
       [seq.id, new Date(now.getTime() + delay * MIN)],
     );
   }
-  return { applied: true, step, seq };
+  return { applied: true, step, seq, claim };
 }
 
 /** Slack route entry: handle one button click and redraw the card. */
-async function handleCallButton(action, interaction, { dbClient = db, slackApi = slack } = {}) {
+async function handleCallButton(action, interaction, { dbClient = db, slackApi = slack, env = process.env } = {}) {
   const outcome = OUTCOME_BY_ACTION[action.action_id];
   if (!outcome) return;
   const userId = interaction.user && interaction.user.id;
@@ -849,7 +898,7 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
     await openCallbackModal({ stepId: action.value, interaction, dbClient, slackApi });
     return;
   }
-  const res = await applyCallOutcome({ stepId: action.value, outcome, slackUserId: userId, dbClient, slackApi });
+  const res = await applyCallOutcome({ stepId: action.value, outcome, slackUserId: userId, dbClient, slackApi, env });
   if (!res.applied) {
     console.log('[FollowupSeq] call outcome ignored (already recorded or not posted)', { stepId: action.value });
     return;
@@ -863,7 +912,7 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
       channel: res.step.slack_channel,
       ts: res.step.slack_ts,
       text: `${payload.card.label}: ${outcome}`,
-      blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome, outcomeBy: userId }),
+      blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome, outcomeBy: userId, note: claimNote(res.claim) }),
     });
   } catch (err) {
     console.warn('[FollowupSeq] could not redraw call card', { stepId: action.value, err: err.message });
@@ -972,7 +1021,7 @@ async function openCallbackModal({ stepId, interaction, dbClient = db, slackApi 
  * The normal sequence is untouched and continues on its own timing. A booking,
  * reply, unsubscribe or DQ cancels the pending callback with everything else.
  */
-async function scheduleCallback({ stepId, when, slackUserId = null, now = new Date(), dbClient = db }) {
+async function scheduleCallback({ stepId, when, slackUserId = null, now = new Date(), dbClient = db, env = process.env }) {
   const { rows: [step] } = await dbClient.query(
     `UPDATE followup_sequence_steps
         SET outcome = 'call_back', outcome_by = $2, outcome_at = $3, updated_at = now()
@@ -982,13 +1031,20 @@ async function scheduleCallback({ stepId, when, slackUserId = null, now = new Da
   );
   if (!step) return { applied: false };
   const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
-  if (!seq || seq.status === 'stopped') return { applied: true, step, seq, scheduled: false };
+  if (!seq) return { applied: true, step, seq, scheduled: false };
+  const claim = await claimLead({ seqId: seq.id, slackUserId, dbClient, env });
+  if (claim.nonCaller) {
+    await dbClient.query(
+      `UPDATE followup_sequence_steps SET payload = COALESCE(payload, '{}'::jsonb) || '{"nonCaller": true}'::jsonb WHERE id = $1`,
+      [step.id]);
+  }
+  if (seq.status === 'stopped') return { applied: true, step, seq, scheduled: false, claim };
   if (seq.status === 'completed') {
     // The last scheduled step already went out; the callback still has to fire.
     try {
       await dbClient.query(`UPDATE followup_sequences SET status = 'active', updated_at = now() WHERE id = $1 AND status = 'completed'`, [seq.id]);
     } catch (err) {
-      if (err && err.code === '23505') return { applied: true, step, seq, scheduled: false };
+      if (err && err.code === '23505') return { applied: true, step, seq, scheduled: false, claim };
       throw err;
     }
   }
@@ -1002,18 +1058,18 @@ async function scheduleCallback({ stepId, when, slackUserId = null, now = new Da
      VALUES ($1, $2, 25, $3, 'pending', $4::jsonb)`,
     [seq.id, kind, when, JSON.stringify({ callbackOf: stepId, setBy: slackUserId })],
   );
-  return { applied: true, step, seq, scheduled: true, kind };
+  return { applied: true, step, seq, scheduled: true, kind, claim };
 }
 
 /** Modal submit (after the 3s acknowledgement): schedule the callback and say so on the card. */
-async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = slack, now = new Date() } = {}) {
+async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = slack, now = new Date(), env = process.env } = {}) {
   let meta = {};
   try { meta = JSON.parse(interaction.view?.private_metadata || '{}'); } catch { meta = {}; }
   const secs = interaction.view?.state?.values?.when_block?.when?.selected_date_time;
   if (!meta.stepId || !secs) return { applied: false };
   const userId = interaction.user && interaction.user.id;
   const when = new Date(secs * 1000);
-  const res = await scheduleCallback({ stepId: meta.stepId, when, slackUserId: userId, now, dbClient });
+  const res = await scheduleCallback({ stepId: meta.stepId, when, slackUserId: userId, now, dbClient, env });
   if (!res.applied) {
     console.log('[FollowupSeq] callback ignored (outcome already recorded)', { stepId: meta.stepId });
     return res;
@@ -1032,7 +1088,7 @@ async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = sla
         channel: res.step.slack_channel,
         ts: res.step.slack_ts,
         text: `${payload.card.label}: call back later`,
-        blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome: 'call_back', outcomeBy: userId, note }),
+        blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome: 'call_back', outcomeBy: userId, note: [note, claimNote(res.claim)].filter(Boolean).join('\n') }),
       });
     } catch (err) {
       console.warn('[FollowupSeq] could not redraw call card', { stepId: meta.stepId, err: err.message });
@@ -1053,6 +1109,8 @@ module.exports = {
   handleCallButton,
   buildCallCardBlocks,
   CALLBACK_MODAL_ID,
+  claimLead,
+  claimNote,
   buildCallbackModal,
   callbackTimeError,
   defaultCallbackTime,
