@@ -21,7 +21,15 @@ const {
 // Free-mail hosts are never a company website. Anchored so acme.com / olive.com stay companies.
 const CONSUMER_DOMAINS = /(^|[.@/])(gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|icloud|me|mac|aol|protonmail|proton|comcast|att|sbcglobal|verizon|bellsouth|cox|charter|earthlink|gmx|zoho|mail|yandex)\.(com|net|me|co\.uk)(?=$|[/:?#])/i;
 
-const ENRICH_TIMEOUT_MS = 120_000;
+// The waterfall walks several vendors and took ~140s under bulk load, so the old 120s
+// cut-off aborted real lookups (card shipped with no phone). Enrichment runs after the
+// Slack card is posted, so a longer wait never delays a card.
+const DEFAULT_ENRICH_TIMEOUT_MS = 300_000;
+
+function enrichTimeoutMs(env = process.env) {
+  const n = Number(env.EMAIL_WATERFALL_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 30_000 ? Math.floor(n) : DEFAULT_ENRICH_TIMEOUT_MS;
+}
 
 function domainFromEmail(email) {
   const e = String(email || '').trim().toLowerCase();
@@ -191,7 +199,7 @@ async function enrichProspect({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(ENRICH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(enrichTimeoutMs()),
   });
   const text = await res.text();
   let hit = null;
@@ -218,6 +226,8 @@ async function enrichCellPhone(input) {
 }
 
 module.exports = {
+  enrichTimeoutMs,
+  DEFAULT_ENRICH_TIMEOUT_MS,
   enrichProspect,
   enrichCellPhone,
   domainFromEmail,
