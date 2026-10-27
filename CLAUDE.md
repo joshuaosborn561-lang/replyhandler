@@ -57,6 +57,12 @@ Final Slack gate: `slackChannelSuppressionReason()` in
 **`MEETING_PROPOSED`**, and **`QUESTION`** post to the AI reply channels.
 `NOT_INTERESTED`, `OOO`, `OTHER`, `OBJECTION`, and similar stay out.
 
+Oct 27: the "Unclassified reply" alert for OTHER is gone (`shouldAlertOther` is
+always false). A bounce / NDR / "Message blocked" is suppressed as `bounce` by
+`looksLikeBounceNotice` before any label is read. An OTHER label gets a Sonnet
+second opinion (`classifyOtherSecondOpinion`); only a real interest or question
+upgrades it. See DECISIONS.md.
+
 Text heuristics in `slackSuppressionReason()`
 (`src/utils/smartlead-webhook-helpers.js`) still catch OOO / unsubscribe /
 wrong-person that mis-classify as a positive. Prefer returning a distinct

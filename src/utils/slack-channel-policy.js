@@ -3,13 +3,19 @@
  *
  * Josh: only interested / bookable positives — no OOO noise, no not-interested
  * declines. Soft questions and meeting proposes still post.
+ * Oct 27 2026: no "Unclassified reply" alerts either. A reply that is not a
+ * real interest or question is recorded with a suppression reason and never
+ * posted. See DECISIONS.md.
  *
  * Cold inbound pitches (no campaign, they wrote first) are hidden when Jev's
  * pitch_to_us_prob is at or above the threshold. Campaign threads where we
  * sent first are never hidden by the pitch filter.
  */
 
-const { slackSuppressionReason: textSuppressionReason } = require('./smartlead-webhook-helpers');
+const {
+  slackSuppressionReason: textSuppressionReason,
+  looksLikeBounceNotice,
+} = require('./smartlead-webhook-helpers');
 
 /** Classifications that may post a Slack card (draft or alert). */
 const SLACK_CHANNEL_CLASSIFICATIONS = new Set([
@@ -66,6 +72,8 @@ function slackChannelSuppressionReason({
 } = {}) {
   const byPitch = pitchInboundSuppressionReason({ isColdInbound, pitchToUsProb });
   if (byPitch) return byPitch;
+  // A bounce / NDR / "Message blocked" is never a person, whatever label it got.
+  if (looksLikeBounceNotice(inboundMessage)) return 'bounce';
   const byClass = classificationSlackSuppressionReason(classification);
   if (byClass) return byClass;
   // Text heuristics still catch OOO / unsubscribe / wrong-person that

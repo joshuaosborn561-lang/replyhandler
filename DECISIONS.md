@@ -1481,6 +1481,7 @@ A boot that already has a Slack timestamp, or a sent / approved / sending row, f
 The inbox poller treats already-posted per inbound Message-ID. A later reply on a thread that already has a card is its own card. The same Message-ID is still one card. A lead is `older_than_lookback` only when every timestamp we have (last_reply_time and the newest reply in history) is outside the window, so a later reply inside the window is not dropped because an older timestamp is.
 
 Guard: `test/marbella-one-shot.test.js` and `test/poller-second-reply.test.js`.
+
 ### Dead-mailbox and departure auto-replies never become referral cards (Oct 27)
 
 After the email-referral change, the first poller pass re-carded a week of suppressed replies in one second (13 cards across five channels, 7 of them auto-replies: "this email account is no longer active", "the address is no longer in use", "this inbox is no longer being monitored", "no longer part of our team, mailbox not monitored", "no longer a sales representative"). The automated-notice check only knew "mailbox no longer monitored" and "no longer employed / with / has left" plus the words reach out / contact, so these slipped through and a typed address promoted them to INTERESTED with a "Thanks so much for the contact" draft.
@@ -1488,3 +1489,24 @@ After the email-referral change, the first poller pass re-carded a week of suppr
 A dead or unwatched mailbox, or a departure notice, is an automated notice even when it names an address or a department mailbox. It does not card, draft, or promote. A live person handing us to a colleague with the colleague's address still cards.
 
 Guard: `test/dead-mailbox-notices.test.js`.
+
+### Client channels get only a real interest or a real question (Oct 27)
+
+Josh: "I don't want these replies in the channels anymore. When we get one look at it and if it's a legit interested or question send it in, if not I don't wanna see junk." The reply he saw was an "Unclassified reply" line holding a mail-server "Message blocked" notice ("Your message to ... has been blocked ... aka.ms/EXOSmtpErrors"), with "Not auto-drafted. Reply manually if it needs one."
+
+Only `INTERESTED`, `MEETING_PROPOSED` and `QUESTION` post to a client channel. That includes meeting and booking requests, a referral from a live person who typed an address (#146), and a positive mixed reply. Everything else is stored as a `suppressed` row with a `suppression_reason` and is never posted:
+
+- bounces, NDRs, "Message blocked", mailer-daemon, postmaster: `bounce`
+- auto-replies, mailbox notices, dead or departed mailboxes, ticket bots, disclaimer-only: `automated_notice` (the dead-mailbox rules from #150 are part of this)
+- out of office: `ooo`
+- clear no: `not_interested`
+- unsubscribe: `unsubscribe` (the SmartLead unsubscribe call and opt-out handling are unchanged)
+- OTHER, OBJECTION and anything unclassified: `not_interested_channel`
+
+The "Unclassified reply" alert is retired. `shouldAlertOther` always returns false and nothing posts a raw OTHER line. A bounce text is caught by rule before any label, so it never reaches Slack even if SmartLead or the classifier called it interested.
+
+When the primary classifier leaves a reply as OTHER, Claude Sonnet gets one more look (`classifyOtherSecondOpinion`). INTERESTED, QUESTION or MEETING_PROPOSED upgrades it and it posts normally. Anything else, or an Anthropic error, stays OTHER and is suppressed. When unsure the prompt says JUNK.
+
+Unchanged: opt-out handling, Gabe Calls forwarding, booking detection, phone lookup on posted cards, and the error alert when a draft fails on a legitimate reply. Bounces are still seen by SmartLead, which owns bounce handling for the lead. Replyhandler never acted on `EMAIL_BOUNCED`, so nothing there changes. Suppressed rows stay visible in the diagnostics endpoint and `resurface-suppressed`.
+
+Guard: `test/channel-only-real-replies.test.js`.
