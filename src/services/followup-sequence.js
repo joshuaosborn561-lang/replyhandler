@@ -317,7 +317,7 @@ const OUTCOME_LABELS = {
 };
 
 /** Pure: the Slack blocks for a call card. `outcome` replaces the buttons. */
-function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, stopped = null } = {}) {
+function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, stopped = null, note = null } = {}) {
   const blocks = [];
   if (card.mention) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: card.mention } });
   blocks.push({
@@ -354,6 +354,7 @@ function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, s
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `${label}${outcomeBy ? ` · <@${outcomeBy}>` : ''}` }],
     });
+    if (note) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: note } });
   } else {
     blocks.push({
       type: 'context',
@@ -740,7 +741,7 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
           continue;
         }
         const tz = time.resolveTimeZone(source.lead_timezone, seq.lead_timezone, client.digest_timezone);
-        const isCall = Object.prototype.hasOwnProperty.call(text.CALL_KINDS, claimed.kind);
+        const isCall = text.isCallKind(claimed.kind);
         let result;
         if (isCall) {
           result = await postCallStep({ step: claimed, seq, client, source, now, tz, dbClient, slackApi, env, deps });
@@ -821,7 +822,8 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
     await dbClient.query(
       `UPDATE followup_sequence_steps
           SET status = 'cancelled', skip_reason = 'wrong_number', updated_at = now()
-        WHERE sequence_id = $1 AND status IN ('pending', 'held') AND kind = ANY($2::text[])`,
+        WHERE sequence_id = $1 AND status IN ('pending', 'held')
+          AND (kind = ANY($2::text[]) OR kind LIKE 'call\\_callback\\_%')`,
       [seq.id, callKinds],
     );
   } else if (outcome === 'no_answer' && step.kind === 'call_day0' && seq.status === 'active') {
@@ -841,6 +843,12 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
   const outcome = OUTCOME_BY_ACTION[action.action_id];
   if (!outcome) return;
   const userId = interaction.user && interaction.user.id;
+  if (outcome === 'call_back') {
+    // Not recorded yet: Gabe picks the callback time first, and the outcome is
+    // recorded when the modal is submitted.
+    await openCallbackModal({ stepId: action.value, interaction, dbClient, slackApi });
+    return;
+  }
   const res = await applyCallOutcome({ stepId: action.value, outcome, slackUserId: userId, dbClient, slackApi });
   if (!res.applied) {
     console.log('[FollowupSeq] call outcome ignored (already recorded or not posted)', { stepId: action.value });
@@ -862,6 +870,177 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
   }
 }
 
+// ─── Callback scheduling ──────────────────────────────────────────────────────
+
+const CALLBACK_MODAL_ID = 'fseq_callback_modal';
+
+function formatInZone(date, tz) {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+    }).format(date);
+  } catch { return date.toISOString(); }
+}
+
+/** Next quarter hour at least an hour out, moved into the lead's call hours. */
+function defaultCallbackTime(now, tz, env = process.env) {
+  const q = 15 * MIN;
+  const target = new Date(Math.ceil((now.getTime() + 60 * MIN) / q) * q);
+  return time.nextCallWindowStart(target, tz, env);
+}
+
+/** Error text, or null when `when` is an acceptable callback time for the lead. */
+function callbackTimeError(when, tz, now = new Date(), env = process.env) {
+  if (!(when instanceof Date) || !Number.isFinite(when.getTime())) return 'Pick a date and time.';
+  if (when.getTime() < now.getTime() + MIN) return 'That time has already passed. Pick a time in the future.';
+  if (!time.inCallWindow(when, tz, env)) {
+    const { start, end } = time.callHours(env);
+    return `That is ${formatInZone(when, tz)} for the lead. Calls only go out ${start}:00 to ${end}:00 their time, Mon-Fri, not on holidays.`;
+  }
+  return null;
+}
+
+/** Pure: the callback modal. The picker shows in the Slack user's own time zone. */
+function buildCallbackModal({ stepId, channel, ts, leadName, tz, now = new Date(), env = process.env }) {
+  const { start, end } = time.callHours(env);
+  const def = defaultCallbackTime(now, tz, env);
+  return {
+    type: 'modal',
+    callback_id: CALLBACK_MODAL_ID,
+    private_metadata: JSON.stringify({ stepId, channel, ts, tz }),
+    title: { type: 'plain_text', text: 'Call back later' },
+    submit: { type: 'plain_text', text: 'Set callback' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${leadName || 'This lead'}* is in *${tz}*.\nRight now it is *${formatInZone(now, tz)}* there.\nCalls only go out *${start}:00 AM to ${end > 12 ? end - 12 : end}:00 PM their time*, Mon-Fri, not on holidays.`,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'when_block',
+        label: { type: 'plain_text', text: 'When should the callback card come up?' },
+        hint: { type: 'plain_text', text: 'The picker uses your own Slack time zone. Suggested time is the next open slot in the lead\'s business hours.' },
+        element: {
+          type: 'datetimepicker',
+          action_id: 'when',
+          initial_date_time: Math.floor(def.getTime() / 1000),
+        },
+      },
+    ],
+  };
+}
+
+/** Synchronous check for the modal submit. Returns Slack `errors` or null. */
+function validateCallbackSubmission(interaction, { now = new Date(), env = process.env } = {}) {
+  let meta = {};
+  try { meta = JSON.parse(interaction.view?.private_metadata || '{}'); } catch { meta = {}; }
+  const secs = interaction.view?.state?.values?.when_block?.when?.selected_date_time;
+  const err = callbackTimeError(secs ? new Date(secs * 1000) : null, meta.tz || time.DEFAULT_TZ, now, env);
+  return err ? { when_block: err } : null;
+}
+
+async function openCallbackModal({ stepId, interaction, dbClient = db, slackApi = slack, now = new Date(), env = process.env }) {
+  const { rows: [step] } = await dbClient.query(
+    `SELECT * FROM followup_sequence_steps WHERE id = $1 AND status = 'posted' AND outcome IS NULL`, [stepId]);
+  if (!step) {
+    console.log('[FollowupSeq] callback modal ignored (outcome already recorded or card not posted)', { stepId });
+    return false;
+  }
+  const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
+  if (!seq || seq.status === 'stopped') return false;
+  const { rows: [source] } = await dbClient.query('SELECT * FROM pending_replies WHERE id = $1', [seq.source_reply_id]);
+  const { rows: [client] } = await dbClient.query('SELECT slack_bot_token, digest_timezone FROM clients WHERE id = $1', [seq.client_id]);
+  if (!source || !client || !client.slack_bot_token) return false;
+  const tz = time.resolveTimeZone(source.lead_timezone, seq.lead_timezone, client.digest_timezone);
+  await slackApi.getClient(client.slack_bot_token).views.open({
+    trigger_id: interaction.trigger_id,
+    view: buildCallbackModal({
+      stepId, channel: interaction.channel?.id || step.slack_channel, ts: interaction.message?.ts || step.slack_ts,
+      leadName: source.lead_full_name || source.lead_name, tz, now, env,
+    }),
+  });
+  return true;
+}
+
+/**
+ * Record "call back later" and queue a callback call card for `when`.
+ * The normal sequence is untouched and continues on its own timing. A booking,
+ * reply, unsubscribe or DQ cancels the pending callback with everything else.
+ */
+async function scheduleCallback({ stepId, when, slackUserId = null, now = new Date(), dbClient = db }) {
+  const { rows: [step] } = await dbClient.query(
+    `UPDATE followup_sequence_steps
+        SET outcome = 'call_back', outcome_by = $2, outcome_at = $3, updated_at = now()
+      WHERE id = $1 AND outcome IS NULL AND status = 'posted'
+      RETURNING *`,
+    [stepId, slackUserId, now],
+  );
+  if (!step) return { applied: false };
+  const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
+  if (!seq || seq.status === 'stopped') return { applied: true, step, seq, scheduled: false };
+  if (seq.status === 'completed') {
+    // The last scheduled step already went out; the callback still has to fire.
+    try {
+      await dbClient.query(`UPDATE followup_sequences SET status = 'active', updated_at = now() WHERE id = $1 AND status = 'completed'`, [seq.id]);
+    } catch (err) {
+      if (err && err.code === '23505') return { applied: true, step, seq, scheduled: false };
+      throw err;
+    }
+  }
+  const { rows: [{ n }] } = await dbClient.query(
+    `SELECT count(*)::int AS n FROM followup_sequence_steps WHERE sequence_id = $1 AND kind LIKE 'call\\_callback\\_%'`,
+    [seq.id],
+  );
+  const kind = `${text.CALLBACK_PREFIX}${n + 1}`;
+  await dbClient.query(
+    `INSERT INTO followup_sequence_steps (sequence_id, kind, seq_order, due_at, status, payload)
+     VALUES ($1, $2, 25, $3, 'pending', $4::jsonb)`,
+    [seq.id, kind, when, JSON.stringify({ callbackOf: stepId, setBy: slackUserId })],
+  );
+  return { applied: true, step, seq, scheduled: true, kind };
+}
+
+/** Modal submit (after the 3s acknowledgement): schedule the callback and say so on the card. */
+async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = slack, now = new Date() } = {}) {
+  let meta = {};
+  try { meta = JSON.parse(interaction.view?.private_metadata || '{}'); } catch { meta = {}; }
+  const secs = interaction.view?.state?.values?.when_block?.when?.selected_date_time;
+  if (!meta.stepId || !secs) return { applied: false };
+  const userId = interaction.user && interaction.user.id;
+  const when = new Date(secs * 1000);
+  const res = await scheduleCallback({ stepId: meta.stepId, when, slackUserId: userId, now, dbClient });
+  if (!res.applied) {
+    console.log('[FollowupSeq] callback ignored (outcome already recorded)', { stepId: meta.stepId });
+    return res;
+  }
+  const payload = parseJson(res.step.payload) || {};
+  const { rows: [client] } = res.seq
+    ? await dbClient.query('SELECT slack_bot_token FROM clients WHERE id = $1', [res.seq.client_id])
+    : { rows: [] };
+  if (payload.card && client && client.slack_bot_token) {
+    const tz = meta.tz || time.DEFAULT_TZ;
+    const note = res.scheduled
+      ? `🔁 *Callback set for* <!date^${secs}^{date_short_pretty} at {time}|${when.toISOString()}> (lead's time: ${formatInZone(when, tz)}). A new call card will come up then.`
+      : '⚠️ The sequence is already stopped, so no callback was scheduled.';
+    try {
+      await slackApi.getClient(client.slack_bot_token).chat.update({
+        channel: res.step.slack_channel,
+        ts: res.step.slack_ts,
+        text: `${payload.card.label}: call back later`,
+        blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome: 'call_back', outcomeBy: userId, note }),
+      });
+    } catch (err) {
+      console.warn('[FollowupSeq] could not redraw call card', { stepId: meta.stepId, err: err.message });
+    }
+  }
+  return res;
+}
+
 module.exports = {
   enabled,
   enrollNewReplies,
@@ -873,5 +1052,13 @@ module.exports = {
   applyCallOutcome,
   handleCallButton,
   buildCallCardBlocks,
+  CALLBACK_MODAL_ID,
+  buildCallbackModal,
+  callbackTimeError,
+  defaultCallbackTime,
+  validateCallbackSubmission,
+  openCallbackModal,
+  scheduleCallback,
+  handleCallbackSubmit,
   OUTCOME_BY_ACTION,
 };

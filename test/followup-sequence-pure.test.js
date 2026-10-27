@@ -4,6 +4,7 @@ const time = require('../src/utils/followup-sequence-time');
 const text = require('../src/utils/followup-sequence-text');
 const copy = require('../src/services/followup-sequence-copy');
 const { callNowDraft } = require('../src/utils/call-now-variant');
+const seq = require('../src/services/followup-sequence');
 
 const TZ = 'America/Chicago';
 
@@ -262,4 +263,71 @@ test('Day 6 voicemail drops the proof sentence when there is no real proof, neve
 test('Day 6 proof without trailing punctuation still reads as a sentence', () => {
   const v = text.voicemailScript('call_day6', { ...args, proofPoint: 'We cut costs 40%' });
   assert.ok(v.includes('Quick recap: cutting your IT costs. We cut costs 40%. If it'));
+});
+
+// ─── callback modal ──────────────────────────────────────────────────────────
+
+const PT = 'America/Los_Angeles';
+const secs = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+const submit = (iso, tz = PT) => ({
+  view: {
+    private_metadata: JSON.stringify({ stepId: 's1', tz }),
+    state: { values: { when_block: { when: { selected_date_time: secs(iso) } } } },
+  },
+});
+
+test('callback modal shows the lead time zone and a datetime picker defaulting to their business hours', () => {
+  const now = new Date('2026-10-27T14:30:00Z'); // 7:30am PT, before their call hours
+  const view = seq.buildCallbackModal({ stepId: 's1', channel: 'C1', ts: '1.2', leadName: 'Pat Smith', tz: PT, now });
+  assert.equal(view.callback_id, 'fseq_callback_modal');
+  assert.deepEqual(JSON.parse(view.private_metadata), { stepId: 's1', channel: 'C1', ts: '1.2', tz: PT });
+  const intro = view.blocks[0].text.text;
+  assert.ok(intro.includes('America/Los_Angeles'), 'names the lead time zone');
+  assert.ok(/7:30 AM/.test(intro), "shows the lead's current local time");
+  assert.ok(/9:00 AM to 5:00 PM/.test(intro));
+  const picker = view.blocks[1].element;
+  assert.equal(picker.type, 'datetimepicker');
+  assert.equal(picker.action_id, 'when');
+  // Default lands inside their business hours: 9am PT.
+  assert.equal(picker.initial_date_time, secs('2026-10-27T16:00:00Z'));
+});
+
+test('default callback time: an hour out, rounded up, never outside call hours or on a holiday', () => {
+  assert.equal(seq.defaultCallbackTime(new Date('2026-10-27T17:05:00Z'), TZ).toISOString(), '2026-10-27T18:15:00.000Z', '12:05 CT -> 1:15 CT');
+  assert.equal(seq.defaultCallbackTime(new Date('2026-10-27T21:30:00Z'), TZ).toISOString(), '2026-10-28T14:00:00.000Z', '4:30pm CT -> next morning 9am');
+  assert.equal(seq.defaultCallbackTime(new Date('2026-11-25T22:30:00Z'), TZ).toISOString(), '2026-11-30T15:00:00.000Z', 'day before Thanksgiving evening -> Monday');
+});
+
+test('callback time must be in the future and inside the lead call hours', () => {
+  const now = new Date('2026-10-27T17:00:00Z');
+  assert.equal(seq.callbackTimeError(new Date('2026-10-27T20:00:00Z'), PT, now), null, '1pm PT Tue');
+  assert.match(seq.callbackTimeError(new Date('2026-10-27T16:30:00Z'), PT, now), /passed/);
+  assert.match(seq.callbackTimeError(new Date('2026-10-28T14:00:00Z'), PT, now), /9:00 to 17:00 their time/, '7am PT');
+  assert.match(seq.callbackTimeError(new Date('2026-10-31T19:00:00Z'), PT, now), /Mon-Fri/, 'Saturday');
+  assert.match(seq.callbackTimeError(new Date('2026-11-26T19:00:00Z'), PT, now), /holidays/, 'Thanksgiving');
+  assert.match(seq.callbackTimeError(null, PT, now), /Pick a date/);
+});
+
+test('modal submission is validated against the lead zone before it is acknowledged', () => {
+  const now = new Date('2026-10-27T17:00:00Z');
+  assert.equal(seq.validateCallbackSubmission(submit('2026-10-27T21:00:00Z'), { now }), null);
+  const bad = seq.validateCallbackSubmission(submit('2026-10-28T13:00:00Z'), { now });
+  assert.ok(bad && bad.when_block, 'error is attached to the picker');
+  assert.ok(seq.validateCallbackSubmission({ view: { private_metadata: '{}', state: { values: {} } } }, { now }).when_block);
+});
+
+test('callback steps are call steps with the same script and no voicemail', () => {
+  assert.equal(text.isCallKind('call_callback_1'), true);
+  assert.equal(text.isCallKind('call_callback_7'), true);
+  assert.equal(text.isCallKind('email_day1'), false);
+  assert.equal(text.stepLabel('call_callback_2'), 'Callback call');
+  assert.equal(text.voicemailScript('call_callback_1', { firstName: 'Pat', callerName: 'Gabe', clientName: 'Acme Co', offerLine: 'x' }), null);
+});
+
+test('call card shows the callback confirmation note and no buttons', () => {
+  const blocks = seq.buildCallCardBlocks({
+    label: 'Day 0 call', leadName: 'Pat', phone: '+15555550100', clientName: 'Acme', script: 's', voicemail: null,
+  }, 'step-1', { outcome: 'call_back', outcomeBy: 'U1', note: '🔁 *Callback set for* Tue, Oct 27, 1:00 PM PDT' });
+  assert.ok(!blocks.some((b) => b.type === 'actions'));
+  assert.ok(JSON.stringify(blocks).includes('Callback set for'));
 });

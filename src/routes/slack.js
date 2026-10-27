@@ -153,6 +153,20 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
     return res.status(400).json({ error: 'Invalid payload' });
   }
 
+  // Follow-up sequence: "call back later" time picker. Validate before acknowledging.
+  if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'fseq_callback_modal') {
+    const seqSvc = require('../services/followup-sequence');
+    const errors = seqSvc.validateCallbackSubmission(interaction);
+    if (errors) return res.status(200).json({ response_action: 'errors', errors });
+    res.status(200).json({ response_action: 'clear' });
+    try {
+      await seqSvc.handleCallbackSubmit(interaction);
+    } catch (err) {
+      console.error('[Slack] Callback modal submit error', { err: err.message, stack: err.stack });
+    }
+    return;
+  }
+
   // Modal submissions must respond within 3s — acknowledge first
   if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'edit_reply_modal') {
     res.status(200).json({ response_action: 'clear' });

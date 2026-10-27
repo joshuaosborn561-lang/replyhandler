@@ -76,3 +76,12 @@ test('admin copy override exists and, like every admin route, takes no key', () 
   assert.match(admin, /'\/admin\/followup-sequence\/copy', async/);
   assert.doesNotMatch(admin, /requireAdminApiKey/);
 });
+
+test('the Slack route validates the callback modal before acknowledging it', () => {
+  const r = src('src/routes/slack.js');
+  const i = r.indexOf("callback_id === 'fseq_callback_modal'");
+  assert.ok(i > 0);
+  const block = r.slice(i, i + 700);
+  assert.ok(block.indexOf('validateCallbackSubmission') < block.indexOf("response_action: 'clear'"));
+  assert.match(block, /response_action: 'errors'/);
+});

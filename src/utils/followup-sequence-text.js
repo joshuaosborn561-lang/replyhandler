@@ -113,13 +113,23 @@ const EMAIL_KINDS = {
   email_breakup: 'Day 5 breakup email',
 };
 
+/** Callback steps are call_callback_1, call_callback_2, ... (one per "call back later"). */
+const CALLBACK_PREFIX = 'call_callback_';
+
+function isCallKind(kind) {
+  return Object.prototype.hasOwnProperty.call(CALL_KINDS, kind) || String(kind || '').startsWith(CALLBACK_PREFIX);
+}
+
 function stepLabel(kind) {
+  if (String(kind || '').startsWith(CALLBACK_PREFIX)) return 'Callback call';
   return CALL_KINDS[kind]?.label || EMAIL_KINDS[kind] || kind;
 }
 
 module.exports = {
   OFFER_MISSING,
   CALL_KINDS,
+  CALLBACK_PREFIX,
+  isCallKind,
   EMAIL_KINDS,
   firstNameOf,
   callerName,
