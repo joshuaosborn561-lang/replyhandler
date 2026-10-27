@@ -426,8 +426,10 @@ router.post('/admin/resurface-suppressed', async (req, res) => {
  *
  * Preview Ariel:
  *   POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292
- * Apply:
+ * Apply (one card, even if the poller counted already_posted or older_than_lookback):
  *   POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0
+ * A named lead or reply id is not limited to the last 30 days. No Slack ts
+ * posts exactly one card. A real Slack ts is chat.update on that message.
  */
 router.post('/admin/refresh-referral-draft', async (req, res) => {
   const dryRaw = req.query.dry ?? req.body?.dry;

@@ -196,6 +196,10 @@ async function findReferralRows({ leadEmail, replyId, campaignId, query }) {
   const email = String(leadEmail || '').trim().toLowerCase();
   const id = String(replyId || '').trim();
   const campaign = String(campaignId || '').trim();
+  // A named lead or reply id is one prospect. The poller lookback and this
+  // scan window must not hide that row. An unscoped dry run stays recent.
+  const targeted = Boolean(email || id);
+  const ageClause = targeted ? '' : `AND pr.created_at > now() - interval '30 days'`;
   const { rows } = await query(
     `SELECT pr.*,
             c.slack_bot_token,
@@ -210,7 +214,7 @@ async function findReferralRows({ leadEmail, replyId, campaignId, query }) {
         AND ($1 = '' OR lower(pr.lead_email) = $1)
         AND ($2 = '' OR pr.id::text = $2)
         AND ($3 = '' OR pr.campaign_id::text = $3)
-        AND pr.created_at > now() - interval '30 days'
+        ${ageClause}
       ORDER BY pr.created_at ASC
       LIMIT 50`,
     [email, id, campaign]

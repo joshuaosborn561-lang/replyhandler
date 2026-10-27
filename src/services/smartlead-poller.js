@@ -284,6 +284,28 @@ async function recoverSuppressedReferral(client, {
   return { posted: true, replyId: reply.id, leadName: reply.lead_name, recoveredReferral: true };
 }
 
+/**
+ * A stored row is already handled. An email referral stored as suppressed
+ * still gets its one card, on that same row, before the skip. A name-only
+ * suppression stays skipped. This does not insert a second row and does not
+ * use a time window.
+ */
+async function returnPostedOrRecoverReferral(client, row, {
+  inbound, leadId, messageId, threadContext,
+}) {
+  const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
+  const recoveredReferral = await recoverSuppressedReferral(client, {
+    inbound,
+    leadEmail: row.lead_email || null,
+    leadName,
+    leadId,
+    messageId,
+    threadContext,
+  });
+  if (recoveredReferral) return recoveredReferral;
+  return { skipped: 'already_posted' };
+}
+
 async function processInboxRow(sourceClient, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const client = await routeClientForCampaign(sourceClient, campaignId);
@@ -319,6 +341,9 @@ async function processInboxRow(sourceClient, row, options) {
 
   // Skip already-handled rows before any extra fetches. Recover unposted
   // cards first — alreadyPostedToSlack is true for those rows too.
+  // A suppressed email referral is not a posted card: recover that same
+  // row before counting already_posted. A name-only suppression stays
+  // skipped. Do not insert a second row.
   // A stale already-carded row still refetches — that is how a hidden
   // newer reply is recovered.
   if (inbound && !staleHistory) {
@@ -352,7 +377,9 @@ async function processInboxRow(sourceClient, row, options) {
       emailStatsId: earlyStatsId,
       messageId,
     })) {
-      return { skipped: 'already_posted' };
+      return returnPostedOrRecoverReferral(client, row, {
+        inbound, leadId, messageId, threadContext,
+      });
     }
   }
 
@@ -460,17 +487,9 @@ async function processInboxRow(sourceClient, row, options) {
     emailStatsId: smartleadEmailStatsId,
     messageId,
   })) {
-    const leadNameEarly = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
-    const recoveredReferral = await recoverSuppressedReferral(client, {
-      inbound,
-      leadEmail: row.lead_email || null,
-      leadName: leadNameEarly,
-      leadId,
-      messageId,
-      threadContext,
+    return returnPostedOrRecoverReferral(client, row, {
+      inbound, leadId, messageId, threadContext,
     });
-    if (recoveredReferral) return recoveredReferral;
-    return { skipped: 'already_posted' };
   }
 
   await cancelForInboundReply({

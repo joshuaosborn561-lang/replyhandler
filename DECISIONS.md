@@ -1446,6 +1446,10 @@ Hey {referred first name}, would this be worth meeting about for you?
 
 The referred name comes from the human sentence ("talk to Guy" is Guy). If the sentence only has an email, the local part is used when it reads as a first name. Otherwise the second line is "Hey there, would this be worth meeting about for you?" and no name is invented. The mailbox still appends its signature on send. The model does not write this draft. Deep Roots and Vasco wording does not replace it.
 
-Ariel Isaac Franco's Vector card (campaign 4242292) may already be in #vector-ai-replies with the earlier draft. `POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0` rewrites that same Slack message with `chat.update` and stores the new draft on the same row. It posts one card only when that reply has none. It does not send.
+The #146 poller did not post Ariel Isaac Franco's card. The webhook row was stored `suppressed` with no Slack ts. When the inbox history is current, the poller's fast path treated any stored row as `already_posted` and returned before `recoverSuppressedReferral`. That skip does not log the address. A row older than `SMARTLEAD_POLL_LOOKBACK_HOURS` is a separate skip (`older_than_lookback`) and also does not log the address.
 
-Guard: `test/referral-draft.test.js`.
+Both already-posted checks now recover a suppressed referral that contains an email, on that same row, before counting `already_posted`. A name with no email stays suppressed. This is not a second insert and not a time-window dedupe. `alreadyPostedToSlack` still matches a suppressed row so the poller does not insert another copy. `findUnpostedReply` still does not resurrect suppressed rows in general.
+
+`POST /admin/refresh-referral-draft?leadEmail=ariel@orioncityscape.com&campaignId=4242292&dry=0` does not consult the poller lookback or the `already_posted` skip. A named lead or reply id is not limited to the last 30 days. Her row has no Slack ts, so the endpoint posts exactly one card: the two-line template and the CC button for Guy@orioncityscape.com. A row that already has a Slack ts is `chat.update`d on that same message. It does not send.
+
+Guard: `a suppressed email referral the poller would skip still posts once` and `the early already-posted skip recovers a suppressed email referral` in `test/referral-draft.test.js`.

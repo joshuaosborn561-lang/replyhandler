@@ -201,6 +201,100 @@ describe('an existing referral card is updated in place', () => {
     assert.match(shown, /Guy@orioncityscape\.com/);
   });
 
+  it('a suppressed email referral the poller would skip still posts once', async () => {
+    const posts = [];
+    const updates = [];
+    let sql = '';
+    const row = arielRow({
+      slack_message_ts: null,
+      status: 'suppressed',
+      classification: 'NOT_INTERESTED',
+      suppression_reason: 'not_interested',
+      created_at: '2024-01-01T00:00:00Z',
+    });
+    const result = await refreshReferralDrafts({
+      dry: false,
+      leadEmail: 'ariel@orioncityscape.com',
+      campaignId: '4242292',
+      query: async (text) => {
+        sql = text;
+        return { rows: [row] };
+      },
+      saveDraft: async () => {},
+      updateCard: async () => { updates.push('update'); },
+      postCard: async (_saved, card) => {
+        posts.push(card);
+        return { ts: '1761570000.000300' };
+      },
+    });
+    assert.doesNotMatch(sql, /interval '30 days'/);
+    assert.equal(updates.length, 0);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].draft, ARIEL);
+    assert.equal(posts[0].classification, 'INTERESTED');
+    assert.equal(posts[0].referredContacts[0].email, 'Guy@orioncityscape.com');
+    assert.equal(result.posted, 1);
+    assert.equal(result.updated, 0);
+    assert.equal(result.rows[0].action, 'posted');
+    const shown = JSON.stringify(buildDraftApprovalCard(posts[0]));
+    assert.match(shown, /Hey Guy, would this be worth meeting about for you\?/);
+    assert.doesNotMatch(shown, /for you guys/);
+    assert.match(shown, /approve_reply_cc_referral/);
+    assert.match(shown, /Guy@orioncityscape\.com/);
+  });
+
+  it('an unscoped refresh stays inside 30 days', async () => {
+    let sql = '';
+    await refreshReferralDrafts({
+      dry: true,
+      query: async (text) => {
+        sql = text;
+        return { rows: [] };
+      },
+    });
+    assert.match(sql, /interval '30 days'/);
+  });
+
+  it('the early already-posted skip recovers a suppressed email referral', () => {
+    const sl = fs.readFileSync(path.join(__dirname, '..', 'src/services/smartlead-poller.js'), 'utf8');
+    const dedupe = fs.readFileSync(path.join(__dirname, '..', 'src/services/reply-dedupe.js'), 'utf8');
+    const earlyStart = sl.indexOf('if (inbound && !staleHistory)');
+    const earlyEnd = sl.indexOf('if (staleHistory && client.smartlead_api_key)');
+    const early = sl.slice(earlyStart, earlyEnd);
+    const postedBlock = early.slice(early.indexOf('if (await alreadyPostedToSlack'));
+    assert.match(postedBlock, /return returnPostedOrRecoverReferral\(/);
+    assert.doesNotMatch(postedBlock, /return \{ skipped: 'already_posted' \}/);
+
+    const lateStart = sl.indexOf('const smartleadEmailStatsId');
+    const lateEnd = sl.indexOf('await cancelForInboundReply');
+    const latePosted = sl.slice(lateStart, lateEnd);
+    const lateBlock = latePosted.slice(latePosted.indexOf('if (await alreadyPostedToSlack'));
+    assert.match(lateBlock, /return returnPostedOrRecoverReferral\(/);
+
+    const helper = sl.slice(
+      sl.indexOf('async function returnPostedOrRecoverReferral'),
+      sl.indexOf('async function processInboxRow'),
+    );
+    assert.ok(
+      helper.indexOf('recoverSuppressedReferral') < helper.indexOf("skipped: 'already_posted'"),
+      'recover the suppressed email referral before counting already_posted',
+    );
+    assert.doesNotMatch(helper, /claimNewInbound/);
+    assert.doesNotMatch(helper, /INSERT INTO pending_replies/);
+    assert.doesNotMatch(helper, /lookbackHours|older_than_lookback/);
+
+    const recorded = dedupe.slice(
+      dedupe.indexOf('async function inboundAlreadyRecorded'),
+      dedupe.indexOf('async function alreadyPostedToSlack'),
+    );
+    assert.ok(!/status\s*=/.test(recorded) && !/status\s+IN/.test(recorded));
+    const unposted = dedupe.slice(
+      dedupe.indexOf('async function findUnpostedReply'),
+      dedupe.indexOf('function formatCampaignDisplayFromReply'),
+    );
+    assert.match(unposted, /status IN \('pending', 'alert_only'\)/);
+  });
+
   it('a suppressed row with no Slack ts posts once', async () => {
     const posts = [];
     const row = arielRow({
