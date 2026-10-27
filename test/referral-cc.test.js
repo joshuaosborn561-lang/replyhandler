@@ -236,7 +236,7 @@ describe('referral CC is only an address the prospect typed', () => {
   });
 
   it('the fallback is the fixed referral template and does not invent an address', () => {
-    const expected = 'Thank you so much for the contact, Ariel!\n\nHey Guy, would this be worth meeting about for you guys?';
+    const expected = 'Thank you so much for the contact, Ariel!\n\nHey Guy, would this be worth meeting about for you?';
     const draft = fallbackDraftText({
       leadName: 'Ariel Isaac Franco',
       classification: 'INTERESTED',

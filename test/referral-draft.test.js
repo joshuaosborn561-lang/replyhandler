@@ -15,7 +15,7 @@ const {
   cardPayload,
 } = require('../src/services/refresh-referral-draft');
 
-const ARIEL = 'Thank you so much for the contact, Ariel!\n\nHey Guy, would this be worth meeting about for you guys?';
+const ARIEL = 'Thank you so much for the contact, Ariel!\n\nHey Guy, would this be worth meeting about for you?';
 const ARIEL_BODY = 'Hi please talk to Guy at our office. Guy@orioncityscape.com';
 const OPTS = {
   prospectEmail: 'ariel@orioncityscape.com',
@@ -80,7 +80,7 @@ describe('referral drafts use the fixed template', () => {
     });
     assert.equal(
       generic,
-      'Thank you so much for the contact, Ariel!\n\nHey there, would this be worth meeting about for you guys?',
+      'Thank you so much for the contact, Ariel!\n\nHey there, would this be worth meeting about for you?',
     );
     assert.doesNotMatch(generic, /Info/);
     const genericContacts = extractReferredContacts(
@@ -195,7 +195,8 @@ describe('an existing referral card is updated in place', () => {
 
     const shown = JSON.stringify(buildDraftApprovalCard(cardPayload(row, ARIEL, updates[0].card.referredContacts)));
     assert.match(shown, /Thank you so much for the contact, Ariel/);
-    assert.match(shown, /Hey Guy, would this be worth meeting about for you guys/);
+    assert.match(shown, /Hey Guy, would this be worth meeting about for you\?/);
+    assert.doesNotMatch(shown, /for you guys/);
     assert.match(shown, /approve_reply_cc_referral/);
     assert.match(shown, /Guy@orioncityscape\.com/);
   });

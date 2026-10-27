@@ -387,15 +387,15 @@ function referralDraftText({
   const prospect = prospectFirstName(leadName);
   const who = referredGreetingName({ human, contacts });
   const line2 = who
-    ? `Hey ${who}, would this be worth meeting about for you guys?`
-    : 'Hey there, would this be worth meeting about for you guys?';
+    ? `Hey ${who}, would this be worth meeting about for you?`
+    : 'Hey there, would this be worth meeting about for you?';
   return `Thank you so much for the contact, ${prospect}!\n\n${line2}`;
 }
 
 function isFixedReferralDraft(text) {
   const s = String(text || '');
   return s.startsWith('Thank you so much for the contact,')
-    && s.includes('would this be worth meeting about for you guys?');
+    && s.includes('would this be worth meeting about for you?');
 }
 
 function referralDraftNote({ leadName, contacts } = {}) {
