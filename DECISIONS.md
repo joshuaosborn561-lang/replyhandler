@@ -1481,3 +1481,10 @@ A boot that already has a Slack timestamp, or a sent / approved / sending row, f
 The inbox poller treats already-posted per inbound Message-ID. A later reply on a thread that already has a card is its own card. The same Message-ID is still one card. A lead is `older_than_lookback` only when every timestamp we have (last_reply_time and the newest reply in history) is outside the window, so a later reply inside the window is not dropped because an older timestamp is.
 
 Guard: `test/marbella-one-shot.test.js` and `test/poller-second-reply.test.js`.
+### Dead-mailbox and departure auto-replies never become referral cards (Oct 27)
+
+After the email-referral change, the first poller pass re-carded a week of suppressed replies in one second (13 cards across five channels, 7 of them auto-replies: "this email account is no longer active", "the address is no longer in use", "this inbox is no longer being monitored", "no longer part of our team, mailbox not monitored", "no longer a sales representative"). The automated-notice check only knew "mailbox no longer monitored" and "no longer employed / with / has left" plus the words reach out / contact, so these slipped through and a typed address promoted them to INTERESTED with a "Thanks so much for the contact" draft.
+
+A dead or unwatched mailbox, or a departure notice, is an automated notice even when it names an address or a department mailbox. It does not card, draft, or promote. A live person handing us to a colleague with the colleague's address still cards.
+
+Guard: `test/dead-mailbox-notices.test.js`.
