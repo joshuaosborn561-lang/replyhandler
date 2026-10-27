@@ -387,12 +387,39 @@ async function attachDraftCc(dbClient, { replyId, platform, isDraft, payload }) 
   };
 }
 
+/** Once a row is in one of these states its card is final (Sent / Rejected / DQ ...). */
+const CARD_FINAL_STATUSES = new Set([
+  'approved', 'sent', 'rejected', 'disqualified', 'meeting_booked', 'booked', 'cancelled',
+]);
+
+/**
+ * True when this reply was already actioned from Slack. A late enrichment or
+ * draft update must not chat.update the interactive Approve / Edit card back
+ * over the Sent confirmation: the buttons come back but the row is no longer
+ * pending, so every click does nothing. Lookup errors fail open (card updates).
+ */
+async function cardAlreadyActioned(replyId, dbClient) {
+  if (!replyId) return false;
+  const client = dbClient || db;
+  try {
+    const result = await client.query('SELECT status FROM pending_replies WHERE id = $1', [replyId]);
+    const status = String(result?.rows?.[0]?.status || '').toLowerCase();
+    return CARD_FINAL_STATUSES.has(status);
+  } catch {
+    return false;
+  }
+}
+
 async function updatePostedCard(slackApi, {
-  token, channelId, ts, isDraft, payload,
+  token, channelId, ts, isDraft, payload, dbClient,
 }) {
   if (!ts) return null;
   if (payload?.replyId) rememberCard(payload.replyId, payload);
   if (isDraft) {
+    if (await cardAlreadyActioned(payload?.replyId, dbClient)) {
+      console.log('[Slack] Card already actioned — not re-rendering the buttons', { replyId: payload.replyId });
+      return { skipped: true, reason: 'already_actioned' };
+    }
     return slackApi.updateDraftApprovalCard(token, channelId, ts, payload);
   }
   return slackApi.updateAlertCard(token, channelId, ts, payload);
@@ -581,7 +608,7 @@ async function completeCardLinks({
   if (changed) {
     try {
       await updatePostedCard(slackApi, {
-        token, channelId, ts: postedTs, isDraft, payload: updatedPayload,
+        token, channelId, ts: postedTs, isDraft, payload: updatedPayload, dbClient,
       });
     } catch (err) {
       console.warn('[Slack] chat.update after link enrich failed', {

@@ -295,3 +295,36 @@ test('poster does not await enrichment before the first Slack post', () => {
   assert.match(poster, /updateDraftApprovalCard|updateAlertCard/);
   assert.match(poster, /awaitLinkUpdate/);
 });
+
+test('a late card update does not put Approve / Edit buttons back on a card that was already sent', async () => {
+  const { updatePostedCard } = require('../src/services/slack-reply-post');
+  const updates = [];
+  const slackApi = {
+    updateDraftApprovalCard: async (...args) => { updates.push(['draft', args]); return { ok: true }; },
+    updateAlertCard: async (...args) => { updates.push(['alert', args]); return { ok: true }; },
+  };
+  const dbFor = (status) => ({ query: async () => ({ rows: status ? [{ status }] : [] }) });
+  const payload = { replyId: 'r-1', leadName: 'Pat' };
+
+  for (const status of ['sent', 'approved', 'rejected', 'disqualified', 'meeting_booked']) {
+    const result = await updatePostedCard(slackApi, {
+      token: 't', channelId: 'C1', ts: '1.1', isDraft: true, payload, dbClient: dbFor(status),
+    });
+    assert.equal(result.skipped, true, status);
+  }
+  assert.equal(updates.length, 0);
+
+  for (const status of ['pending', 'flagged', null]) {
+    await updatePostedCard(slackApi, {
+      token: 't', channelId: 'C1', ts: '1.1', isDraft: true, payload, dbClient: dbFor(status),
+    });
+  }
+  assert.equal(updates.length, 3);
+
+  // A lookup error fails open: the card still updates.
+  await updatePostedCard(slackApi, {
+    token: 't', channelId: 'C1', ts: '1.1', isDraft: true, payload,
+    dbClient: { query: async () => { throw new Error('db down'); } },
+  });
+  assert.equal(updates.length, 4);
+});
