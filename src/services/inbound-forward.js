@@ -19,6 +19,7 @@ const {
 const {
   parseInboundFromPayload,
   cleanInboundReply,
+  cleanInboundOrRaw,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
   latestInboundFromSmartleadHistory,
@@ -71,7 +72,7 @@ function extractInboundForwardFields(payload = {}) {
     || (payload.campaign && typeof payload.campaign === 'object' ? payload.campaign.name : null)
     || null;
   let inbound = parseInboundFromPayload(replyObj, payload);
-  inbound = cleanInboundReply(inbound) || String(inbound || '').trim();
+  inbound = cleanInboundOrRaw(inbound);
   const replyMessageId = replyObj && typeof replyObj === 'object' ? messageIdOfMessage(replyObj) : '';
   const payloadMessageId = messageIdOfMessage(payload);
   return {

@@ -20,6 +20,7 @@ const { messageIdOfMessage } = require('../utils/inbound-message-id');
 const {
   parseInboundFromPayload,
   cleanInboundReply,
+  cleanInboundOrRaw,
   preferFullerInbound,
   latestInboundReplyMeta,
   normalizeSmartleadLeadId,
@@ -123,7 +124,7 @@ function describeSmartleadInbound(payload = {}) {
     text = parseInboundFromPayload(null, payload);
   }
   if (meta.body) text = preferFullerInbound(text, meta.body);
-  text = cleanInboundReply(text) || String(text || '').trim();
+  text = cleanInboundOrRaw(text);
   text = decodeInboundForStorage(text);
 
   const fromReply = replyObj && typeof replyObj === 'object' ? messageIdOfMessage(replyObj) : '';

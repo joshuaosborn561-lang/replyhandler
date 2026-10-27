@@ -156,11 +156,30 @@ function stripEmailArtifacts(raw) {
  * The prospect's own signature is deliberately left in — it carries their
  * title, phone and booking link.
  */
+function looksLikeHtml(s) {
+  return /<\/?[a-z!][^>]*>/i.test(String(s || ''));
+}
+
 function cleanInboundReply(raw) {
-  let t = stripHtmlToText(raw) || String(raw || '');
+  let t = stripHtmlToText(raw);
+  // Outlook sends some replies (auto-responses, "report phishing" clicks) as an
+  // empty HTML shell: <html><body><div><br></div></body></html>. That strips to
+  // "". Falling back to the raw markup made the tags the "reply" and then no
+  // draft could be written. Real plain text still passes through untouched.
+  if (!t && !looksLikeHtml(raw)) t = String(raw || '');
   t = stripEmailQuotePrefix(t);
   t = stripEmailArtifacts(t);
   return t.trim();
+}
+
+/**
+ * cleanInboundReply, or the trimmed original when it is not markup. Markup that
+ * strips to nothing is blank, never the tags themselves.
+ */
+function cleanInboundOrRaw(raw) {
+  const cleaned = cleanInboundReply(raw);
+  if (cleaned) return cleaned;
+  return looksLikeHtml(raw) ? '' : String(raw || '').trim();
 }
 
 function messageFromEmail(m) {
@@ -251,6 +270,32 @@ function pickLatestInboundReply(histResponse, leadEmail) {
   if (strict.body) return strict;
   const looseRows = collectRows(false);
   return pickLatestNonDuplicate(looseRows);
+}
+
+/**
+ * True when the newest REPLY in a SmartLead history has no prospect text at
+ * all (empty body or an empty HTML shell, no attachment text). Older replies
+ * with real text do not count: the webhook is about the newest one, and
+ * drafting against an older reply would answer the wrong email.
+ */
+function latestInboundReplyIsBlank(histResponse) {
+  if (!histResponse || typeof histResponse !== 'object') return false;
+  const list = Array.isArray(histResponse.history)
+    ? histResponse.history
+    : Array.isArray(histResponse.messages)
+      ? histResponse.messages
+      : Array.isArray(histResponse)
+        ? histResponse
+        : [];
+  const replies = list.filter((m) => {
+    if (!m || typeof m !== 'object') return false;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    return type === 'REPLY' || type === 'INBOUND';
+  });
+  if (!replies.length) return false;
+  replies.sort((a, b) => String(a.time || a.received_at || '').localeCompare(String(b.time || b.received_at || '')));
+  const last = replies[replies.length - 1];
+  return !cleanInboundReply(fullestMessageText(last));
 }
 
 function latestInboundFromSmartleadHistory(histResponse, leadEmail) {
@@ -510,6 +555,9 @@ module.exports = {
   stripEmailQuotePrefix,
   stripEmailArtifacts,
   cleanInboundReply,
+  cleanInboundOrRaw,
+  looksLikeHtml,
+  latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   latestInboundReplyMeta,
   lastOutboundBodyFromSmartleadHistory,
