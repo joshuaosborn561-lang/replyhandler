@@ -1465,3 +1465,19 @@ Cards already posted by that poll stay where they are. Nothing is deleted. They 
 Ariel's row is outside the poller lookback, so startup posts her one card if she still has none (`ensureArielReferralCard`). A boot that finds a Slack timestamp does nothing. It does not send.
 
 Guard: `test/referral-departure.test.js`.
+
+### Marbella's second reply gets one confirmation card (Oct 27)
+
+Marbella Porcayo (marbella@pacocean.net), Vector campaign 4242292, SmartLead lead 4826394186, replied "Info" at 10:22 AM ET and that card was sent at 10:23. At 10:32 AM ET she replied again, Message-ID `<C472638D-01F3-4902-B61B-C0C8AE0A923A@pacocean.net>`, with "Wed, Oct 28 at 11:00 AM PDT", taking the first time we offered. The webhook logged campaign 4242292 as not accessible while SmartLead was returning 429, stored nothing, and posted no card. #148 fail-opens that access check for a later 429. It does not recreate a reply that was already dropped.
+
+Startup posts exactly one card for that Message-ID in Vector's Slack channel (`ensureMarbellaReplyCard`). The draft is this text and nothing else. The mailbox adds the signature. It is not written by a model:
+
+```
+Hey Marbella, that time works for us. We look forward to meeting with you Wednesday, Oct 28 at 11:00 AM PDT!
+```
+
+A boot that already has a Slack timestamp, or a sent / approved / sending row, for that Message-ID does nothing. It does not send.
+
+The inbox poller treats already-posted per inbound Message-ID. A later reply on a thread that already has a card is its own card. The same Message-ID is still one card. A lead is `older_than_lookback` only when every timestamp we have (last_reply_time and the newest reply in history) is outside the window, so a later reply inside the window is not dropped because an older timestamp is.
+
+Guard: `test/marbella-one-shot.test.js` and `test/poller-second-reply.test.js`.

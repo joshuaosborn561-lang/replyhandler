@@ -21,12 +21,14 @@ const {
   recoverUnpostedSlackCards,
   inboundAlreadyRecorded,
   isPostedSlackTs,
+  canonicalInboundMessageId,
 } = require('./reply-dedupe');
 const {
   cleanInboundOrRaw,
   latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   latestInboundReplyMeta,
+  listInboundReplies,
   lastOutboundBodyFromSmartleadHistory,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
@@ -316,6 +318,69 @@ async function returnPostedOrRecoverReferral(client, row, {
   return { skipped: 'already_posted' };
 }
 
+/**
+ * A lead is outside the lookback only when every timestamp we have is.
+ * `last_reply_time` alone is not enough: a later reply sitting in history
+ * inside the window must still be read. No timestamp at all is not a skip.
+ */
+function outsideLookback(row, hist, lookbackMs, now = Date.now()) {
+  if (!lookbackMs || lookbackMs <= 0) return false;
+  const times = [];
+  const last = replyTime(row);
+  if (last) times.push(last.getTime());
+  const newest = newestReplyTimeFromHistory(hist);
+  if (newest) times.push(newest.getTime());
+  if (!times.length) return false;
+  return now - Math.max(...times) > lookbackMs;
+}
+
+/**
+ * The next inbound on this thread that is not already a card.
+ * Identity is the Message-ID. The latest card on the lead does not cover
+ * a later email, and a reply outside the lookback window is not revived.
+ */
+async function nextUnrecordedInbound({
+  client,
+  campaignId,
+  leadId,
+  leadEmail,
+  threadContext,
+  lookbackMs,
+  skipMessageId = '',
+  leadReplyTime = null,
+  now = Date.now(),
+  isRecorded,
+}) {
+  const skip = canonicalInboundMessageId(skipMessageId);
+  const leadInside = !leadReplyTime || (now - leadReplyTime.getTime() <= lookbackMs);
+  const replies = listInboundReplies(threadContext, leadEmail);
+  for (const reply of replies) {
+    const mid = canonicalInboundMessageId(reply.messageId);
+    if (skip && mid && mid === skip) continue;
+    const at = reply.time ? new Date(reply.time) : null;
+    const dated = at && !Number.isNaN(at.getTime());
+    if (dated) {
+      if (now - at.getTime() > lookbackMs) continue;
+    } else if (!leadInside) {
+      continue;
+    }
+    const recorded = isRecorded
+      ? await isRecorded(reply)
+      : await alreadyPostedToSlack({
+        clientId: client.id,
+        platform: 'smartlead',
+        campaignId,
+        leadId,
+        leadEmail: leadEmail || null,
+        inboundMessage: reply.body,
+        emailStatsId: null,
+        messageId: mid,
+      });
+    if (!recorded) return { body: reply.body, messageId: mid, time: reply.time || '' };
+  }
+  return null;
+}
+
 async function processInboxRow(sourceClient, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const client = await routeClientForCampaign(sourceClient, campaignId);
@@ -324,12 +389,11 @@ async function processInboxRow(sourceClient, row, options) {
 
   const at = replyTime(row);
   const lookbackMs = options.lookbackHours * 3600 * 1000;
-  if (at && Date.now() - at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
-
   // Derived before the dedupe checks: the webhook and this poller build the inbound
   // text differently (payload body vs rebuilt history), so an exact text match is not
   // a reliable identity. stats_id comes from the same thread history in both paths.
   let threadContext = historyFromRow(row);
+  if (outsideLookback(row, threadContext, lookbackMs)) return { skipped: 'older_than_lookback' };
   let inboundMeta = latestInboundReplyMeta(threadContext, row?.lead_email);
   let inbound = decodeInboundForStorage(
     inboundMeta.body || latestInboundFromHistory(threadContext, row?.lead_email)
@@ -387,9 +451,23 @@ async function processInboxRow(sourceClient, row, options) {
       emailStatsId: earlyStatsId,
       messageId,
     })) {
-      return returnPostedOrRecoverReferral(client, row, {
-        inbound, leadId, messageId, threadContext,
+      const sibling = await nextUnrecordedInbound({
+        client,
+        campaignId,
+        leadId,
+        leadEmail: row.lead_email || null,
+        threadContext,
+        lookbackMs,
+        skipMessageId: messageId,
+        leadReplyTime: at,
       });
+      if (!sibling) {
+        return returnPostedOrRecoverReferral(client, row, {
+          inbound, leadId, messageId, threadContext,
+        });
+      }
+      inbound = sibling.body;
+      messageId = sibling.messageId || '';
     }
   }
 
@@ -497,9 +575,23 @@ async function processInboxRow(sourceClient, row, options) {
     emailStatsId: smartleadEmailStatsId,
     messageId,
   })) {
-    return returnPostedOrRecoverReferral(client, row, {
-      inbound, leadId, messageId, threadContext,
+    const sibling = await nextUnrecordedInbound({
+      client,
+      campaignId,
+      leadId,
+      leadEmail: row.lead_email || null,
+      threadContext,
+      lookbackMs,
+      skipMessageId: messageId,
+      leadReplyTime: at,
     });
+    if (!sibling) {
+      return returnPostedOrRecoverReferral(client, row, {
+        inbound, leadId, messageId, threadContext,
+      });
+    }
+    inbound = sibling.body;
+    messageId = sibling.messageId || '';
   }
 
   await cancelForInboundReply({
@@ -861,4 +953,6 @@ module.exports = {
   newestReplyTimeFromHistory,
   historyLagsLastReply,
   shouldRefetchStaleHistory,
+  outsideLookback,
+  nextUnrecordedInbound,
 };
