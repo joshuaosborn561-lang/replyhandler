@@ -188,6 +188,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleOpenEditModal(action.value, interaction);
     } else if (action.action_id === 'toggle_cc_client') {
       await handleToggleCcClient(action);
+    } else if (String(action.action_id || '').startsWith('fseq_')) {
+      await require('../services/followup-sequence').handleCallButton(action, interaction);
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });

@@ -399,6 +399,13 @@ async function scheduleAfterOutboundSend(clientId, reply) {
     return;
   }
 
+  // The follow-up card sequence replaces this cadence for positive replies.
+  // Running both would put two sets of nudges on the same lead.
+  if (require('./followup-sequence').enabled() && isPositiveFollowUpClassification(reply.classification)) {
+    console.log('[FollowUp] Skip schedule — follow-up card sequence is on', { replyId: reply.id });
+    return;
+  }
+
   const { isReplyDisqualified } = require('./disqualified-prospects');
   if (await isReplyDisqualified(clientId, reply)) {
     console.log('[FollowUp] Skip schedule — prospect disqualified', {

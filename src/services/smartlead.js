@@ -86,6 +86,38 @@ async function getCampaign(apiKey, campaignId) {
 }
 
 /**
+ * The campaign's own email copy (every step and variant), as plain objects
+ * { subject, body }. Empty array when the API has nothing or fails.
+ * @see https://api.smartlead.ai/api-reference/campaigns/get-campaign-sequence
+ */
+async function getCampaignSequence(apiKey, campaignId) {
+  if (!apiKey || campaignId == null || campaignId === '') return [];
+  const cid = toSmartleadId(campaignId, 'campaign_id');
+  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}/sequence?api_key=${encodeURIComponent(apiKey)}`;
+  const res = await fetchWith429Retry(url);
+  const body = await res.text();
+  if (!res.ok) {
+    const err = new Error(`SmartLead getCampaignSequence failed (${res.status}): ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  let data;
+  try { data = JSON.parse(body); } catch { return []; }
+  const list = Array.isArray(data) ? data : (Array.isArray(data?.sequences) ? data.sequences : []);
+  const out = [];
+  for (const step of list) {
+    if (!step || typeof step !== 'object') continue;
+    const variants = Array.isArray(step.sequence_variants) && step.sequence_variants.length
+      ? step.sequence_variants : [step];
+    for (const v of variants) {
+      const text = String(v.email_body || v.body || '').trim();
+      if (text) out.push({ subject: String(v.subject || step.subject || ''), body: text });
+    }
+  }
+  return out;
+}
+
+/**
  * Resolve the human campaign name, with a short in-memory cache.
  * Returns null when the campaign is missing or the API fails.
  */
@@ -741,6 +773,7 @@ module.exports = {
   sendReply,
   forwardThreadToClient,
   getCampaign,
+  getCampaignSequence,
   resolveCampaignName,
   verifyCampaignAccess,
   resolveEmailStatsId,

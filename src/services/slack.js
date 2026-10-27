@@ -1500,6 +1500,7 @@ async function getPermalink(token, channelId, messageTs) {
 }
 
 module.exports = {
+  getClient,
   postDraftApproval,
   updateDraftApprovalCard,
   buildDraftApprovalCard,

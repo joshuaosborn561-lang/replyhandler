@@ -132,6 +132,9 @@ async function markMeetingBooked({
     cancelledFollowUps += byEmail.rowCount || 0;
   }
 
+  // Follow-up card sequence (no-op unless it ever enrolled this lead).
+  await require('./followup-sequence').stopSequencesForLead(reply, 'booked');
+
   console.log('[MeetingBooked] Marked booked + cancelled follow-ups', {
     clientId,
     replyId: reply.id,

@@ -17,6 +17,7 @@ const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
 const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
+const { validateExtraction } = require('../services/followup-sequence-copy');
 
 const router = Router();
 
@@ -467,6 +468,48 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
   } catch (err) {
     console.error('[Admin] heyreach approval card error', { err: err.message });
     return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * Set (or clear) a client's offer line and proof point for the follow-up card
+ * sequence by hand. Like every admin route it takes no key (Josh, Oct 20: no
+ * admin key checks). The proof point still has to carry a real number; a manual row is never overwritten by extraction.
+ * Body: { clientId, campaignId?, offerLine?, proofPoint?, clear? }
+ */
+router.post('/admin/followup-sequence/copy', async (req, res) => {
+  try {
+    const { clientId, campaignId = '', offerLine = null, proofPoint = null, clear = false } = req.body || {};
+    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+    const camp = campaignId != null ? String(campaignId) : '';
+    if (clear) {
+      await db.query(
+        `DELETE FROM followup_sequence_copy WHERE client_id = $1 AND campaign_id = $2 AND source = 'manual'`,
+        [clientId, camp],
+      );
+      return res.json({ cleared: true });
+    }
+    if (proofPoint && !/\d/.test(String(proofPoint))) {
+      return res.status(400).json({ error: 'proofPoint must contain a real number' });
+    }
+    // Same structural checks as extraction, minus the verbatim-from-copy rule
+    // (a human is vouching for it).
+    const checked = validateExtraction(`${offerLine || ''} ${proofPoint || ''}`, {
+      offer_line: offerLine, proof_point: proofPoint,
+    });
+    if (checked.reasons.length) return res.status(400).json({ error: 'rejected', reasons: checked.reasons });
+    await db.query(
+      `INSERT INTO followup_sequence_copy (client_id, campaign_id, offer_line, proof_point, source, source_hash, extracted_at)
+       VALUES ($1, $2, $3, $4, 'manual', NULL, now())
+       ON CONFLICT (client_id, campaign_id) DO UPDATE
+         SET offer_line = EXCLUDED.offer_line, proof_point = EXCLUDED.proof_point,
+             source = 'manual', source_hash = NULL, extracted_at = now()`,
+      [clientId, camp, checked.offerLine, checked.proofPoint],
+    );
+    return res.json({ saved: true, offerLine: checked.offerLine, proofPoint: checked.proofPoint });
+  } catch (err) {
+    console.error('[Admin] followup-sequence copy error', { err: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
