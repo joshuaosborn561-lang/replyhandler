@@ -472,6 +472,48 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
 });
 
 /**
+ * Trace ghosted-meeting checks: every booked meeting looked at, the decision, the reason,
+ * and the stage-by-stage trail. Read-only. Query: ?days=2 (default 3), ?decision=held.
+ */
+router.get('/admin/ghosted-meetings', async (req, res) => {
+  try {
+    const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 3));
+    const decision = req.query.decision ? String(req.query.decision) : null;
+    const { rows } = await db.query(
+      `SELECT g.id, c.name AS client, g.lead_key, g.meeting_start, g.meeting_end, g.source,
+              g.decision, g.reason, g.evidence, g.sequence_id, g.trail, g.first_seen_at, g.decided_at
+         FROM ghosted_meeting_checks g JOIN clients c ON c.id = g.client_id
+        WHERE g.first_seen_at >= now() - ($1::int * interval '1 day')
+          AND ($2::text IS NULL OR g.decision = $2)
+        ORDER BY g.meeting_start DESC LIMIT 200`,
+      [days, decision],
+    );
+    return res.json({ count: rows.length, checks: rows });
+  } catch (err) {
+    console.error('[Admin] ghosted-meetings list error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Run one ghosted-meeting scan now. When GHOSTED_MEETING_ENABLED is off this is always a
+ * dry run (decides and logs, enrolls nothing). With the flag on, pass { dryRun: true } to
+ * preview. Nothing here sends to a lead.
+ */
+router.post('/admin/ghosted-meetings/run', async (req, res) => {
+  try {
+    const ghostedMeetings = require('../services/ghosted-meetings');
+    const wantsDry = req.body && (req.body.dryRun === true || req.body.dryRun === 'true');
+    const dryRun = wantsDry || !ghostedMeetings.enabled();
+    const result = await ghostedMeetings.runGhostedMeetingScan({ dryRun });
+    return res.json({ dryRun, flag: ghostedMeetings.enabled(), result });
+  } catch (err) {
+    console.error('[Admin] ghosted-meetings run error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Set (or clear) a client's offer line and proof point for the follow-up card
  * sequence by hand. Like every admin route it takes no key (Josh, Oct 20: no
  * admin key checks). The proof point still has to carry a real number; a manual row is never overwritten by extraction.

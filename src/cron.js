@@ -161,7 +161,8 @@ function startCron() {
   // human clicks; nothing is sent to a lead from here.
   {
     const { enabled: sequenceEnabled, runSequenceTick } = require('./services/followup-sequence');
-    if (sequenceEnabled()) {
+    const ghostedMeetings = require('./services/ghosted-meetings');
+    if (sequenceEnabled() || ghostedMeetings.enabled()) {
       cron.schedule('* * * * *', async () => {
         try {
           const result = await runSequenceTick();
@@ -173,6 +174,24 @@ function startCron() {
         }
       });
       console.log('[Cron] Follow-up card sequence ENABLED');
+    }
+
+    // Ghosted meetings (OFF by default, GHOSTED_MEETING_ENABLED): find booked meetings the
+    // prospect never showed up to and enroll them in the sequence above. Cards only.
+    if (ghostedMeetings.enabled()) {
+      cron.schedule('*/2 * * * *', async () => {
+        try {
+          const result = await ghostedMeetings.runGhostedMeetingScan({
+            dryRun: /^(1|true|yes|on)$/i.test(String(process.env.GHOSTED_MEETING_DRY_RUN || '')),
+          });
+          if (result.candidates || result.enrolled || result.sourceErrors.length) {
+            console.log('[Cron] Ghosted meeting scan', result);
+          }
+        } catch (err) {
+          console.error('[Cron] Ghosted meeting scan failed', { err: err.message });
+        }
+      });
+      console.log('[Cron] Ghosted-meeting follow-up ENABLED');
     }
   }
 

@@ -33,6 +33,8 @@ const { prefersInPersonMeeting, prefersCallbackCall } = require('../utils/meetin
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const time = require('../utils/followup-sequence-time');
 const text = require('../utils/followup-sequence-text');
+const ghost = require('./ghosted-meetings');
+const ghostText = require('../utils/ghosted-meeting-text');
 
 const POSITIVE = new Set(['INTERESTED', 'MEETING_PROPOSED']);
 const ENROLL_STATUSES = ['pending', 'approved', 'sending', 'sent', 'flagged'];
@@ -77,7 +79,7 @@ async function enrollNewReplies({ now = new Date(), dbClient = db, env = process
         AND pr.slack_message_ts IS NOT NULL
         AND pr.created_at >= $2
         AND c.active IS DISTINCT FROM false
-        AND NOT EXISTS (SELECT 1 FROM followup_sequences s WHERE s.source_reply_id = pr.id)
+        AND NOT EXISTS (SELECT 1 FROM followup_sequences s WHERE s.source_reply_id = pr.id AND s.origin = 'reply')
       ORDER BY pr.created_at ASC
       LIMIT $3`,
     [ENROLL_STATUSES, floor, limit],
@@ -113,7 +115,7 @@ async function createSequence(reply, key, { now, dbClient = db, env = process.en
          (client_id, source_reply_id, platform, campaign_id, lead_key, lead_name, lead_email,
           linkedin_url, lead_timezone, enrolled_at, status, stop_reason)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       ON CONFLICT (source_reply_id) DO NOTHING
+       ON CONFLICT (source_reply_id, origin) DO NOTHING
        RETURNING id`,
       [reply.client_id, reply.id, reply.platform, reply.campaign_id || null, key,
         reply.lead_name || null, reply.lead_email || null, reply.linkedin_url || null,
@@ -441,8 +443,9 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   const callers = text.parseCallers(env);
   const caller = text.callerName();
   const args = { firstName: first, callerName: caller, clientName: client.name, offerLine, proofPoint };
-  const script = text.callScript(args);
-  const voicemail = text.voicemailScript(step.kind, args);
+  const isGhost = ghostText.isGhostKind(step.kind);
+  const script = isGhost ? ghostText.ghostCallScript(args) : text.callScript(args);
+  const voicemail = isGhost ? ghostText.ghostVoicemail(args) : text.voicemailScript(step.kind, args);
   let permalink = null;
   try {
     permalink = await slackApi.getPermalink(client.slack_bot_token, client.slack_channel_id, source.slack_message_ts);
@@ -471,7 +474,7 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   });
   await setStep(step.id, {
     status: 'posted', slack_channel: channel, slack_ts: res.ts, posted_at: now,
-    payload: { card },
+    payload: { ...(parseJson(step.payload) || {}), card },
   }, dbClient);
   return 'posted';
 }
@@ -527,6 +530,25 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       }
     }
     body = text.emailBody(step.kind, { firstName: first, slots, link, askForTimes });
+  } else if (ghostText.isGhostKind(step.kind)) {
+    if (step.kind === 'ghost_breakup') {
+      body = ghostText.emailBody(step.kind, { firstName: first });
+    } else {
+      ({ slots, link, askForTimes } = await resolveTimes({ client, seq, deps }));
+      const heldFor = now.getTime() - origDue.getTime();
+      if (!slots.length && !link && !askForTimes) {
+        if (heldFor >= 180 * MIN) {
+          await setStep(step.id, { status: 'skipped', skip_reason: 'no_live_times' }, dbClient);
+          return 'skipped';
+        }
+        await setStep(step.id, {
+          status: 'held', skip_reason: 'no_live_times', payload: { ...payload, originalDue: origDue.toISOString() },
+          due_at: new Date(now.getTime() + 5 * MIN),
+        }, dbClient);
+        return 'wait';
+      }
+      body = ghostText.emailBody(step.kind, { firstName: first, slots, link, askForTimes });
+    }
   } else if (step.kind === 'email_proof') {
     ({ proofPoint } = await offerFor(client, source, deps));
     body = text.emailBody('email_proof', { firstName: first, proofPoint });
@@ -585,6 +607,9 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
     leadEmail: source.lead_email, linkedinUrl: source.linkedin_url,
   });
   const notes = [`Sequence · ${text.stepLabel(step.kind)}`];
+  if (ghostText.isGhostKind(step.kind)) {
+    notes.push(`Missed meeting (${payload.ghost && payload.ghost.reason ? String(payload.ghost.reason).replace(/_/g, ' ') : 'no show'}). Nothing sends until you approve this card.`);
+  }
   if (payload.noLiveTimes) {
     notes.push('⚠️ No live times were available, so this asks them for a time.');
   }
@@ -627,6 +652,7 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       lastOutboundMessage: source.sent_reply || undefined,
       contextLabel: 'You sent',
       threadPermalink: permalink || undefined,
+      mention: ghostText.isGhostKind(step.kind) ? (ghostText.mentionLine(env) || undefined) : undefined,
     },
   });
   if (!posted || !isPostedSlackTs(posted.ts)) {
@@ -659,21 +685,29 @@ async function releaseStalePosting(dbClient = db) {
 }
 
 /** Stop sequences whose lead replied, booked, was DQ'd or claimed. */
-async function applyStopRules({ dbClient = db, slackApi = slack, limit = 200 } = {}) {
+async function applyStopRules({ dbClient = db, slackApi = slack, limit = 200, onlyGhost = false, deps = {} } = {}) {
   const { rows } = await dbClient.query(
-    `SELECT s.id AS seq_id, pr.*
+    `SELECT s.id AS seq_id, s.origin AS seq_origin, s.enrolled_at AS seq_enrolled_at,
+            s.client_id AS seq_client_id, s.lead_email AS seq_lead_email, pr.*
        FROM followup_sequences s
        JOIN pending_replies pr ON pr.id = s.source_reply_id
       WHERE s.status = 'active'
+        AND ($2::boolean = false OR s.origin = 'ghosted_meeting')
       ORDER BY s.created_at ASC
       LIMIT $1`,
-    [limit],
+    [limit, onlyGhost],
   );
   let stopped = 0;
   for (const row of rows) {
-    const { seq_id: seqId, ...source } = row;
+    const {
+      seq_id: seqId, seq_origin: seqOrigin, seq_enrolled_at: seqEnrolledAt,
+      seq_client_id: seqClientId, seq_lead_email: seqLeadEmail, ...source
+    } = row;
     let reason = null;
-    if (['meeting_booked'].includes(source.status)) reason = 'booked';
+    if (seqOrigin === ghost.ORIGIN) {
+      // The source reply is already booked (the meeting was ghosted), so only the ghost rules apply.
+      reason = await ghost.stopReason({ id: seqId, client_id: seqClientId, lead_email: seqLeadEmail, enrolled_at: seqEnrolledAt }, source, { dbClient, deps });
+    } else if (['meeting_booked'].includes(source.status)) reason = 'booked';
     else if (source.status === 'disqualified') reason = 'disqualified';
     else if (source.status === 'rejected' || !POSITIVE.has(String(source.classification || '').toUpperCase())) reason = 'source_closed';
     else reason = await stopReasonForLead(source, { dbClient, checkBooked: false });
@@ -699,14 +733,18 @@ async function completeFinishedSequences(dbClient = db) {
 
 async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = slack, env = process.env, limit = 25, deps = {} } = {}) {
   const totals = { enrolled: 0, stopped: 0, posted: 0, skipped: 0, waited: 0, failed: 0 };
-  if (!enabled(env)) return { ...totals, disabled: true };
+  const regularOn = enabled(env);
+  const ghostOn = ghost.enabled(env);
+  if (!regularOn && !ghostOn) return { ...totals, disabled: true };
   if (tickActive) return { ...totals, overlap: true };
   tickActive = true;
   try {
     await releaseStalePosting(dbClient);
-    totals.stopped = await applyStopRules({ dbClient, slackApi });
-    const e = await enrollNewReplies({ now, dbClient, env });
-    totals.enrolled = e.enrolled;
+    totals.stopped = await applyStopRules({ dbClient, slackApi, onlyGhost: !regularOn, deps });
+    if (regularOn) {
+      const e = await enrollNewReplies({ now, dbClient, env });
+      totals.enrolled = e.enrolled;
+    }
 
     // Anything more than a day late is stale. Never catch up in a burst.
     await dbClient.query(
@@ -722,9 +760,10 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
          FROM followup_sequence_steps st
          JOIN followup_sequences s ON s.id = st.sequence_id
         WHERE s.status = 'active' AND st.status IN ('pending', 'held') AND st.due_at <= $1
+          AND ($3::boolean OR s.origin = 'ghosted_meeting')
         ORDER BY st.due_at ASC, st.seq_order ASC
         LIMIT $2`,
-      [now, limit],
+      [now, limit, regularOn],
     );
 
     for (const step of due) {
@@ -743,7 +782,9 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
           totals.skipped++;
           continue;
         }
-        const reason = await stopReasonForLead(source, { dbClient });
+        const reason = seq.origin === ghost.ORIGIN
+          ? await ghost.stopReason(seq, source, { dbClient, env, deps })
+          : await stopReasonForLead(source, { dbClient });
         if (reason) {
           await stopSequence(seq.id, reason, { dbClient, slackApi });
           totals.stopped++;
@@ -763,6 +804,10 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
             continue;
           }
           result = await postEmailStep({ step: claimed, seq, client, source, now, dbClient, slackApi, env, deps });
+        }
+        if (result === 'posted' && seq.origin === ghost.ORIGIN) {
+          const { rows: [after] } = await dbClient.query('SELECT slack_ts, payload FROM followup_sequence_steps WHERE id = $1', [step.id]);
+          await ghost.recordStepPosted(seq, { ...claimed, payload: (after && after.payload) || claimed.payload }, { dbClient, ts: after && after.slack_ts });
         }
         if (result === 'posted') totals.posted++;
         else if (result === 'skipped') totals.skipped++;

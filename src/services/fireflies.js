@@ -90,6 +90,52 @@ async function getTranscript(id, { fetchImpl, env } = {}) {
   return data?.transcript || null;
 }
 
+const WINDOW_QUERY = `
+  query TranscriptsBetween($from: DateTime, $to: DateTime, $limit: Int) {
+    transcripts(fromDate: $from, toDate: $to, limit: $limit) {
+      id
+      title
+      date
+      duration
+      is_live
+      organizer_email
+      participants
+      meeting_attendees { displayName email name }
+      meeting_info { silent_meeting summary_status }
+      meeting_attendance { name join_time leave_time }
+    }
+  }
+`;
+
+const ATTENDANCE_QUERY = `
+  query TranscriptAttendance($id: String!) {
+    transcript(id: $id) {
+      id
+      date
+      sentences { speaker_name text }
+      speakers { id name }
+      meeting_info { silent_meeting summary_status }
+      meeting_attendance { name join_time leave_time }
+      meeting_attendees { displayName email name }
+      participants
+    }
+  }
+`;
+
+/** Transcripts created inside [from, to] (Date objects). Fireflies caps one page at 50. */
+async function listTranscriptsBetween(from, to, { limit = 50, fetchImpl, env } = {}) {
+  const data = await graphql(WINDOW_QUERY, {
+    from: from.toISOString(), to: to.toISOString(), limit: Math.min(50, limit),
+  }, { fetchImpl, env });
+  return Array.isArray(data?.transcripts) ? data.transcripts.filter((t) => t?.id) : [];
+}
+
+/** Who spoke / joined, for deciding whether the prospect was really on the call. */
+async function getTranscriptAttendance(id, { fetchImpl, env } = {}) {
+  const data = await graphql(ATTENDANCE_QUERY, { id: String(id) }, { fetchImpl, env });
+  return data?.transcript || null;
+}
+
 function attendeeBlob(row) {
   const people = [
     ...(Array.isArray(row?.meeting_attendees) ? row.meeting_attendees : []),
@@ -138,6 +184,8 @@ module.exports = {
   graphql,
   searchTranscripts,
   getTranscript,
+  listTranscriptsBetween,
+  getTranscriptAttendance,
   transcriptMatches,
   sentencesToText,
   attendeeBlob,

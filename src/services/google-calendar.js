@@ -124,6 +124,27 @@ async function findUpcomingEvents(connection, query, { days = 60 } = {}) {
   return Array.isArray(data.items) ? data.items : [];
 }
 
+/**
+ * Events that start inside [timeMin, timeMax] (past or future), with attendees.
+ * Used to find the real start/end of a booked meeting after the fact.
+ */
+async function listEventsBetween(connection, timeMin, timeMax, { maxResults = 250 } = {}) {
+  const token = await getValidToken(connection);
+  const params = new URLSearchParams({
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    singleEvents: 'true',
+    orderBy: 'startTime',
+    maxResults: String(maxResults),
+  });
+  const res = await fetch(`${CALENDAR_API}/calendars/primary/events?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Google events.list failed: ${await res.text()}`);
+  const data = await res.json();
+  return Array.isArray(data.items) ? data.items : [];
+}
+
 async function createEvent(connection, { summary, description, startTime, endTime, attendeeEmail, attendeeName }) {
   const token = await getValidToken(connection);
   const res = await fetch(`${CALENDAR_API}/calendars/primary/events?sendUpdates=all&conferenceDataVersion=0`, {
@@ -145,4 +166,4 @@ async function createEvent(connection, { summary, description, startTime, endTim
   return res.json();
 }
 
-module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, createEvent, getValidToken };
+module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, listEventsBetween, createEvent, getValidToken };
