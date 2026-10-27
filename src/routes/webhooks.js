@@ -28,6 +28,8 @@ const {
   stripHtmlToText,
   stripEmailQuotePrefix,
   cleanInboundReply,
+  cleanInboundOrRaw,
+  latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
@@ -463,7 +465,7 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
 
     let inboundForPersist = String(inboundMessage || '').trim();
     if (slEnhance && inboundForPersist) {
-      inboundForPersist = cleanInboundReply(inboundForPersist) || inboundForPersist;
+      inboundForPersist = cleanInboundOrRaw(inboundForPersist);
     }
     // After tag stripping. Decoding first would turn `&lt;...&gt;` into a tag
     // and the stripper would eat it.
@@ -657,7 +659,27 @@ async function processSmartleadWebhookAsync({
 
   let inboundEffective = String(inboundMessage || '').trim();
   if (slEnhance && inboundEffective) {
-    inboundEffective = cleanInboundReply(inboundEffective) || inboundEffective;
+    inboundEffective = cleanInboundOrRaw(inboundEffective);
+  }
+
+  // The newest reply has no text at all (empty Outlook HTML shell, typically an
+  // auto-response or a "report phishing" click a few seconds after we send).
+  // There is nothing to draft and nothing a person could answer, so this is not
+  // a draft failure: no Slack error card. Older replies with text must not be
+  // drafted in its place, so check before history expands the inbound.
+  if (!inboundEffective && latestInboundReplyIsBlank(threadContext)) {
+    console.log('[Webhook] SmartLead blank inbound reply, skipped (no text to draft)', {
+      clientId, campaignId: resolvedCampaignId, leadId: resolvedLeadId, hasEmail: !!leadEmail,
+    });
+    if (replyRow && replyRow.id) {
+      await db.query(
+        `UPDATE pending_replies
+            SET status = 'suppressed', suppression_reason = 'empty_inbound', updated_at = now()
+          WHERE id = $1 AND status = 'pending'`,
+        [replyRow.id],
+      ).catch((err) => console.warn('[Webhook] could not mark blank reply suppressed', { err: err.message }));
+    }
+    return;
   }
 
   if (threadContext && typeof threadContext === 'object' && !Array.isArray(threadContext)) {
