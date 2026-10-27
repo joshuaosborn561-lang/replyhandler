@@ -304,6 +304,9 @@ router.post('/admin/post-approval-card', async (req, res) => {
     cc_client: ccClientRaw,
     ccClient: ccClientAlt,
     force: forceRaw,
+    channelId: channelIdRaw,
+    channel_id: channelIdAlt,
+    route: routeRaw,
   } = req.body || {};
   const forced = forceCard.parseForce(forceRaw);
   const threadTs = String(threadTsRaw || threadTsAlt || '').trim() || null;
@@ -311,6 +314,16 @@ router.post('/admin/post-approval-card', async (req, res) => {
   const ccClient = ccClientVal === true || /^(1|true|yes|on)$/i.test(String(ccClientVal || ''));
   if (threadTs && !/^\d+\.\d+$/.test(threadTs)) {
     return res.status(400).json({ error: 'thread_ts must look like 1234567890.123456' });
+  }
+
+  let channelOverride = null;
+  try {
+    channelOverride = forceCard.resolveChannelOverride({
+      channelId: channelIdRaw ?? channelIdAlt,
+      route: routeRaw,
+    });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
 
   if (!clientId || !leadName || !inboundMessage || !draft || !campaignId || !leadId) {
@@ -368,7 +381,7 @@ router.post('/admin/post-approval-card', async (req, res) => {
 
     const slackResult = await postProspectSlackCard({
       token: client.slack_bot_token,
-      channelId: client.slack_channel_id,
+      channelId: channelOverride || client.slack_channel_id,
       clientId,
       platform: 'smartlead',
       campaignId: String(campaignId),
@@ -407,6 +420,7 @@ router.post('/admin/post-approval-card', async (req, res) => {
       replyId: reply.id,
       slackMessageTs: slackResult.ts,
       threadTs,
+      channelId: channelOverride || client.slack_channel_id,
       ccClientButton: ccClient,
       forced,
     });
@@ -451,7 +465,9 @@ router.post('/admin/resurface-suppressed', async (req, res) => {
  * force: true posts a NEW card (new pending row copied from replyId, new draft)
  * even when a card already exists or a send failed. The old row is untouched.
  * A lead who unsubscribed or was disqualified is still refused (409).
- * thread_ts posts the card inside that Slack thread. Never sends anything.
+ * thread_ts posts the card inside that Slack thread. channelId (or
+ * route: 'followup') posts to another channel than the client's default.
+ * Never sends anything.
  */
 /**
  * Rewrite referral drafts to the fixed template.
@@ -498,6 +514,8 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
       reasoning: req.body?.reasoning,
       force: req.body?.force,
       threadTs: req.body?.thread_ts ?? req.body?.threadTs,
+      channelId: req.body?.channelId ?? req.body?.channel_id,
+      route: req.body?.route,
     });
     return res.status(result.posted ? 201 : 200).json(result);
   } catch (err) {

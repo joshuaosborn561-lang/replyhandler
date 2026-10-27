@@ -74,7 +74,7 @@ async function findPostedSibling(row, query) {
  * The source row is not touched. Refuses an unsubscribed or disqualified lead.
  */
 async function postForcedCard({
-  row, draftText, cls, reasoning, threadTs, query, postFn, isDisqualifiedFn,
+  row, draftText, cls, reasoning, threadTs, channelOverride, query, postFn, isDisqualifiedFn,
 }) {
   const blocked = await force.findForceBlock({
     clientId: row.client_id,
@@ -108,7 +108,7 @@ async function postForcedCard({
   try {
     posted = await postFn({
       token: row.slack_bot_token,
-      channelId: row.slack_channel_id,
+      channelId: channelOverride || row.slack_channel_id,
       clientId: row.client_id,
       platform: 'heyreach',
       campaignId: fresh.campaign_id,
@@ -158,6 +158,7 @@ async function postForcedCard({
     sourceReplyId: row.id,
     slackMessageTs: posted.ts,
     threadTs: threadTs || null,
+    channelId: channelOverride || row.slack_channel_id,
   };
 }
 
@@ -168,12 +169,15 @@ async function postStoredHeyreachApprovalCard({
   reasoning = 'Manually promoted to an approval card from the stored LinkedIn reply.',
   force: forceRaw = false,
   threadTs: threadTsRaw = null,
+  channelId: channelIdRaw = null,
+  route = null,
   query = (...args) => db.query(...args),
   postFn = postProspectSlackCard,
   isDisqualifiedFn,
 } = {}) {
   const forced = force.parseForce(forceRaw);
   const threadTs = force.parseThreadTs(threadTsRaw);
+  const channelOverride = force.resolveChannelOverride({ channelId: channelIdRaw, route });
   const id = String(replyId || '').trim();
   if (!id) throw httpError(400, 'replyId is required');
   const draftText = String(draft || '').trim();
@@ -198,7 +202,7 @@ async function postStoredHeyreachApprovalCard({
   if (!row) throw httpError(404, 'stored reply not found');
   if (row.platform !== 'heyreach') throw httpError(400, 'stored reply is not a HeyReach reply');
   if (row.active === false) throw httpError(409, 'client is inactive');
-  if (!row.slack_bot_token || !row.slack_channel_id) {
+  if (!row.slack_bot_token || !(channelOverride || row.slack_channel_id)) {
     throw httpError(409, 'client has no Slack channel');
   }
 
@@ -207,7 +211,7 @@ async function postStoredHeyreachApprovalCard({
   }
   if (forced) {
     return postForcedCard({
-      row, draftText, cls, reasoning, threadTs, query, postFn, isDisqualifiedFn,
+      row, draftText, cls, reasoning, threadTs, channelOverride, query, postFn, isDisqualifiedFn,
     });
   }
   if (isPostedSlackTs(row.slack_message_ts)) {
@@ -254,7 +258,7 @@ async function postStoredHeyreachApprovalCard({
   const lastOutbound = lastOutboundFromThread(updated.thread_context);
   const posted = await postFn({
     token: row.slack_bot_token,
-    channelId: row.slack_channel_id,
+    channelId: channelOverride || row.slack_channel_id,
     clientId: row.client_id,
     platform: 'heyreach',
     campaignId: updated.campaign_id,
@@ -294,6 +298,7 @@ async function postStoredHeyreachApprovalCard({
     posted: true,
     replyId: updated.id,
     slackMessageTs: posted?.ts || null,
+    channelId: channelOverride || row.slack_channel_id,
   };
 }
 

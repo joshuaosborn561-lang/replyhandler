@@ -37,6 +37,35 @@ function parseThreadTs(raw) {
   return ts;
 }
 
+const CHANNEL_ID_RE = /^[CG][A-Z0-9]{6,}$/;
+const FOLLOWUP_ROUTES = new Set(['followup', 'followups', 'follow_up', 'follow-up', 'follow_ups']);
+
+/**
+ * Optional channel override. channelId posts there; route: 'followup' maps to
+ * the shared follow-ups channel. Returns null for "use the client's channel".
+ * The Approve / Edit buttons resolve the client from the row, not the channel,
+ * so a card in another channel still sends through the right client.
+ */
+function resolveChannelOverride({ channelId, route } = {}) {
+  const explicit = String(channelId ?? '').trim();
+  const routeName = String(route ?? '').trim().toLowerCase();
+  if (explicit && !CHANNEL_ID_RE.test(explicit)) {
+    throw httpError(400, 'channelId must be a Slack channel id like C0BRRS8DV19');
+  }
+  let fromRoute = null;
+  if (routeName) {
+    if (!FOLLOWUP_ROUTES.has(routeName)) {
+      throw httpError(400, "route must be 'followup' when set");
+    }
+    // Lazy require: follow-up-runner pulls in most of the app.
+    fromRoute = require('./follow-up-runner').followUpSlackChannelId();
+  }
+  if (explicit && fromRoute && explicit !== fromRoute) {
+    throw httpError(400, 'pass channelId or route, not both with different channels');
+  }
+  return explicit || fromRoute || null;
+}
+
 function conversationIdOf(threadContext) {
   let tc = threadContext;
   if (typeof tc === 'string') {
@@ -171,6 +200,7 @@ async function insertHeyreachCopy(query, row, { threadContextJson, classificatio
 }
 
 module.exports = {
+  resolveChannelOverride,
   insertHeyreachCopy,
   parseForce,
   parseThreadTs,
