@@ -121,6 +121,10 @@ test('full Day 0 path: call card, No answer queues the voicemail email 5 min lat
   // Clicking twice does nothing.
   assert.equal((await svc.applyCallOutcome({ stepId: step.id, outcome: 'no_answer', now: clickAt, slackApi, env: ENV })).applied, false);
 
+  // The email is queued by the click itself, due 5 minutes out. No second click needed.
+  const { rows: [queued] } = await pg.query(`SELECT status, due_at FROM followup_sequence_steps WHERE kind = 'email_vm'`);
+  assert.equal(queued.status, 'pending');
+  assert.equal(new Date(queued.due_at).getTime() - clickAt.getTime(), 5 * MIN);
   // 4 min after the click: not yet.
   await svc.runSequenceTick({ now: new Date(clickAt.getTime() + 4 * MIN), slackApi, deps, env: ENV });
   assert.equal(calls.cards.length, 0);
@@ -129,7 +133,7 @@ test('full Day 0 path: call card, No answer queues the voicemail email 5 min lat
   assert.equal(calls.cards.length, 1);
   const card = calls.cards[0];
   assert.equal(card.channelId, 'C0BRRS8DV19');
-  assert.match(card.card.draft, /^Hey Pat, just tried you and left you a voicemail\./);
+  assert.match(card.card.draft, /^Hey Pat, just tried you, left you a voicemail\. Still want to take a peek at this\?\n\nDoes Slot1A or Slot1B work for a quick call\?/);
   assert.match(card.card.draft, /Slot1A or Slot1B/);
   assert.equal(card.card.classification, 'FOLLOW_UP');
   const { rows: [pr] } = await pg.query('SELECT status, classification, draft_reply FROM pending_replies WHERE id = $1', [card.replyId]);
@@ -372,4 +376,32 @@ test('a bare "connected" outcome no longer exists', { skip }, async () => {
   const { svc } = await setup();
   assert.equal(Object.values(svc.OUTCOME_BY_ACTION).includes('connected'), false);
   assert.equal(svc.OUTCOME_BY_ACTION.fseq_connected, undefined);
+});
+
+async function day6Voicemail(proofPoint) {
+  const { pg, svc, clientId } = await setup();
+  await addReply(pg, clientId);
+  const { slackApi, deps, calls } = fakes();
+  deps.resolveCopy = async () => ({ offerLine: 'cutting your IT costs', proofPoint });
+  await svc.runSequenceTick({ now: NOW, slackApi, deps, env: ENV });
+  const { rows: [seq] } = await pg.query('SELECT * FROM followup_sequences');
+  await pg.query(`UPDATE followup_sequence_steps SET status = 'skipped' WHERE sequence_id = $1 AND kind <> 'call_day6'`, [seq.id]);
+  const d6 = new Date('2026-11-03T18:00:00Z'); // Tue 12:00 CT
+  await pg.query(`UPDATE followup_sequence_steps SET due_at = $1 WHERE kind = 'call_day6'`, [new Date(d6.getTime() - MIN)]);
+  const before = calls.posts.length;
+  await svc.runSequenceTick({ now: d6, slackApi, deps, env: ENV });
+  assert.equal(calls.posts.length, before + 1);
+  return JSON.stringify(calls.posts[calls.posts.length - 1].blocks);
+}
+
+test('Day 6 call card voicemail is the breakup script with offer and real proof', { skip }, async () => {
+  const blocks = await day6Voicemail('Last quarter we booked 212 meetings for 14 clients.');
+  assert.ok(blocks.includes('Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it'));
+  assert.ok(blocks.includes('reply to my email and we'));
+});
+
+test('Day 6 call card voicemail omits the proof sentence when there is none', { skip }, async () => {
+  const blocks = await day6Voicemail(null);
+  assert.ok(blocks.includes('Quick recap: cutting your IT costs. If it'));
+  assert.ok(!blocks.includes('212'));
 });

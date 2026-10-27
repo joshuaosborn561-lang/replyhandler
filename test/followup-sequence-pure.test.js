@@ -103,13 +103,13 @@ test('voicemails: Day 0, Day 3 and Day 6 leave one; the other calls leave none',
   const d3 = text.voicemailScript('call_day3', args);
   assert.ok(/calling about cutting your IT costs/.test(d3));
   assert.ok(/one more email/.test(d3) && /if you're still interested/i.test(d3) && /scheduled/.test(d3));
-  assert.ok(/sent you an email/.test(text.voicemailScript('call_day6', args)));
+  assert.ok(text.voicemailScript('call_day6', args));
 });
 
 test('email bodies match the spec wording', () => {
   const slots = [{ label: 'Wed, Oct 28, 11:00 AM CDT' }, { label: 'Thu, Oct 29, 2:00 PM CDT' }];
   const vm = text.emailBody('email_vm', { firstName: 'Pat', slots, link: '' });
-  assert.ok(vm.startsWith('Hey Pat, just tried you and left you a voicemail.'));
+  assert.ok(vm.startsWith('Hey Pat, just tried you, left you a voicemail. Still want to take a peek at this?\n\n'));
   assert.ok(vm.includes('Wed, Oct 28, 11:00 AM CDT') && vm.includes('Thu, Oct 29, 2:00 PM CDT'));
   const d1 = text.emailBody('email_day1', { firstName: 'Pat', slots, link: '' });
   assert.ok(/those times got taken/i.test(d1) && d1.includes('Thu, Oct 29, 2:00 PM CDT'));
@@ -238,4 +238,28 @@ test('no calls on a holiday, and a holiday reply starts the next business day', 
   const next = time.nextCallWindowStart(new Date('2026-11-26T17:00:00Z'), TZ);
   assert.equal(next.toISOString(), '2026-11-30T15:00:00.000Z', 'Mon Nov 30, 9am CST');
   assert.equal(time.inCallWindow(new Date('2026-11-25T17:00:00Z'), TZ), true);
+});
+
+test('Day 6 voicemail is a breakup script: recap the offer, then the real proof', () => {
+  const proof = 'Last quarter we booked 212 meetings for 14 clients.';
+  assert.equal(
+    text.voicemailScript('call_day6', { ...args, proofPoint: proof }),
+    "Hey Pat, Gabe with Acme Co. Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+  );
+});
+
+test('Day 6 voicemail drops the proof sentence when there is no real proof, never invents one', () => {
+  const none = text.voicemailScript('call_day6', { ...args, proofPoint: null });
+  assert.equal(
+    none,
+    "Hey Pat, Gabe with Acme Co. Last call from me. Quick recap: cutting your IT costs. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
+  );
+  assert.equal(text.voicemailScript('call_day6', { ...args, proofPoint: '   ' }), none);
+  // A missing offer shows the placeholder, same as the call script.
+  assert.ok(text.voicemailScript('call_day6', { ...args, offerLine: null }).includes(text.OFFER_MISSING));
+});
+
+test('Day 6 proof without trailing punctuation still reads as a sentence', () => {
+  const v = text.voicemailScript('call_day6', { ...args, proofPoint: 'We cut costs 40%' });
+  assert.ok(v.includes('Quick recap: cutting your IT costs. We cut costs 40%. If it'));
 });

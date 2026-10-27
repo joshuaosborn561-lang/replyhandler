@@ -428,10 +428,10 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
     return 'skipped';
   }
 
-  const { offerLine } = await offerFor(client, source, deps);
+  const { offerLine, proofPoint } = await offerFor(client, source, deps);
   const first = text.firstNameOf(source.lead_full_name || source.lead_name);
   const caller = text.callerName(env);
-  const args = { firstName: first, callerName: caller, clientName: client.name, offerLine };
+  const args = { firstName: first, callerName: caller, clientName: client.name, offerLine, proofPoint };
   const script = text.callScript(args);
   const voicemail = text.voicemailScript(step.kind, args);
   let permalink = null;

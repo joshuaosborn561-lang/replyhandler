@@ -42,7 +42,7 @@ const CALL_KINDS = {
 };
 
 /** Voicemail script for a call step, or null when the call leaves none. */
-function voicemailScript(kind, { firstName, callerName: caller, clientName, offerLine }) {
+function voicemailScript(kind, { firstName, callerName: caller, clientName, offerLine, proofPoint }) {
   const type = CALL_KINDS[kind]?.voicemail;
   if (!type) return null;
   const first = firstName || 'there';
@@ -53,7 +53,10 @@ function voicemailScript(kind, { firstName, callerName: caller, clientName, offe
   if (type === 'day3') {
     return `Hey ${first}, it's ${caller} with ${clientName}, calling about ${offer}. I'll send you one more email. If you're still interested, we can get this scheduled.`;
   }
-  return `Hey ${first}, it's ${caller} with ${clientName}. I sent you an email about ${offer}. Take a look, and if it's still of interest just reply and we'll get it scheduled.`;
+  // Day 6: breakup voicemail. Recaps the offer and, only when real proof exists, the proof.
+  const proof = String(proofPoint || '').trim().replace(/[.!\s]+$/, '');
+  const proofSentence = proof ? ` ${proof}.` : '';
+  return `Hey ${first}, ${caller} with ${clientName}. Last call from me. Quick recap: ${offer}.${proofSentence} If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.`;
 }
 
 function timesSentence(slots, link) {
@@ -77,7 +80,7 @@ function emailBody(kind, { firstName, slots, link, proofPoint, askForTimes = fal
     case 'email_vm': {
       const body = times || (askForTimes ? noTimesAsk : null);
       if (!body) return null;
-      return `Hey ${first}, just tried you and left you a voicemail.\n\n${body}`;
+      return `Hey ${first}, just tried you, left you a voicemail. Still want to take a peek at this?\n\n${body}`;
     }
     case 'email_day1': {
       if (!times && !askForTimes) return null;

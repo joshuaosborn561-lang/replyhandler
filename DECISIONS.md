@@ -1519,12 +1519,12 @@ Days are BUSINESS days (Mon-Fri, skipping New Year's Day, Memorial Day, July 4, 
 
 Every call card carries this line and the phone, with one button per outcome (no bare "Connected"; if you spoke to them you pick what they said): Meeting booked (stops the sequence), No answer / left voicemail, Spoke to them: not interested (stops the sequence), Spoke to them: call back later (sequence continues), Wrong number (no more call cards for that lead; emails continue): "Hey {first_name}, this is {caller_name} with {client_name}. We emailed you about {offer + value prop in one sentence}. Did you still want to take a peek at that in the next couple days?"
 
-- Day 0: if there is a phone, the first reply draft says "calling you now" (only inside the lead's call hours) and a call card posts. When Gabe clicks No answer/VM, 5 minutes later an email card says "Hey, just tried you, left you a voicemail" followed by the normal reply with two live times.
+- Day 0: if there is a phone, the first reply draft says "calling you now" (only inside the lead's call hours) and a call card posts. When Gabe clicks No answer/VM, the email card posts by itself 5 minutes later (no second click). Its text is "Hey {first_name}, just tried you, left you a voicemail. Still want to take a peek at this?" followed by "Does X or Y work for a quick call?" with two live times.
 - Day 0, 3 to 4 hours later: call card, no voicemail.
 - Day 1: call card at a different time of day, then an email card "Those times got taken, here are new times" with two fresh live slots (slots already offered are excluded).
 - Day 3: call card with voicemail 2 ("calling about {offer}, I'll send you one more email, if you're still interested we can get this scheduled"), then an email card adding one real proof point, then an "Any thoughts?" card.
 - Day 5: breakup email card ("Don't want to keep emailing you. Did you still want to meet about this, or have priorities changed?").
-- Day 6: final call card plus a voicemail that points to the email. Then stop.
+- Day 6: final call card plus a breakup voicemail: "Hey {first_name}, {caller} with {client}. Last call from me. Quick recap: {offer}. {proof}. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries." The proof sentence is the verbatim proof point from the campaign copy and is left out when there is no real proof (never invented). Then stop.
 - No phone: no calling-now line and no call cards; email cards only.
 - The "Does X or Y work for a quick call?" line stays fixed (Josh, Oct 27). LinkedIn-sourced leads get these as LinkedIn messages through the existing send path.
 - Any later inbound reply, a booking, an unsubscribe or a DQ stops the sequence and closes its unsent cards. A reject on one email card skips that step only.
@@ -1532,3 +1532,5 @@ Every call card carries this line and the phone, with one button per outcome (no
 Offer line and proof point come from the client's own campaign copy (SmartLead campaign sequence, else the outbound mail in the lead's thread). The proof point must be a sentence copied word for word from that copy and contain a real number; the offer line may not carry a number the copy lacks. When no real proof exists the Day 3 proof card is held, never invented. A hand-entered row (`POST /admin/followup-sequence/copy`, no key like every admin route) overrides extraction.
 
 Guards: `test/followup-sequence-pure.test.js`, `test/followup-sequence-guards.test.js`, and `test/followup-sequence-db.test.js` (runs only where PGlite is installed).
+
+Update (Oct 27, Josh): the Day 0 voicemail email and the Day 6 breakup voicemail were reworded as above. Guards: `test/followup-sequence-pure.test.js` (scripts) and `test/followup-sequence-db.test.js` (auto-fire 5 minutes after No answer, Day 6 card with and without proof).
