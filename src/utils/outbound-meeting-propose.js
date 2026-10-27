@@ -16,7 +16,7 @@ function outboundProposesMeeting(text) {
   if (!s) return false;
 
   // Explicit scheduler / booking-link language
-  if (/calendly\.com|cal\.com\/|savvycal\.com|hubspot\.com\/meetings/.test(s)) return true;
+  if (/calendly\.com|cal\.com\/|savvycal\.com|tidycal\.com|hubspot\.com\/meetings/.test(s)) return true;
   if (/\b(calendly|booking link|scheduler link)\b/.test(s)) return true;
   if (/\b(book|schedule)\s+(a\s+)?(quick\s+)?(call|meeting|time|slot|demo)\b/.test(s)) return true;
   if (/\b(book for you|book you|book it for you|i can book)\b/.test(s)) return true;

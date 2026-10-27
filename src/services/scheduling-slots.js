@@ -390,6 +390,163 @@ async function fetchPublicMsBookingsStarts(bookingUrl, { fromDate, toDate } = {}
   return { starts: [], timeZone: null };
 }
 
+
+// ---------------------------------------------------------------------------
+// TidyCal (Agency). Open times come from the authenticated REST API:
+//   GET /booking-types/{id}/timeslots?starts_at=&ends_at=   (range <= 90 days, 60 req/min)
+// The booking URL a client stores in booking-bridge is the public TidyCal page:
+//   https://tidycal.com/team/<team-slug>/<booking-type-slug>   (or /<username>/<slug>)
+// so we first map that URL to a booking type id (cached), then ask for timeslots.
+// Needs TIDYCAL_API_TOKEN (a REST personal access token). Without it this returns no times and the
+// caller falls back to the booking link only, so it is inert until a client actually uses TidyCal.
+// Team custom domains (not recognisable by host): TIDYCAL_CUSTOM_HOSTS='{"parlay.book.example.com":"team/parlay-tech"}'.
+// ---------------------------------------------------------------------------
+const TIDYCAL_API = 'https://tidycal.com/api';
+const TIDYCAL_INDEX_TTL_MS = 30 * 60 * 1000;
+const TIDYCAL_INDEX_MISS_COOLDOWN_MS = 60 * 1000;
+const TIDYCAL_MAX_RANGE_MS = 89 * 24 * 60 * 60 * 1000;
+const TIDYCAL_MAX_PAGES = 10;
+let tidycalIndex = null; // { at, map: Map<key, { id, durationMinutes }> }
+
+function tidycalCustomHosts() {
+  try {
+    const raw = process.env.TIDYCAL_CUSTOM_HOSTS;
+    const obj = raw ? JSON.parse(raw) : {};
+    const out = {};
+    for (const [host, prefix] of Object.entries(obj || {})) {
+      out[String(host).toLowerCase()] = String(prefix || '').replace(/^\/+|\/+$/g, '').toLowerCase();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function isTidyCalUrl(url) {
+  const h = hostnameOf(url);
+  return h === 'tidycal.com' || Object.prototype.hasOwnProperty.call(tidycalCustomHosts(), h);
+}
+
+/**
+ * Normalised lookup key for a TidyCal booking page URL:
+ *   tidycal.com/team/parlay-tech/30-minute-meeting -> "team/parlay-tech/30-minute-meeting"
+ *   tidycal.com/jane/intro                          -> "jane/intro"
+ *   custom host mapped to "team/parlay-tech"        -> "team/parlay-tech/<slug>"
+ */
+function parseTidyCalBookingUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    const parts = u.pathname.split('/').filter(Boolean).map((x) => x.toLowerCase());
+    if (host === 'tidycal.com') {
+      if (parts[0] === 'team' && parts.length >= 3) return { key: parts.slice(0, 3).join('/') };
+      if (parts[0] !== 'team' && parts.length >= 2) return { key: parts.slice(0, 2).join('/') };
+      return null;
+    }
+    const prefix = tidycalCustomHosts()[host];
+    if (prefix !== undefined && parts.length >= 1) {
+      return { key: [prefix, parts[0]].filter(Boolean).join('/') };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function tidycalGet(path, { token, fetchImpl = fetch } = {}) {
+  const res = await fetchImpl(`${TIDYCAL_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (res.status === 429) {
+    const err = new Error(`TidyCal rate limited (retry after ${res.headers && res.headers.get ? res.headers.get('retry-after') : '?'}s)`);
+    err.code = 'TIDYCAL_RATE_LIMIT';
+    throw err;
+  }
+  if (!res.ok) {
+    throw new Error(`TidyCal ${res.status} for ${path.split('?')[0]}`);
+  }
+  return res.json();
+}
+
+async function tidycalPaged(path, opts) {
+  const rows = [];
+  for (let page = 1; page <= TIDYCAL_MAX_PAGES; page += 1) {
+    const sep = path.includes('?') ? '&' : '?';
+    const body = await tidycalGet(`${path}${sep}page=${page}`, opts);
+    rows.push(...(Array.isArray(body.data) ? body.data : []));
+    const next = body.next_page_url || (body.links && body.links.next);
+    if (!next) break;
+  }
+  return rows;
+}
+
+async function buildTidyCalIndex(opts) {
+  const map = new Map();
+  const add = (bt) => {
+    if (!bt || bt.id == null || bt.disabled_at || bt.deleted_at) return;
+    const parsed = parseTidyCalBookingUrl(bt.booking_page_url || bt.url);
+    if (parsed) map.set(parsed.key, { id: bt.id, durationMinutes: bt.duration_minutes || null });
+  };
+  for (const bt of await tidycalPaged('/booking-types', opts)) add(bt);
+  for (const team of await tidycalPaged('/teams', opts)) {
+    for (const bt of await tidycalPaged(`/teams/${encodeURIComponent(team.id)}/booking-types`, opts)) add(bt);
+  }
+  return map;
+}
+
+async function resolveTidyCalBookingType(bookingUrl, opts, now = Date.now()) {
+  const parsed = parseTidyCalBookingUrl(bookingUrl);
+  if (!parsed) return null;
+  const age = tidycalIndex ? now - tidycalIndex.at : Infinity;
+  if (age < TIDYCAL_INDEX_TTL_MS && tidycalIndex.map.has(parsed.key)) return tidycalIndex.map.get(parsed.key);
+  // Stale, missing, or unknown URL: rebuild the index, but at most once a minute so a bad URL cannot
+  // burn the 60 requests/minute API limit.
+  if (age >= TIDYCAL_INDEX_MISS_COOLDOWN_MS) {
+    tidycalIndex = { at: now, map: await buildTidyCalIndex(opts) };
+  }
+  return tidycalIndex.map.get(parsed.key) || null;
+}
+
+/**
+ * Open starts for a TidyCal booking page. Same return shape as the other public fetchers.
+ * @param {string} bookingUrl
+ * @param {{ fromDate?: Date, toDate?: Date }} [range]
+ * @param {{ token?: string, fetchImpl?: Function, now?: number }} [deps] test seams
+ */
+async function fetchPublicTidyCalStarts(bookingUrl, { fromDate, toDate } = {}, deps = {}) {
+  const token = deps.token !== undefined ? deps.token : process.env.TIDYCAL_API_TOKEN;
+  const timeZone = process.env.DEFAULT_BOOKING_TIMEZONE || 'America/Chicago';
+  if (!token) {
+    console.warn('[SchedulingSlots] TidyCal URL but TIDYCAL_API_TOKEN is not set');
+    return { starts: [], timeZone: null };
+  }
+  const opts = { token, fetchImpl: deps.fetchImpl || fetch };
+  const nowMs = deps.now || Date.now();
+  const bt = await resolveTidyCalBookingType(bookingUrl, opts, nowMs);
+  if (!bt) {
+    console.warn('[SchedulingSlots] TidyCal booking type not found for URL', { url: normalizeBookingUrl(bookingUrl) });
+    return { starts: [], timeZone: null };
+  }
+  const from = new Date(fromDate || nowMs);
+  let to = new Date(toDate || nowMs + 14 * 24 * 60 * 60 * 1000);
+  if (to.getTime() - from.getTime() > TIDYCAL_MAX_RANGE_MS) to = new Date(from.getTime() + TIDYCAL_MAX_RANGE_MS);
+  const qs = new URLSearchParams({ starts_at: from.toISOString(), ends_at: to.toISOString() });
+  const body = await tidycalGet(`/booking-types/${encodeURIComponent(bt.id)}/timeslots?${qs}`, opts);
+  const starts = [];
+  for (const slot of Array.isArray(body.data) ? body.data : []) {
+    if (!slot || !slot.starts_at) continue;
+    if (slot.available_bookings != null && Number(slot.available_bookings) < 1) continue;
+    const d = new Date(slot.starts_at);
+    if (!Number.isNaN(d.getTime()) && d.getTime() > nowMs) starts.push(d);
+  }
+  starts.sort((a, b) => a - b);
+  return { starts, timeZone };
+}
+
+function resetTidyCalCacheForTests() {
+  tidycalIndex = null;
+}
+
 /**
  * Dispatch by the public destination URL Josh stored in BookingBridge.
  * Unknown hosts are treated as SavvyCal custom domains (PowerPSA, etc.).
@@ -400,6 +557,7 @@ async function fetchPublicBookingStarts(bookingUrl, range) {
   if (isHubSpotMeetingsUrl(bookingUrl)) return fetchPublicHubSpotStarts(bookingUrl, range);
   if (isMsBookingsUrl(bookingUrl)) return fetchPublicMsBookingsStarts(bookingUrl, range);
   if (isSavvyCalHost(bookingUrl)) return fetchPublicSavvyCalStarts(bookingUrl, range);
+  if (isTidyCalUrl(bookingUrl)) return fetchPublicTidyCalStarts(bookingUrl, range);
   return fetchPublicSavvyCalStarts(bookingUrl, range);
 }
 
@@ -800,6 +958,10 @@ module.exports = {
   fetchPublicCalendlyStarts,
   fetchPublicHubSpotStarts,
   fetchPublicSavvyCalStarts,
+  fetchPublicTidyCalStarts,
+  parseTidyCalBookingUrl,
+  isTidyCalUrl,
+  resetTidyCalCacheForTests,
   fetchPublicBookingStarts,
   isHubSpotMeetingsUrl,
   isMsBookingsUrl,
