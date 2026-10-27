@@ -179,7 +179,7 @@ function startCron() {
     // Ghosted meetings (OFF by default, GHOSTED_MEETING_ENABLED): find booked meetings the
     // prospect never showed up to and enroll them in the sequence above. Cards only.
     if (ghostedMeetings.enabled()) {
-      cron.schedule('*/10 * * * *', async () => {
+      cron.schedule('*/2 * * * *', async () => {
         try {
           const result = await ghostedMeetings.runGhostedMeetingScan({
             dryRun: /^(1|true|yes|on)$/i.test(String(process.env.GHOSTED_MEETING_DRY_RUN || '')),

@@ -97,6 +97,7 @@ const WINDOW_QUERY = `
       title
       date
       duration
+      is_live
       organizer_email
       participants
       meeting_attendees { displayName email name }

@@ -1532,3 +1532,11 @@ Every call card carries this line and the phone, with one button per outcome (no
 Offer line and proof point come from the client's own campaign copy (SmartLead campaign sequence, else the outbound mail in the lead's thread). The proof point must be a sentence copied word for word from that copy and contain a real number; the offer line may not carry a number the copy lacks. When no real proof exists the Day 3 proof card is held, never invented. A hand-entered row (`POST /admin/followup-sequence/copy`, no key like every admin route) overrides extraction.
 
 Guards: `test/followup-sequence-pure.test.js`, `test/followup-sequence-guards.test.js`, and `test/followup-sequence-db.test.js` (runs only where PGlite is installed).
+
+### No-show rebook card for Gabe and Cayden (Oct 27, OFF by default)
+
+Josh's rule: a no-show is an obvious one, detected about 5 minutes after the meeting ends (not 45), the same "meeting ended" idea as the Fireflies call-finished notifier. A booked meeting is a no-show when Fireflies has no recording of it, OR the recording is under 5 minutes, OR only one person joined or spoke (Fireflies' own notetaker never counts). Anything else is attended. A transcript that is still processing or live is HELD and re-checked, never called a no-show.
+
+On a no-show, ONE rebook email card goes to the follow-ups channel tagging Gabe and Cayden (first click claims it; the sent-confirmation card shows who clicked). Buttons are the standard FOLLOW_UP card: Approve & Send, Edit & send, Reject (on a follow-up card this reads as Skipped). It sends only on a click, through the existing send path. Copy is short, uses two live times plus the booking link, and claims nothing. The extra call cards, day 2 email and breakup only exist with `GHOSTED_MEETING_FULL_SEQUENCE=true`.
+
+Scan runs every 2 minutes. Knobs: `GHOSTED_MEETING_GRACE_MINUTES` (5), `GHOSTED_MEETING_MIN_MINUTES` (5), `GHOSTED_MEETING_MENTIONS`, `GHOSTED_MEETING_FULL_SEQUENCE`. Guard: `test/ghosted-meetings.test.js`.

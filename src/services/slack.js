@@ -954,6 +954,7 @@ function buildDraftApprovalCard({
   replyAllCc = null, showCcClientButton = false,
   leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   referredContacts = null,
+  mention = null,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -975,6 +976,7 @@ function buildDraftApprovalCard({
   }
 
   const metaBlocks = [
+    ...(mention ? [{ type: 'section', text: { type: 'mrkdwn', text: String(mention) } }] : []),
     {
       type: 'header',
       text: { type: 'plain_text', text: headerText },

@@ -19,7 +19,9 @@ for (const k of ['ALLO_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'FIREFLI
 
 const MIN = 60000;
 const NOW = new Date('2026-10-27T17:00:00Z'); // Tue 12:00 CT
-const ENV = { GHOSTED_MEETING_ENABLED: 'true', FOLLOWUP_CALLER_NAME: 'Gabe' };
+const ENV_DEFAULT = { GHOSTED_MEETING_ENABLED: 'true', FOLLOWUP_CALLER_NAME: 'Gabe' };
+// Existing flow tests exercise the opt-in full sequence (calls, day 2, breakup).
+const ENV = { ...ENV_DEFAULT, GHOSTED_MEETING_FULL_SEQUENCE: 'true' };
 const MEET_START = new Date('2026-10-27T15:00:00Z'); // 10:00 CT, ended 90 min before NOW
 const MEET_END = new Date('2026-10-27T15:30:00Z');
 
@@ -70,8 +72,21 @@ test('ghost copy: no claims, fixed scripts, two live times, nothing without time
   assert.ok(Object.prototype.hasOwnProperty.call(seqText.CALL_KINDS, 'ghost_call_2'));
 });
 
-test('ghost plan: email now, call in the window, day 2 call + email, day 4 breakup, business days only', () => {
+test('ghost plan: default is one rebook email card now; the rest is opt-in', () => {
   const plan = text.planGhostSequence({ enrolledAt: NOW, timeZone: 'America/Chicago', time, env: {} });
+  assert.deepEqual(plan.map((s) => s.kind), ['ghost_email']);
+  assert.equal(plan[0].due.toISOString(), NOW.toISOString());
+});
+
+test('rebook card tags Gabe and Cayden by default, and the override wins', () => {
+  assert.deepEqual(text.mentionIds({}), ['U0CAL8ZDG92', 'U0BL8JT75KN']);
+  assert.match(text.mentionLine({}), /^<@U0CAL8ZDG92> <@U0BL8JT75KN> no-show: .*First click claims it\./);
+  assert.deepEqual(text.mentionIds({ GHOSTED_MEETING_MENTIONS: 'UABCDEFG1:Pat' }), ['UABCDEFG1']);
+  assert.deepEqual(text.mentionIds({ FOLLOWUP_CALLERS: '{"UZZZZZZZ9":"Sam"}' }), ['UZZZZZZZ9']);
+});
+
+test('ghost plan (full sequence): email now, call in the window, day 2 call + email, day 4 breakup, business days only', () => {
+  const plan = text.planGhostSequence({ enrolledAt: NOW, timeZone: 'America/Chicago', time, env: {}, fullSequence: true });
   assert.deepEqual(plan.map((s) => s.kind), ['ghost_email', 'ghost_call', 'ghost_call_2', 'ghost_email_2', 'ghost_breakup']);
   assert.equal(plan[0].due.toISOString(), NOW.toISOString());
   assert.equal(plan[1].due.toISOString(), new Date(NOW.getTime() + 10 * MIN).toISOString());
@@ -79,7 +94,7 @@ test('ghost plan: email now, call in the window, day 2 call + email, day 4 break
   assert.equal(wd(plan[2].due), 'Thu'); // Tue + 2 business days
   assert.equal(wd(plan[4].due), 'Mon'); // Tue + 4 business days
   // Enrolled late Friday: the call waits for Monday, never a weekend.
-  const fri = text.planGhostSequence({ enrolledAt: new Date('2026-10-30T23:00:00Z'), timeZone: 'America/Chicago', time, env: {} });
+  const fri = text.planGhostSequence({ enrolledAt: new Date('2026-10-30T23:00:00Z'), timeZone: 'America/Chicago', time, env: {}, fullSequence: true });
   assert.equal(wd(fri[1].due), 'Mon');
 });
 
@@ -107,7 +122,7 @@ test('Fireflies check: recording with the prospect speaking = attended; only the
   assert.equal(spoke.status, 'attended');
   const silent = await g.checkFireflies(cand, { env: {}, deps: { firefliesApi: ffApi({ list: [withLead], detail: { sentences: [
     { speaker_name: 'Gabe', text: 'Hello? Anyone there?' }] } }) } });
-  assert.deepEqual([silent.status, silent.reason], ['ghosted', 'silent_call']);
+  assert.deepEqual([silent.status, silent.reason], ['ghosted', 'single_participant']);
   const none = await g.checkFireflies(cand, { env: {}, deps: { firefliesApi: ffApi({ list: [{ id: 'other', title: 'Someone Else' }] }) } });
   assert.deepEqual([none.status, none.reason], ['ghosted', 'no_recording']);
   const flagged = await g.checkFireflies(cand, { env: {}, deps: { firefliesApi: ffApi({ list: [{ ...withLead, meeting_info: { silent_meeting: true } }] }) } });
@@ -285,18 +300,79 @@ test('prospect attended: recorded as attended, nothing enrolled', { skip }, asyn
   const res = await ghost.runGhostedMeetingScan({ now: NOW, env: ENV, deps });
   assert.equal(res.attended, 1);
   const [c] = await checks(pg);
-  assert.deepEqual([c.decision, c.reason], ['attended', 'prospect_spoke']);
+  assert.deepEqual([c.decision, c.reason], ['attended', 'multiple_participants']);
   assert.equal((await pg.query('SELECT count(*)::int AS n FROM followup_sequences')).rows[0].n, 0);
 });
 
-test('silent call (recording exists, prospect never spoke) is ghosted and enrolled', { skip }, async () => {
+test('obvious no-show rules: under 5 minutes, one participant, or no recording; two people for 5+ minutes attended', async () => {
+  const g = require('../src/services/ghosted-meetings');
+  const cand = { start: MEET_START, end: MEET_END, email: 'pat@x.co', name: 'Pat Smith' };
+  const run = (row, detail) => g.checkFireflies(cand, { env: {}, deps: { firefliesApi: ffApi({ list: [{ ...withLead, ...row }], detail }) } });
+  const two = { sentences: [{ speaker_name: 'Gabe', text: 'Hi' }, { speaker_name: 'Pat', text: 'Hey' }] };
+  const short = await run({ duration: 3.2 }, two);
+  assert.deepEqual([short.status, short.reason], ['ghosted', 'short_meeting']);
+  assert.equal(short.evidence.duration_minutes, 3.2);
+  const ok = await run({ duration: 5 }, two);
+  assert.deepEqual([ok.status, ok.reason], ['attended', 'multiple_participants']);
+  const one = await run({ duration: 20 }, { sentences: [{ speaker_name: 'Gabe', text: 'Anyone?' }] });
+  assert.deepEqual([one.status, one.reason], ['ghosted', 'single_participant']);
+  const nothing = await run({ duration: 20 }, { sentences: [] });
+  assert.equal(nothing.reason, 'single_participant');
+  // Attendance records count as people even when nobody spoke; the Fireflies notetaker never counts.
+  const joined = await run({ duration: 20 }, { sentences: [], meeting_attendance: [{ name: 'Gabe' }, { name: 'Pat Smith' }] });
+  assert.equal(joined.status, 'attended');
+  const botOnly = await run({ duration: 20 }, { sentences: [{ speaker_name: 'Gabe', text: 'Hi' }], meeting_attendance: [{ name: 'Gabe' }, { name: 'Fireflies.ai Notetaker' }] });
+  assert.equal(botOnly.reason, 'single_participant');
+  // Still processing or live is never called a no-show.
+  assert.equal((await run({ duration: 0, meeting_info: { summary_status: 'processing' } }, two)).status, 'held');
+  assert.equal((await run({ duration: 0, is_live: true }, two)).reason, 'meeting_still_live');
+  // The cutoff is configurable.
+  const strict = await g.checkFireflies(cand, { env: { GHOSTED_MEETING_MIN_MINUTES: '10' }, deps: { firefliesApi: ffApi({ list: [{ ...withLead, duration: 7 }], detail: two }) } });
+  assert.equal(strict.reason, 'short_meeting');
+});
+
+test('default no-show makes exactly one rebook email card that tags Gabe and Cayden and sends nothing', { skip }, async () => {
+  const { pg, ghost, seq, clientId } = await setup();
+  await addReply(pg, clientId);
+  const { slackApi, deps, calls } = fakes();
+  // Scan 5 minutes after the meeting ended.
+  const at = new Date(MEET_END.getTime() + 5 * MIN);
+  const res = await ghost.runGhostedMeetingScan({ now: at, env: ENV_DEFAULT, deps });
+  assert.equal(res.enrolled, 1);
+  const kinds = (await pg.query('SELECT kind FROM followup_sequence_steps ORDER BY seq_order')).rows.map((r) => r.kind);
+  assert.deepEqual(kinds, ['ghost_email']);
+  await seq.runSequenceTick({ now: at, slackApi, deps, env: ENV_DEFAULT });
+  assert.equal(calls.cards.length, 1);
+  const card = calls.cards[0];
+  assert.equal(card.channelId, 'C0BRRS8DV19');
+  assert.match(card.card.mention, /<@U0CAL8ZDG92> <@U0BL8JT75KN>/);
+  assert.match(card.card.draft, /^Hey Pat, looks like we missed each other\./);
+  assert.match(card.card.draft, /Mon 10am or Mon 2pm/);
+  assert.doesNotMatch(card.card.draft, /guarantee|definitely|best in/i);
+  const { rows: [pr] } = await pg.query('SELECT status FROM pending_replies WHERE id = $1', [card.replyId]);
+  assert.equal(pr.status, 'pending', 'nothing sends until a human clicks Approve & Send');
+  assert.equal(calls.posts.length, 0, 'no call card in the default plan');
+});
+
+test('the card builder puts the mention first and keeps Approve & Send / Edit & send / Reject', () => {
+  const slackSvc = require('../src/services/slack');
+  const { blocks } = slackSvc.buildDraftApprovalCard({
+    replyId: 'r1', leadName: 'Pat', leadEmail: 'pat@x.co', platform: 'smartlead', classification: 'FOLLOW_UP',
+    draft: 'Hey Pat, looks like we missed each other.', mention: '<@U0CAL8ZDG92> <@U0BL8JT75KN> no-show',
+  });
+  assert.equal(blocks[0].text.text, '<@U0CAL8ZDG92> <@U0BL8JT75KN> no-show');
+  const ids = blocks.filter((b) => b.type === 'actions').flatMap((b) => b.elements.map((e) => e.action_id));
+  for (const id of ['approve_reply', 'open_edit_modal', 'reject_reply']) assert.ok(ids.includes(id), id);
+});
+
+test('single participant (recording exists, only one person on it) is ghosted and enrolled', { skip }, async () => {
   const { pg, ghost, clientId } = await setup();
   await addReply(pg, clientId);
   const { deps } = fakes({ firefliesApi: ffApi({ list: [withLead], detail: { sentences: [{ speaker_name: 'Gabe', text: 'Hello?' }] } }) });
   const res = await ghost.runGhostedMeetingScan({ now: NOW, env: ENV, deps });
   assert.equal(res.enrolled, 1);
   const [c] = await checks(pg);
-  assert.equal(c.reason, 'silent_call');
+  assert.equal(c.reason, 'single_participant');
 });
 
 test('no Fireflies key: held with a reason, no sequence, and retried later', { skip }, async () => {
@@ -319,8 +395,11 @@ test('too early (inside the grace period) leaves no trace; too old is ignored', 
   const { pg, ghost, clientId } = await setup();
   await addReply(pg, clientId);
   const { deps } = fakes();
-  await ghost.runGhostedMeetingScan({ now: new Date(MEET_END.getTime() + 20 * MIN), env: ENV, deps });
-  assert.equal((await checks(pg)).length, 0);
+  await ghost.runGhostedMeetingScan({ now: new Date(MEET_END.getTime() + 3 * MIN), env: ENV, deps });
+  assert.equal((await checks(pg)).length, 0, 'inside the 5 minute grace');
+  await ghost.runGhostedMeetingScan({ now: new Date(MEET_END.getTime() + 5 * MIN), env: ENV, deps });
+  assert.equal((await checks(pg)).length, 1, 'decided 5 minutes after the end');
+  await pg.query('TRUNCATE ghosted_meeting_checks, followup_sequence_steps, followup_sequences CASCADE');
   await ghost.runGhostedMeetingScan({ now: new Date(MEET_END.getTime() + 72 * 60 * MIN), env: ENV, deps });
   assert.equal((await checks(pg)).length, 0);
 });

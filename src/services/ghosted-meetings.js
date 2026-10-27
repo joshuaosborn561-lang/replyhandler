@@ -16,8 +16,9 @@
  *   - meetings / pending_replies: booked evidence and the reply the sequence hangs off
  *   - Fireflies (FIREFLIES_API_KEY): was the prospect on the call and did they speak
  *
- * Ghosted means the meeting ended GHOSTED_MEETING_GRACE_MINUTES ago and Fireflies shows
- * no recording of it, or a recording where the prospect never spoke (silent call).
+ * Obvious no-show (meeting ended GHOSTED_MEETING_GRACE_MINUTES ago, default 5): Fireflies has no
+ * recording of it, OR the recording is under GHOSTED_MEETING_MIN_MINUTES (5), OR only one person
+ * joined / spoke. Anything else is attended. The result is one rebook email card for Gabe/Cayden.
  * Without a Fireflies key a meeting is HELD, never guessed: it stays visible in
  * ghosted_meeting_checks with reason fireflies_not_configured.
  *
@@ -46,6 +47,11 @@ function enabled(env = process.env) {
   return /^(1|true|yes|on)$/i.test(String(env.GHOSTED_MEETING_ENABLED || '').trim());
 }
 
+/** Default is one rebook email card. GHOSTED_MEETING_FULL_SEQUENCE=true adds the call cards, day 2 and breakup. */
+function fullSequence(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env.GHOSTED_MEETING_FULL_SEQUENCE || '').trim());
+}
+
 function envNumber(env, name, fallback) {
   const n = parseFloat(env[name]);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
@@ -54,7 +60,8 @@ function envNumber(env, name, fallback) {
 function config(env = process.env) {
   const start = env.GHOSTED_MEETING_START ? new Date(env.GHOSTED_MEETING_START) : null;
   return {
-    graceMs: envNumber(env, 'GHOSTED_MEETING_GRACE_MINUTES', 45) * MIN,
+    graceMs: envNumber(env, 'GHOSTED_MEETING_GRACE_MINUTES', 5) * MIN,
+    minMeetingMs: envNumber(env, 'GHOSTED_MEETING_MIN_MINUTES', 5) * MIN,
     lookbackMs: (envNumber(env, 'GHOSTED_MEETING_LOOKBACK_HOURS', 48) || 48) * HOUR,
     defaultDurationMs: (envNumber(env, 'GHOSTED_MEETING_DEFAULT_MINUTES', 30) || 30) * MIN,
     floor: start && Number.isFinite(start.getTime()) ? start : null,
@@ -393,31 +400,54 @@ async function checkFireflies(cand, { env = process.env, deps = {} } = {}) {
     };
   }
   const t = matches[0];
-  if (t.meeting_info && t.meeting_info.silent_meeting === true) {
-    return { status: 'ghosted', reason: 'silent_call', evidence: { fireflies: 'silent_meeting', transcript_id: t.id } };
+  if (t.is_live === true) {
+    return { status: 'held', reason: 'meeting_still_live', evidence: { fireflies: 'live', transcript_id: t.id } };
   }
   const state = String((t.meeting_info && t.meeting_info.summary_status) || '').toLowerCase();
   if (state === 'processing' || state === 'pending') {
     return { status: 'held', reason: 'transcript_processing', evidence: { fireflies: state, transcript_id: t.id } };
   }
+  if (t.meeting_info && t.meeting_info.silent_meeting === true) {
+    return { status: 'ghosted', reason: 'silent_call', evidence: { fireflies: 'silent_meeting', transcript_id: t.id } };
+  }
+  // Obvious no-show rule 2: the recording is shorter than the minimum (Fireflies duration is in minutes).
+  const minMinutes = envNumber(env, 'GHOSTED_MEETING_MIN_MINUTES', 5);
+  const durationMin = Number(t.duration);
+  if (Number.isFinite(durationMin) && durationMin < minMinutes) {
+    return {
+      status: 'ghosted', reason: 'short_meeting',
+      evidence: { fireflies: 'short', transcript_id: t.id, duration_minutes: Math.round(durationMin * 10) / 10 },
+    };
+  }
+  // Obvious no-show rule 1: only one person was on the call (joined or spoke).
   let detail;
   try {
     detail = await api.getTranscriptAttendance(t.id, { env, fetchImpl: deps.fetchImpl });
   } catch (err) {
     return { status: 'held', reason: 'fireflies_error', evidence: { fireflies_error: String(err.message).slice(0, 120), transcript_id: t.id } };
   }
-  const speakers = new Set();
-  for (const s of (detail && detail.sentences) || []) {
-    if (s && s.speaker_name && String(s.text || '').trim()) speakers.add(String(s.speaker_name).toLowerCase());
-  }
-  const tokens = nameTokens(cand.name);
-  const leadSpoke = [...speakers].some((sp) => (tokens.length >= 2 && tokens.every((tk) => sp.includes(tk)))
-    || sp.includes(cand.email));
-  const evidence = { fireflies: 'transcript', transcript_id: t.id, speakers: speakers.size };
-  if (leadSpoke || speakers.size >= 2) {
-    return { status: 'attended', reason: 'prospect_spoke', evidence };
-  }
-  return { status: 'ghosted', reason: 'silent_call', evidence };
+  const people = distinctPeople(detail, t);
+  const evidence = {
+    fireflies: 'transcript', transcript_id: t.id, participants: people.size,
+    ...(Number.isFinite(durationMin) ? { duration_minutes: Math.round(durationMin * 10) / 10 } : {}),
+  };
+  if (people.size >= 2) return { status: 'attended', reason: 'multiple_participants', evidence };
+  return { status: 'ghosted', reason: 'single_participant', evidence };
+}
+
+const NOTETAKER = /fireflies|notetaker|note taker|otter\.ai|read\.ai|fathom/i;
+
+/** Distinct humans who joined or spoke (Fireflies' own notetaker bot never counts). */
+function distinctPeople(detail, row) {
+  const out = new Set();
+  const add = (v) => {
+    const k = String(v || '').trim().toLowerCase();
+    if (k && !NOTETAKER.test(k)) out.add(k);
+  };
+  const d = detail || {};
+  for (const a of d.meeting_attendance || row.meeting_attendance || []) add(a && a.name);
+  for (const s of d.sentences || []) if (s && String(s.text || '').trim()) add(s.speaker_name);
+  return out;
 }
 
 // ─── Dedupe against what is already on the board ─────────────────────────────
@@ -525,7 +555,7 @@ async function enrollGhost(check, client, source, { now, env, dbClient = db }) {
   }
   if (!seqId) return { ok: false, reason: 'already_enrolled' };
 
-  const plan = ghostText.planGhostSequence({ enrolledAt: now, timeZone: tz, time, env });
+  const plan = ghostText.planGhostSequence({ enrolledAt: now, timeZone: tz, time, env, fullSequence: fullSequence(env) });
   for (const s of plan) {
     await dbClient.query(
       `INSERT INTO followup_sequence_steps (sequence_id, kind, seq_order, due_at, status, payload)

@@ -642,6 +642,7 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       lastOutboundMessage: source.sent_reply || undefined,
       contextLabel: 'You sent',
       threadPermalink: permalink || undefined,
+      mention: ghostText.isGhostKind(step.kind) ? (ghostText.mentionLine(env) || undefined) : undefined,
     },
   });
   if (!posted || !isPostedSlackTs(posted.ts)) {

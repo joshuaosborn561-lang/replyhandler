@@ -10,6 +10,8 @@
  *   ghost_email_2  Day 2  "new times" email
  *   ghost_breakup  Day 4  breakup email
  * Every one is a card a human clicks. Nothing claims anything not passed in.
+ * By default only ghost_email is planned (the rebook card); the rest need
+ * GHOSTED_MEETING_FULL_SEQUENCE=true.
  */
 
 const CALL_KINDS = {
@@ -75,13 +77,15 @@ function emailBody(kind, { firstName, slots, link, askForTimes = false } = {}) {
  *   `time` is src/utils/followup-sequence-time.
  * @returns {Array<{kind, order, due: Date, type: 'call'|'email'}>}
  */
-function planGhostSequence({ enrolledAt, timeZone, time, env = process.env }) {
+function planGhostSequence({ enrolledAt, timeZone, time, env = process.env, fullSequence = false }) {
   const MIN = 60 * 1000;
   const tz = time.resolveTimeZone(timeZone);
   const start = enrolledAt instanceof Date ? enrolledAt : new Date(enrolledAt);
   const steps = [];
 
   steps.push({ kind: 'ghost_email', order: 10, type: 'email', due: start });
+  // Default: the rebook email card only. The call cards, day 2 and breakup are opt-in.
+  if (!fullSequence) return steps;
 
   // Call as soon as the lead's call window is open, after the email card is up.
   const callAt = time.nextCallWindowStart(new Date(start.getTime() + 10 * MIN), tz, env);
@@ -101,7 +105,31 @@ function planGhostSequence({ enrolledAt, timeZone, time, env = process.env }) {
   return steps;
 }
 
+const DEFAULT_MENTIONS = 'U0CAL8ZDG92:Gabe,U0BL8JT75KN:Cayden';
+
+/**
+ * Slack user ids to @-mention on a rebook card. Gabe and Cayden by default.
+ * GHOSTED_MEETING_MENTIONS (ids, optionally id:Name, comma separated) overrides; with it unset the
+ * follow-up caller list is used when configured. First click on the card is the claim, shown on
+ * the sent-confirmation card.
+ */
+function mentionIds(env = process.env) {
+  const raw = String(env.GHOSTED_MEETING_MENTIONS || env.FOLLOWUP_CALLERS || DEFAULT_MENTIONS);
+  const ids = [];
+  const found = raw.match(/\bU[A-Z0-9]{6,}\b/g) || [];
+  for (const id of found) if (!ids.includes(id)) ids.push(id);
+  return ids;
+}
+
+function mentionLine(env = process.env) {
+  const ids = mentionIds(env);
+  if (!ids.length) return null;
+  return `${ids.map((id) => `<@${id}>`).join(' ')} no-show: send this rebook email if it looks right. First click claims it.`;
+}
+
 module.exports = {
+  mentionIds,
+  mentionLine,
   CALL_KINDS,
   EMAIL_KINDS,
   isGhostKind,
