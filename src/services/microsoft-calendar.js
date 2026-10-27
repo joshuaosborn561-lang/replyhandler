@@ -122,6 +122,23 @@ async function findUpcomingEvents(connection, query, { days = 60 } = {}) {
   return Array.isArray(data.value) ? data.value : [];
 }
 
+/** Events inside [timeMin, timeMax] (past or future), with attendees. */
+async function listEventsBetween(connection, timeMin, timeMax, { top = 100 } = {}) {
+  const token = await getValidToken(connection);
+  const params = new URLSearchParams({
+    startDateTime: timeMin.toISOString(),
+    endDateTime: timeMax.toISOString(),
+    $top: String(top),
+    $orderby: 'start/dateTime',
+  });
+  const res = await fetch(`${GRAPH_API}/me/calendarView?${params}`, {
+    headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="UTC"' },
+  });
+  if (!res.ok) throw new Error(`Microsoft calendarView failed: ${await res.text()}`);
+  const data = await res.json();
+  return Array.isArray(data.value) ? data.value : [];
+}
+
 async function createEvent(connection, { summary, description, startTime, endTime, attendeeEmail, attendeeName }) {
   const token = await getValidToken(connection);
 
@@ -150,4 +167,4 @@ async function createEvent(connection, { summary, description, startTime, endTim
   return res.json();
 }
 
-module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, createEvent, getValidToken };
+module.exports = { getAuthUrl, exchangeCode, getUserEmail, getAvailability, findUpcomingEvents, listEventsBetween, createEvent, getValidToken };

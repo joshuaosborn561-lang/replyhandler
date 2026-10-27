@@ -114,6 +114,11 @@ function stepLabel(kind) {
   return CALL_KINDS[kind]?.label || EMAIL_KINDS[kind] || kind;
 }
 
+// Ghosted-meeting steps (src/utils/ghosted-meeting-text.js) share the same card machinery.
+const ghostText = require('./ghosted-meeting-text');
+Object.assign(CALL_KINDS, ghostText.CALL_KINDS);
+Object.assign(EMAIL_KINDS, ghostText.EMAIL_KINDS);
+
 module.exports = {
   OFFER_MISSING,
   CALL_KINDS,

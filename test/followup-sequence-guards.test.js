@@ -20,7 +20,7 @@ test('cron only schedules the sequence tick behind the flag', () => {
   const cron = src('src/cron.js');
   const i = cron.indexOf('Follow-up card sequence for positive replies');
   assert.ok(i > 0);
-  assert.match(cron.slice(i, i + 400), /if \(sequenceEnabled\(\)\)/);
+  assert.match(cron.slice(i, i + 500), /if \(sequenceEnabled\(\)( \|\| ghostedMeetings\.enabled\(\))?\)/);
 });
 
 test('the sequence never sends to a lead: no send path is imported', () => {
