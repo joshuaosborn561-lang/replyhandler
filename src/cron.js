@@ -312,6 +312,11 @@ function startCron() {
   }).catch((err) => {
     console.error('[Startup] Ariel referral card failed', { err: err.message });
   });
+  require('./services/marbella-reply-card').ensureMarbellaReplyCard().then((out) => {
+    console.log('[Startup] Marbella reply card', out && out.action);
+  }).catch((err) => {
+    console.error('[Startup] Marbella reply card failed', { err: err.message });
+  });
   ensureEmailReplyWebhooks().catch((err) =>
     console.error('[Startup] EMAIL_REPLY webhook check failed', { err: err.message })
   );

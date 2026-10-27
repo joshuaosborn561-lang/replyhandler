@@ -306,6 +306,61 @@ function pickLatestInboundReply(histResponse, leadEmail) {
 }
 
 /**
+ * Every prospect reply in a thread, newest first.
+ *
+ * A reply that carries its own Message-ID is kept even when the body quotes
+ * our last send. SmartLead stores that quote on the new email, and dropping
+ * it made the poller treat the thread as the older card. A row that reuses a
+ * SENT message id, or a body with no id that is only our outbound, is not a
+ * second email.
+ */
+function listInboundReplies(histResponse, leadEmail) {
+  void leadEmail;
+  if (!histResponse || typeof histResponse !== 'object') return [];
+  const list = Array.isArray(histResponse.history)
+    ? histResponse.history
+    : Array.isArray(histResponse.messages)
+      ? histResponse.messages
+      : Array.isArray(histResponse)
+        ? histResponse
+        : [];
+  const sentIds = new Set();
+  let lastSentBody = '';
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    if (type !== 'SENT' && type !== 'OUTBOUND') continue;
+    const id = messageIdOfMessage(m);
+    if (id) sentIds.add(id);
+    const raw = m.email_body || m.body || m.text || '';
+    const plain = stripHtmlToText(raw) || String(raw || '').trim();
+    if (plain) lastSentBody = plain;
+  }
+  const rows = [];
+  for (const m of list) {
+    if (!m || typeof m !== 'object') continue;
+    const type = String(m.type || m.direction || '').toUpperCase();
+    if (type !== 'REPLY' && type !== 'INBOUND') continue;
+    const messageId = messageIdOfMessage(m);
+    if (messageId && sentIds.has(messageId)) continue;
+    const raw = fullestMessageText(m);
+    const body = cleanInboundReply(raw);
+    if (!body) continue;
+    const rawForDedupe = stripHtmlToText(raw) || String(raw || '').trim();
+    if (!messageId && lastSentBody && isLikelyDuplicateOfOutbound(rawForDedupe || body, lastSentBody)) {
+      continue;
+    }
+    rows.push({
+      time: String(m.time || m.sent_at || m.received_at || m.created_at || ''),
+      body,
+      messageId: messageId || '',
+    });
+  }
+  rows.sort((a, b) => b.time.localeCompare(a.time));
+  return rows;
+}
+
+/**
  * True when the newest REPLY in a SmartLead history has no prospect text at
  * all (empty body or an empty HTML shell, no attachment text). Older replies
  * with real text do not count: the webhook is about the newest one, and
@@ -862,6 +917,7 @@ module.exports = {
   latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   latestInboundReplyMeta,
+  listInboundReplies,
   lastOutboundBodyFromSmartleadHistory,
   isLikelyDuplicateOfOutbound,
   parseInboundFromPayload,
