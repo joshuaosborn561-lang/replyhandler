@@ -139,13 +139,20 @@ function nonEmpty(value) {
 }
 
 function heyreachSendReady(meta, linkedinUrl) {
+  // HeyReach /inbox/SendMessage only works with a conversationId + linkedInAccountId.
+  // The listId + linkedinUrl form answers 404 "This conversation does not exist"
+  // (Nutter LinkedIn reply, 2026-10-22), so a row with only a list id is NOT ready:
+  // the conversation is looked up first.
+  void linkedinUrl;
   const conversationId = nonEmpty(meta?.conversationId);
   const linkedInAccountId = meta?.linkedinAccountId ?? meta?.linkedInAccountId ?? null;
-  const listId = meta?.listId ?? null;
-  const url = nonEmpty(meta?.linkedinUrl) || nonEmpty(linkedinUrl);
-  if (conversationId && linkedInAccountId) return true;
-  if (listId && linkedInAccountId && url) return true;
-  return false;
+  return Boolean(conversationId && linkedInAccountId);
+}
+
+function isConversationMissingError(err) {
+  if (!err) return false;
+  if (err.status === 404) return true;
+  return /\(404\)|conversation does not exist/i.test(String(err.message || ''));
 }
 
 function slackFailure(message) {
@@ -303,6 +310,73 @@ async function persistHeyreachIdentifiers(reply, patch, query) {
 }
 
 /**
+ * Look the conversation up in the HeyReach inbox (LinkedIn URL first, then the
+ * lead id / name) and return meta with the conversationId + linkedInAccountId
+ * HeyReach has right now. Throws (nothing sent) when it cannot be found or the
+ * match is a different LinkedIn profile.
+ *
+ * ignoreStored: the stored conversationId was rejected by HeyReach, so do not
+ * use it as a search key and do not accept it back.
+ */
+async function resolveHeyreachConversation(client, reply, metaIn, linkedinUrlIn, findConversation, { ignoreStored = false } = {}) {
+  const meta = { ...metaIn };
+  let linkedinUrl = linkedinUrlIn;
+  const apiKey = client?.heyreach_api_key;
+  if (!apiKey) {
+    throw new Error('HeyReach API key is missing, so the conversation could not be looked up. Nothing was sent.');
+  }
+  let found = null;
+  try {
+    found = await findConversation(apiKey, {
+      conversationId: ignoreStored ? null : nonEmpty(meta.conversationId),
+      leadId: reply.lead_id,
+      linkedinUrl,
+      leadName: reply.lead_name,
+      allowNameSearch: true,
+      maxPages: 15,
+      limit: 100,
+    });
+  } catch (err) {
+    const raw = redactSecret(err.message, apiKey);
+    if (/nothing was sent/i.test(raw)) throw new Error(slackFailure(raw));
+    const status = err.status ? ` (${err.status})` : '';
+    throw new Error(slackFailure(
+      `HeyReach inbox lookup failed${status}. Nothing was sent. ${raw}`
+    ));
+  }
+  if (!found) {
+    const who = reply.lead_name || 'this lead';
+    const where = linkedinUrl ? ` (${linkedinUrl})` : '';
+    throw new Error(slackFailure(
+      `HeyReach conversation not found for ${who}${where}. Nothing was sent.`
+    ));
+  }
+  const conversationId = heyreach.extractHeyreachConversationId(found);
+  const linkedInAccountId = heyreach.extractHeyreachLinkedInAccountId(found);
+  const foundUrl = heyreach.extractHeyreachLinkedinUrl(found);
+  if (!conversationId || !linkedInAccountId) {
+    throw new Error(slackFailure(
+      'HeyReach inbox lookup found a conversation but it had no conversationId and linkedInAccountId. Nothing was sent.'
+    ));
+  }
+  if (linkedinUrl && foundUrl && !heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl)) {
+    throw new Error(slackFailure(
+      `HeyReach inbox lookup found a different LinkedIn profile than the one stored for ${reply.lead_name || 'this lead'}. Nothing was sent.`
+    ));
+  }
+  meta.conversationId = conversationId;
+  meta.linkedinAccountId = linkedInAccountId;
+  delete meta.linkedInAccountId;
+  if (foundUrl && (!linkedinUrl || heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl))) {
+    linkedinUrl = foundUrl;
+  }
+  if (linkedinUrl) meta.linkedinUrl = linkedinUrl;
+  const foundList = found.listId || found.list_id || found.list?.id || null;
+  if (meta.listId == null && foundList != null) meta.listId = foundList;
+  return { meta, linkedinUrl };
+}
+
+/**
  * Send a HeyReach reply. When the stored row has no conversationId +
  * linkedInAccountId (suppressed inbox rows, or a manual card), look the
  * conversation up with the server-side HeyReach key and persist the ids
@@ -348,57 +422,9 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
   }
 
   if (!heyreachSendReady(meta, linkedinUrl)) {
-    const apiKey = client?.heyreach_api_key;
-    if (!apiKey) {
-      throw new Error('HeyReach API key is missing, so the conversation could not be looked up. Nothing was sent.');
-    }
-    let found = null;
-    try {
-      found = await findConversation(apiKey, {
-        conversationId: nonEmpty(meta.conversationId),
-        leadId: reply.lead_id,
-        linkedinUrl,
-        leadName: reply.lead_name,
-        allowNameSearch: true,
-        maxPages: 15,
-        limit: 100,
-      });
-    } catch (err) {
-      const raw = redactSecret(err.message, apiKey);
-      if (/nothing was sent/i.test(raw)) throw new Error(slackFailure(raw));
-      const status = err.status ? ` (${err.status})` : '';
-      throw new Error(slackFailure(
-        `HeyReach inbox lookup failed${status}. Nothing was sent. ${raw}`
-      ));
-    }
-    if (!found) {
-      const who = reply.lead_name || 'this lead';
-      const where = linkedinUrl ? ` (${linkedinUrl})` : '';
-      throw new Error(slackFailure(
-        `HeyReach conversation not found for ${who}${where}. Nothing was sent.`
-      ));
-    }
-    const conversationId = heyreach.extractHeyreachConversationId(found);
-    const linkedInAccountId = heyreach.extractHeyreachLinkedInAccountId(found);
-    const foundUrl = heyreach.extractHeyreachLinkedinUrl(found);
-    if (!conversationId || !linkedInAccountId) {
-      throw new Error(slackFailure(
-        'HeyReach inbox lookup found a conversation but it had no conversationId and linkedInAccountId. Nothing was sent.'
-      ));
-    }
-    if (linkedinUrl && foundUrl && !heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl)) {
-      throw new Error(slackFailure(
-        `HeyReach inbox lookup found a different LinkedIn profile than the one stored for ${reply.lead_name || 'this lead'}. Nothing was sent.`
-      ));
-    }
-    meta.conversationId = conversationId;
-    meta.linkedinAccountId = linkedInAccountId;
-    if (foundUrl && (!linkedinUrl || heyreach.linkedinUrlsMatch(linkedinUrl, foundUrl))) {
-      linkedinUrl = foundUrl;
-    }
-    if (linkedinUrl) meta.linkedinUrl = linkedinUrl;
-    const foundList = found.listId || found.list_id || found.list?.id || null;
-    if (meta.listId == null && foundList != null) meta.listId = foundList;
+    const resolved = await resolveHeyreachConversation(client, reply, meta, linkedinUrl, findConversation);
+    meta = resolved.meta;
+    linkedinUrl = resolved.linkedinUrl;
     filled = true;
   }
 
@@ -433,7 +459,7 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
     }
   }
 
-  await sendMessage(client.heyreach_api_key, {
+  const sendOnce = () => sendMessage(client.heyreach_api_key, {
     conversationId: meta.conversationId || null,
     linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
     senderId: meta.senderId || null,
@@ -441,6 +467,58 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
     linkedinUrl: meta.linkedinUrl || linkedinUrl || reply.linkedin_url || null,
     message: replyText,
   });
+
+  try {
+    await sendOnce();
+    return undefined;
+  } catch (err) {
+    // HeyReach answered 404 "This conversation does not exist": the stored
+    // conversationId / account id is stale or from another id space (webhook vs
+    // inbox). Nothing was sent. Look the conversation up again by the lead's
+    // LinkedIn URL / name and retry exactly once with what HeyReach returns now.
+    if (!isConversationMissingError(err)) throw err;
+    const staleId = nonEmpty(meta.conversationId);
+    const staleAccount = meta.linkedinAccountId ?? meta.linkedInAccountId ?? null;
+    console.warn('[ReplySend] HeyReach said the conversation does not exist — re-resolving once', {
+      replyId: reply.id, hadConversationId: Boolean(staleId),
+    });
+    let resolved;
+    try {
+      resolved = await resolveHeyreachConversation(client, reply, meta, linkedinUrl, findConversation, { ignoreStored: true });
+    } catch (lookupErr) {
+      throw new Error(slackFailure(
+        `HeyReach said the conversation does not exist, and looking it up again failed. Nothing was sent. ${lookupErr.message}`
+      ));
+    }
+    const sameIds = String(resolved.meta.conversationId) === String(staleId)
+      && String(resolved.meta.linkedinAccountId) === String(staleAccount);
+    if (sameIds) {
+      throw new Error(slackFailure(
+        'HeyReach said the conversation does not exist, and the inbox lookup returned the same ids. Nothing was sent.'
+      ));
+    }
+    meta = resolved.meta;
+    linkedinUrl = resolved.linkedinUrl;
+    if (await heyreachConversationAlreadySent(reply, nonEmpty(meta.conversationId), query)) {
+      return { skippedDuplicate: true, reason: 'same_heyreach_conversation' };
+    }
+    try {
+      await persistHeyreachIdentifiers(reply, {
+        conversationId: meta.conversationId || null,
+        linkedinAccountId: meta.linkedinAccountId ?? null,
+        linkedinUrl: linkedinUrl || meta.linkedinUrl || null,
+        listId: meta.listId ?? null,
+        senderId: meta.senderId ?? null,
+        campaignName: meta.campaignName || null,
+      }, query);
+    } catch (persistErr) {
+      console.warn('[ReplySend] Could not persist re-resolved HeyReach identifiers', {
+        replyId: reply.id, err: persistErr.message,
+      });
+    }
+    await sendOnce();
+    return undefined;
+  }
 }
 
 async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false, referralCc = null } = {}) {

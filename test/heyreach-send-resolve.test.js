@@ -594,3 +594,145 @@ test('admin promotion posts one card for the stored reply and will not insert an
   assert.match(admin, /\/admin\/heyreach\/approval-card/);
   assert.doesNotMatch(admin, /requireAdminApiKey/);
 });
+
+test('a row with only a list id and LinkedIn URL is resolved first, not sent by list id', async () => {
+  const events = [];
+  const reply = {
+    id: 'card-list-only',
+    client_id: 'client-nutter',
+    lead_id: 'lead-9',
+    lead_name: 'James A Frenchik',
+    linkedin_url: JAMES_URL,
+    thread_context: { heyreach: { listId: 1024318, linkedinAccountId: 245028 } },
+  };
+  await sendHeyreachReply({ heyreach_api_key: 'k' }, reply, 'Hello', {
+    lookupSibling: async () => null,
+    findConversation: async () => { events.push('find'); return jamesConversation(); },
+    query: async () => ({ rows: [] }),
+    sendMessage: async (_key, payload) => {
+      events.push('send');
+      assert.equal(payload.conversationId, '2-Y29udmVyc2F0aW9u');
+      assert.equal(payload.linkedInAccountId, 8811);
+    },
+  });
+  assert.deepEqual(events, ['find', 'send']);
+});
+
+test('HeyReach 404 conversation does not exist re-resolves once and retries with the fresh ids', async () => {
+  const events = [];
+  const persisted = [];
+  const reply = {
+    id: 'card-stale',
+    client_id: 'client-nutter',
+    lead_id: 'lead-9',
+    lead_name: 'James A Frenchik',
+    linkedin_url: JAMES_URL,
+    thread_context: { heyreach: { conversationId: 'stale-id', linkedinAccountId: 1 } },
+  };
+  await sendHeyreachReply({ heyreach_api_key: 'k' }, reply, 'Hello', {
+    lookupSibling: async () => { throw new Error('should not look up a sibling'); },
+    findConversation: async (_key, query) => {
+      events.push('find');
+      assert.equal(query.conversationId, null, 'stale id is not a search key');
+      assert.equal(query.linkedinUrl, JAMES_URL);
+      return jamesConversation();
+    },
+    query: async (sql, params) => {
+      if (/thread_context #>>/.test(sql)) return { rows: [] };
+      persisted.push(JSON.parse(params[0]).heyreach);
+      return { rows: [] };
+    },
+    sendMessage: async (_key, payload) => {
+      events.push(`send:${payload.conversationId}`);
+      if (payload.conversationId === 'stale-id') {
+        const err = new Error('HeyReach sendMessage failed (404): {"errorMessage":"This conversation does not exist"}');
+        err.status = 404;
+        throw err;
+      }
+    },
+  });
+  assert.deepEqual(events, ['send:stale-id', 'find', 'send:2-Y29udmVyc2F0aW9u']);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].conversationId, '2-Y29udmVyc2F0aW9u');
+  assert.equal(persisted[0].linkedinAccountId, 8811);
+});
+
+test('HeyReach 404 with the same ids from the inbox fails with nothing sent', async () => {
+  let sends = 0;
+  const reply = {
+    id: 'card-same',
+    client_id: 'client-nutter',
+    lead_name: 'James A Frenchik',
+    linkedin_url: JAMES_URL,
+    thread_context: { heyreach: { conversationId: '2-Y29udmVyc2F0aW9u', linkedinAccountId: 8811 } },
+  };
+  await assert.rejects(
+    sendHeyreachReply({ heyreach_api_key: 'k' }, reply, 'Hello', {
+      lookupSibling: async () => null,
+      findConversation: async () => jamesConversation(),
+      query: async () => ({ rows: [] }),
+      sendMessage: async () => {
+        sends += 1;
+        const err = new Error('HeyReach sendMessage failed (404): conversation does not exist');
+        err.status = 404;
+        throw err;
+      },
+    }),
+    /same ids\. Nothing was sent/,
+  );
+  assert.equal(sends, 1);
+});
+
+test('HeyReach 404 then lookup not found fails with nothing sent; a 500 is not retried', async () => {
+  const base = {
+    id: 'card-nf',
+    client_id: 'client-nutter',
+    lead_name: 'James A Frenchik',
+    linkedin_url: JAMES_URL,
+    thread_context: { heyreach: { conversationId: 'stale-id', linkedinAccountId: 1 } },
+  };
+  let sends = 0;
+  await assert.rejects(
+    sendHeyreachReply({ heyreach_api_key: 'k' }, { ...base }, 'Hello', {
+      lookupSibling: async () => null,
+      findConversation: async () => null,
+      query: async () => ({ rows: [] }),
+      sendMessage: async () => {
+        sends += 1;
+        const err = new Error('HeyReach sendMessage failed (404): This conversation does not exist');
+        err.status = 404;
+        throw err;
+      },
+    }),
+    /Nothing was sent/,
+  );
+  assert.equal(sends, 1);
+
+  let finds = 0;
+  await assert.rejects(
+    sendHeyreachReply({ heyreach_api_key: 'k' }, { ...base }, 'Hello', {
+      lookupSibling: async () => null,
+      findConversation: async () => { finds += 1; return jamesConversation(); },
+      query: async () => ({ rows: [] }),
+      sendMessage: async () => {
+        const err = new Error('HeyReach sendMessage failed (500): boom');
+        err.status = 500;
+        throw err;
+      },
+    }),
+    /500/,
+  );
+  assert.equal(finds, 0);
+});
+
+test('heyreach.sendMessage puts the HTTP status on the error', async () => {
+  const f = installFetch(async () => ({ status: 404, body: '{"errorMessage":"This conversation does not exist"}' }));
+  try {
+    await assert.rejects(
+      heyreach.sendMessage('k', { conversationId: 'c', linkedInAccountId: 1, message: 'hi' }),
+      (err) => err.status === 404 && /does not exist/.test(err.message),
+    );
+  } finally {
+    f.restore();
+  }
+});
