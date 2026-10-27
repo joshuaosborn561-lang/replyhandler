@@ -4,6 +4,7 @@
  */
 
 const db = require('../db');
+const { cleanInboundOrRaw } = require('../utils/smartlead-webhook-helpers');
 
 const OTHER_ALERT_REASON = 'not_interested_channel';
 
@@ -13,17 +14,23 @@ function shouldAlertOther(reason, classification) {
 }
 
 function compactOtherAlertText({ leadName, platform, inboundMessage, leadPhone } = {}) {
-  const snippet = String(inboundMessage || '').replace(/\s+/g, ' ').trim();
+  const snippet = cleanInboundOrRaw(inboundMessage).replace(/\s+/g, ' ').trim();
+  if (!snippet) return null;
   const short = snippet.length > 280 ? `${snippet.slice(0, 277)}…` : snippet;
   const who = String(leadName || 'Unknown').trim();
   const where = platform === 'heyreach' ? 'LinkedIn' : 'Email';
   const phone = String(leadPhone || '').trim();
-  return `💬 Unclassified reply · ${who} (${where})${phone ? ` · 📱 ${phone}` : ''}\n> ${short || '(no text)'}\n_Not auto-drafted. Reply manually if it needs one._`;
+  return `💬 Unclassified reply · ${who} (${where})${phone ? ` · 📱 ${phone}` : ''}\n> ${short}\n_Not auto-drafted. Reply manually if it needs one._`;
 }
 
 async function postOtherAlert({
   clientId, client: clientRow, platform, leadName, inboundMessage, leadPhone,
 }, deps = {}) {
+  const text = compactOtherAlertText({ leadName, platform, inboundMessage, leadPhone });
+  if (!text) {
+    console.log('[OtherAlert] Skipped empty inbound', { clientId, platform, reason: 'empty_inbound' });
+    return null;
+  }
   try {
     let client = clientRow;
     if (!client) {
@@ -37,7 +44,7 @@ async function postOtherAlert({
     const slack = new WebClient(client.slack_bot_token);
     const res = await slack.chat.postMessage({
       channel: client.slack_channel_id,
-      text: compactOtherAlertText({ leadName, platform, inboundMessage, leadPhone }),
+      text,
       unfurl_links: false,
     });
     console.log('[OtherAlert] Posted', { clientId, platform });

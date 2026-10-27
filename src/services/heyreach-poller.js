@@ -19,6 +19,7 @@ const {
   STORED_NORM_SQL,
 } = require('./reply-dedupe');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { cleanInboundOrRaw, looksLikeHtml } = require('../utils/smartlead-webhook-helpers');
 
 const HR_BASE = 'https://api.heyreach.io/api/public';
 
@@ -218,13 +219,20 @@ function senderId(conv) {
 }
 
 function latestInbound(messages) {
+  let blankShell = false;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (!isInboundMessage(m)) continue;
-    const text = pickText(m);
-    if (!text) continue;
+    const raw = pickText(m);
+    if (!String(raw).trim()) continue;
+    const text = looksLikeHtml(raw) ? cleanInboundOrRaw(raw) : String(raw).trim();
+    if (!text) {
+      blankShell = true;
+      continue;
+    }
     return { message: m, text, at: messageTime(m) };
   }
+  if (blankShell) return { blank: true, text: '', message: null, at: null };
   return null;
 }
 
@@ -351,6 +359,14 @@ async function loadClients() {
 async function processConversation(client, conv, options) {
   const messages = conversationMessages(conv);
   const inbound = latestInbound(messages);
+  if (inbound && inbound.blank) {
+    console.log('[HeyReachPoll] blank inbound reply, skipped (no text to draft)', {
+      client: client.name,
+      conversationId: conversationId(conv),
+      reason: 'empty_inbound',
+    });
+    return { skipped: 'empty_inbound' };
+  }
   if (!inbound) return { skipped: 'no_inbound' };
   const lookbackMs = options.lookbackHours * 3600 * 1000;
   if (inbound.at && Date.now() - inbound.at.getTime() > lookbackMs) return { skipped: 'older_than_lookback' };
@@ -680,4 +696,5 @@ module.exports = {
   hasCampaignId,
   campaignId,
   conversationMessages,
+  latestInbound,
 };

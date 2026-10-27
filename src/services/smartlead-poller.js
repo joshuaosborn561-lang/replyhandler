@@ -21,8 +21,8 @@ const {
   recoverUnpostedSlackCards,
 } = require('./reply-dedupe');
 const {
-  stripHtmlToText,
-  stripEmailQuotePrefix,
+  cleanInboundOrRaw,
+  latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   latestInboundReplyMeta,
   lastOutboundBodyFromSmartleadHistory,
@@ -58,9 +58,10 @@ function latestInboundFromHistory(hist, leadEmail) {
     const m = list[i];
     if (!m || typeof m !== 'object') continue;
     if (String(m.type || '').toUpperCase() !== 'REPLY') continue;
-    const raw = m.email_body || m.body || m.text || '';
-    let plain = stripHtmlToText(raw) || String(raw).trim();
-    plain = stripEmailQuotePrefix(plain);
+    const raw = m.email_body || m.body || m.text || m.html || '';
+    // Empty Outlook shells strip to nothing. Keep that empty result so the
+    // tags themselves are never stored or posted as the reply.
+    const plain = cleanInboundOrRaw(raw);
     if (plain) return plain;
   }
   return '';
@@ -292,6 +293,17 @@ async function processInboxRow(sourceClient, row, options) {
         });
       }
     }
+  }
+
+  if (!inbound && latestInboundReplyIsBlank(threadContext)) {
+    console.log('[SmartLeadPoll] blank inbound reply, skipped (no text to draft)', {
+      client: client.name,
+      campaignId,
+      leadId,
+      leadEmail: row.lead_email || null,
+      reason: 'empty_inbound',
+    });
+    return { skipped: 'empty_inbound' };
   }
 
   if (!inbound) return { skipped: 'no_inbound' };

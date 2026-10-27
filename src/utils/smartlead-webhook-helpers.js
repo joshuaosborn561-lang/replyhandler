@@ -182,6 +182,39 @@ function cleanInboundOrRaw(raw) {
   return looksLikeHtml(raw) ? '' : String(raw || '').trim();
 }
 
+/**
+ * True when a webhook payload includes a reply body and every copy of it
+ * is an empty HTML shell (or whitespace). Missing fields are not blank:
+ * a category event that simply omits the body must still be read from
+ * history. A disclaimer or any other real sentence is not blank.
+ */
+function payloadInboundIsBlank(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const replyObj = payload.reply_message
+    || payload.replyMessage
+    || payload.reply
+    || payload.latest_reply
+    || payload.last_reply
+    || null;
+  const values = [];
+  const push = (v) => {
+    if (typeof v === 'string') values.push(v);
+  };
+  if (replyObj && typeof replyObj === 'object') {
+    for (const key of ['text', 'body', 'html', 'email_body', 'preview_text', 'message', 'plain_text']) {
+      push(replyObj[key]);
+    }
+  } else {
+    push(replyObj);
+  }
+  for (const key of ['preview_text', 'reply_html', 'html', 'body_html', 'reply_body', 'reply_text', 'reply_message_body', 'body']) {
+    push(payload[key]);
+  }
+  if (!values.length) return false;
+  if (!values.every((v) => !cleanInboundOrRaw(v))) return false;
+  return values.some((v) => looksLikeHtml(v));
+}
+
 function messageFromEmail(m) {
   const v = m && (m.from || m.From || m.sender || m.reply_from);
   return v ? String(v).trim().toLowerCase() : '';
@@ -766,6 +799,7 @@ module.exports = {
   stripEmailArtifacts,
   cleanInboundReply,
   cleanInboundOrRaw,
+  payloadInboundIsBlank,
   looksLikeHtml,
   latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,

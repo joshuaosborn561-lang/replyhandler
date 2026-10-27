@@ -25,10 +25,9 @@ const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
 const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
-  stripHtmlToText,
-  stripEmailQuotePrefix,
-  cleanInboundReply,
   cleanInboundOrRaw,
+  payloadInboundIsBlank,
+  looksLikeHtml,
   latestInboundReplyIsBlank,
   latestInboundFromSmartleadHistory,
   lastOutboundBodyFromSmartleadHistory,
@@ -651,14 +650,16 @@ async function processSmartleadWebhookAsync({
   if (!threadContext) {
     let fallbackMsg = String(inboundMessage || '').trim();
     if (slEnhance && fallbackMsg) {
-      fallbackMsg = stripEmailQuotePrefix(fallbackMsg);
-      fallbackMsg = stripHtmlToText(fallbackMsg) || fallbackMsg;
+      fallbackMsg = cleanInboundOrRaw(fallbackMsg);
     }
     threadContext = [{ role: 'prospect', message: fallbackMsg || '(could not load thread from SmartLead)' }];
   }
 
   let inboundEffective = String(inboundMessage || '').trim();
   if (slEnhance && inboundEffective) {
+    inboundEffective = cleanInboundOrRaw(inboundEffective);
+  }
+  if (looksLikeHtml(inboundEffective)) {
     inboundEffective = cleanInboundOrRaw(inboundEffective);
   }
 
@@ -718,6 +719,20 @@ async function processSmartleadWebhookAsync({
   }
 
   if (!inboundEffective) {
+    if (latestInboundReplyIsBlank(threadContext) || payloadInboundIsBlank(payload)) {
+      console.log('[Webhook] SmartLead blank inbound reply, skipped (no text to draft)', {
+        clientId, campaignId: resolvedCampaignId, leadId: resolvedLeadId, hasEmail: !!leadEmail,
+      });
+      if (replyRow && replyRow.id) {
+        await db.query(
+          `UPDATE pending_replies
+              SET status = 'suppressed', suppression_reason = 'empty_inbound', updated_at = now()
+            WHERE id = $1 AND status = 'pending'`,
+          [replyRow.id],
+        ).catch((err) => console.warn('[Webhook] could not mark blank reply suppressed', { err: err.message }));
+      }
+      return;
+    }
     console.warn('[Webhook] SmartLead could not resolve prospect reply text', { clientId, campaignId: resolvedCampaignId });
     await slack.postError(client.slack_bot_token, client.slack_channel_id, {
       leadName: `${leadName} (SmartLead)`,
@@ -1119,7 +1134,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     }
 
     const hr = normalizeHeyreachPayload(payload);
-    const {
+    let {
       campaignId,
       campaignName: hrCampaignName,
       leadId,
@@ -1132,6 +1147,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       senderId: hrSenderId,
       threadContext: normalizedThread,
     } = hr;
+    if (looksLikeHtml(inboundMessage)) {
+      inboundMessage = cleanInboundOrRaw(inboundMessage);
+      if (!inboundMessage) {
+        console.log('[Webhook] HeyReach blank inbound reply, skipped (no text to draft)', {
+          clientId, campaignId, leadId, conversationId: hrConversationId, reason: 'empty_inbound',
+        });
+        return res.status(200).json({ ok: true, skipped: true, reason: 'empty_inbound' });
+      }
+    }
 
     console.log('[Webhook] HeyReach extracted', {
       clientId,
