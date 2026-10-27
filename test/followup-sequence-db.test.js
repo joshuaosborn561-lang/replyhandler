@@ -318,3 +318,58 @@ test('one live sequence per lead', { skip }, async () => {
   const { rows } = await pg.query(`SELECT status FROM followup_sequences WHERE lead_email = 'same@x.co'`);
   assert.equal(rows.filter((r) => r.status === 'active').length <= 1, true);
 });
+
+async function postedCallStep(pg, svc, clientId, over = {}) {
+  await addReply(pg, clientId, over);
+  const { slackApi, deps, calls } = fakes();
+  await svc.runSequenceTick({ now: NOW, slackApi, deps, env: ENV });
+  const { rows: [step] } = await pg.query(`SELECT * FROM followup_sequence_steps WHERE kind = 'call_day0'`);
+  const { rows: [seq] } = await pg.query('SELECT * FROM followup_sequences');
+  return { step, seq, slackApi, deps, calls };
+}
+
+test('Connected - not interested stops the sequence and closes unsent cards', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi, deps, calls } = await postedCallStep(pg, svc, clientId);
+  // An email card is already out and unsent.
+  await svc.applyCallOutcome({ stepId: step.id, outcome: 'no_answer', now: NOW, slackApi, env: ENV });
+  await svc.runSequenceTick({ now: new Date(NOW.getTime() + 6 * MIN), slackApi, deps, env: ENV });
+  assert.equal(calls.cards.length, 1);
+  const { rows: [callLater] } = await pg.query(`SELECT * FROM followup_sequence_steps WHERE kind = 'call_day0_late'`);
+  await pg.query(`UPDATE followup_sequence_steps SET status = 'posted', slack_channel = 'C0BRRS8DV19', slack_ts = '2000.9' WHERE id = $1`, [callLater.id]);
+  const out = await svc.applyCallOutcome({ stepId: callLater.id, outcome: 'not_interested', slackUserId: 'U7', now: new Date(NOW.getTime() + 10 * MIN), slackApi, env: ENV });
+  assert.equal(out.applied, true);
+  const { rows: [after] } = await pg.query('SELECT status, stop_reason FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.deepEqual([after.status, after.stop_reason], ['stopped', 'not_interested']);
+  const { rows: [pr] } = await pg.query('SELECT status FROM pending_replies WHERE id = $1', [calls.cards[0].replyId]);
+  assert.equal(pr.status, 'skipped', 'the unsent email card can no longer be approved');
+  assert.equal((await pg.query(`SELECT count(*)::int AS n FROM followup_sequence_steps WHERE status IN ('pending','held')`)).rows[0].n, 0);
+});
+
+test('Call back later is logged and the sequence keeps going', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi } = await postedCallStep(pg, svc, clientId);
+  await svc.applyCallOutcome({ stepId: step.id, outcome: 'call_back', slackUserId: 'U7', now: NOW, slackApi, env: ENV });
+  const { rows: [s] } = await pg.query('SELECT status FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.status, 'active');
+  const { rows: [st] } = await pg.query('SELECT outcome FROM followup_sequence_steps WHERE id = $1', [step.id]);
+  assert.equal(st.outcome, 'call_back');
+  assert.equal((await pg.query(`SELECT count(*)::int AS n FROM followup_sequence_steps WHERE kind = 'email_vm'`)).rows[0].n, 0, 'only No answer queues the voicemail email');
+});
+
+test('Wrong number cancels the remaining call cards but the email cards stay', { skip }, async () => {
+  const { pg, svc, clientId } = await setup();
+  const { step, seq, slackApi } = await postedCallStep(pg, svc, clientId);
+  await svc.applyCallOutcome({ stepId: step.id, outcome: 'wrong_number', now: NOW, slackApi, env: ENV });
+  const states = await stepStates(pg, seq.id);
+  for (const k of ['call_day0_late', 'call_day1', 'call_day3', 'call_day6']) assert.equal(states[k], 'cancelled/wrong_number', k);
+  for (const k of ['email_day1', 'email_proof', 'email_thoughts', 'email_breakup']) assert.equal(states[k], 'pending', k);
+  const { rows: [s] } = await pg.query('SELECT status FROM followup_sequences WHERE id = $1', [seq.id]);
+  assert.equal(s.status, 'active');
+});
+
+test('a bare "connected" outcome no longer exists', { skip }, async () => {
+  const { svc } = await setup();
+  assert.equal(Object.values(svc.OUTCOME_BY_ACTION).includes('connected'), false);
+  assert.equal(svc.OUTCOME_BY_ACTION.fseq_connected, undefined);
+});

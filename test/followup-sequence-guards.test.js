@@ -37,14 +37,20 @@ test('email steps are ordinary FOLLOW_UP approval cards (a human clicks Approve)
   assert.match(s, /isDraft: true/);
 });
 
-test('call card has the three buttons and nothing that sends', () => {
+test('call card has one button per outcome and nothing that sends', () => {
   const { buildCallCardBlocks } = require('../src/services/followup-sequence');
   const blocks = buildCallCardBlocks({
     label: 'Day 0 call', leadName: 'Pat', phone: '+15555550100', clientName: 'Acme', script: 's', voicemail: null,
   }, 'step-1');
   const actions = blocks.find((b) => b.type === 'actions').elements;
-  assert.deepEqual(actions.map((a) => a.action_id), ['fseq_connected', 'fseq_no_answer', 'fseq_booked']);
-  assert.deepEqual(actions.map((a) => a.value), ['step-1', 'step-1', 'step-1']);
+  assert.deepEqual(actions.map((a) => a.action_id), [
+    'fseq_booked', 'fseq_no_answer', 'fseq_not_interested', 'fseq_call_back', 'fseq_wrong_number']);
+  assert.ok(actions.every((a) => a.value === 'step-1'));
+  assert.ok(!actions.some((a) => /connected$/i.test(a.text.text.trim())), 'no bare Connected button');
+  assert.deepEqual(actions.map((a) => a.text.text), [
+    '📅 Meeting booked', '📵 No answer / left voicemail', '🚫 Spoke to them: not interested',
+    '🔁 Spoke to them: call back later', '❌ Wrong number']);
+  assert.ok(actions.every((a) => a.text.text.length <= 75), 'Slack button text limit');
   const done = buildCallCardBlocks({
     label: 'Day 0 call', leadName: 'Pat', phone: '+15555550100', clientName: 'Acme', script: 's', voicemail: 'v',
   }, 'step-1', { outcome: 'no_answer', outcomeBy: 'U1' });

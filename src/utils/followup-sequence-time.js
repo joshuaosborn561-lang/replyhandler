@@ -3,7 +3,9 @@
 /**
  * Timing for the follow-up card sequence. Pure functions, no I/O.
  *
- * Days are BUSINESS days (Mon-Fri, holidays not modelled). Call cards only come
+ * Days are BUSINESS days: Mon-Fri, skipping major US holidays (New Year's Day,
+ * Memorial Day, July 4, Labor Day, Thanksgiving and the day after, Christmas;
+ * a fixed holiday on a weekend is observed on the nearest weekday). Call cards only come
  * due inside the lead's local business hours (default 9:00-17:00, Mon-Fri).
  * Email cards are snapped into the existing send window by the caller.
  */
@@ -62,6 +64,51 @@ function isWeekend(parts) {
   return parts.weekday === 'Sat' || parts.weekday === 'Sun';
 }
 
+// ─── Major US holidays ───────────────────────────────────────────────────────
+
+function dowOf(year, month, day) {
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 Sun
+}
+
+/** n-th (1-based) given weekday of a month, or the last one when n = -1. */
+function nthWeekday(year, month, weekday, n) {
+  if (n > 0) {
+    const first = dowOf(year, month, 1);
+    return 1 + ((weekday - first + 7) % 7) + (n - 1) * 7;
+  }
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return lastDay - ((dowOf(year, month, lastDay) - weekday + 7) % 7);
+}
+
+/** Fixed-date holiday, observed Friday when it falls on Saturday, Monday when on Sunday. */
+function observed(year, month, day) {
+  const d = dowOf(year, month, day);
+  const shift = d === 6 ? -1 : d === 0 ? 1 : 0;
+  const o = new Date(Date.UTC(year, month - 1, day + shift));
+  return { year: o.getUTCFullYear(), month: o.getUTCMonth() + 1, day: o.getUTCDate() };
+}
+
+function holidayKeys(year) {
+  const k = (o) => `${o.year}-${o.month}-${o.day}`;
+  const thanks = nthWeekday(year, 11, 4, 4);
+  return new Set([
+    k(observed(year, 1, 1)),
+    k({ year, month: 5, day: nthWeekday(year, 5, 1, -1) }), // Memorial Day
+    k(observed(year, 7, 4)),
+    k({ year, month: 9, day: nthWeekday(year, 9, 1, 1) }), // Labor Day
+    k({ year, month: 11, day: thanks }),
+    k({ year, month: 11, day: thanks + 1 }),
+    k(observed(year, 12, 25)),
+  ]);
+}
+
+/** True for a major US holiday (observed date). `ymd` is { year, month, day }. */
+function isHoliday(ymd) {
+  const key = `${ymd.year}-${ymd.month}-${ymd.day}`;
+  // New Year's Day on a Saturday is observed on Dec 31 of the year before.
+  return holidayKeys(ymd.year).has(key) || holidayKeys(ymd.year + 1).has(key);
+}
+
 function offsetMs(date, tz) {
   const p = zonedParts(date, tz);
   const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
@@ -85,9 +132,10 @@ function weekdayOfYmd({ year, month, day }) {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 Sun
 }
 
+/** Not a business day: weekend or major US holiday. */
 function isWeekendYmd(ymd) {
   const w = weekdayOfYmd(ymd);
-  return w === 0 || w === 6;
+  return w === 0 || w === 6 || isHoliday(ymd);
 }
 
 /** First business day on or after the given date. */
@@ -112,7 +160,7 @@ function inCallWindow(date, tz, env = process.env) {
   const d = date instanceof Date ? date : new Date(date);
   if (!Number.isFinite(d.getTime())) return false;
   const p = zonedParts(d, tz);
-  if (isWeekend(p)) return false;
+  if (isWeekend(p) || isHoliday(p)) return false;
   const { start, end } = callHours(env);
   const mins = p.hour * 60 + p.minute;
   return mins >= start * 60 && mins < end * 60;
@@ -219,6 +267,7 @@ module.exports = {
   addBusinessDays,
   rollToBusinessDay,
   businessDayAfter,
+  isHoliday,
   inCallWindow,
   nextCallWindowStart,
   planSequence,

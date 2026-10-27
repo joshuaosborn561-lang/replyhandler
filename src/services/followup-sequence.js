@@ -5,7 +5,7 @@
  *
  * OFF by default (FOLLOWUP_SEQUENCE_ENABLED). Every step is a Slack card in the
  * follow-ups channel that a human clicks. Nothing in this file sends to a lead:
- *  - call cards carry the script + phone and Connected / No answer-VM / Booked
+ *  - call cards carry the script + phone and one button per possible outcome
  *  - email cards are ordinary FOLLOW_UP approval cards (Approve & Send, Edit)
  *
  * Timing is BUSINESS days; call cards only come due inside the lead's local
@@ -296,6 +296,26 @@ function leadLocalTime(now, tz) {
   } catch { return ''; }
 }
 
+/**
+ * One button per thing that can happen on a call. There is no bare "Connected":
+ * if you spoke to them, you pick what they said.
+ */
+const OUTCOME_BUTTONS = [
+  { actionId: 'fseq_booked', outcome: 'booked', text: '📅 Meeting booked', style: 'primary' },
+  { actionId: 'fseq_no_answer', outcome: 'no_answer', text: '📵 No answer / left voicemail' },
+  { actionId: 'fseq_not_interested', outcome: 'not_interested', text: '🚫 Spoke to them: not interested', style: 'danger' },
+  { actionId: 'fseq_call_back', outcome: 'call_back', text: '🔁 Spoke to them: call back later' },
+  { actionId: 'fseq_wrong_number', outcome: 'wrong_number', text: '❌ Wrong number' },
+];
+
+const OUTCOME_LABELS = {
+  booked: '📅 Meeting booked',
+  no_answer: '📵 No answer / left voicemail',
+  not_interested: '🚫 Spoke to them: not interested (follow-ups stopped)',
+  call_back: '🔁 Spoke to them: call back later',
+  wrong_number: '❌ Wrong number (no more call cards for this lead)',
+};
+
 /** Pure: the Slack blocks for a call card. `outcome` replaces the buttons. */
 function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, stopped = null } = {}) {
   const blocks = [];
@@ -329,19 +349,25 @@ function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, s
   if (outcome || stopped) {
     const label = stopped
       ? `🛑 Sequence stopped (${String(stopped).replace(/_/g, ' ')})`
-      : ({ connected: '✅ Connected', no_answer: '📵 No answer / voicemail', booked: '📅 Booked' }[outcome] || outcome);
+      : (OUTCOME_LABELS[outcome] || outcome);
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `${label}${outcomeBy ? ` · <@${outcomeBy}>` : ''}` }],
     });
   } else {
     blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: 'When the call is over, click the one that happened. If you spoke to them, pick what they said. Emails to send show up as their own cards with Approve & Send / Edit.' }],
+    });
+    blocks.push({
       type: 'actions',
-      elements: [
-        { type: 'button', text: { type: 'plain_text', text: '✅ Connected' }, action_id: 'fseq_connected', value: stepId },
-        { type: 'button', text: { type: 'plain_text', text: '📵 No answer / VM' }, action_id: 'fseq_no_answer', value: stepId },
-        { type: 'button', text: { type: 'plain_text', text: '📅 Booked' }, style: 'primary', action_id: 'fseq_booked', value: stepId },
-      ],
+      elements: OUTCOME_BUTTONS.map((b) => ({
+        type: 'button',
+        text: { type: 'plain_text', text: b.text },
+        action_id: b.actionId,
+        value: stepId,
+        ...(b.style ? { style: b.style } : {}),
+      })),
     });
   }
   return blocks;
@@ -719,8 +745,10 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
         if (isCall) {
           result = await postCallStep({ step: claimed, seq, client, source, now, tz, dbClient, slackApi, env, deps });
         } else {
-          if (claimed.kind !== 'email_vm' && !inSendWindow(now)) {
-            await setStep(step.id, { status: 'pending', due_at: snapDueToSendWindow(now) }, dbClient);
+          const holiday = time.isHoliday(time.zonedParts(now, time.DEFAULT_TZ));
+          if (claimed.kind !== 'email_vm' && (holiday || !inSendWindow(now))) {
+            const next = holiday ? time.nextCallWindowStart(now, time.DEFAULT_TZ, env) : snapDueToSendWindow(now);
+            await setStep(step.id, { status: 'pending', due_at: next }, dbClient);
             totals.waited++;
             continue;
           }
@@ -752,16 +780,15 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
 
 // ─── Call card buttons ────────────────────────────────────────────────────────
 
-const OUTCOME_BY_ACTION = {
-  fseq_connected: 'connected',
-  fseq_no_answer: 'no_answer',
-  fseq_booked: 'booked',
-};
+const OUTCOME_BY_ACTION = Object.fromEntries(OUTCOME_BUTTONS.map((b) => [b.actionId, b.outcome]));
 
 /**
- * Record what happened on a call. Connected and No answer are just logged;
- * No answer on the Day 0 call queues the voicemail email 5 minutes out;
- * Booked stops the sequence and marks the meeting booked.
+ * Record what happened on a call.
+ *  - Meeting booked: marks the meeting booked, stops the sequence, closes unsent cards.
+ *  - Not interested: stops the sequence and closes unsent cards.
+ *  - No answer / voicemail: logged; on the Day 0 call it queues the voicemail email 5 min out.
+ *  - Call back later: logged, sequence continues.
+ *  - Wrong number: no more call cards for this lead; email steps continue.
  */
 async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new Date(), dbClient = db, slackApi = slack, env = process.env }) {
   const { rows: [step] } = await dbClient.query(
@@ -787,6 +814,16 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
       console.warn('[FollowupSeq] markMeetingBooked failed', { stepId, err: err.message });
     }
     await stopSequence(seq.id, 'booked', { dbClient, slackApi, now });
+  } else if (outcome === 'not_interested') {
+    await stopSequence(seq.id, 'not_interested', { dbClient, slackApi, now });
+  } else if (outcome === 'wrong_number') {
+    const callKinds = Object.keys(text.CALL_KINDS);
+    await dbClient.query(
+      `UPDATE followup_sequence_steps
+          SET status = 'cancelled', skip_reason = 'wrong_number', updated_at = now()
+        WHERE sequence_id = $1 AND status IN ('pending', 'held') AND kind = ANY($2::text[])`,
+      [seq.id, callKinds],
+    );
   } else if (outcome === 'no_answer' && step.kind === 'call_day0' && seq.status === 'active') {
     const delay = envMinutes('FOLLOWUP_VM_EMAIL_DELAY_MINUTES', 5, env);
     await dbClient.query(

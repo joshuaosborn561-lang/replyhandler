@@ -204,3 +204,38 @@ test('calling-you-now is the standing Day 0 reply only with the flag on and insi
   assert.equal(callNowDraft({ ...lead, mobilePhone: null, leadTimezone: TZ, now: new Date('2026-10-27T15:30:00Z') }, on), null, 'no phone');
   assert.equal(callNowDraft({ ...lead, leadTimezone: TZ, now: new Date('2026-10-27T15:30:00Z') }, {}), null, 'flag off: unchanged');
 });
+
+// ─── holidays ────────────────────────────────────────────────────────────────
+
+test('major US holidays are not business days (observed dates)', () => {
+  const h = (y, m, d) => time.isHoliday({ year: y, month: m, day: d });
+  assert.equal(h(2026, 11, 26), true, 'Thanksgiving');
+  assert.equal(h(2026, 11, 27), true, 'day after Thanksgiving');
+  assert.equal(h(2026, 12, 25), true, 'Christmas');
+  assert.equal(h(2026, 5, 25), true, 'Memorial Day');
+  assert.equal(h(2026, 9, 7), true, 'Labor Day');
+  assert.equal(h(2027, 1, 1), true, "New Year's Day");
+  assert.equal(h(2026, 7, 3), true, 'July 4 is a Saturday in 2026: observed Friday');
+  assert.equal(h(2026, 7, 4), false);
+  assert.equal(h(2027, 12, 31), true, "New Year's 2028 is a Saturday: observed Dec 31");
+  assert.equal(h(2026, 11, 25), false, 'day before Thanksgiving is a normal day');
+  assert.equal(h(2026, 10, 27), false);
+});
+
+test('business-day counting skips holidays', () => {
+  // Reply Mon Nov 23, 2026: Day 1 Tue, Day 2 Wed, Day 3 skips Thanksgiving + Friday + the weekend.
+  const steps = time.planSequence({ enrolledAt: new Date('2026-11-23T17:00:00Z'), timeZone: TZ });
+  const by = Object.fromEntries(steps.map((s) => [s.kind, s]));
+  const ymd = (d) => { const p = time.zonedParts(d, TZ); return `${p.year}-${p.month}-${p.day}`; };
+  assert.equal(ymd(by.call_day1.due), '2026-11-24');
+  assert.equal(ymd(by.call_day3.due), '2026-11-30', 'Day 3 is the Monday after Thanksgiving weekend');
+  assert.equal(ymd(by.email_breakup.due), '2026-12-2', 'Day 5');
+  assert.equal(ymd(by.call_day6.due), '2026-12-3', 'Day 6');
+});
+
+test('no calls on a holiday, and a holiday reply starts the next business day', () => {
+  assert.equal(time.inCallWindow(new Date('2026-11-26T17:00:00Z'), TZ), false, 'Thanksgiving noon CT');
+  const next = time.nextCallWindowStart(new Date('2026-11-26T17:00:00Z'), TZ);
+  assert.equal(next.toISOString(), '2026-11-30T15:00:00.000Z', 'Mon Nov 30, 9am CST');
+  assert.equal(time.inCallWindow(new Date('2026-11-25T17:00:00Z'), TZ), true);
+});
