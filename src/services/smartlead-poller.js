@@ -30,10 +30,11 @@ const {
   lastOutboundBodyFromSmartleadHistory,
   normalizeSmartleadLeadId,
   normalizeSmartleadCampaignId,
+  referralTextBlockReason,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('./inbound-forward');
-const { promoteReferral, DRAFT_ALWAYS } = require('../utils/referral-promotion');
+const { promoteReferral, DRAFT_ALWAYS, shouldRecoverSuppressedReferral } = require('../utils/referral-promotion');
 const { looksLikeReferral, ourIdentitiesFromThread } = require('../utils/reply-all');
 const { referralCcCsv } = require('../utils/referred-contact');
 
@@ -205,6 +206,7 @@ async function storeReferralCc(replyId, contacts) {
 /** A stored suppression is not a card. An email referral gets the one card. */
 async function recoverSuppressedReferral(client, {
   inbound, leadEmail, leadName, leadId, messageId, threadContext,
+  smartleadClassification,
 }) {
   const existing = await inboundAlreadyRecorded(db, {
     clientId: client.id,
@@ -216,6 +218,12 @@ async function recoverSuppressedReferral(client, {
   });
   if (!existing || existing.status !== 'suppressed') return null;
   if (isPostedSlackTs(existing.slack_message_ts)) return null;
+  if (!shouldRecoverSuppressedReferral({
+    classification: existing.classification,
+    suppressionReason: existing.suppression_reason,
+    smartleadClassification,
+    inbound,
+  })) return null;
   const ref = promoteReferral(existing.classification, inbound, referralOpts(threadContext, {
     prospectEmail: leadEmail,
     prospectName: leadName,
@@ -294,6 +302,7 @@ async function returnPostedOrRecoverReferral(client, row, {
   inbound, leadId, messageId, threadContext,
 }) {
   const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
+  const slCategory = classifyFromSmartlead(row, threadContext);
   const recoveredReferral = await recoverSuppressedReferral(client, {
     inbound,
     leadEmail: row.lead_email || null,
@@ -301,6 +310,7 @@ async function returnPostedOrRecoverReferral(client, row, {
     leadId,
     messageId,
     threadContext,
+    smartleadClassification: slCategory?.classification || '',
   });
   if (recoveredReferral) return recoveredReferral;
   return { skipped: 'already_posted' };
@@ -585,7 +595,7 @@ async function processInboxRow(sourceClient, row, options) {
         : `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
     }
   }
-  if (referredContacts.length || (DRAFT_ALWAYS.has(classification) && looksLikeReferral(inbound))) {
+  if (!referralTextBlockReason(inbound) && (referredContacts.length || (DRAFT_ALWAYS.has(classification) && looksLikeReferral(inbound)))) {
     try {
       const redraft = await draftOnly({
         classification,

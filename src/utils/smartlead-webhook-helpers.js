@@ -670,6 +670,58 @@ function isDisclaimerOrScannerOnly(text) {
   return boilerplatePresent;
 }
 
+/** Mailbox is dead: not monitored, no longer active, no longer in use. */
+function looksLikeUnmonitoredMailbox(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\b(not regularly monitored|no longer monitored|is not monitored)\b/.test(s)) return true;
+  if (/\b(inbox|e-?mail|mailbox|address)\b/.test(s) && /\b(no longer active|no longer in use|not monitored)\b/.test(s)) return true;
+  return false;
+}
+
+/** A mailbox rule that forwards the thread. Not a person handing us to a colleague. */
+function looksLikeAutoForward(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  return /\bforward(?:ing)? (?:your |this |the )?(?:e-?mail|message|mail)\b/.test(s);
+}
+
+/**
+ * The sender has left. A current employee pointing at a colleague does not match.
+ */
+function looksLikeDeparture(text) {
+  const s = normWs(text);
+  if (!s) return false;
+  if (/\bno longer (?:employed|with|works?|working|part of)\b/.test(s)) return true;
+  if (/\bno longer (?:a|an) (?:[a-z]+ ){0,3}(?:representative|employee|member)\b/.test(s)) return true;
+  if (/\b(?:has left|left|leaving) (?:the )?(?:company|organization|org|team|firm)\b/.test(s)) return true;
+  if (/\b(?:i am|i'm|i have|i've|has|is) retired\b/.test(s)) return true;
+  if (/\bretired from\b/.test(s)) return true;
+  if (/\b(?:i have|i've|has) moved on\b/.test(s)) return true;
+  if (/\bmoved on from\b/.test(s)) return true;
+  if (/\b(?:do not|don't|dont) work (?:here|there) anymore\b/.test(s)) return true;
+  if (/\bno longer work(?:s|ing)? (?:here|there)\b/.test(s)) return true;
+  if (/\bnot (?:the )?right (?:person|contact)\b/.test(s) && /\b(?:left|leaving|retired|no longer)\b/.test(s)) return true;
+  return false;
+}
+
+/**
+ * Why this human reply must not become a referral card.
+ * Null when a current employee may be handing the thread to someone else.
+ * Quotes and disclaimer footers are not the human reply.
+ */
+function referralTextBlockReason(text) {
+  const human = humanTextForClassification(text);
+  const body = human || text;
+  if (!String(body || '').trim()) return null;
+  if (looksLikeOutOfOffice(body)) return 'ooo';
+  if (looksLikeAutomatedNotice(body)) return 'automated_notice';
+  if (looksLikeUnsubscribe(body)) return 'unsubscribe';
+  if (looksLikeDeparture(body)) return 'departure';
+  if (looksLikeNotInterested(body)) return 'not_interested';
+  return null;
+}
+
 /**
  * Mailbox changes, departure auto-replies, ticket bots, and replies whose
  * only content is a legal disclaimer or a security-gateway footer. Rules
@@ -678,6 +730,8 @@ function isDisclaimerOrScannerOnly(text) {
 function looksLikeAutomatedNotice(text) {
   const s = normWs(text);
   if (!s) return false;
+  if (looksLikeUnmonitoredMailbox(text)) return true;
+  if (looksLikeAutoForward(text)) return true;
   if (/\bmoved to a new server\b/.test(s)) return true;
   if (/\bnew e-?mail address\b/.test(s)) return true;
   if (/\bplease use the new e-?mail\b/.test(s)) return true;
@@ -700,6 +754,7 @@ function looksLikeLiveColleagueReferral(text) {
   const s = normWs(text);
   if (!s) return false;
   if (looksLikeAutomatedNotice(text)) return false;
+  if (looksLikeDeparture(text)) return false;
   if (/\b(no longer employed|no longer with|no longer works?|has left)\b/.test(s)) return false;
   if (!/\bnot (the )?right (person|contact)\b/.test(s)) return false;
   return /\b(talk|speak) to (my|our) colleague\b/.test(s) && /\bhandles this\b/.test(s);
@@ -720,6 +775,7 @@ function slackSuppressionReason(text) {
   if (looksLikeAutomatedNotice(text)) return 'automated_notice';
   if (looksLikeUnsubscribe(text)) return 'unsubscribe';
   if (looksLikeWrongPerson(text)) return 'wrong_person';
+  if (/\bnot seeking\b/.test(normWs(text))) return 'not_interested';
   return null;
 }
 
@@ -740,6 +796,7 @@ function looksLikeUnsubscribe(text) {
 function looksLikeWrongPerson(text) {
   const s = normWs(text);
   if (!s) return false;
+  if (looksLikeDeparture(text)) return true;
   if (looksLikeLiveColleagueReferral(text)) return false;
   // Common "wrong person / no longer employed" / redirect phrases.
   if (/\bno longer employed\b/.test(s)) return true;
@@ -756,6 +813,7 @@ function looksLikeWrongPerson(text) {
 function looksLikeNotInterested(text) {
   const s = normWs(text);
   if (!s) return false;
+  if (/\bnot seeking\b/.test(s)) return true;
 
   // High-priority clear declines first. This must run before positive "interested in"
   // checks because "not interested in this service" contains "interested in".
@@ -816,6 +874,10 @@ module.exports = {
   smartleadWebhookEnhancementsEnabled,
   looksLikeOutOfOffice,
   looksLikeAutomatedNotice,
+  looksLikeUnmonitoredMailbox,
+  looksLikeAutoForward,
+  looksLikeDeparture,
+  referralTextBlockReason,
   humanTextForClassification,
   isDisclaimerOrScannerOnly,
   looksLikeLiveColleagueReferral,

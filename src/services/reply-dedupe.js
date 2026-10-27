@@ -271,7 +271,7 @@ function samePersonSql(leadIdParam, leadEmailParam) {
  * during that window and we double-carded / double-sent (Casey Buckstaff,
  * 2026-10-05 — webhook card + "polling backstop" card 2 seconds later).
  */
-const INBOUND_ROW_COLUMNS = `id, status, inbound_message, inbound_message_id, classification, slack_message_ts`;
+const INBOUND_ROW_COLUMNS = `id, status, inbound_message, inbound_message_id, classification, suppression_reason, slack_message_ts`;
 
 /**
  * Text match is the fallback. A stored row that already has a different

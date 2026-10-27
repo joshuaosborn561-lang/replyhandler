@@ -227,6 +227,7 @@ async function refreshReferralDrafts({
   leadEmail = '',
   replyId = '',
   campaignId = '',
+  missingOnly = false,
   query = (...args) => db.query(...args),
   saveDraft = null,
   updateCard = null,
@@ -257,6 +258,17 @@ async function refreshReferralDrafts({
         leadEmail: row.lead_email,
         action: 'skip',
         reason: action.reason || 'not_a_referral',
+        slackMessageTs: row.slack_message_ts || null,
+      });
+      continue;
+    }
+    if (missingOnly && action.type === 'update') {
+      summary.skipped += 1;
+      summary.rows.push({
+        replyId: row.id,
+        leadEmail: row.lead_email,
+        action: 'skip',
+        reason: 'card_already_exists',
         slackMessageTs: row.slack_message_ts || null,
       });
       continue;

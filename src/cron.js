@@ -307,6 +307,11 @@ function startCron() {
   logIntegrationStatus().catch((err) =>
     console.error('[Startup] Integration check failed', { err: err.message })
   );
+  require('./services/ariel-referral-card').ensureArielReferralCard().then((out) => {
+    console.log('[Startup] Ariel referral card', out && out.action);
+  }).catch((err) => {
+    console.error('[Startup] Ariel referral card failed', { err: err.message });
+  });
   ensureEmailReplyWebhooks().catch((err) =>
     console.error('[Startup] EMAIL_REPLY webhook check failed', { err: err.message })
   );
