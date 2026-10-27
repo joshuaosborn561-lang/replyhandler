@@ -275,14 +275,7 @@ function normalizeThreadSteps(threadContext, {
   return merged;
 }
 
-function enrichLinesHtml(enrichment) {
-  const e = enrichment || {};
-  const rows = [
-    ['Email', e.email],
-    ['Cell', e.phone],
-    ['LinkedIn', e.linkedinUrl],
-    ['Website', e.website],
-  ];
+function labelRowsHtml(rows) {
   return rows
     .map(([label, val]) => {
       if (!val) {
@@ -295,6 +288,16 @@ function enrichLinesHtml(enrichment) {
       return `<tr><td style="padding:2px 12px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;">${cell}</td></tr>`;
     })
     .join('');
+}
+
+function enrichLinesHtml(enrichment) {
+  const e = enrichment || {};
+  return labelRowsHtml([
+    ['Email', e.email],
+    ['Cell', e.phone],
+    ['LinkedIn', e.linkedinUrl],
+    ['Website', e.website],
+  ]);
 }
 
 function enrichLinesText(enrichment) {
@@ -387,6 +390,65 @@ function buildClientNotifyEmail({
 }
 
 /**
+ * Same layout as the prospect-reply notify email (FYI line, notes line, Prospect table, a card
+ * for the body) for a meeting a caller booked on a call. The card carries Allo's call summary.
+ */
+function buildBookedMeetingNotifyEmail({
+  prospect,
+  clientName,
+  listName,
+  callerFirstName,
+  callAtLabel,
+  summary,
+  noSummaryText,
+}) {
+  const p = prospect || {};
+  const name = String(p.name || p.company || 'Prospect').trim() || 'Prospect';
+  const by = String(callerFirstName || '').trim();
+  const subject = `Meeting booked: ${name}${clientName ? ` · ${clientName}` : ''}`;
+  const list = String(listName || '').trim();
+  const body = String(summary || '').trim() || noSummaryText;
+  const status = ['Booked on the call', callAtLabel].filter(Boolean).join(' · ');
+  const rows = [
+    ['Name', p.name],
+    ['Company', p.company],
+    ['Title', p.title],
+    ['Email', p.email],
+    ['Cell', p.phone],
+  ];
+
+  const htmlBody = `
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
+  <p>FYI — ${by ? `${escapeHtml(by)} just` : 'We just'} booked a meeting with <strong>${escapeHtml(name)}</strong>${list ? ` (${escapeHtml(list)})` : ''}.</p>
+  <p>${escapeHtml(FYI_NOTES_LINE)}</p>
+  <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
+  <table style="border-collapse:collapse;font-size:14px;">${labelRowsHtml(rows)}</table>
+  <h3 style="margin:22px 0 8px;font-size:14px;">Call summary</h3>
+  <div style="margin:0 0 16px 0;">
+    <div style="font-size:12px;color:#666;margin:0 0 6px 0;">${escapeHtml(status)}</div>
+    <div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">
+      <div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(body)}</div>
+    </div>
+  </div>
+</div>`.trim();
+
+  const textBody = [
+    `FYI — ${by ? `${by} just` : 'We just'} booked a meeting with ${name}${list ? ` (${list})` : ''}.`,
+    FYI_NOTES_LINE,
+    '',
+    'Prospect',
+    ...rows.map(([k, v]) => `${k}: ${v || 'not found'}`),
+    '',
+    'Call summary',
+    status,
+    '',
+    body,
+  ].join('\n');
+
+  return { subject, htmlBody, textBody };
+}
+
+/**
  * Inbound-only copy of the same inbox-thread email, used by campaign-mapped
  * forwards. No "we just replied" line and no enrichment spend.
  */
@@ -429,6 +491,7 @@ function buildInboundForwardEmail({
 
 module.exports = {
   buildClientNotifyEmail,
+  buildBookedMeetingNotifyEmail,
   buildInboundForwardEmail,
   normalizeThreadSteps,
   pickRicherThreadContext,

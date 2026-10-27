@@ -1,26 +1,29 @@
 /**
- * Email Josh when a meeting a caller booked on a call lands in the #meetings-booked Slack channel.
+ * Email the booked client (and Josh) when a meeting a caller booked on a call lands in the
+ * #meetings-booked Slack channel.
  *
  * booking-bridge `log-booking` posts the already-resolved fields here (Allo call summary and the
- * prospect's name, company, email, phone, title); this module only formats and sends. The recipient
- * is fixed by config (BOOKED_MEETING_EMAIL_TO, default joshua@salesglidergrowth.com) and is never
- * taken from the request, so the endpoint cannot be used to mail anyone else.
+ * prospect's name, company, email, phone, title); this module resolves recipients and sends.
+ * Recipients are never taken from the request:
+ *   To  = the booked client's always-CC list (clients.cc_emails / cc_email), the same list the
+ *         positive-reply notify email goes to
+ *   CC  = Josh (BOOKED_MEETING_EMAIL_TO, default joshua@salesglidergrowth.com)
+ *   no always-CC configured (or the client cannot be resolved) = To Josh only.
+ * Layout, subject style and notes line match the positive-reply notify email
+ * (buildBookedMeetingNotifyEmail in client-notify-email.js). Reply-To is the same FYI reply-to.
  */
 
 const gmail = require('./gmail-send');
+const db = require('../db');
+const { buildBookedMeetingNotifyEmail } = require('./client-notify-email');
+const { alwaysCcEmails, parseEmailList } = require('./client-cc');
+const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
+const { fyiReplyTo } = require('../utils/fyi-notify');
 
 const DEFAULT_TO = 'joshua@salesglidergrowth.com';
 const EVENT = 'booked_meeting_email';
 const SEEN_TTL_MS = 60 * 60 * 1000;
 const seen = new Map();
-
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 function str(v, max = 500) {
   if (v === null || v === undefined) return '';
@@ -37,17 +40,16 @@ function parseBookedMeetingPayload(body) {
   const b = body && typeof body === 'object' ? body : {};
   if (String(b.event || '') !== EVENT) return { ok: false, error: 'unsupported_event' };
   const p = b.prospect && typeof b.prospect === 'object' ? b.prospect : {};
-  const summary = String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000);
   const parsed = {
     bookingId: str(b.booking_id, 100),
     alloCallId: str(b.allo_call_id, 100),
     caller: str(b.caller, 200),
     client: str(b.client, 200),
+    clientSlug: str(b.client_slug, 100).toLowerCase(),
     list: str(b.list, 200),
     callAt: str(b.call_at, 60),
-    summary,
+    summary: String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000),
     summarySource: str(b.summary_source, 40),
-    recordingUrl: /^https:\/\//i.test(String(b.recording_url || '')) ? str(b.recording_url, 1000) : '',
     prospect: {
       name: str(p.name, 200),
       company: str(p.company, 200),
@@ -76,59 +78,50 @@ function whenLabel(iso) {
 const NO_SUMMARY = 'Allo has not produced a summary for this call yet.';
 
 function buildBookedMeetingEmail(m) {
-  const who = m.prospect.company || m.prospect.name || 'a prospect';
-  const by = m.caller ? m.caller.split(/\s+/)[0] : '';
-  const subject = `Meeting booked: ${who}${m.client ? ` (${m.client})` : ''}${by ? ` via ${by}` : ''}`;
+  const first = m.caller ? m.caller.split(/\s+/)[0] : '';
+  return buildBookedMeetingNotifyEmail({
+    prospect: m.prospect,
+    clientName: m.client,
+    listName: m.list,
+    callerFirstName: first,
+    callAtLabel: whenLabel(m.callAt),
+    summary: m.summary,
+    noSummaryText: NO_SUMMARY,
+  });
+}
 
-  const rows = [
-    ['Name', m.prospect.name],
-    ['Company', m.prospect.company],
-    ['Title', m.prospect.title],
-    ['Email', m.prospect.email],
-    ['Phone', m.prospect.phone],
-  ];
-  const meta = [
-    ['Client', m.client],
-    ['List', m.list],
-    ['Booked by', m.caller],
-    ['Call time', whenLabel(m.callAt)],
-  ].filter(([, v]) => v);
+/**
+ * The booked client's always-CC addresses. Matches the booking's client to active ReplyHandler
+ * clients the same way the booking bridge does (slug aliases, then exact client name); when more
+ * than one active client matches, their lists are merged. Throws on a DB error.
+ */
+async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.query.bind(db) } = {}) {
+  const names = [
+    ...(CLIENT_SLUG_ALIASES[clientSlug] || []),
+    ...(clientName ? [clientName] : []),
+  ].map((n) => String(n).trim().toLowerCase()).filter(Boolean);
+  if (!names.length) return { clients: [], always: [] };
+  const { rows } = await query(
+    `SELECT id, name, cc_emails, cc_email FROM clients
+      WHERE active IS DISTINCT FROM false
+        AND lower(name) = ANY($1::text[])`,
+    [names]
+  );
+  const always = [];
+  for (const row of rows) {
+    for (const email of alwaysCcEmails(row)) if (!always.includes(email)) always.push(email);
+  }
+  return { clients: rows.map((r) => r.name), always };
+}
 
-  const summary = m.summary || NO_SUMMARY;
-  const text = [
-    `Meeting booked${by ? ` by ${by}` : ''}.`,
-    '',
-    'PROSPECT',
-    ...rows.map(([k, v]) => `${k}: ${v || '-'}`),
-    '',
-    'CALL SUMMARY (Allo)',
-    summary,
-    '',
-    ...meta.map(([k, v]) => `${k}: ${v}`),
-    ...(m.recordingUrl ? [`Recording: ${m.recordingUrl}`] : []),
-  ].join('\n');
-
-  const cell = 'padding:4px 12px 4px 0;vertical-align:top;';
-  const contactRows = rows.map(([k, v]) => {
-    let val = escapeHtml(v || '-');
-    if (k === 'Email' && v) val = `<a href="mailto:${escapeHtml(v)}">${escapeHtml(v)}</a>`;
-    return `<tr><td style="${cell}color:#666;">${k}</td><td style="${cell}"><b>${val}</b></td></tr>`;
-  }).join('');
-  const metaLine = meta.map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(v)}`).join(' &middot; ');
-  const html = [
-    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111;">',
-    `<p><b>Meeting booked${by ? ` by ${escapeHtml(by)}` : ''}.</b></p>`,
-    `<table style="border-collapse:collapse;">${contactRows}</table>`,
-    '<p style="margin:16px 0 4px;color:#666;">Call summary (Allo)</p>',
-    `<div style="white-space:pre-wrap;">${escapeHtml(summary)}</div>`,
-    metaLine ? `<p style="margin-top:16px;color:#666;font-size:12px;">${metaLine}</p>` : '',
-    m.recordingUrl
-      ? `<p style="font-size:12px;"><a href="${escapeHtml(m.recordingUrl)}">Call recording</a></p>`
-      : '',
-    '</div>',
-  ].join('');
-
-  return { subject, text, html };
+/**
+ * To = client always-CC (else Josh), CC = Josh when the client is on To. Josh is never dropped.
+ */
+function buildRecipients({ always, josh }) {
+  const owner = parseEmailList(josh);
+  const clientList = (always || []).filter((e) => !owner.includes(e));
+  if (!clientList.length) return { to: owner, cc: [] };
+  return { to: clientList, cc: owner };
 }
 
 function alreadySent(key, now = Date.now()) {
@@ -136,23 +129,35 @@ function alreadySent(key, now = Date.now()) {
   return seen.has(key);
 }
 
-async function handleBookedMeetingEmail(body, { send = gmail.sendMail, now = Date.now(), env = process.env } = {}) {
+async function handleBookedMeetingEmail(body, {
+  send = (m) => gmail.sendMail(m),
+  now = Date.now(),
+  env = process.env,
+  resolveCc = resolveClientAlwaysCc,
+} = {}) {
   const parsed = parseBookedMeetingPayload(body);
   if (!parsed.ok) return { status: 400, body: { ok: false, error: parsed.error } };
   const m = parsed.value;
   const key = `${m.bookingId}|${m.alloCallId}`;
   if (alreadySent(key, now)) return { status: 200, body: { ok: true, deduped: true } };
 
-  const { subject, text, html } = buildBookedMeetingEmail(m);
-  const to = recipient(env);
+  let always = [];
   try {
-    await send({ to, subject, htmlBody: html, textBody: text });
+    ({ always } = await resolveCc({ clientSlug: m.clientSlug, clientName: m.client }));
+  } catch (err) {
+    // Never lose Josh's copy because the client lookup failed.
+    console.warn('[BookedMeetingEmail] client always-CC lookup failed, sending to Josh only', { err: err.message });
+  }
+  const { to, cc } = buildRecipients({ always, josh: recipient(env) });
+  const { subject, textBody, htmlBody } = buildBookedMeetingEmail(m);
+  try {
+    await send({ to, cc, replyTo: fyiReplyTo(env), subject, htmlBody, textBody });
   } catch (err) {
     console.error('[BookedMeetingEmail] send failed', { err: err.message });
     return { status: 502, body: { ok: false, error: 'send_failed' } };
   }
   seen.set(key, now);
-  return { status: 200, body: { ok: true, sent: true } };
+  return { status: 200, body: { ok: true, sent: true, to, cc } };
 }
 
 function _resetSeenForTests() {
@@ -166,6 +171,8 @@ module.exports = {
   recipient,
   parseBookedMeetingPayload,
   buildBookedMeetingEmail,
+  resolveClientAlwaysCc,
+  buildRecipients,
   handleBookedMeetingEmail,
   _resetSeenForTests,
 };
