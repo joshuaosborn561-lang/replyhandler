@@ -161,6 +161,9 @@ async function markDisqualified({
     );
   }
 
+  // Follow-up card sequence (no-op unless it ever enrolled this lead).
+  await require('./followup-sequence').stopSequencesForLead(reply, 'disqualified');
+
   // Lazy require avoids a cycle with outbound-follow-up (which checks DQ on schedule).
   const { cancelPendingForThread } = require('./outbound-follow-up');
   const cancelledFollowUps = await cancelPendingForThread(clientId, {

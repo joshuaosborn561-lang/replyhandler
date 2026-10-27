@@ -1510,3 +1510,25 @@ When the primary classifier leaves a reply as OTHER, Claude Sonnet gets one more
 Unchanged: opt-out handling, Gabe Calls forwarding, booking detection, phone lookup on posted cards, and the error alert when a draft fails on a legitimate reply. Bounces are still seen by SmartLead, which owns bounce handling for the lead. Replyhandler never acted on `EMAIL_BOUNCED`, so nothing there changes. Suppressed rows stay visible in the diagnostics endpoint and `resurface-suppressed`.
 
 Guard: `test/channel-only-real-replies.test.js`.
+
+### Follow-up card sequence for positive replies (Oct 27, OFF by default)
+
+Josh's spec for the follow-ups channel. Every step is a Slack card a human clicks. Nothing sends to a lead on its own. Caller is Gabe (`FOLLOWUP_CALLER_NAME`). It is off until `FOLLOWUP_SEQUENCE_ENABLED=true`, and it only enrols positive replies (INTERESTED, MEETING_PROPOSED) that arrive after it is turned on (never a back-fill; `FOLLOWUP_SEQUENCE_START` and a 6h age cap enforce that). It applies to every client. When on, it replaces the old outbound cadence for positive replies (`scheduleAfterOutboundSend` returns early) so a lead never gets two sets of nudges.
+
+Days are BUSINESS days (Mon-Fri, skipping New Year's Day, Memorial Day, July 4, Labor Day, Thanksgiving and the day after, and Christmas; a weekend holiday is observed on the nearest weekday). Call cards only come due inside the lead's local business hours (9-5 Mon-Fri, lead time zone, else the client's, else Central). Open times always come from `resolveVerifiedSchedulingSlots`, the same live availability the reply drafts use.
+
+Every call card carries this line and the phone, with one button per outcome (no bare "Connected"; if you spoke to them you pick what they said): Meeting booked (stops the sequence), No answer / left voicemail, Spoke to them: not interested (stops the sequence), Spoke to them: call back later (sequence continues), Wrong number (no more call cards for that lead; emails continue): "Hey {first_name}, this is {caller_name} with {client_name}. We emailed you about {offer + value prop in one sentence}. Did you still want to take a peek at that in the next couple days?"
+
+- Day 0: if there is a phone, the first reply draft says "calling you now" (only inside the lead's call hours) and a call card posts. When Gabe clicks No answer/VM, 5 minutes later an email card says "Hey, just tried you, left you a voicemail" followed by the normal reply with two live times.
+- Day 0, 3 to 4 hours later: call card, no voicemail.
+- Day 1: call card at a different time of day, then an email card "Those times got taken, here are new times" with two fresh live slots (slots already offered are excluded).
+- Day 3: call card with voicemail 2 ("calling about {offer}, I'll send you one more email, if you're still interested we can get this scheduled"), then an email card adding one real proof point, then an "Any thoughts?" card.
+- Day 5: breakup email card ("Don't want to keep emailing you. Did you still want to meet about this, or have priorities changed?").
+- Day 6: final call card plus a voicemail that points to the email. Then stop.
+- No phone: no calling-now line and no call cards; email cards only.
+- The "Does X or Y work for a quick call?" line stays fixed (Josh, Oct 27). LinkedIn-sourced leads get these as LinkedIn messages through the existing send path.
+- Any later inbound reply, a booking, an unsubscribe or a DQ stops the sequence and closes its unsent cards. A reject on one email card skips that step only.
+
+Offer line and proof point come from the client's own campaign copy (SmartLead campaign sequence, else the outbound mail in the lead's thread). The proof point must be a sentence copied word for word from that copy and contain a real number; the offer line may not carry a number the copy lacks. When no real proof exists the Day 3 proof card is held, never invented. A hand-entered row (`POST /admin/followup-sequence/copy`, no key like every admin route) overrides extraction.
+
+Guards: `test/followup-sequence-pure.test.js`, `test/followup-sequence-guards.test.js`, and `test/followup-sequence-db.test.js` (runs only where PGlite is installed).

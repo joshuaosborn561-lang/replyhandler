@@ -156,6 +156,26 @@ function startCron() {
     });
   }
 
+  // ─── Follow-up card sequence for positive replies (OFF by default) ──
+  // FOLLOWUP_SEQUENCE_ENABLED=true turns it on. Every step is a Slack card a
+  // human clicks; nothing is sent to a lead from here.
+  {
+    const { enabled: sequenceEnabled, runSequenceTick } = require('./services/followup-sequence');
+    if (sequenceEnabled()) {
+      cron.schedule('* * * * *', async () => {
+        try {
+          const result = await runSequenceTick();
+          if (result.enrolled || result.posted || result.stopped || result.failed) {
+            console.log('[Cron] Follow-up sequence tick', result);
+          }
+        } catch (err) {
+          console.error('[Cron] Follow-up sequence tick failed', { err: err.message });
+        }
+      });
+      console.log('[Cron] Follow-up card sequence ENABLED');
+    }
+  }
+
   // ─── Weekly voice learning — Fridays ──────────────────────────────
   // Learns from the week's Slack-approved / edited sends and manual
   // SmartLead / HeyReach replies, refreshes RAG, re-synthesizes the voice

@@ -80,7 +80,7 @@ async function getReply(replyId) {
             pr.lead_phone, pr.lead_phone_provider, pr.lead_phone_alt, pr.lead_website,
             pr.phone_enrichment_status, pr.phone_enrichment_error, pr.phone_enriched_at,
             pr.classification, pr.status, pr.draft_reply, pr.enrichment_receipt,
-            pr.created_at, pr.draft_variant,
+            pr.created_at, pr.draft_variant, pr.lead_timezone,
             c.name AS client_name,
             c.reply_enrich_ceiling_usd, c.reply_enrich_ceiling_hot_usd
        FROM pending_replies pr
@@ -349,6 +349,7 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       status: existing.status,
       leadName: existing.lead_name,
       createdAt: existing.created_at,
+      leadTimezone: existing.lead_timezone,
     }) : null;
     if (callNow) {
       draftSql = `,
