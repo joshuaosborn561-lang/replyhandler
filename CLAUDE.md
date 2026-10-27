@@ -66,8 +66,11 @@ Drafts follow the same set: `DRAFT_CLASSIFICATIONS` is only those three
 positives. Decline-mode helpers remain for fallbacks, but declines are not
 Slack-carded.
 
-Note: wrong-person also catches "please contact Jane instead", so genuine
-referrals are currently silenced. Known tradeoff, deliberate.
+Note: wrong-person also catches "please contact Jane instead". A name with
+no email stays silent on that path. A referral whose human text contains
+the other person's email is carded, with a CC action for that address
+(see DECISIONS.md). Do not construct an address from the name, and do not
+read one out of a signature, quoted history, or disclaimer.
 
 ## Josh / SalesGlider draft voice
 

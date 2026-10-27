@@ -49,6 +49,7 @@ const MIGRATION_FILES = [
   '040_decode_inbound_html_entities.sql',
   '042_smartlead_campaign_routes.sql',
   '043_inbound_message_id.sql',
+  '044_referral_cc.sql',
 ];
 
 async function clientsTableExists(client) {

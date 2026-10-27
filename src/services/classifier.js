@@ -18,6 +18,7 @@ const {
   rewriteRawCtapperCalendly,
 } = require('../utils/public-booking-link');
 const claudeReplyDraft = require('./claude-reply-draft');
+const { referralDraftNote } = require('../utils/referred-contact');
 const jevClassifier = require('./jev-classifier');
 const { classifyDuringOutage } = require('../utils/classifier-outage');
 const {
@@ -212,12 +213,19 @@ function fallbackDraftText({
   voicePrompt,
   clientName,
   slotLabels,
+  referredContacts,
 } = {}) {
   void threadContext;
   const name = firstNameFromLead(leadName);
   const [d1, d2] = nextTwoBusinessDayLabels(digestTimezone || DEFAULT_DRAFT_TZ);
   const link = prospectBookingLink({ clientName, bookingLink });
   const msg = String(inboundMessage || '').trim();
+  const handoff = Array.isArray(referredContacts) ? referredContacts.filter((c) => c && c.email) : [];
+  const handoffWho = handoff.length ? (handoff[0].name || 'there') : '';
+  const handoffAlso = handoff.slice(1).map((c) => c.name || c.email).filter(Boolean);
+  const handoffAck = handoff.length
+    ? `Hey ${name}, thanks for pointing me to ${handoffWho}${handoffAlso.length ? ` and ${handoffAlso.join(' and ')}` : ''}. ${handoffWho}, ${name} suggested I reach you. `
+    : '';
   const labels = Array.isArray(slotLabels) ? slotLabels.filter(Boolean) : [];
   const time1 = labels[0] || '';
   const time2 = labels[1] || '';
@@ -232,6 +240,17 @@ function fallbackDraftText({
   const wantLink = typeof includeBookingLink === 'boolean'
     ? includeBookingLink
     : shouldIncludeBookingLink(voicePrompt, clientName);
+
+  if (handoffAck) {
+    if (callback) {
+      return `${handoffAck}${DEEP_ROOTS_CALLER} will call from ${DEEP_ROOTS_FROM_NUMBER}. What time works best?`;
+    }
+    if (inPerson) {
+      return `${handoffAck}Happy to stop by and walk through it. What time works?`;
+    }
+    const linkBit = wantLink && link ? ` Here's the booking link if easier: ${link}` : '';
+    return `${handoffAck}Happy to jump on a quick call and walk through it. What time works?${linkBit}`;
+  }
 
   if (DECLINE_CLASSIFICATIONS.has(classification)) {
     return (
@@ -877,6 +896,7 @@ async function draftOnly({
   factCheckRetryClaims = null,
   slotLabels = null,
   slots = null,
+  referredContacts = null,
 }) {
   if (!assertDraftableClassification(classification)) {
     console.warn('[Classifier] Refusing draft for non-positive classification', {
@@ -931,6 +951,8 @@ async function draftOnly({
     ? 'They already proposed times — confirm or lightly counter those times. Do NOT invent unrelated mid-morning / early afternoon slots.'
     : null;
 
+  const handoffNote = referralDraftNote({ leadName, contacts: referredContacts });
+
   const modeNote = callback
     ? `${mode} MODE: Acknowledge their latest point first, then ask what time works best. Tyler will call from 218-469-3457. No booking URL or two calendar slots.`
     : inPerson
@@ -945,6 +967,7 @@ async function draftOnly({
     `${proposedTimesNote ? `${proposedTimesNote}\n\n` : ''}` +
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
+    (handoffNote ? `${handoffNote}\n\n` : '') +
     `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.` +
     (factCheckRetryClaims && factCheckRetryClaims.length
       ? `\n\n${factCheckRetryHint(factCheckRetryClaims)}`
@@ -965,6 +988,7 @@ async function draftOnly({
     voicePrompt,
     clientName,
     slotLabels: resolvedSlotLabels,
+    referredContacts,
   }), { booking, includeBookingLink, voicePrompt, leadName, clientName });
 
   async function draftWithGemini() {
@@ -1024,6 +1048,7 @@ async function draftOnly({
         draftMode,
         learnedVoiceBlock,
         factCheckRetryClaims,
+        referredContacts,
       });
       const draft = finalizeDraft(result.text, {
         booking, includeBookingLink, voicePrompt, leadName, clientName,

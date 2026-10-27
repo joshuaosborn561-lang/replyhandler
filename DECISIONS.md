@@ -1421,3 +1421,15 @@ Kayla Debiec (kdebiec@embracepetinsurance.com, Parlay campaign 4161772, subject 
 A reply that, after quoted history and a trailing signature, is only a legal disclaimer or a security-gateway footer (Mimecast, Proofpoint, Barracuda, an external-sender banner, and the same kind of notice) is an automated notice: no approval card, no draft, same `automated_notice` path as the mailbox and departure notices. A real sentence plus that footer is classified on the human sentence and the card still shows the full email, footer included. Referral promotion reads the human sentence only, and bare "copying" is not a referral unless it names who was copied. A later SmartLead "Interested" category does not relabel a disclaimer-only row.
 
 Guard: `disclaimer and scanner footers are automated notices` in `test/automated-notice.test.js`
+
+### An email in the referral is a card; a name alone is not a CC (Oct 27)
+
+Ariel Isaac Franco (ariel@orioncityscape.com), Vector campaign "Vector | Big Owners | Clippers" 4242292, subject "Clippers tix", replied at 10:57 AM ET Oct 27 2026: "Hi please talk to Guy at our office. Guy@orioncityscape.com", plus his signature. SmartLead stamped the lead Not Interested (category 3). The webhook at 14:57:10Z logged `suppressed from Slack` with classification `NOT_INTERESTED` and reason `not_interested`. `promoteReferral` refused to override Not Interested and Wrong Person, so no card posted in #vector-ai-replies. The #144 deploy started about a minute later and did not drop this webhook.
+
+That refusal stays for a name with no address ("talk to Guy", "please contact Jane instead", "I've CC'd our ops manager"). Those rows follow the old path: OTHER can still become INTERESTED, and a Not Interested or Wrong Person label stays silent. The card, when one posts, is the normal card. There is no CC button and no CC field.
+
+When the human-written sentence contains the other person's email, the row is carded even if SmartLead said Not Interested or Wrong Person. The card shows the full reply and the detected address, and adds "Approve & send with CC" for that address. Normal Approve does not add it. Edit can change or clear it. Clearing sends with no referral CC. A non-empty field that is not an email, or a CC the provider cannot place on the same thread, sends nothing. The address is the one they typed. It is not guessed from a name, and it is not taken from a signature, quoted history, or a disclaimer. OOO, unsubscribe, remove-me, and automated notices still do not promote.
+
+The referred person is not enrolled in a cold sequence in this change, and the domain is not blocked.
+
+Guard: `test/referral-cc.test.js`, including `a name with no email has no CC option`.

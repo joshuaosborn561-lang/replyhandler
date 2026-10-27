@@ -210,6 +210,7 @@ async function generateClaudeReply({
   draftMode = 'realtime',
   learnedVoiceBlock = '',
   factCheckRetryClaims = null,
+  referredContacts = null,
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
   if (String(draftMode || '').toLowerCase() === 'bulk') {
@@ -321,6 +322,7 @@ async function generateClaudeReply({
     formatExamples(examples),
     '</similar_manual_replies>',
     '',
+    require('../utils/referred-contact').referralDraftNote({ leadName, contacts: referredContacts }),
     'Write the reply now. Acknowledge their latest point before any CTA.',
     factCheckRetryClaims && factCheckRetryClaims.length
       ? `\n${require('../utils/draft-fact-check').factCheckRetryHint(factCheckRetryClaims)}`

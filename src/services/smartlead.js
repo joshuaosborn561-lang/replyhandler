@@ -316,6 +316,7 @@ async function sendReply(apiKey, campaignId, leadId, {
   replyText, emailStatsId, cc, bcc,
   recipient, toEmail, toFirstName,
   replyMessageId, replyEmailTime, replyEmailBody,
+  requireCc = false, requiredCc = null,
 } = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
@@ -369,6 +370,20 @@ async function sendReply(apiKey, campaignId, leadId, {
   if (typeof bcc === 'string') {
     const bccStr = bcc.trim();
     if (bccStr) payload.bcc = bccStr;
+  }
+
+  // A referred-contact send must include cc. Do not POST a reply that would
+  // go out without it.
+  if (requireCc) {
+    const have = String(payload.cc || '').toLowerCase();
+    const need = Array.isArray(requiredCc) && requiredCc.length
+      ? requiredCc
+      : String(payload.cc || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const missing = need.filter((email) => !have.includes(String(email).toLowerCase()));
+    if (!payload.cc || missing.length) {
+      const who = (missing.length ? missing : need).join(', ') || 'the referred contact';
+      throw new Error(`SmartLead reply would go out without CC ${who}. Nothing was sent.`);
+    }
   }
 
   const res = await fetch(url, {

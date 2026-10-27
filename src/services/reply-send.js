@@ -443,7 +443,7 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
   });
 }
 
-async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false } = {}) {
+async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false, referralCc = null } = {}) {
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
@@ -478,6 +478,11 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       replyId: reply.id, lead: reply.lead_name, platform: reply.platform,
     });
     return { skippedDuplicate: true };
+  }
+
+  const referralListEarly = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
+  if (referralListEarly.length && reply.platform !== 'smartlead') {
+    throw new Error(`Cannot CC ${referralListEarly.join(', ')} on this channel. Nothing was sent.`);
   }
 
   if (reply.platform === 'smartlead') {
@@ -562,8 +567,23 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     }
     // Reply-all: CC other humans on the inbound. Loop-in client CC (#106)
     // still applies on Send + CC client and is merged in.
-    const ccMerged = mergeCcLists(replyAll.cc, prospectCc);
+    // A referred-contact CC is explicit. If we cannot put it on the payload,
+    // send nothing.
+    const referralList = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
+    const ccMerged = mergeCcLists(replyAll.cc, prospectCc, referralList);
     if (ccMerged.length) sendOpts.cc = ccMerged.join(', ');
+    if (referralList.length) {
+      const ccLower = String(sendOpts.cc || '').toLowerCase();
+      const missing = referralList.filter((email) => !ccLower.includes(String(email).toLowerCase()));
+      if (reply.platform !== 'smartlead' || missing.length || !sendOpts.cc) {
+        throw new Error(
+          `Cannot CC ${referralList.join(', ')} on this thread. Nothing was sent.`
+        );
+      }
+      sendOpts.requireCc = true;
+      sendOpts.requiredCc = referralList;
+      console.log('[ReplySend] Referral CC', { replyId: reply.id, cc: referralList.join(', ') });
+    }
 
     await smartlead.sendReply(
       client.smartlead_api_key,
@@ -703,6 +723,19 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     }
     }
 
+    if (referralList.length) {
+      try {
+        await db.query(
+          `UPDATE pending_replies SET referral_cc = $1, updated_at = now() WHERE id = $2`,
+          [referralList.join(', '), reply.id]
+        );
+      } catch (err) {
+        console.warn('[ReplySend] referral_cc not stored', {
+          replyId: reply.id, cc: referralList.join(', '), err: err.message,
+        });
+      }
+    }
+
     return {
       clientNotifyError: clientNotifyError || undefined,
       clientCcWarning: clientCcWarning || undefined,
@@ -710,6 +743,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
       prospectCcEmails: prospectCc || undefined,
+      referralCcEmails: referralList.length ? referralList.join(', ') : undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
       leadLinkedinUrl: enrichment?.linkedinUrl || undefined,
