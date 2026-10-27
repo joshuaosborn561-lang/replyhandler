@@ -235,34 +235,27 @@ describe('referral CC is only an address the prospect typed', () => {
     assert.equal(own.emails, undefined);
   });
 
-  it('the fallback thanks Ariel and addresses Guy, and keeps Deep Roots on a callback', () => {
+  it('the fallback is the fixed referral template and does not invent an address', () => {
+    const expected = 'Thank you so much for the contact, Ariel!\n\nHey Guy, would this be worth meeting about for you?';
     const draft = fallbackDraftText({
       leadName: 'Ariel Isaac Franco',
       classification: 'INTERESTED',
+      inboundMessage: ARIEL_PLAIN,
       referredContacts: [{ name: 'Guy', email: 'Guy@orioncityscape.com' }],
       bookingLink: 'https://book.example.com/josh',
       includeBookingLink: true,
-    });
-    assert.match(draft, /thanks for pointing me to Guy/);
-    assert.match(draft, /Guy, Ariel suggested I reach you/);
-    assert.match(draft, /quick call/);
-
-    const deep = fallbackDraftText({
-      leadName: 'Ariel Isaac Franco',
       clientName: 'Deep Roots',
-      classification: 'INTERESTED',
-      referredContacts: [{ name: 'Guy', email: 'Guy@orioncityscape.com' }],
-      bookingLink: 'https://book.example.com/josh',
     });
-    assert.match(deep, /Tyler will call from 218-469-3457/);
-    assert.doesNotMatch(deep, /quick call/);
-    assert.doesNotMatch(deep, /book\.example\.com/);
+    assert.equal(draft, expected);
+    assert.doesNotMatch(draft, /book\.example\.com/);
+    assert.doesNotMatch(draft, /218-469-3457/);
 
     const named = fallbackDraftText({
       leadName: 'Ariel Isaac Franco',
       classification: 'INTERESTED',
       inboundMessage: NAME_ONLY,
     });
+    assert.equal(named, expected);
     assert.doesNotMatch(named, /Guy@/);
   });
 

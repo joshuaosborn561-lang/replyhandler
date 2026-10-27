@@ -70,7 +70,10 @@ Note: wrong-person also catches "please contact Jane instead". A name with
 no email stays silent on that path. A referral whose human text contains
 the other person's email is carded, with a CC action for that address
 (see DECISIONS.md). Do not construct an address from the name, and do not
-read one out of a signature, quoted history, or disclaimer.
+read one out of a signature, quoted history, or disclaimer. The draft for
+any handoff is the fixed two-line template in `referralDraftText` — thank
+the replier, blank line, then address the referred person. Do not freewrite
+it. The mailbox still appends the signature on send.
 
 ## Josh / SalesGlider draft voice
 
@@ -229,6 +232,13 @@ everyone else is still on send.
 anything the webhooks missed, with `recoverUnpostedSlackCards` catching rows
 that were stored but never made it to Slack. This is what recovered the backlog
 after the 413 outage. Do not disable them to "reduce noise"; dedupe instead.
+A suppressed row still counts as already handled, so the poller does not
+insert a second copy. The exception is a referral whose human text contains
+an email: both already-posted checks recover that same row and post one
+card. A name with no email stays suppressed. That recovery is not a time
+window. `POST /admin/refresh-referral-draft` with `leadEmail` or `replyId`
+posts that one card even when the poller counted the row `already_posted`
+or `older_than_lookback`. It does not send.
 
 Both webhook paths dedupe before classifying (`smartleadDuplicateInDb`,
 `heyreachDuplicateInDb` + an in-memory TTL check for HeyReach). Redelivered

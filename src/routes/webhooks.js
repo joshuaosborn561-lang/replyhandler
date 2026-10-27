@@ -774,7 +774,8 @@ async function processSmartleadWebhookAsync({
   // Automated notices are suppressed before SmartLead's category. Otherwise
   // the category is the source of truth for email. Only when SmartLead has
   // not labelled the reply do we ask Jev / Gemini to classify.
-  // The LLM still writes every draft (draftOnly below).
+  // draftOnly writes the draft. A referral handoff is the fixed template,
+  // not a freewritten model draft.
   const slCategory = classifyFromSmartlead(payload, threadContext);
   const notice = automatedNoticeResult(inboundEffective);
   let result;
