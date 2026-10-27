@@ -685,8 +685,12 @@ function looksLikeAutomatedNotice(text) {
   if (/\bthis is an automated message\b/.test(s)) return true;
   if (/\bticket\s*#/.test(s)) return true;
   if (/\bwe have received your request\b/.test(s)) return true;
-  const departed = /\b(no longer employed|no longer with|has left)\b/.test(s);
-  const handoff = /\b(reach out|contact)\b/.test(s);
+  // Dead or unwatched mailbox: "this email account is no longer active",
+  // "the address is no longer in use", "inbox is not regularly monitored".
+  if (/\b(e-?mail|inbox|mailbox|account|address|box)\b[^.!?]{0,60}\b(is |are )?no longer (in use|active|valid|in service|being used|checked|monitored|being monitored)\b/.test(s)) return true;
+  if (/\b(e-?mail|inbox|mailbox|account|address|box)\b[^.!?]{0,40}\b(is |are )?(not|isn'?t) (regularly |actively |being )?(monitored|checked|attended)\b/.test(s)) return true;
+  const departed = /\b(no longer employed|no longer with|has left|no longer part of|no longer a (sales )?(rep|representative|employee|member)|is no longer (at|employed at))\b/.test(s);
+  const handoff = /\b(reach out|contact|e-?mail|direct|forward|send|inquiries)\b/.test(s);
   if (departed && handoff) return true;
   if (isDisclaimerOrScannerOnly(text)) return true;
   return false;
