@@ -78,9 +78,23 @@ function phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }
     const providerLabel = Object.prototype.hasOwnProperty.call(labels, pk) ? labels[pk] : provider;
     return `\n📱 ${escMrkdwn(phone)}${providerLabel ? ` _(${escMrkdwn(providerLabel)})_` : ''}`;
   }
-  // No phone on file: show nothing (Josh, Oct 20) — no empty/"not found" label.
+  // No phone on file: the reason line comes from phoneMissingLine (Josh, Oct 27).
   void phoneEnrichmentStatus;
   return '';
+}
+
+/**
+ * No phone on the card: one short line saying why (Josh, Oct 27 2026), so a
+ * FullEnrich miss reads differently from out of credits. Empty when we have a
+ * phone or an alt number, or when no reason is known yet (card still posting).
+ */
+function phoneMissingLine({
+  leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt,
+} = {}) {
+  if (String(leadPhone || '').trim() || String(leadPhoneAlt || '').trim()) return '';
+  const { phoneMissingText } = require('../utils/phone-lookup-reason');
+  const text = phoneMissingText(enrichmentReceipt?.phoneLookup, phoneEnrichmentStatus);
+  return text ? `\n${escMrkdwn(text)}` : '';
 }
 
 function normalizeLinkedinUrl(raw) {
@@ -204,6 +218,7 @@ function leadFieldText({
     `${leadEmail ? ` · ${escMrkdwn(leadEmail)}` : ''}` +
     phoneEnrichmentLine({ leadPhone, phoneProvider, phoneEnrichmentStatus }) +
     altPhoneLine(leadPhone, leadPhoneAlt) +
+    phoneMissingLine({ leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt }) +
     linkedinUrlLine(leadLinkedinUrl) +
     websiteUrlLine(normalizeWebsiteUrl(leadWebsite) || websiteFromLeadEmail(leadEmail)) +
     locationLine(leadLocation, leadTimezone) +

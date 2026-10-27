@@ -573,6 +573,9 @@ async function completeCardLinks({
     || callNowSwap
     || extra.phoneEnrichmentStatus === 'not_found'
     || extra.phoneEnrichmentStatus === 'failed'
+    || (!extra.phone && !extra.phoneAlt
+        && JSON.stringify(extra.enrichmentReceipt?.phoneLookup || null)
+          !== JSON.stringify(payload.enrichmentReceipt?.phoneLookup || null))
     || !icpVerdictEquals(payload.leadIcpVerdict, icp);
 
   if (changed) {

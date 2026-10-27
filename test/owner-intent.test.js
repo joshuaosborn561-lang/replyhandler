@@ -943,12 +943,12 @@ test('Slack campaign field shows the campaign name', () => {
     reversal('Slack campaign field shows the campaign name', 'approve confirmation no longer resolves campaign name'));
 });
 
-// ── Decision: missing phone says "phone number not found" ─────────────
-// "and if you cant find one say phone number not found"
-// Josh, Oct 20 2026 (reverses the earlier "phone number not found" label):
-// "where the hell are the phone numbers on the cards" — show the phone when we
-// have one; if none is on file, show nothing rather than a blank/not-found label.
-test('missing phone shows no phone line on Slack', () => {
+// ── Decision: missing phone says WHY, never "phone number not found" ──
+// Josh, Oct 20 2026: show nothing rather than a blank/"phone number not found" label.
+// Josh, Oct 27 2026: "just say when you can't find a phone number from FE so i
+// know if its that or no credits" -> a short reason line (phoneMissingLine:
+// FullEnrich found none / out of credits / timed out / errored / not run).
+test('missing phone never uses the bare "phone number not found" label', () => {
   const slackService = read('src/services/slack.js');
   const fnStart = slackService.indexOf('function phoneEnrichmentLine');
   const fnEnd = slackService.indexOf('/** Slack block-quote', fnStart);
@@ -957,7 +957,7 @@ test('missing phone shows no phone line on Slack', () => {
     slackService.slice(fnStart, fnEnd),
     /phone number not found/,
     reversal(
-      'missing phone shows no phone line on Slack',
+      'missing phone never uses the bare "phone number not found" label',
       'a not-found phone label came back'
     )
   );

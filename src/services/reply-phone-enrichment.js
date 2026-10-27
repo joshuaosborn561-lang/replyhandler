@@ -41,6 +41,8 @@ function shouldSkipEnrichment(classification) {
   return SKIP_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
 }
 
+const { phoneLookupFromHit, phoneLookupFromError } = require('../utils/phone-lookup-reason');
+const { allowsTier } = require('./reply-enrich-policy');
 const { callNowDraft, CALL_NOW_VARIANT } = require('../utils/call-now-variant');
 
 function storedResult(reply) {
@@ -311,6 +313,17 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
       if (!email) email = phoneStep.hit.email || email;
     }
 
+    // Josh (Oct 27 2026): say why a card has no phone (FullEnrich found none vs
+    // out of credits vs timeout vs error vs not run). Rendered by slack.js.
+    if (!phone && !phoneAlt) {
+      const lookup = phoneLookupFromHit({
+        fullenrich: phoneStep.hit?.fullenrich || null,
+        skipped: phoneStep.skipped || null,
+        fullenrichAllowed: allowsTier(phoneCap, 'fullenrich'),
+      });
+      if (lookup) receipt.phoneLookup = lookup;
+    }
+
     receipt.spentUsd = Number(spentUsd.toFixed(6));
     const status = phone || email || linkedinUrl || website ? 'found' : 'not_found';
 
@@ -386,18 +399,26 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
     });
     return storedResult(rows[0]);
   } catch (err) {
+    const failReceipt = {
+      ...(existing.enrichment_receipt && typeof existing.enrichment_receipt === 'object'
+        ? existing.enrichment_receipt : {}),
+      phoneLookup: phoneLookupFromError(err),
+      at: new Date().toISOString(),
+    };
     await db.query(
       `UPDATE pending_replies
           SET phone_enrichment_status = 'failed',
               phone_enrichment_error = $1,
+              enrichment_receipt = $3::jsonb,
               phone_enriched_at = now(),
               updated_at = now()
         WHERE id = $2`,
-      [String(err.message || err).slice(0, 1000), replyId]
+      [String(err.message || err).slice(0, 1000), replyId, JSON.stringify(failReceipt)]
     );
     console.error('[ReplyEnrich] failed', { replyId, err: err.message });
     return {
       ...storedResult(existing),
+      receipt: failReceipt,
       status: 'failed',
       error: err.message,
     };
