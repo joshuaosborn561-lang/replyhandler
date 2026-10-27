@@ -50,7 +50,7 @@ function lastOutboundText(threadContext) {
 function outboundOfferedToSendBookingLink(threadContext) {
   const last = lastOutboundText(threadContext).toLowerCase();
   if (!last) return false;
-  if (/https?:\/\/\S*(calendly|cal\.com|savvycal|booking)/i.test(last)) return true;
+  if (/https?:\/\/\S*(calendly|cal\.com|savvycal|tidycal|booking)/i.test(last)) return true;
   return (
     /send (you )?(a |the )?(booking |calendly |calendar )?link/.test(last)
     || /booking link if/.test(last)
@@ -71,7 +71,7 @@ function looksLikeBookingLinkRequest(inboundMessage, threadContext) {
 
   // Explicit ask for the link / calendar
   if (
-    /\b(calendly|cal\.com|savvycal)\b/.test(m)
+    /\b(calendly|cal\.com|savvycal|tidycal)\b/.test(m)
     || /\b(booking|calendar|schedule) link\b/.test(m)
     || /\bsend (me )?(the |a )?(link|calendar|calendly|booking)\b/.test(m)
     || /\b(share|drop|email|forward) (me )?(the |a )?(link|calendar|calendly)\b/.test(m)
@@ -106,7 +106,7 @@ function stripBookingUrls(text, bookingLink) {
   if (link) {
     s = s.split(link).join('').replace(/[ \t]+\n/g, '\n').trim();
   }
-  s = s.replace(/https?:\/\/(?:www\.)?(?:calendly\.com|cal\.com|savvycal\.com)\/\S+/gi, '');
+  s = s.replace(/https?:\/\/(?:www\.)?(?:calendly\.com|cal\.com|savvycal\.com|tidycal\.com)\/\S+/gi, '');
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
   return s;
 }

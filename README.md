@@ -55,6 +55,8 @@ cp .env.example .env
 | `ADMIN_API_KEY` | Required. Header on every `/admin` route. Fail-closed if unset |
 | `WEBHOOK_TEST_SECRET` | Optional. Protects `/auth/gmail/connect` when `AUTH_CONNECT_SECRET` is unset |
 | `DEFAULT_BOOKING_TIMEZONE` | Optional. IANA zone for labeling verified slots (default `America/New_York`) |
+| `TIDYCAL_API_TOKEN` | Optional, off by default. TidyCal REST personal access token (Integrations → Advanced → Manage API keys → Personal tokens). Only used when a client's BookingBridge destination is a `tidycal.com` page: open times come from `GET /booking-types/{id}/timeslots`. Unset = TidyCal URLs return no times (link only). |
+| `TIDYCAL_CUSTOM_HOSTS` | Optional JSON `{"parlay.book.example.com":"team/parlay-tech"}` mapping a TidyCal team custom domain to its team path so it is recognised as TidyCal |
 | `FOLLOW_UP_REMINDER_HOURS` | Optional. After you **send** an approved reply, Slack gets a **follow-up nudge** if the prospect hasn’t replied again within this many hours (default `24`) |
 | `HEYREACH_POLL_ENABLED` | Optional. Backstop poller for HeyReach inbox replies if webhooks are late/missed (default `true`) |
 | `HEYREACH_POLL_MINUTES` | Optional. Poll interval in minutes (default `3`) |
