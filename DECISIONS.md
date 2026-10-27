@@ -1510,3 +1510,16 @@ When the primary classifier leaves a reply as OTHER, Claude Sonnet gets one more
 Unchanged: opt-out handling, Gabe Calls forwarding, booking detection, phone lookup on posted cards, and the error alert when a draft fails on a legitimate reply. Bounces are still seen by SmartLead, which owns bounce handling for the lead. Replyhandler never acted on `EMAIL_BOUNCED`, so nothing there changes. Suppressed rows stay visible in the diagnostics endpoint and `resurface-suppressed`.
 
 Guard: `test/channel-only-real-replies.test.js`.
+
+## Force a fresh approval card (admin endpoints)
+
+`POST /admin/heyreach/approval-card` and `POST /admin/post-approval-card` accept `force: true`.
+
+- Force inserts a NEW `pending_replies` row (status `pending`) and posts a card for it. The source row is never updated. Buttons act on the new row, so a card whose send failed (`flagged`, no buttons) can be replaced by a working one.
+- HeyReach force copies the lead, campaign, LinkedIn URL and `thread_context` (conversation and LinkedIn account ids) from the source row and uses the new `draft`. The `/admin/post-approval-card` route already always inserted a row, so there force only enables the checks below and the claim-guard bypass.
+- Force skips the duplicate checks (`card_already_posted`, `duplicate_card`, and the "a sibling already has a card" claim). It does NOT skip: a sent reply (`already_sent`), a lead in `disqualified_prospects`, a `disqualified` row for the lead, or an unsubscribe (`REMOVE_ME` / suppression `unsubscribe`). Those return 409 with `reason`.
+- Optional `thread_ts` posts the card inside that Slack thread. Optional `channelId` (or `route: "followup"`, the shared follow-ups channel) posts to another channel; the client and send path still come from the row, not the channel.
+- A forced row that never gets a card is set to `skipped` so no recovery job posts it later.
+- Nothing is sent. A person still clicks Approve or Edit & send.
+
+Guard: `test/force-approval-card.test.js`.

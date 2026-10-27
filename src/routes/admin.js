@@ -16,6 +16,7 @@ const {
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
+const forceCard = require('../services/force-approval-card');
 const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
 
 const router = Router();
@@ -302,12 +303,27 @@ router.post('/admin/post-approval-card', async (req, res) => {
     threadTs: threadTsAlt,
     cc_client: ccClientRaw,
     ccClient: ccClientAlt,
+    force: forceRaw,
+    channelId: channelIdRaw,
+    channel_id: channelIdAlt,
+    route: routeRaw,
   } = req.body || {};
+  const forced = forceCard.parseForce(forceRaw);
   const threadTs = String(threadTsRaw || threadTsAlt || '').trim() || null;
   const ccClientVal = ccClientRaw !== undefined ? ccClientRaw : ccClientAlt;
   const ccClient = ccClientVal === true || /^(1|true|yes|on)$/i.test(String(ccClientVal || ''));
   if (threadTs && !/^\d+\.\d+$/.test(threadTs)) {
     return res.status(400).json({ error: 'thread_ts must look like 1234567890.123456' });
+  }
+
+  let channelOverride = null;
+  try {
+    channelOverride = forceCard.resolveChannelOverride({
+      channelId: channelIdRaw ?? channelIdAlt,
+      route: routeRaw,
+    });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
 
   if (!clientId || !leadName || !inboundMessage || !draft || !campaignId || !leadId) {
@@ -320,6 +336,19 @@ router.post('/admin/post-approval-card', async (req, res) => {
     const { rows: [client] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);
     if (!client || !client.active) {
       return res.status(404).json({ error: 'client not found or inactive' });
+    }
+
+    if (forced) {
+      // Force always inserts a new row (this route already does). It still
+      // refuses a lead who unsubscribed or was disqualified.
+      const blocked = await forceCard.findForceBlock({
+        clientId,
+        platform: 'smartlead',
+        campaignId: String(campaignId),
+        leadId: String(leadId),
+        leadEmail: leadEmail || null,
+      });
+      if (blocked) forceCard.throwBlocked(blocked);
     }
 
     const lastOut = String(lastOutboundMessage || '').trim();
@@ -352,7 +381,7 @@ router.post('/admin/post-approval-card', async (req, res) => {
 
     const slackResult = await postProspectSlackCard({
       token: client.slack_bot_token,
-      channelId: client.slack_channel_id,
+      channelId: channelOverride || client.slack_channel_id,
       clientId,
       platform: 'smartlead',
       campaignId: String(campaignId),
@@ -362,6 +391,8 @@ router.post('/admin/post-approval-card', async (req, res) => {
       replyId: reply.id,
       postInThread: false,
       threadTs,
+      // Force skips the "a sibling already has a card" check on purpose.
+      claimFn: forced ? forceCard.makeForceClaim() : null,
       card: {
         showCcClientButton: ccClient,
         replyId: reply.id,
@@ -377,16 +408,28 @@ router.post('/admin/post-approval-card', async (req, res) => {
       },
     });
 
+    if (forced && (slackResult?.skipped || !slackResult?.ts)) {
+      await forceCard.parkForcedRow((...args) => db.query(...args), reply.id);
+      return res.status(409).json({
+        ok: false, reason: slackResult?.reason || 'not_posted', replyId: reply.id, forced: true,
+      });
+    }
+
     return res.status(201).json({
       ok: true,
       replyId: reply.id,
       slackMessageTs: slackResult.ts,
       threadTs,
+      channelId: channelOverride || client.slack_channel_id,
       ccClientButton: ccClient,
+      forced,
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
-    return res.status(500).json({ error: err.message });
+    return res.status(err.status || 500).json({
+      error: err.message,
+      ...(err.reason ? { reason: err.reason } : {}),
+    });
   }
 });
 
@@ -417,7 +460,14 @@ router.post('/admin/resurface-suppressed', async (req, res) => {
  * Same row, same inbound — does not insert a second card.
  *
  * POST /admin/heyreach/approval-card
- * Body: { replyId, draft, classification? }
+ * Body: { replyId, draft, classification?, reasoning?, force?, thread_ts? }
+ *
+ * force: true posts a NEW card (new pending row copied from replyId, new draft)
+ * even when a card already exists or a send failed. The old row is untouched.
+ * A lead who unsubscribed or was disqualified is still refused (409).
+ * thread_ts posts the card inside that Slack thread. channelId (or
+ * route: 'followup') posts to another channel than the client's default.
+ * Never sends anything.
  */
 /**
  * Rewrite referral drafts to the fixed template.
@@ -462,11 +512,18 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
       draft: req.body?.draft,
       classification: req.body?.classification,
       reasoning: req.body?.reasoning,
+      force: req.body?.force,
+      threadTs: req.body?.thread_ts ?? req.body?.threadTs,
+      channelId: req.body?.channelId ?? req.body?.channel_id,
+      route: req.body?.route,
     });
     return res.status(result.posted ? 201 : 200).json(result);
   } catch (err) {
     console.error('[Admin] heyreach approval card error', { err: err.message });
-    return res.status(err.status || 500).json({ error: err.message });
+    return res.status(err.status || 500).json({
+      error: err.message,
+      ...(err.reason ? { reason: err.reason } : {}),
+    });
   }
 });
 
