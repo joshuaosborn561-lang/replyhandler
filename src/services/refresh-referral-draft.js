@@ -129,6 +129,7 @@ function cardPayload(row, draft, contacts) {
     leadPhone: row.lead_phone || undefined,
     phoneProvider: row.lead_phone_provider || undefined,
     phoneEnrichmentStatus: row.phone_enrichment_status || undefined,
+    enrichmentReceipt: (row.enrichment_receipt && row.enrichment_receipt.phoneLookup) ? { phoneLookup: row.enrichment_receipt.phoneLookup } : undefined,
     leadLinkedinUrl: row.linkedin_url || undefined,
     leadWebsite: row.lead_website || undefined,
     leadPhoneAlt: row.lead_phone_alt || undefined,

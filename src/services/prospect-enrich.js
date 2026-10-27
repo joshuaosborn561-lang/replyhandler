@@ -98,6 +98,26 @@ function emptyResult({
     phoneType: null,
     deprecatedMaxTier: null,
     stoppedAtCeiling: false,
+    fullenrich: null,
+  };
+}
+
+const FE_MOBILE_OUTCOMES = new Set([
+  'found', 'no_match', 'out_of_credits', 'timeout', 'error', 'not_run',
+]);
+
+/**
+ * email-waterfall /enrich-one reports what FullEnrich did for the mobile
+ * lookup: { enabled, mobile, credits_exhausted }. Older waterfall builds send
+ * nothing, so null means "unknown", never "no match".
+ */
+function normalizeFullenrichOutcome(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const mobile = FE_MOBILE_OUTCOMES.has(raw.mobile) ? raw.mobile : 'not_run';
+  return {
+    enabled: raw.enabled === true,
+    mobile,
+    creditsExhausted: raw.credits_exhausted === true,
   };
 }
 
@@ -131,6 +151,7 @@ function fromHit(hit, input) {
     phoneType: hit?.phone_type || hit?.line_type || null,
     deprecatedMaxTier: hit?.deprecated_max_tier || null,
     stoppedAtCeiling: Boolean(hit?.stopped_at_ceiling),
+    fullenrich: normalizeFullenrichOutcome(hit?.fullenrich),
     rawHit: hit && typeof hit === 'object' ? hit : null,
   };
 }

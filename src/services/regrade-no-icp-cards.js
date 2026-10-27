@@ -35,6 +35,7 @@ function cardPayload(row, verdict) {
     leadPhone: row.lead_phone || undefined,
     phoneProvider: row.lead_phone_provider || undefined,
     phoneEnrichmentStatus: row.phone_enrichment_status || undefined,
+    enrichmentReceipt: (row.enrichment_receipt && row.enrichment_receipt.phoneLookup) ? { phoneLookup: row.enrichment_receipt.phoneLookup } : undefined,
     leadLinkedinUrl: row.linkedin_url || undefined,
     leadWebsite: row.lead_website || undefined,
     leadPhoneAlt: row.lead_phone_alt || undefined,
@@ -75,7 +76,7 @@ async function regradeNoIcpCards({
   const { rows } = await dbClient.query(
     `SELECT pr.id, pr.status, pr.classification, pr.draft_reply, pr.inbound_message,
             pr.slack_message_ts, pr.lead_name, pr.lead_email, pr.lead_phone,
-            pr.lead_phone_provider, pr.phone_enrichment_status, pr.linkedin_url,
+            pr.lead_phone_provider, pr.phone_enrichment_status, pr.enrichment_receipt, pr.linkedin_url,
             pr.lead_website, pr.icp_verdict, pr.platform, pr.campaign_id, pr.campaign_name,
             c.slack_bot_token, c.slack_channel_id, c.name AS client_name
        FROM pending_replies pr
