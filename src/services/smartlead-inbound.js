@@ -19,8 +19,8 @@ const {
 const { messageIdOfMessage } = require('../utils/inbound-message-id');
 const {
   parseInboundFromPayload,
-  cleanInboundReply,
   cleanInboundOrRaw,
+  looksLikeAutomatedNotice,
   preferFullerInbound,
   latestInboundReplyMeta,
   normalizeSmartleadLeadId,
@@ -149,6 +149,14 @@ async function applyInboundCategory(existing, payload, database, patchCard) {
   const sl = classifyFromSmartlead(payload);
   if (!sl?.classification) return existing;
   if (String(existing.classification || '').toUpperCase() === sl.classification) return existing;
+  // A later Interested category must not relabel a disclaimer-only reply
+  // or patch an approval card onto it. A real human reply still updates.
+  if (
+    String(existing.classification || '').toUpperCase() === 'AUTOMATED_NOTICE'
+    || looksLikeAutomatedNotice(existing.inbound_message)
+  ) {
+    return existing;
+  }
   const query = database.query.bind(database);
   const { rows } = await query(
     `UPDATE pending_replies

@@ -6,6 +6,7 @@ const {
   looksLikeAutomatedNotice,
   looksLikeNotInterested,
   looksLikeWrongPerson,
+  humanTextForClassification,
 } = require('../utils/smartlead-webhook-helpers');
 const { looksLikeMixedIntent, promoteMixedIntent } = require('../utils/mixed-intent');
 const {
@@ -1088,14 +1089,17 @@ async function classifyAndDraft(
     preGate = 'not_interested';
   }
 
+  // Classify the human sentences. The draft still receives the full email,
+  // footer included (inbound canon: drafter input is the full text).
+  const forModel = humanTextForClassification(inboundMessage).trim() || inboundMessage;
   if (!classification) {
-    const result = await classifyReply(threadContext, inboundMessage);
+    const result = await classifyReply(threadContext, forModel);
     classification = result.classification;
     pitchToUsProb = result.pitchToUsProb;
     classifySource = result.source;
   }
   if (preGate !== 'ooo' && preGate !== 'wrong_person' && preGate !== 'automated_notice') {
-    classification = promoteMixedIntent(classification, inboundMessage);
+    classification = promoteMixedIntent(classification, forModel);
   }
 
   const { resolveReplyOrdinal } = require('../utils/reply-ordinal');

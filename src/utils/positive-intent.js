@@ -3,6 +3,8 @@
  * hidden as OTHER or NOT_INTERESTED by a classifier miss.
  */
 
+const { humanTextForClassification } = require('./smartlead-webhook-helpers');
+
 const MEETING_RE = [
   /\b(let me know|send( me)?|share|suggest|propose|give me)\b[^.?!]{0,40}\b(a few|a couple( of)?|some)?\s*(days?|times?|slots?)\b/i,
   /\b(set up|schedule|book|hop on|jump on|have|get on)\b[^.?!]{0,20}\b(a |quick )?(call|meeting|chat|zoom|teams)\b/i,
@@ -34,7 +36,11 @@ const OVERRIDABLE = new Set(['OTHER', 'NOT_INTERESTED', 'OBJECTION', '']);
 function applyPositiveIntentGuard(classification, text) {
   const c = String(classification || '').toUpperCase();
   if (!OVERRIDABLE.has(c)) return { classification, overridden: false };
-  const hit = positiveIntentFromText(text);
+  // A disclaimer footer is not the prospect. An empty human remainder
+  // must not be upgraded off phrases that live only in that footer.
+  const human = humanTextForClassification(text);
+  if (!String(human || '').trim()) return { classification, overridden: false };
+  const hit = positiveIntentFromText(human);
   if (!hit) return { classification, overridden: false };
   return { classification: hit, overridden: true, from: c || null };
 }

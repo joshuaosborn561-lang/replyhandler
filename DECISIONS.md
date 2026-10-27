@@ -1411,3 +1411,13 @@ Identity is the email's Message-ID, checked inside the existing claim lock befor
 This does not bring back a stats-id or time-window match. A duplicate card of one email is still worse than a missed reply, and a missed reply is still not acceptable. Two different Message-IDs are two emails even when the words match. That is the correction to "the same text is always a duplicate": the same rendering of one email is a duplicate; a second email is not.
 
 Guard: `test/inbound-canon.test.js`.
+
+## 2026-10-27
+
+### Disclaimer and scanner footers are automated notices
+
+Kayla Debiec (kdebiec@embracepetinsurance.com, Parlay campaign 4161772, subject "Cavaliers tix") replied with only a confidentiality disclaimer and a Mimecast virus-scan footer. Jev classified it OTHER and wrote no draft. The referral matcher then treated "copying" inside "disclosure, copying, distribution" as "prospect looped in a colleague" and promoted OTHER to INTERESTED, so #parlay-replyhandler got an approval card headed SMARTLEAD — INTERESTED with both labels in the footer.
+
+A reply that, after quoted history and a trailing signature, is only a legal disclaimer or a security-gateway footer (Mimecast, Proofpoint, Barracuda, an external-sender banner, and the same kind of notice) is an automated notice: no approval card, no draft, same `automated_notice` path as the mailbox and departure notices. A real sentence plus that footer is classified on the human sentence and the card still shows the full email, footer included. Referral promotion reads the human sentence only, and bare "copying" is not a referral unless it names who was copied. A later SmartLead "Interested" category does not relabel a disclaimer-only row.
+
+Guard: `disclaimer and scanner footers are automated notices` in `test/automated-notice.test.js`
