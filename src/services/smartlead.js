@@ -42,6 +42,8 @@ async function fetchWith429Retry(url, opts = {}, { retries = FETCH_429_RETRIES }
   return lastRes;
 }
 
+const DEFINITE_NO_ACCESS_STATUS = new Set([400, 401, 403, 404]);
+
 /** apiKey prefix → { fetchedAt, list } */
 const categoryListCache = new Map();
 const CATEGORY_LIST_TTL_MS = 30 * 60 * 1000;
@@ -66,10 +68,12 @@ async function getCampaign(apiKey, campaignId) {
   if (!apiKey || campaignId == null || campaignId === '') return null;
   const cid = toSmartleadId(campaignId, 'campaign_id');
   const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url);
+  const res = await fetchWith429Retry(url);
   const body = await res.text();
   if (!res.ok) {
-    throw new Error(`SmartLead getCampaign failed (${res.status}): ${body.slice(0, 300)}`);
+    const err = new Error(`SmartLead getCampaign failed (${res.status}): ${body.slice(0, 300)}`);
+    err.status = res.status;
+    throw err;
   }
   if (!body || !String(body).trim()) {
     throw new Error(`SmartLead getCampaign empty body (${res.status})`);
@@ -121,8 +125,16 @@ async function verifyCampaignAccess(apiKey, campaignId) {
   try {
     const data = await getCampaign(apiKey, campaignId);
     return Boolean(data && (data.id != null || data.name != null));
-  } catch {
-    return false;
+  } catch (err) {
+    // Only a definite "this key cannot see that campaign" answer rejects the
+    // webhook. A 429 / 5xx / network blip must not silently drop a real reply
+    // (the shared master key 429s under load): fail open and let the thread
+    // fetch and the reply body decide.
+    if (DEFINITE_NO_ACCESS_STATUS.has(Number(err && err.status))) return false;
+    console.warn('[SmartLead] campaign access check inconclusive — continuing', {
+      campaignId, status: (err && err.status) || null, err: String(err && err.message).slice(0, 120),
+    });
+    return true;
   }
 }
 
