@@ -946,6 +946,17 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     return false;
   }
 
+  const { extractReferredContacts } = require('../utils/referred-contact');
+  const { ourIdentitiesFromThread } = require('../utils/reply-all');
+  let threadForReferral = reply.thread_context;
+  if (typeof threadForReferral === 'string') {
+    try { threadForReferral = JSON.parse(threadForReferral); } catch { threadForReferral = null; }
+  }
+  const referredContacts = extractReferredContacts(reply.inbound_message, {
+    prospectEmail: reply.lead_email,
+    prospectName: reply.lead_name,
+    ourEmails: ourIdentitiesFromThread(threadForReferral),
+  });
   const policy = applyClientDraftPolicy(client, reply.lead_email, {
     classification: reply.classification,
     draft: reply.draft_reply,
@@ -978,6 +989,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     inboundMessage: reply.inbound_message,
     campaignDisplay: formatCampaignDisplayFromReply(reply),
     lastOutboundMessage: lastOutboundFromThreadContext(reply) || undefined,
+    referredContacts,
   };
 
   const posted = await postProspectSlackCard({

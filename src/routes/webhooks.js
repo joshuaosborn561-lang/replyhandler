@@ -50,7 +50,9 @@ const {
   describeSmartleadInbound,
 } = require('../services/smartlead-inbound');
 const { isColdInbound } = require('../services/heyreach-poller');
-const { buildReplyAll, looksLikeReferral } = require('../utils/reply-all');
+const { buildReplyAll, ourIdentitiesFromThread, emailsFromValue } = require('../utils/reply-all');
+const { promoteReferral } = require('../utils/referral-promotion');
+const { referralCcCsv } = require('../utils/referred-contact');
 
 /** Positive SmartLead classes: always drafted. */
 const SMARTLEAD_DRAFT_ALWAYS = new Set(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
@@ -89,32 +91,29 @@ function automatedNoticeResult(inboundMessage) {
   };
 }
 
-/**
- * Referrals ("I've CC'd X", "talk to my colleague") get a draft.
- * Declines, wrong-person labels, OOO, and automated notices do not.
- */
-function promoteReferral(classification, inboundMessage) {
-  const c = String(classification || '').toUpperCase();
-  if (
-    SMARTLEAD_DRAFT_ALWAYS.has(c)
-    || c === 'REMOVE_ME'
-    || c === 'OOO'
-    || c === 'OUT_OF_OFFICE'
-    || c === 'WRONG_PERSON'
-    || c === 'NOT_INTERESTED'
-    || c === 'AUTOMATED_NOTICE'
-  ) {
-    return { promoted: false, classification };
+function referralOptsFromThread(threadContext, { prospectEmail, prospectName, extraEmails } = {}) {
+  return {
+    prospectEmail,
+    prospectName,
+    ourEmails: [
+      ...ourIdentitiesFromThread(threadContext),
+      ...emailsFromValue(extraEmails),
+    ],
+  };
+}
+
+async function storeReferralCc(replyId, contacts) {
+  const csv = referralCcCsv(contacts);
+  if (!replyId || !csv) return;
+  console.log('[Referral] referred contact', { replyId, cc: csv });
+  try {
+    await db.query(
+      `UPDATE pending_replies SET referral_cc = $1, updated_at = now() WHERE id = $2`,
+      [csv, replyId]
+    );
+  } catch (err) {
+    console.warn('[Referral] referral_cc not stored', { replyId, cc: csv, err: err.message });
   }
-  if (looksLikeAutomatedNotice(inboundMessage)) {
-    return { promoted: false, classification };
-  }
-  const textReason = slackSuppressionReason(inboundMessage);
-  if (textReason === 'wrong_person' || textReason === 'ooo' || textReason === 'automated_notice') {
-    return { promoted: false, classification };
-  }
-  if (!looksLikeReferral(inboundMessage)) return { promoted: false, classification };
-  return { promoted: true, classification: 'INTERESTED' };
 }
 
 const router = Router();
@@ -828,12 +827,29 @@ async function processSmartleadWebhookAsync({
       }
     }
   }
+  let referredContacts = [];
   {
-    const ref = promoteReferral(classification, inboundEffective);
+    promoteReferral.opts = referralOptsFromThread(threadContext, {
+      prospectEmail: leadEmail,
+      prospectName: senderName,
+      extraEmails: [payload.from_email, payload.sl_senders_mailbox, payload.sender_email],
+    });
+    let ref;
+    try {
+      ref = promoteReferral(classification, inboundEffective);
+    } finally {
+      promoteReferral.opts = null;
+    }
+    referredContacts = ref.referredContacts || [];
     if (ref.promoted) {
-      console.log('[Webhook] SmartLead referral reply promoted for draft', { clientId, from: classification, to: ref.classification });
+      console.log('[Webhook] SmartLead referral reply promoted for draft', {
+        clientId, from: classification, to: ref.classification, cc: referralCcCsv(referredContacts),
+      });
       classification = ref.classification;
-      reasoning = `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
+      const who = referralCcCsv(referredContacts);
+      reasoning = who
+        ? `Referral reply (CC ${who}). ${reasoning || ''}`.trim()
+        : `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
     }
   }
 
@@ -881,6 +897,7 @@ async function processSmartleadWebhookAsync({
       return;
     }
     replyRow = claimed.reply;
+    if (referredContacts.length) await storeReferralCc(replyRow.id, referredContacts);
   } else {
     const { rows: [fresh] } = await db.query(
       'SELECT classification FROM pending_replies WHERE id = $1',
@@ -909,6 +926,7 @@ async function processSmartleadWebhookAsync({
         statsId, inboundMessageId || null, replyRow.id,
       ]
     );
+    if (referredContacts.length) await storeReferralCc(replyRow.id, referredContacts);
   }
 
   await maybeForwardInboundReply({
@@ -972,6 +990,7 @@ async function processSmartleadWebhookAsync({
     linkedinUrl: leadData.linkedin_url || leadData.linkedinUrl || payload.linkedin_url || undefined,
     leadWebsite: leadData.website || leadData.company_website || leadData.company_url || undefined,
     replyAllCc: replyAll.cc,
+    referredContacts,
   };
 
   const posted = await postProspectSlackCard({
@@ -1012,6 +1031,7 @@ async function processSmartleadWebhookAsync({
       clientId,
       draftMode: 'realtime',
       slots,
+      referredContacts,
     });
   } catch (err) {
     console.error('[Webhook] SmartLead draft failed after card', { clientId, err: err.message });
@@ -1032,6 +1052,7 @@ async function processSmartleadWebhookAsync({
         clientName: client.name,
         clientId,
         draftMode: 'realtime',
+        referredContacts,
       });
     } catch (err) {
       console.error('[Webhook] SmartLead draft retry failed', { clientId, err: err.message });
@@ -1071,6 +1092,7 @@ async function processSmartleadWebhookAsync({
         draftMode: 'realtime',
         slots,
         factCheckRetryClaims: claims,
+        referredContacts,
       }),
     });
     policy = applyFactCheckToPolicy(policy, factCheck);

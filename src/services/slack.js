@@ -1,5 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
+const { referralCcButtonText } = require('../utils/referred-contact');
 const { decodeHtmlEntities: decodeAllHtmlEntities } = require('../utils/html-entities');
 const { isDeepRootsClient } = require('../utils/meeting-modality');
 const { prepareFollowUpThreadTurns } = require('../utils/follow-up-thread-display');
@@ -479,6 +480,31 @@ function loopInClientBlock(needsClient, whatToSend) {
   };
 }
 
+function referredContactSection(contacts) {
+  const list = (Array.isArray(contacts) ? contacts : []).filter((c) => c && c.email);
+  if (!list.length) return null;
+  const title = list.length === 1 ? 'Referred contact' : 'Referred contacts';
+  const lines = list.map((c) => (c.name ? `${c.name} — ${c.email}` : c.email));
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${title}*\n${lines.map((line) => escMrkdwn(line)).join('\n')}` },
+  };
+}
+
+function referralCcActionsBlock(replyId, contacts) {
+  const label = referralCcButtonText(contacts);
+  if (!label) return null;
+  return {
+    type: 'actions',
+    elements: [{
+      type: 'button',
+      text: { type: 'plain_text', text: label },
+      action_id: 'approve_reply_cc_referral',
+      value: String(replyId),
+    }],
+  };
+}
+
 function sendCcClientActionsBlock(replyId) {
   return {
     type: 'actions',
@@ -912,6 +938,7 @@ function buildDraftApprovalCard({
   leadIcpVerdict, needsReview, needsClient = false, whatToSend = null,
   replyAllCc = null, showCcClientButton = false,
   leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
+  referredContacts = null,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
@@ -994,7 +1021,15 @@ function buildDraftApprovalCard({
         })
       : null;
     if (notice) tail.push(notice);
+    if (String(platform || '').toLowerCase() === 'smartlead') {
+      const referred = referredContactSection(referredContacts);
+      if (referred) tail.push(referred);
+    }
     tail.push(draftApprovalActionsBlock(replyId));
+    if (String(platform || '').toLowerCase() === 'smartlead') {
+      const referralBtn = referralCcActionsBlock(replyId, referredContacts);
+      if (referralBtn) tail.push(referralBtn);
+    }
     if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
       tail.push(sendCcClientActionsBlock(replyId));
     }
@@ -1294,12 +1329,7 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
-async function openEditReplyModal(token, triggerId, {
-  replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
-}) {
-  const slack = getClient(token);
-  const meta = JSON.stringify({ replyId, channelId, messageTs });
-
+function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
   const blocks = [
     {
       type: 'input',
@@ -1315,6 +1345,31 @@ async function openEditReplyModal(token, triggerId, {
       },
     },
   ];
+  const cc = String(referralCc || '').trim();
+  if (cc) {
+    blocks.push({
+      type: 'input',
+      optional: true,
+      block_id: 'referral_cc_block',
+      label: { type: 'plain_text', text: 'CC address — clear this to send with no CC' },
+      element: {
+        type: 'plain_text_input',
+        action_id: 'referral_cc_input',
+        initial_value: cc.slice(0, 2900),
+      },
+    });
+  }
+  return blocks;
+}
+
+async function openEditReplyModal(token, triggerId, {
+  replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
+  referralCc,
+}) {
+  const slack = getClient(token);
+  const meta = JSON.stringify({ replyId, channelId, messageTs });
+
+  const blocks = buildEditReplyBlocks({ initialDraft, referralCc });
 
   const notice = ccAutoNoticeBlock({
     ccEmails: ccEmails || ccEmail,
@@ -1458,6 +1513,8 @@ module.exports = {
   lastThreadTurn,
   draftApprovalActionsBlock,
   openEditReplyModal,
+  buildEditReplyBlocks,
+  referralCcActionsBlock,
   postMorningDigestHeader,
   postAttentionDigestHeader,
   postPendingApprovalDigest,

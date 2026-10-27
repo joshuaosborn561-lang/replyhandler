@@ -5,6 +5,7 @@ const slackService = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
+const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
 const { markMeetingBooked } = require('../services/meeting-booked');
@@ -175,6 +176,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleApprove(action.value, interaction);
     } else if (action.action_id === 'approve_reply_cc_client') {
       await handleApprove(action.value, interaction, { ccClientOnProspect: true });
+    } else if (action.action_id === 'approve_reply_cc_referral') {
+      await handleApprove(action.value, interaction, { referralCcFromRow: true });
     } else if (action.action_id === 'reject_reply') {
       await handleReject(action.value, interaction);
     } else if (action.action_id === 'dq_prospect') {
@@ -202,6 +205,12 @@ async function handleOpenEditModal(replyId, interaction) {
   }
 
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
+  const detectedCc = reply.platform === 'smartlead'
+    ? (String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
+      prospectEmail: reply.lead_email,
+      prospectName: reply.lead_name,
+    })))
+    : '';
   await slackService.openEditReplyModal(client.slack_bot_token, interaction.trigger_id, {
     replyId,
     initialDraft: reply.draft_reply || '',
@@ -210,6 +219,7 @@ async function handleOpenEditModal(replyId, interaction) {
     ccEmail: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
+    referralCc: detectedCc,
   });
 }
 
@@ -246,6 +256,8 @@ async function handleEditModalSubmit(interaction) {
   const draftState = interaction.view.state.values?.draft_block?.draft_input;
   const messageText = (draftState?.value || '').trim();
   if (!messageText) return;
+  const ccState = interaction.view.state.values?.referral_cc_block?.referral_cc_input;
+  const referralCcField = ccState ? String(ccState.value || '') : null;
 
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
@@ -265,7 +277,15 @@ async function handleEditModalSubmit(interaction) {
   const ctx = await slackCardContextFromReply(reply, client);
 
   try {
-    const sendResult = await sendReplyToPlatform(client, reply, messageText) || {};
+    let referralCc = null;
+    if (referralCcField != null) {
+      const parsed = parseReferralCcInput(referralCcField, { prospectEmail: reply.lead_email });
+      if (parsed.error) throw new Error(parsed.error);
+      referralCc = parsed.emails;
+    }
+    const sendResult = await sendReplyToPlatform(client, reply, messageText, {
+      referralCc,
+    }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 
     await db.query(
@@ -348,7 +368,7 @@ async function setCardStatus(token, interaction, text) {
   }
 }
 
-async function handleApprove(replyId, interaction, { ccClientOnProspect = false } = {}) {
+async function handleApprove(replyId, interaction, { ccClientOnProspect = false, referralCcFromRow = false } = {}) {
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
      WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
@@ -378,8 +398,21 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
   const ctx = await slackCardContextFromReply(reply, client);
 
   try {
+    let referralCc = null;
+    if (referralCcFromRow) {
+      const csv = String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
+        prospectEmail: reply.lead_email,
+        prospectName: reply.lead_name,
+      }));
+      const parsed = parseReferralCcInput(csv, { prospectEmail: reply.lead_email });
+      if (parsed.error || !parsed.emails.length) {
+        throw new Error(parsed.error || 'No referred email to CC. Nothing was sent.');
+      }
+      referralCc = parsed.emails;
+    }
     const sendResult = await sendReplyToPlatform(client, reply, reply.draft_reply, {
       ccClientOnProspect,
+      referralCc,
     }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 
@@ -415,6 +448,9 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false 
       }
       if (sendResult.prospectCcEmails) {
         extraFooter += `\nProspect thread CC: ${sendResult.prospectCcEmails}`;
+      }
+      if (sendResult.referralCcEmails) {
+        extraFooter += `\nReferred contact CC: ${sendResult.referralCcEmails}`;
       }
       if (sendResult.clientNotifyError) {
         extraFooter += `\n⚠️ Reply sent, but the client notify copy failed: ${sendResult.clientNotifyError}`;

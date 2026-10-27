@@ -6,7 +6,7 @@ const smartlead = require('./smartlead');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
 const { classifyFromSmartlead, applySmartleadCategory } = require('./smartlead-category');
-const { classifyAndDraft } = require('./classifier');
+const { classifyAndDraft, draftOnly, fallbackDraftText } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
 const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
@@ -19,6 +19,8 @@ const {
   decodeInboundForStorage,
   repostReplyRowToSlack,
   recoverUnpostedSlackCards,
+  inboundAlreadyRecorded,
+  isPostedSlackTs,
 } = require('./reply-dedupe');
 const {
   cleanInboundOrRaw,
@@ -31,6 +33,9 @@ const {
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
 const { maybeForwardInboundReply } = require('./inbound-forward');
+const { promoteReferral } = require('../utils/referral-promotion');
+const { referralCcCsv } = require('../utils/referred-contact');
+const { ourIdentitiesFromThread } = require('../utils/reply-all');
 
 const SL_BASE = 'https://server.smartlead.ai/api/v1';
 
@@ -173,6 +178,110 @@ async function fetchInboxReplies(apiKey, offset, limit) {
   const body = await res.text();
   if (!res.ok) throw new Error(`SmartLead inbox-replies failed (${res.status}): ${body.slice(0, 300)}`);
   try { return JSON.parse(body); } catch { return {}; }
+}
+
+function referralOpts(threadContext, { prospectEmail, prospectName } = {}) {
+  return {
+    prospectEmail,
+    prospectName,
+    ourEmails: ourIdentitiesFromThread(threadContext),
+  };
+}
+
+async function storeReferralCc(replyId, contacts) {
+  const csv = referralCcCsv(contacts);
+  if (!replyId || !csv) return;
+  console.log('[Referral] referred contact', { replyId, cc: csv });
+  try {
+    await db.query(
+      `UPDATE pending_replies SET referral_cc = $1, updated_at = now() WHERE id = $2`,
+      [csv, replyId]
+    );
+  } catch (err) {
+    console.warn('[Referral] referral_cc not stored', { replyId, cc: csv, err: err.message });
+  }
+}
+
+/** A stored suppression is not a card. An email referral gets the one card. */
+async function recoverSuppressedReferral(client, {
+  inbound, leadEmail, leadName, leadId, messageId, threadContext,
+}) {
+  const existing = await inboundAlreadyRecorded(db, {
+    clientId: client.id,
+    platform: 'smartlead',
+    leadId,
+    leadEmail,
+    inboundMessage: inbound,
+    messageId,
+  });
+  if (!existing || existing.status !== 'suppressed') return null;
+  if (isPostedSlackTs(existing.slack_message_ts)) return null;
+  const ref = promoteReferral(existing.classification, inbound, referralOpts(threadContext, {
+    prospectEmail: leadEmail,
+    prospectName: leadName,
+  }));
+  if (!ref.referredContacts?.length) return null;
+  const classification = ref.classification || 'INTERESTED';
+  let draft = '';
+  try {
+    draft = await draftOnly({
+      classification,
+      threadContext,
+      inboundMessage: inbound,
+      leadName: leadName || 'there',
+      voicePrompt: client.voice_prompt,
+      bookingLink: client.booking_link,
+      platform: 'smartlead',
+      clientName: client.name,
+      clientId: client.id,
+      draftMode: 'bulk',
+      referredContacts: ref.referredContacts,
+    });
+  } catch (err) {
+    console.warn('[SmartLeadPoll] Referral redraft failed', { replyId: existing.id, err: err.message });
+  }
+  if (!draft) {
+    draft = fallbackDraftText({
+      leadName: leadName || 'there',
+      inboundMessage: inbound,
+      bookingLink: client.booking_link,
+      classification,
+      voicePrompt: client.voice_prompt,
+      clientName: client.name,
+      referredContacts: ref.referredContacts,
+    });
+  }
+  const { rows } = await db.query(
+    `UPDATE pending_replies
+        SET classification = $1,
+            status = 'pending',
+            suppression_reason = NULL,
+            draft_reply = $2,
+            updated_at = now()
+      WHERE id = $3 AND status = 'suppressed' AND slack_message_ts IS NULL
+      RETURNING *`,
+    [classification, draft || '', existing.id]
+  );
+  const reply = rows[0];
+  if (!reply) return null;
+  await storeReferralCc(reply.id, ref.referredContacts);
+  const csv = referralCcCsv(ref.referredContacts);
+  console.log('[SmartLeadPoll] Suppressed referral with an email promoted to a card', {
+    replyId: reply.id, cc: csv,
+  });
+  const posted = await repostReplyRowToSlack(client, {
+    ...reply,
+    classification,
+    draft_reply: draft || '',
+    inbound_message: reply.inbound_message || inbound,
+    lead_email: leadEmail || reply.lead_email,
+    lead_name: leadName || reply.lead_name,
+    thread_context: reply.thread_context || threadContext,
+  }, {
+    reasoningExtra: `Referral reply (CC ${csv}).`,
+  });
+  if (!posted) return { skipped: 'already_posted', replyId: reply.id };
+  return { posted: true, replyId: reply.id, leadName: reply.lead_name, recoveredReferral: true };
 }
 
 async function processInboxRow(sourceClient, row, options) {
@@ -351,6 +460,16 @@ async function processInboxRow(sourceClient, row, options) {
     emailStatsId: smartleadEmailStatsId,
     messageId,
   })) {
+    const leadNameEarly = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
+    const recoveredReferral = await recoverSuppressedReferral(client, {
+      inbound,
+      leadEmail: row.lead_email || null,
+      leadName: leadNameEarly,
+      leadId,
+      messageId,
+      threadContext,
+    });
+    if (recoveredReferral) return recoveredReferral;
     return { skipped: 'already_posted' };
   }
 
@@ -429,6 +548,59 @@ async function processInboxRow(sourceClient, row, options) {
   reasoning = applied.reasoning;
   classification = applyPositiveIntentGuard(classification, inbound).classification;
 
+  let referredContacts = [];
+  {
+    const ref = promoteReferral(classification, inbound, referralOpts(threadContext, {
+      prospectEmail: leadEmail,
+      prospectName: leadName,
+    }));
+    referredContacts = ref.referredContacts || [];
+    if (ref.promoted) {
+      console.log('[SmartLeadPoll] Referral reply promoted', {
+        from: classification, to: ref.classification, cc: referralCcCsv(referredContacts),
+      });
+      classification = ref.classification;
+      const who = referralCcCsv(referredContacts);
+      reasoning = who
+        ? `Referral reply (CC ${who}). ${reasoning || ''}`.trim()
+        : `Referral reply (prospect looped in a colleague); drafted reply-all. ${reasoning || ''}`.trim();
+    }
+  }
+  if (referredContacts.length) {
+    try {
+      const redraft = await draftOnly({
+        classification,
+        threadContext,
+        inboundMessage: inbound,
+        leadName,
+        voicePrompt: client.voice_prompt,
+        bookingLink: client.booking_link,
+        schedulingPromptBlock: promptBlock,
+        digestTimezone: client.digest_timezone,
+        platform: 'smartlead',
+        clientName: client.name,
+        clientId: client.id,
+        draftMode: 'bulk',
+        slots: slotResult.slots,
+        referredContacts,
+      });
+      if (redraft) draft = redraft;
+    } catch (err) {
+      console.warn('[SmartLeadPoll] Referral draft failed', { err: err.message });
+    }
+    if (!draft) {
+      draft = fallbackDraftText({
+        leadName,
+        inboundMessage: inbound,
+        bookingLink: client.booking_link,
+        classification,
+        voicePrompt: client.voice_prompt,
+        clientName: client.name,
+        referredContacts,
+      });
+    }
+  }
+
   const suppressed = slackChannelSuppressionReason({
     classification,
     inboundMessage: inbound,
@@ -485,6 +657,7 @@ async function processInboxRow(sourceClient, row, options) {
     return { skipped: 'already_posted', existingId: claimed.existing?.id };
   }
   const reply = claimed.reply;
+  if (referredContacts.length) await storeReferralCc(reply.id, referredContacts);
 
   let slLead = null;
   if (!extractLeadPhone(row) && leadEmail && client.smartlead_api_key) {
@@ -511,6 +684,7 @@ async function processInboxRow(sourceClient, row, options) {
     leadData: row,
     linkedinUrl: row.linkedin_url || row.linkedinUrl || row.profile_url || undefined,
     leadWebsite: row.website || row.company_website || row.company_url || undefined,
+    referredContacts,
   };
 
   try {
