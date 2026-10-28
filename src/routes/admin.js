@@ -555,4 +555,32 @@ router.post('/admin/followup-sequence/copy', async (req, res) => {
   }
 });
 
+/**
+ * Disqualify a prospect: same effect as the Slack DQ button (records the DQ, stops the
+ * follow-up sequence and nudges, closes the open card). Nothing is sent to a lead.
+ * Body: { replyId } or { clientId, leadEmail | linkedinUrl }, optional { note, dryRun }.
+ * dryRun=true previews: finds the reply and reports, writes nothing.
+ * Idempotent: a lead that is already DQ'd returns alreadyDisqualified: true.
+ */
+router.post('/admin/disqualify', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const dryRaw = req.query.dry ?? req.query.dryRun ?? b.dryRun ?? b.dry;
+    const dryRun = /^(1|true|yes|on)$/i.test(String(dryRaw == null ? '' : dryRaw));
+    const { disqualifyFromAdmin } = require('../services/admin-disqualify');
+    const out = await disqualifyFromAdmin({
+      replyId: b.replyId || b.reply_id || null,
+      clientId: b.clientId || b.client_id || null,
+      leadEmail: b.leadEmail || b.lead_email || null,
+      linkedinUrl: b.linkedinUrl || b.linkedin_url || null,
+      note: b.note || b.reason || null,
+      dryRun,
+    });
+    return res.status(out.http).json(out.body);
+  } catch (err) {
+    console.error('[Admin] disqualify error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

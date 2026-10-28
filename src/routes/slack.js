@@ -686,4 +686,7 @@ async function handleMeetingBooked(replyId, interaction) {
   });
 }
 
+// Used by the admin DQ endpoint so it renders the same closed card as the DQ button.
+router.cardHelpers = { slackCardContextFromReply, sentCardPayload };
+
 module.exports = router;
