@@ -59,4 +59,24 @@ router.post('/webhook/booking-bridge/booked-email', async (req, res) => {
   }
 });
 
+/**
+ * Warm lead (interested, or callback with an agreed time) from a cold call -> email the client.
+ * POST /webhook/booking-bridge/warm-lead-email   Authorization: Bearer <BOOKING_BRIDGE_WEBHOOK_SECRET>
+ * Off unless WARM_LEAD_EMAIL_ENABLED=true. Body { dry_run: true } returns the rendered email and recipients unsent.
+ */
+router.post('/webhook/booking-bridge/warm-lead-email', async (req, res) => {
+  const auth = assertBookingBridgeSecret(req);
+  if (!auth.ok) {
+    return res.status(auth.status).json({ ok: false, error: auth.error });
+  }
+  try {
+    const { handleWarmLeadEmail } = require('../services/warm-lead-email');
+    const result = await handleWarmLeadEmail(req.body || {});
+    return res.status(result.status).json(result.body);
+  } catch (err) {
+    console.error('[WarmLeadEmail] handler error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 module.exports = router;
