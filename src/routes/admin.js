@@ -18,6 +18,7 @@ const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../servi
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
 const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
 const { validateExtraction } = require('../services/followup-sequence-copy');
+const { toAdminClient } = require('../utils/public-client');
 
 const router = Router();
 
@@ -30,8 +31,10 @@ function webhookUrls(clientId) {
   };
 }
 
+// Every client response from /admin goes through here. Secret columns (API keys,
+// Slack bot token) are never returned: has_* flags only. Write them with POST/PATCH.
 function formatClient(client) {
-  return { ...client, ...webhookUrls(client.id) };
+  return { ...toAdminClient(client), ...webhookUrls(client.id) };
 }
 
 function normalizeCcListField(value) {
