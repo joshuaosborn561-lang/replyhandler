@@ -275,14 +275,7 @@ function normalizeThreadSteps(threadContext, {
   return merged;
 }
 
-function enrichLinesHtml(enrichment) {
-  const e = enrichment || {};
-  const rows = [
-    ['Email', e.email],
-    ['Cell', e.phone],
-    ['LinkedIn', e.linkedinUrl],
-    ['Website', e.website],
-  ];
+function labelRowsHtml(rows) {
   return rows
     .map(([label, val]) => {
       if (!val) {
@@ -295,6 +288,16 @@ function enrichLinesHtml(enrichment) {
       return `<tr><td style="padding:2px 12px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;">${cell}</td></tr>`;
     })
     .join('');
+}
+
+function enrichLinesHtml(enrichment) {
+  const e = enrichment || {};
+  return labelRowsHtml([
+    ['Email', e.email],
+    ['Cell', e.phone],
+    ['LinkedIn', e.linkedinUrl],
+    ['Website', e.website],
+  ]);
 }
 
 function enrichLinesText(enrichment) {
@@ -386,6 +389,95 @@ function buildClientNotifyEmail({
   return { subject, htmlBody, textBody };
 }
 
+const BOOKED_NOTES_LINE =
+  'If you have any notes before the meeting, just hit reply all. Our operations team sees it.';
+
+function highlightSections(h) {
+  if (!h) return [];
+  const out = [];
+  if (h.painPoints && h.painPoints.length) out.push({ label: 'Pain points', items: h.painPoints });
+  if (h.currentSetup) out.push({ label: 'Current setup', items: [h.currentSetup] });
+  if (h.objections && h.objections.length) out.push({ label: 'Objections', items: h.objections });
+  if (h.nextStep) out.push({ label: 'Next step', items: [h.nextStep] });
+  return out;
+}
+
+/**
+ * Same layout as the prospect-reply notify email (FYI line, notes line, Prospect table, a card
+ * for the body) for a meeting a caller booked on a cold call. The card carries Allo's short
+ * summary plus, when available, structured highlights from the transcript.
+ */
+function buildBookedMeetingNotifyEmail({
+  prospect,
+  clientName,
+  callAtLabel,
+  summary,
+  highlights,
+  noSummaryText,
+}) {
+  const p = prospect || {};
+  const person = String(p.name || '').trim();
+  const company = String(p.company || '').trim();
+  const name = person || company || 'Prospect';
+  const subject = `Meeting booked: ${name}${clientName ? ` · ${clientName}` : ''}`;
+  const sections = highlightSections(highlights);
+  const short = String(summary || '').trim();
+  const status = ['Booked on a cold call', callAtLabel].filter(Boolean).join(' · ');
+  const rows = [
+    ['Name', p.name],
+    ['Company', p.company],
+    ['Title', p.title],
+    ['Email', p.email],
+    ['Cell', p.phone],
+    // LinkedIn is shown only when found; nothing is printed for a miss.
+    ...(p.linkedinUrl ? [['LinkedIn', p.linkedinUrl]] : []),
+  ];
+  const withCompany = person && company ? ` at ${company}` : '';
+  const openerText = `FYI, we just booked a meeting with ${name}${withCompany} through a cold call.`;
+  const openerHtml = `FYI, we just booked a meeting with <strong>${escapeHtml(name)}</strong>${
+    withCompany ? ` at <strong>${escapeHtml(company)}</strong>` : ''
+  } through a cold call.`;
+
+  const bodyHtml = [
+    short ? `<div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(short)}</div>` : '',
+    ...sections.map((sec) => (
+      `<div style="margin:${short ? '12px' : '0'} 0 0 0;"><div style="font-weight:600;margin:0 0 4px 0;">${escapeHtml(sec.label)}</div>` +
+      `<ul style="margin:0;padding-left:18px;line-height:1.45;">${sec.items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul></div>`
+    )),
+    !short && !sections.length ? `<div style="color:#111;">${escapeHtml(noSummaryText)}</div>` : '',
+  ].join('');
+
+  const htmlBody = `
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
+  <p>${openerHtml}</p>
+  <p>${escapeHtml(BOOKED_NOTES_LINE)}</p>
+  <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
+  <table style="border-collapse:collapse;font-size:14px;">${labelRowsHtml(rows)}</table>
+  <h3 style="margin:22px 0 8px;font-size:14px;">Call summary</h3>
+  <div style="margin:0 0 16px 0;">
+    <div style="font-size:12px;color:#666;margin:0 0 6px 0;">${escapeHtml(status)}</div>
+    <div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">${bodyHtml}</div>
+  </div>
+</div>`.trim();
+
+  const textBody = [
+    openerText,
+    BOOKED_NOTES_LINE,
+    '',
+    'Prospect',
+    ...rows.map(([k, v]) => `${k}: ${v || 'not found'}`),
+    '',
+    'Call summary',
+    status,
+    '',
+    ...(short ? [short, ''] : []),
+    ...sections.flatMap((sec) => [`${sec.label}:`, ...sec.items.map((i) => `- ${i}`), '']),
+    ...(!short && !sections.length ? [noSummaryText] : []),
+  ].join('\n').trimEnd();
+
+  return { subject, htmlBody, textBody };
+}
+
 /**
  * Inbound-only copy of the same inbox-thread email, used by campaign-mapped
  * forwards. No "we just replied" line and no enrichment spend.
@@ -429,6 +521,8 @@ function buildInboundForwardEmail({
 
 module.exports = {
   buildClientNotifyEmail,
+  buildBookedMeetingNotifyEmail,
+  BOOKED_NOTES_LINE,
   buildInboundForwardEmail,
   normalizeThreadSteps,
   pickRicherThreadContext,
