@@ -48,3 +48,30 @@ First Day 30 cards can appear 30 days after the first sequence finishes (sequenc
 ## Rollback
 
 Set `NURTURE_ENABLED=false` (everything stops), or turn off the later flags individually. Rows stay in `nurture_leads` and `nurture_touches`. Open cards stay in Slack until clicked; Approve does nothing while `NURTURE_SEND_ENABLED` is off.
+
+## Manual enrolment (migration 049)
+
+For leads that never had a follow-up sequence, add them by hand. A manual row has `origin = 'manual'`,
+no `source_sequence_id` and no `source_reply_id` (no `pending_replies` row is created), and carries its
+own copy: `custom_subject` / `custom_body`. The card and the stored touch show that copy instead of the
+template, and Edit still works on it.
+
+- Endpoint: `POST /admin/nurture/enrol` with `{ clientId, leads: [...], apply?, allowPartial? }`.
+  Dry run unless `apply: true`. Like every admin route it takes no key. A write needs the client in
+  `NURTURE_CLIENT_IDS`. The response carries issue codes by row, no names or emails.
+- Script: `node scripts/nurture-manual-enrol.js --file leads.json --client <uuid> [--apply] [--allow-partial] [--json]`.
+  Dry run by default, with a read-only Postgres session.
+- A lead: `email`, `name`, `subject`, `body` (required); `company`, `phone`, `summary`, `note` (card);
+  `last_outreach_at`, `due` (ISO dates, `due` defaults to now, snapped into the send window);
+  `hubspot: false` (no HubSpot contact) or `hubspot_contact_id`. `flag` is a synonym for `note`.
+- Checks per lead: valid email, the same copy rules as the card (guarantee line, sign-off, no dashes,
+  110 words, no placeholders), not a duplicate in the file, not already live in nurture, not DQ'd, no
+  earlier unsubscribe / not interested / wrong person reply, no booked meeting. One problem blocks the
+  whole batch unless `allowPartial`. Re-running a load enrols nobody twice.
+- No HubSpot contact: `hubspot_skip` leads are never looked up or written, and the card says "no contact found".
+  Leads with neither flag set are looked up at sync time; no contact is fine.
+- Exit rules for a manual lead look at its email from enrolment on: later unsubscribe / not interested /
+  wrong person exits it, a later positive reply or a booking pauses it, a DQ exits it at any time.
+- Phone: the lead's own `phone` is used when no earlier reply has one. There is no reply to run the phone
+  lookup from, so a lead without a number shows "none found (no lookup: no reply record on file)".
+- Nothing posts or sends from here. All four flags still decide that, and a person still clicks Approve.

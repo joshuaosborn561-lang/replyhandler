@@ -1578,3 +1578,9 @@ Josh's spec (via CRM): a lead whose positive-reply follow-up sequence ran to the
 - Admin routes follow the no-key rule: `GET /admin/nurture` (counts only) and `POST /admin/nurture/run?dry=1`.
 
 Guards: `test/nurture-day30-pure.test.js`, `test/nurture-day30-db.test.js` (PGlite).
+
+## Nurture: manual enrolment (migration 049)
+Leads can be enrolled by hand with their own subject and body, no `pending_replies` row, and optionally no
+HubSpot contact. Dry run is the default; one bad lead blocks the whole batch; the endpoint takes no key
+(Josh, Oct 20) but only writes for clients listed in `NURTURE_CLIENT_IDS` and never returns names or emails.
+Manual rows are judged by email, from enrolment onward, so a lead's older replies don't pause it.

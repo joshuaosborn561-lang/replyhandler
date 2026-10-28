@@ -236,6 +236,7 @@ function buildNurtureCardBlocks(card, touchId, state = null) {
     `*Last reply or call:* ${card.summary ? mrkdwnEscape(clip(card.summary, 500)) : 'No summary on file'}`,
     card.hubspotUrl ? `*HubSpot:* <${card.hubspotUrl}|Open contact>` : '*HubSpot:* no contact found',
   ];
+  if (card.note) lines.push(`*Note:* ${mrkdwnEscape(clip(card.note, 300))}`);
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `NURTURE: Day 30 touch` } },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
