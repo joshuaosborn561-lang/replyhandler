@@ -199,6 +199,24 @@ local `meetings` row.
 
 Guard: `test/booking-bridge.test.js` (`campaignIntelligenceSaysBooked`)
 
+### Cancelled bookings do not count as booked
+
+*"Yes, please fix that in reply."* (Oct 27, after booking-bridge #19 started
+recording TidyCal cancels / reschedules)
+
+Every check that reads `booking_events` (`campaignIntelligenceSaysBooked` /
+`campaignIntelligenceBookingState`, and the ghosted-meeting candidate pull)
+ignores a `booking_confirmed` row that has `cancelled_at` set, or that a
+`booking_cancelled` row points at (`payload.original_booking_event_id` or the
+shared `payload.tidycal_booking_id`). A reschedule is not a cancel. When every
+booking for a lead was cancelled, the local `meetings` rows that only mirrored
+those bookings (stamped `calendar_provider = 'booking_bridge'`, or an unstamped
+`booked` row written within 15 min of the cancelled booking) stop blocking, so
+the lead's normal follow-up schedule applies again. Meetings a person marked
+booked are untouched, and follow-ups already marked `skipped` are not revived.
+
+Guard: `test/booking-cancelled.test.js`
+
 ### No follow-up backfill older than 3 days
 
 *"stop backfilling past 3 days ago"*

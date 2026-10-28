@@ -34,7 +34,7 @@ const microsoft = require('./microsoft-calendar');
 const { leadKey } = require('./follow-up-call-reminder');
 const { isDisqualified } = require('./disqualified-prospects');
 const { isLeadClaimed } = require('./client-claimed');
-const { slugFromClientName, normalizeEmail } = require('./booking-bridge');
+const { slugFromClientName, normalizeEmail, activeBookingRows } = require('./booking-bridge');
 const { followUpSlackChannelId } = require('./follow-up-runner');
 const time = require('../utils/followup-sequence-time');
 const ghostText = require('../utils/ghosted-meeting-text');
@@ -195,8 +195,10 @@ async function fetchBookingEvents({ now, cfg, env = process.env, fetchImpl = fet
   const key = String(env.SUPABASE_SERVICE_ROLE_KEY || '');
   if (!base || !key) return { rows: [], error: 'supabase_not_configured' };
   const qs = new URLSearchParams({
-    select: 'id,client_slug,client_name,lead_email,lead_name,created_at,payload',
-    event_type: 'eq.booking_confirmed',
+    select: 'id,event_type,client_slug,client_name,lead_email,lead_name,created_at,cancelled_at,payload',
+    // booking_cancelled rows ride along only so a cancel that is not yet stamped
+    // on its original row still retires it (see activeBookingRows).
+    event_type: 'in.(booking_confirmed,booking_cancelled)',
     created_at: `gte.${new Date(now.getTime() - cfg.bookingLookbackMs).toISOString()}`,
     order: 'created_at.desc',
     limit: '500',
@@ -208,7 +210,10 @@ async function fetchBookingEvents({ now, cfg, env = process.env, fetchImpl = fet
     const text = await res.text();
     if (!res.ok) return { rows: [], error: `booking_events_http_${res.status}` };
     const rows = text ? JSON.parse(text) : [];
-    return { rows: Array.isArray(rows) ? rows : [], error: null };
+    // A cancelled booking is not a meeting that can be ghosted.
+    const live = activeBookingRows(Array.isArray(rows) ? rows : [])
+      .filter((r) => String(r?.event_type || 'booking_confirmed') === 'booking_confirmed');
+    return { rows: live, error: null };
   } catch (err) {
     return { rows: [], error: `booking_events_${err.message}`.slice(0, 120) };
   }
@@ -767,6 +772,7 @@ module.exports = {
   enabled,
   config,
   log,
+  fetchBookingEvents,
   meetingTimesFromPayload,
   normalizeCalendarEvent,
   collectCandidates,

@@ -437,7 +437,7 @@ test('follow-ups after any positive reply at 3:30pm CT then 24h/48h/1w', () => {
     reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', '3:30pm / 2pm CT constants were removed'));
   assert.match(scheduleSrc, /MIN_FOLLOW_UP_HOURS\s*=\s*2/,
     reversal('first follow-up at 3:30pm CT same day unless inbound after 2pm CT', '2h minimum floor was removed'));
-  assert.ok(read('src/services/booking-check.js').includes('campaignIntelligenceSaysBooked'),
+  assert.ok(/campaignIntelligence(SaysBooked|BookingState)/.test(read('src/services/booking-check.js')),
     'follow-up booked check must pull campaignintelligence booking_events');
   assert.strictEqual(maxAgeHours(), 24,
     reversal('no backlog — follow-ups from deploy onward', 'the stale guard has been widened or removed'));

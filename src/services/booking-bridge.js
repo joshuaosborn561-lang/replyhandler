@@ -26,6 +26,13 @@ const CLIENT_SLUG_ALIASES = {
 };
 
 /** Same set ReplyHandler posts to Slack as a real prospect positive. */
+/**
+ * Stamped on `meetings.calendar_provider` for rows this bridge mirrors from a
+ * booking_confirmed event, so a later cancel can tell them apart from meetings
+ * a person marked booked by hand.
+ */
+const BRIDGE_MEETING_MARKER = 'booking_bridge';
+
 const POSITIVE_CLASSIFICATIONS = ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'];
 
 function slugFromClientName(name) {
@@ -240,22 +247,24 @@ async function stopFollowUpsForEmail({
         `UPDATE meetings
             SET status = 'booked',
                 confirmed_time = COALESCE(confirmed_time, now()),
+                calendar_provider = COALESCE(calendar_provider, $2),
                 updated_at = now()
           WHERE id = $1`,
-        [existing.id]
+        [existing.id, BRIDGE_MEETING_MARKER]
       );
     } else {
       await db.query(
         `INSERT INTO meetings
           (client_id, pending_reply_id, lead_name, lead_email, linkedin_url,
-           status, confirmed_time)
-         VALUES ($1, $2, $3, $4, $5, 'booked', now())`,
+           status, confirmed_time, calendar_provider)
+         VALUES ($1, $2, $3, $4, $5, 'booked', now(), $6)`,
         [
           clientId,
           anchor.id,
           name || anchor.lead_name || null,
           email,
           anchor.linkedin_url || null,
+          BRIDGE_MEETING_MARKER,
         ]
       );
     }
@@ -273,9 +282,9 @@ async function stopFollowUpsForEmail({
       await db.query(
         `INSERT INTO meetings
           (client_id, pending_reply_id, lead_name, lead_email, linkedin_url,
-           status, confirmed_time)
-         VALUES ($1, NULL, $2, $3, NULL, 'booked', now())`,
-        [clientId, name, email]
+           status, confirmed_time, calendar_provider)
+         VALUES ($1, NULL, $2, $3, NULL, 'booked', now(), $4)`,
+        [clientId, name, email, BRIDGE_MEETING_MARKER]
       );
       meetingsUpserted = 1;
     }
@@ -346,28 +355,77 @@ async function handleBookingBridgeEvent(payload) {
 }
 
 /**
+ * A booking_events row only counts as a booking while it is still live.
+ * booking-bridge sets `cancelled_at` on the original `booking_confirmed` row
+ * when TidyCal reports a cancel, and also writes a `booking_cancelled` row that
+ * points back at it (`payload.original_booking_event_id`, or the shared
+ * `payload.tidycal_booking_id`). Either signal retires the booking, so a cancel
+ * that raced its own confirm (row not yet stamped) is still honoured.
+ */
+function payloadOf(row) {
+  const p = row && row.payload;
+  return p && typeof p === 'object' ? p : {};
+}
+
+function bookingRowIsCancelled(row) {
+  if (!row) return false;
+  if (row.cancelled_at) return true;
+  const p = payloadOf(row);
+  return p.cancelled === true || Boolean(p.cancelled_at);
+}
+
+/** @returns {Array} rows that are not cancelled and not linked to a later booking_cancelled row. */
+function activeBookingRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cancelledIds = new Set();
+  const cancelledTidy = new Set(); // `${client_slug}|${tidycal_booking_id}`
+  for (const r of list) {
+    if (String(r?.event_type || '') !== 'booking_cancelled') continue;
+    const p = payloadOf(r);
+    if (p.original_booking_event_id != null && p.original_booking_event_id !== '') {
+      cancelledIds.add(String(p.original_booking_event_id));
+    }
+    if (p.tidycal_booking_id != null && p.tidycal_booking_id !== '') {
+      cancelledTidy.add(`${String(r.client_slug || '').toLowerCase()}|${p.tidycal_booking_id}`);
+    }
+  }
+  return list.filter((r) => {
+    if (bookingRowIsCancelled(r)) return false;
+    if (r?.id != null && cancelledIds.has(String(r.id))) return false;
+    const tid = payloadOf(r).tidycal_booking_id;
+    if (tid != null && tid !== ''
+      && cancelledTidy.has(`${String(r.client_slug || '').toLowerCase()}|${tid}`)) return false;
+    return true;
+  });
+}
+
+/**
  * Pull from campaignintelligence `booking_events` (same Supabase as reply RAG).
  * Used by follow-up runner so we still suppress nudges if the push webhook was
  * missed or raced the due tick.
  *
- * Booked signals:
+ * Booked signals (cancelled bookings never count, see activeBookingRows):
  * - event_type = booking_confirmed
  * - Culture Fits / MS Bookings first-click treated as booked (page_view)
  *
- * Soft-fails (returns null) when Supabase is not configured or the request errors.
+ * Soft-fails (returns null reason) when Supabase is not configured or the request errors.
  *
- * @returns {Promise<string|null>} skip reason, or null if not booked / unknown
+ * @returns {Promise<{ reason: string|null, cancelledOnly: boolean, cancelledAnchors: Date[] }>}
+ *   `cancelledOnly` is true when this email has booking(s) in booking_events
+ *   and every one of them was cancelled (no live booking).
+ *   `cancelledAnchors` are the created_at times of those cancelled bookings.
  */
-async function campaignIntelligenceSaysBooked(leadEmail) {
+async function campaignIntelligenceBookingState(leadEmail) {
+  const none = { reason: null, cancelledOnly: false, cancelledAnchors: [] };
   const email = normalizeEmail(leadEmail);
-  if (!email) return null;
+  if (!email) return none;
 
   const base = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
-  if (!base || !key) return null;
+  if (!base || !key) return none;
 
   const qs = new URLSearchParams({
-    select: 'id,event_type,client_slug,platform,created_at',
+    select: 'id,event_type,client_slug,platform,created_at,cancelled_at,payload',
     lead_email: `ilike.${email}`,
     order: 'created_at.desc',
     limit: '25',
@@ -389,31 +447,49 @@ async function campaignIntelligenceSaysBooked(leadEmail) {
         status: res.status,
         body: String(text).slice(0, 200),
       });
-      return null;
+      return none;
     }
     rows = text ? JSON.parse(text) : [];
   } catch (err) {
     console.warn('[BookingBridge] campaignintelligence lookup error', {
       err: err.message,
     });
-    return null;
+    return none;
   }
 
-  if (!Array.isArray(rows) || !rows.length) return null;
+  if (!Array.isArray(rows) || !rows.length) return none;
 
-  for (const row of rows) {
+  const active = activeBookingRows(rows);
+  for (const row of active) {
     const type = String(row?.event_type || '');
-    if (type === 'booking_confirmed') return 'booking_bridge_confirmed';
+    if (type === 'booking_confirmed') {
+      return { reason: 'booking_bridge_confirmed', cancelledOnly: false, cancelledAnchors: [] };
+    }
     const slug = String(row?.client_slug || '').toLowerCase();
     const platform = String(row?.platform || '').toLowerCase();
     if (
       type === 'page_view'
       && (slug === 'culturefits' || platform === 'msbookings')
     ) {
-      return 'booking_bridge_ms_click';
+      return { reason: 'booking_bridge_ms_click', cancelledOnly: false, cancelledAnchors: [] };
     }
   }
-  return null;
+
+  // No live booking. If confirmed bookings exist and all were cancelled, say so
+  // (the local mirror of those bookings must not keep blocking follow-ups).
+  const confirmed = rows.filter((r) => String(r?.event_type || '') === 'booking_confirmed');
+  if (confirmed.length) {
+    const anchors = confirmed
+      .map((r) => new Date(r.created_at))
+      .filter((d) => Number.isFinite(d.getTime()));
+    return { reason: null, cancelledOnly: true, cancelledAnchors: anchors };
+  }
+  return none;
+}
+
+/** @returns {Promise<string|null>} skip reason, or null if not booked / unknown / cancelled */
+async function campaignIntelligenceSaysBooked(leadEmail) {
+  return (await campaignIntelligenceBookingState(leadEmail)).reason;
 }
 
 module.exports = {
@@ -428,5 +504,9 @@ module.exports = {
   stopFollowUpsForEmail,
   handleBookingBridgeEvent,
   campaignIntelligenceSaysBooked,
+  campaignIntelligenceBookingState,
+  activeBookingRows,
+  bookingRowIsCancelled,
+  BRIDGE_MEETING_MARKER,
   normalizeEmail,
 };

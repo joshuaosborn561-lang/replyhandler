@@ -4,10 +4,16 @@ const microsoft = require('./microsoft-calendar');
 const { replySuppressesFollowUp } = require('../utils/booking-signals');
 const { callSaysBooked } = require('./call-booking-check');
 const {
-  campaignIntelligenceSaysBooked,
+  campaignIntelligenceBookingState,
   stopFollowUpsForEmail,
   normalizeEmail,
+  BRIDGE_MEETING_MARKER,
 } = require('./booking-bridge');
+
+// A meeting row written by the booking bridge within this window of a booking
+// that has since been cancelled is that booking's mirror (rows written before
+// the bridge stamped them have no marker).
+const BRIDGE_MIRROR_WINDOW_MIN = 15;
 
 /**
  * "Does it look like this prospect already booked?"
@@ -19,11 +25,23 @@ const {
  * Returns a reason string when booked, or null.
  */
 
-/** 1. We booked it ourselves through the approve/send path. */
-async function meetingRowExists(clientId, { leadEmail, leadName }) {
+/**
+ * 1. We booked it ourselves through the approve/send path.
+ *
+ * `cancelledBookingAnchors`: created_at times of booking_events bookings that
+ * were all cancelled (no live booking left). Meeting rows that only mirror
+ * those cancelled bookings are ignored, so the lead's follow-ups are allowed
+ * again. Meetings a person marked booked, proposed or confirmed are untouched.
+ */
+async function meetingRowExists(clientId, { leadEmail, leadName, cancelledBookingAnchors = null }) {
   const email = String(leadEmail || '').trim().toLowerCase();
   const name = String(leadName || '').trim();
   if (!email && !name) return false;
+
+  const ignoreMirrors = Array.isArray(cancelledBookingAnchors);
+  const anchors = ignoreMirrors
+    ? cancelledBookingAnchors.map((d) => new Date(d).toISOString())
+    : [];
 
   const { rows } = await db.query(
     `SELECT 1 FROM meetings
@@ -33,8 +51,26 @@ async function meetingRowExists(clientId, { leadEmail, leadName }) {
           ($2::text <> '' AND lower(COALESCE(lead_email, '')) = $2)
           OR ($3::text <> '' AND lower(COALESCE(lead_name, '')) = lower($3))
         )
+        AND NOT (
+          $4::boolean
+          AND status = 'booked'
+          AND (
+            COALESCE(calendar_provider, '') = $5
+            OR (
+              calendar_provider IS NULL
+              AND EXISTS (
+                SELECT 1 FROM unnest($6::timestamptz[]) AS a
+                 WHERE meetings.confirmed_time BETWEEN a - make_interval(mins => $7::int)
+                                                   AND a + make_interval(mins => $7::int)
+              )
+            )
+          )
+        )
       LIMIT 1`,
-    [clientId, email, name]
+    [
+      clientId, email, name,
+      ignoreMirrors, BRIDGE_MEETING_MARKER, anchors, BRIDGE_MIRROR_WINDOW_MIN,
+    ]
   );
   return rows.length > 0;
 }
@@ -110,11 +146,19 @@ async function calendarHasEventWith(clientId, { leadEmail, leadName }) {
  * @returns {Promise<string|null>} reason the follow-up should be skipped, or null
  */
 async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, leadId, since }) {
-  if (await meetingRowExists(clientId, { leadEmail, leadName })) return 'meeting_row_exists';
-
   // Campaignintelligence booking page (push webhook + live pull of booking_events).
   // Pull covers webhook races / misses so FOLLOW_UP cards still suppress.
-  const fromBridge = await campaignIntelligenceSaysBooked(leadEmail);
+  // Cancelled bookings never count; when every booking for this lead was
+  // cancelled, the local meeting rows that merely mirrored them stop blocking.
+  const bridge = await campaignIntelligenceBookingState(leadEmail);
+  const fromBridge = bridge.reason;
+
+  if (await meetingRowExists(clientId, {
+    leadEmail,
+    leadName,
+    cancelledBookingAnchors: bridge.cancelledOnly ? bridge.cancelledAnchors : null,
+  })) return 'meeting_row_exists';
+
   if (fromBridge) {
     const email = normalizeEmail(leadEmail);
     if (clientId && email) {
