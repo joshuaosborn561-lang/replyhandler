@@ -6,6 +6,7 @@ const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
+const { alwaysForwardEmailsForProspectCc } = require('../services/client-cc');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
 const { markMeetingBooked } = require('../services/meeting-booked');
@@ -252,6 +253,8 @@ async function handleOpenEditModal(replyId, interaction) {
     ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
     referralCc: detectedCc,
+    // SmartLead only: prefill the client's always-CC contact; the user can edit or clear it.
+    clientCc: reply.platform === 'smartlead' ? alwaysForwardEmailsForProspectCc(client) : null,
   });
 }
 
@@ -290,6 +293,8 @@ async function handleEditModalSubmit(interaction) {
   if (!messageText) return;
   const ccState = interaction.view.state.values?.referral_cc_block?.referral_cc_input;
   const referralCcField = ccState ? String(ccState.value || '') : null;
+  const clientCcState = interaction.view.state.values?.client_cc_block?.client_cc_input;
+  const clientCcField = clientCcState ? String(clientCcState.value || '') : null;
 
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
@@ -315,8 +320,15 @@ async function handleEditModalSubmit(interaction) {
       if (parsed.error) throw new Error(parsed.error);
       referralCc = parsed.emails;
     }
+    let clientCc = null;
+    if (clientCcField != null) {
+      const parsedClientCc = parseReferralCcInput(clientCcField, { prospectEmail: reply.lead_email });
+      if (parsedClientCc.error) throw new Error(parsedClientCc.error);
+      clientCc = parsedClientCc.emails;
+    }
     const sendResult = await sendReplyToPlatform(client, reply, messageText, {
       referralCc,
+      clientCc,
     }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
 

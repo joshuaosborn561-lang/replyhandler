@@ -1584,3 +1584,12 @@ Leads can be enrolled by hand with their own subject and body, no `pending_repli
 HubSpot contact. Dry run is the default; one bad lead blocks the whole batch; the endpoint takes no key
 (Josh, Oct 20) but only writes for clients listed in `NURTURE_CLIENT_IDS` and never returns names or emails.
 Manual rows are judged by email, from enrolment onward, so a lead's older replies don't pause it.
+
+## Edit & send has a CC field, prefilled with the client's contact (2026-10-28)
+Josh wants to edit the draft and CC the client's contact in the same send. The Edit & send modal on SmartLead cards now has
+a **CC client contact** field, prefilled with the client's always-CC list (`cc_emails`, else legacy `cc_email`). It can be
+edited or cleared; empty means no CC. Whatever is in the field goes to SmartLead `reply-email-thread` as the `cc` string,
+merged with reply-all and referral CCs, and the send fails closed if the address cannot be carried. It is separate from
+the referral CC field. HeyReach has no field. Plain **Approve & Send** still omits `cc` (deliverability), and the
+Gmail FYI notify is unchanged.
+Guard: `test/edit-send-cc.test.js`
