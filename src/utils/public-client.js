@@ -107,6 +107,28 @@ function toPublicClient(row) {
   return stripSecrets(publicRow);
 }
 
+/**
+ * Admin view of a full clients row: every secret-named column (SmartLead /
+ * HeyReach / Allo keys, Slack bot token, anything matching SECRET_FIELD_RE) is
+ * removed and replaced with a has_<column> boolean. No last-4, no prefix.
+ * Everything else on the row passes through unchanged.
+ */
+function toAdminClient(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const [key, val] of Object.entries(row)) {
+    if (looksSecretField(key)) {
+      out[`has_${key}`] = typeof val === 'string' ? val.trim() !== '' : val != null && val !== false;
+    } else {
+      out[key] = val;
+    }
+  }
+  for (const f of SECRET_FIELDS) {
+    if (!(`has_${f}` in out)) out[`has_${f}`] = false;
+  }
+  return out;
+}
+
 function assertNoSecretFields(payload, path = '') {
   if (payload == null) return;
   if (Array.isArray(payload)) {
@@ -151,6 +173,7 @@ module.exports = {
   looksLikeTokenValue,
   stripSecrets,
   toPublicClient,
+  toAdminClient,
   webhookUrls,
   assertNoSecretFields,
   assertNoTokenValues,
