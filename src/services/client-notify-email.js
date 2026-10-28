@@ -479,6 +479,61 @@ function buildBookedMeetingNotifyEmail({
 }
 
 /**
+ * Warm lead from a cold call (interested, or a callback with an agreed time). Same layout as the booked-meeting
+ * email; the copy never says a meeting is booked.
+ */
+function buildWarmLeadNotifyEmail({ kind, prospect, clientName, callAtLabel, title, summary, agreedTime, noSummaryText }) {
+  const p = prospect || {};
+  const person = String(p.name || '').trim();
+  const company = String(p.company || '').trim();
+  const name = person || company || 'Prospect';
+  const callback = kind === 'callback';
+  const subject = `${callback ? 'Callback set' : 'Warm lead'}: ${name}${clientName ? ` \u00b7 ${clientName}` : ''}`;
+  const withCompany = person && company ? ` at ${company}` : '';
+  const status = [callback ? 'Callback agreed on a cold call' : 'Interested on a cold call', callAtLabel].filter(Boolean).join(' \u00b7 ');
+  const openerText = callback
+    ? `FYI, ${name}${withCompany} asked for a callback on a cold call${agreedTime ? `. ${agreedTime}` : ''}. No meeting is booked yet.`
+    : `FYI, ${name}${withCompany} showed interest on a cold call. This is a warm lead, not a booked meeting; we are following up.`;
+  const openerHtml = escapeHtml(openerText)
+    .replace(escapeHtml(name), `<strong>${escapeHtml(name)}</strong>`);
+  const rows = [
+    ['Name', p.name], ['Company', p.company], ['Title', p.title], ['Email', p.email], ['Cell', p.phone],
+    ...(p.linkedinUrl ? [['LinkedIn', p.linkedinUrl]] : []),
+  ];
+  const noteLine = 'If you have any notes, just hit reply all. Our operations team sees it.';
+  const short = String(summary || '').trim();
+  const head = String(title || '').trim();
+  const bodyHtml = [
+    head ? `<div style="font-weight:600;margin:0 0 6px 0;">${escapeHtml(head)}</div>` : '',
+    callback && agreedTime ? `<div style="margin:0 0 8px 0;"><strong>Agreed callback:</strong> ${escapeHtml(agreedTime)}</div>` : '',
+    short ? `<div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(short)}</div>` : '',
+    !short && !head ? `<div style="color:#111;">${escapeHtml(noSummaryText)}</div>` : '',
+  ].join('');
+  const htmlBody = `
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#111;line-height:1.45;">
+  <p>${openerHtml}</p>
+  <p>${escapeHtml(noteLine)}</p>
+  <h3 style="margin:18px 0 8px;font-size:14px;">Prospect</h3>
+  <table style="border-collapse:collapse;font-size:14px;">${labelRowsHtml(rows)}</table>
+  <h3 style="margin:22px 0 8px;font-size:14px;">Call summary</h3>
+  <div style="margin:0 0 16px 0;">
+    <div style="font-size:12px;color:#666;margin:0 0 6px 0;">${escapeHtml(status)}</div>
+    <div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;background:#fff;">${bodyHtml}</div>
+  </div>
+</div>`.trim();
+  const textBody = [
+    openerText, noteLine, '', 'Prospect',
+    ...rows.map(([k, v]) => `${k}: ${v || 'not found'}`),
+    '', 'Call summary', status, '',
+    ...(head ? [head] : []),
+    ...(callback && agreedTime ? [`Agreed callback: ${agreedTime}`] : []),
+    ...(short ? [short] : []),
+    ...(!short && !head ? [noSummaryText] : []),
+  ].join('\n').trimEnd();
+  return { subject, htmlBody, textBody };
+}
+
+/**
  * Inbound-only copy of the same inbox-thread email, used by campaign-mapped
  * forwards. No "we just replied" line and no enrichment spend.
  */
@@ -522,6 +577,7 @@ function buildInboundForwardEmail({
 module.exports = {
   buildClientNotifyEmail,
   buildBookedMeetingNotifyEmail,
+  buildWarmLeadNotifyEmail,
   BOOKED_NOTES_LINE,
   buildInboundForwardEmail,
   normalizeThreadSteps,
