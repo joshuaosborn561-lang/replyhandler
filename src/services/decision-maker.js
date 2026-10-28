@@ -105,7 +105,13 @@ function decisionMakerText(dm) {
 async function loadClientPersonas(db, clientId) {
   if (!db || !clientId) return [];
   try {
-    const { rows } = await db.query('SELECT icp_profile FROM clients WHERE id = $1', [clientId]);
+    const { rows } = await db.query('SELECT name, icp_profile FROM clients WHERE id = $1', [clientId]);
+    // Code-owned buyer titles (e.g. SalesGlider's own ICP) beat stored ones.
+    const { DEFAULT_CLIENT_PERSONAS, CLIENT_TAG_ALIASES } = require('./reply-icp-variants');
+    const { clientTagFor } = require('./prospect-enrich');
+    const slug = rows[0]?.name ? clientTagFor(rows[0].name) : '';
+    const fixed = DEFAULT_CLIENT_PERSONAS[CLIENT_TAG_ALIASES[slug] || slug];
+    if (fixed) return [...fixed];
     return targetPersonas(rows[0]?.icp_profile);
   } catch (err) {
     if (!/icp_profile/.test(err.message || '')) console.warn('[DecisionMaker] personas read skipped', { err: err.message });
