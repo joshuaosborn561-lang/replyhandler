@@ -92,3 +92,55 @@ test('bad payloads are rejected', async () => {
   assert.equal((await w.handleWarmLeadEmail({ event: 'x' }, deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' } }))).status, 400);
   assert.equal((await w.handleWarmLeadEmail(body({ kind: 'booked' }), deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' } }))).status, 400);
 });
+
+const PT = 'America/Los_Angeles';
+const callAt = Date.parse('2026-10-28T15:23:00Z'); // 8:23 AM PT, 10:23 AM CT
+
+test('localizeTime: prospect zone first, Central in brackets', () => {
+  const t = (txt, o = {}) => w.localizeTime(txt, { callAtMs: callAt, zone: PT, ...o });
+  assert.equal(t('Gabe agreed to call him at 11:00 today'), 'Gabe agreed to call him at 11:00 AM PT (1:00 PM CT) today');
+  assert.equal(t('call at 2 pm'), 'call at 2:00 PM PT (4:00 PM CT)');
+  assert.equal(t('call at 2:30'), 'call at 2:30 PM PT (4:30 PM CT)'); // no am/pm: next business-hour occurrence after the call
+  assert.equal(t('call at noon'), 'call at 12:00 PM PT (2:00 PM CT)');
+  assert.equal(t('call at 9'), 'call at 9:00 AM PT (11:00 AM CT)');
+  assert.equal(t('call at 11 AM Eastern'), 'call at 11:00 AM ET (10:00 AM CT)');
+});
+
+test('localizeTime: Central or unknown zone shows CT only; no clock time is left alone', () => {
+  assert.equal(w.localizeTime('call him at 11:00', { callAtMs: callAt, zone: 'America/Chicago' }), 'call him at 11:00 AM CT');
+  assert.equal(w.localizeTime('call him at 11:00', { callAtMs: callAt, zone: '' }), 'call him at 11:00 AM CT');
+  assert.equal(w.localizeTime('he has 12 buildings', { callAtMs: callAt, zone: PT }), 'he has 12 buildings');
+  assert.equal(w.localizeTime('call him tomorrow at 3 pm', { callAtMs: callAt, zone: PT }), 'call him tomorrow at 3:00 PM PT (5:00 PM CT)');
+});
+
+test('title line is dropped when unknown, shown when known', async () => {
+  const none = await w.handleWarmLeadEmail({ ...body(), dry_run: true }, deps());
+  assert.ok(!/Title/.test(none.body.textBody) && !/Title/.test(none.body.htmlBody));
+  assert.ok(!/not found.*Title|Title.*not found/.test(none.body.textBody));
+  const has = await w.handleWarmLeadEmail({ ...body({ prospect: { name: 'Pat Doe', company: 'Acme PM', title: 'Director of Operations' } }), dry_run: true }, deps());
+  assert.match(has.body.textBody, /Title: Director of Operations/);
+});
+
+test('unverified call email is labelled; verified email is plain and fixes the summary spelling', async () => {
+  const un = await w.handleWarmLeadEmail({ ...body({ prospect: { name: 'Pat Doe', company: 'Acme PM', email: 'pdoeee@gmail.com', email_verified: false } }), dry_run: true }, deps());
+  assert.match(un.body.textBody, /Email: pdoeee@gmail.com \(from call, unverified\)/);
+  const sum = '# T ## Summary He gave you pdoeee@gmail.com. You agreed to call him at 11:00 today.';
+  const ok = await w.handleWarmLeadEmail({ ...body({ summary: sum, prospect: { name: 'Pat Doe', email: 'pdoe@gmail.com', email_verified: true }, prospect_zone: PT }), dry_run: true }, deps());
+  assert.match(ok.body.textBody, /Email: pdoe@gmail.com\n/);
+  assert.ok(!/pdoeee/.test(ok.body.textBody));
+  assert.ok(!/unverified/.test(ok.body.textBody));
+});
+
+test('agreed time in the email uses the prospect zone', async () => {
+  const r = await w.handleWarmLeadEmail({ ...body({ prospect_zone: PT }), dry_run: true }, deps());
+  assert.match(r.body.textBody, /Gabe agreed to call him at 11:00 AM PT \(1:00 PM CT\) on Wednesday, Oct 28/);
+  assert.match(r.body.subject, /Callback set/);
+});
+
+test('a lookup title fills an empty title; a lookup failure changes nothing', async () => {
+  const sent = [];
+  const d = deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' }, send: async (m) => { sent.push(m); }, linkedinFn: async () => ({ linkedinUrl: 'https://www.linkedin.com/in/pat', title: 'VP Ops' }) });
+  await w.handleWarmLeadEmail(body(), d);
+  assert.match(sent[0].textBody, /Title: VP Ops/);
+  assert.match(sent[0].textBody, /LinkedIn: https:\/\/www.linkedin.com\/in\/pat/);
+});
