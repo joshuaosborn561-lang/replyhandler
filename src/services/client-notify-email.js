@@ -497,7 +497,12 @@ function buildWarmLeadNotifyEmail({ kind, prospect, clientName, callAtLabel, tit
   const openerHtml = escapeHtml(openerText)
     .replace(escapeHtml(name), `<strong>${escapeHtml(name)}</strong>`);
   const rows = [
-    ['Name', p.name], ['Company', p.company], ['Title', p.title], ['Email', p.email], ['Cell', p.phone],
+    ['Name', p.name], ['Company', p.company],
+    // No Title line at all when the title is unknown.
+    ...(String(p.title || '').trim() ? [['Title', p.title]] : []),
+    // An email heard only on the call is labelled; a verified one (list, lead record) is shown plain.
+    ['Email', p.email && p.emailVerified === false ? `${p.email} (from call, unverified)` : p.email],
+    ['Cell', p.phone],
     ...(p.linkedinUrl ? [['LinkedIn', p.linkedinUrl]] : []),
   ];
   const noteLine = 'If you have any notes, just hit reply all. Our operations team sees it.';

@@ -194,6 +194,7 @@ async function lookupMissingLinkedin({
     linkedinUrl: normalizeLinkedin(hit.linkedinUrl),
     website: hit.website && !isConsumerHost(hit.website) ? asWebsite(hit.website) : null,
     email: hit.email || email || null,
+    title: hit.title || null,
     spentUsd: hit.spentUsd || 0,
     skipped: null,
   };
