@@ -43,6 +43,12 @@ function enabled(env = process.env) {
   return String(env.WARM_LEAD_EMAIL_ENABLED || '').trim().toLowerCase() === 'true';
 }
 
+/** A title worth showing: more than 3 characters and at least one letter. Anything else is ''. */
+function usableTitle(v) {
+  const s = str(v, 200);
+  return s.length > 3 && /\p{L}/u.test(s) ? s : '';
+}
+
 function cleanLinkedinUrl(v) {
   const m = String(v || '').match(/https?:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[^/?#\s]+/i);
   return m ? m[0] : '';
@@ -287,7 +293,7 @@ function parseWarmLeadPayload(body) {
     summary: String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000),
     prospect: {
       name: str(p.name, 200), company: str(p.company, 200), email: str(p.email, 320),
-      phone: str(p.phone, 60), title: str(p.title, 200), linkedinUrl: cleanLinkedinUrl(p.linkedin_url),
+      phone: str(p.phone, 60), title: usableTitle(p.title), linkedinUrl: cleanLinkedinUrl(p.linkedin_url),
       // false only when the email is the one heard on the call and nothing verified it
       emailVerified: p.email_verified !== false,
     },
@@ -363,14 +369,14 @@ async function defaultLinkedinLookup(m) {
     companyName: m.prospect.company || undefined,
     clientTag: m.clientDisplay || m.client || undefined,
   });
-  return { linkedinUrl: hit && hit.linkedinUrl ? cleanLinkedinUrl(hit.linkedinUrl) : '', title: hit && hit.title ? str(hit.title, 200) : '' };
+  return { linkedinUrl: hit && hit.linkedinUrl ? cleanLinkedinUrl(hit.linkedinUrl) : '', title: hit && hit.title ? usableTitle(hit.title) : '' };
 }
 
 async function safeLookup(fn, m) {
   try {
     const hit = await Promise.race([Promise.resolve(fn(m)), new Promise((resolve) => setTimeout(() => resolve({}), 20000).unref())]);
     if (typeof hit === 'string') return { linkedinUrl: cleanLinkedinUrl(hit), title: '' };
-    return { linkedinUrl: cleanLinkedinUrl(hit && hit.linkedinUrl), title: str(hit && hit.title, 200) };
+    return { linkedinUrl: cleanLinkedinUrl(hit && hit.linkedinUrl), title: usableTitle(hit && hit.title) };
   } catch (err) {
     console.warn('[WarmLeadEmail] LinkedIn lookup failed, omitting it', { err: err.message });
     return { linkedinUrl: '', title: '' };
@@ -428,5 +434,5 @@ function _resetSeenForTests() { seen.clear(); }
 
 module.exports = {
   EVENT, KINDS, DEFAULT_VECTOR_FALLBACK, enabled, splitAlloSummary, agreedTimeFrom, clientSafeSummary, swapYou,
-  parseWarmLeadPayload, prepareWarmLead, localizeTime, fixHeardEmails, warmLeadRecipients, handleWarmLeadEmail, _resetSeenForTests,
+  parseWarmLeadPayload, prepareWarmLead, usableTitle, localizeTime, fixHeardEmails, warmLeadRecipients, handleWarmLeadEmail, _resetSeenForTests,
 };

@@ -173,3 +173,19 @@ test('a lookup title fills an empty title; a lookup failure changes nothing', as
   assert.match(sent[0].textBody, /Title: VP Ops/);
   assert.match(sent[0].textBody, /LinkedIn: https:\/\/www.linkedin.com\/in\/pat/);
 });
+
+test('junk titles (3 characters or fewer, or no letters) never show a Title line', async () => {
+  for (const title of ['PDS', 'P', '--', '1234']) {
+    const r = await w.handleWarmLeadEmail({ ...body({ prospect: { name: 'Pat Doe', company: 'Acme PM', title } }), dry_run: true }, deps());
+    assert.ok(!/Title/.test(r.body.textBody), title);
+    assert.ok(!/Title/.test(r.body.htmlBody), title);
+  }
+  assert.equal(w.usableTitle('Director of Operations'), 'Director of Operations');
+});
+
+test('a junk lookup title does not fill an empty title', async () => {
+  const sent = [];
+  const d = deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' }, send: async (m) => { sent.push(m); }, linkedinFn: async () => ({ linkedinUrl: '', title: 'PDS' }) });
+  await w.handleWarmLeadEmail(body(), d);
+  assert.ok(!/Title/.test(sent[0].textBody));
+});
