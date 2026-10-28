@@ -1346,7 +1346,12 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
-function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
+/**
+ * `clientCc`: string | null. null = no client CC field (HeyReach). A string,
+ * even empty, shows the field; non-empty prefills it with the client's
+ * always-CC contact. Clearing it sends with no client CC.
+ */
+function buildEditReplyBlocks({ initialDraft, referralCc, clientCc = null } = {}) {
   const blocks = [
     {
       type: 'input',
@@ -1362,6 +1367,21 @@ function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
       },
     },
   ];
+  if (clientCc != null) {
+    const prefill = String(clientCc || '').trim();
+    blocks.push({
+      type: 'input',
+      optional: true,
+      block_id: 'client_cc_block',
+      label: { type: 'plain_text', text: 'CC client contact — clear to send with no CC' },
+      hint: { type: 'plain_text', text: 'Comma-separated. Goes on the prospect thread via SmartLead.' },
+      element: {
+        type: 'plain_text_input',
+        action_id: 'client_cc_input',
+        ...(prefill ? { initial_value: prefill.slice(0, 2900) } : {}),
+      },
+    });
+  }
   const cc = String(referralCc || '').trim();
   if (cc) {
     blocks.push({
@@ -1381,12 +1401,12 @@ function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
 
 async function openEditReplyModal(token, triggerId, {
   replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
-  referralCc,
+  referralCc, clientCc,
 }) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
 
-  const blocks = buildEditReplyBlocks({ initialDraft, referralCc });
+  const blocks = buildEditReplyBlocks({ initialDraft, referralCc, clientCc });
 
   const notice = ccAutoNoticeBlock({
     ccEmails: ccEmails || ccEmail,

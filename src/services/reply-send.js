@@ -443,7 +443,11 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
   });
 }
 
-async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false, referralCc = null } = {}) {
+/**
+ * `clientCc`: addresses typed (or left prefilled) in the Edit & send modal's
+ * CC field. Fail-closed like referralCc: if SmartLead cannot carry them, nothing is sent.
+ */
+async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false, referralCc = null, clientCc = null } = {}) {
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;
@@ -481,8 +485,9 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
   }
 
   const referralListEarly = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
-  if (referralListEarly.length && reply.platform !== 'smartlead') {
-    throw new Error(`Cannot CC ${referralListEarly.join(', ')} on this channel. Nothing was sent.`);
+  const clientCcEarly = Array.isArray(clientCc) ? clientCc.filter(Boolean) : [];
+  if ((referralListEarly.length || clientCcEarly.length) && reply.platform !== 'smartlead') {
+    throw new Error(`Cannot CC ${[...clientCcEarly, ...referralListEarly].join(', ')} on this channel. Nothing was sent.`);
   }
 
   if (reply.platform === 'smartlead') {
@@ -570,19 +575,21 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     // A referred-contact CC is explicit. If we cannot put it on the payload,
     // send nothing.
     const referralList = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
-    const ccMerged = mergeCcLists(replyAll.cc, prospectCc, referralList);
+    const editCcList = clientCcEarly;
+    const ccMerged = mergeCcLists(replyAll.cc, prospectCc, editCcList, referralList);
     if (ccMerged.length) sendOpts.cc = ccMerged.join(', ');
-    if (referralList.length) {
+    const requiredList = mergeCcLists(editCcList, referralList);
+    if (requiredList.length) {
       const ccLower = String(sendOpts.cc || '').toLowerCase();
-      const missing = referralList.filter((email) => !ccLower.includes(String(email).toLowerCase()));
+      const missing = requiredList.filter((email) => !ccLower.includes(String(email).toLowerCase()));
       if (reply.platform !== 'smartlead' || missing.length || !sendOpts.cc) {
         throw new Error(
-          `Cannot CC ${referralList.join(', ')} on this thread. Nothing was sent.`
+          `Cannot CC ${requiredList.join(', ')} on this thread. Nothing was sent.`
         );
       }
       sendOpts.requireCc = true;
-      sendOpts.requiredCc = referralList;
-      console.log('[ReplySend] Referral CC', { replyId: reply.id, cc: referralList.join(', ') });
+      sendOpts.requiredCc = requiredList;
+      console.log('[ReplySend] Explicit CC', { replyId: reply.id, cc: requiredList.join(', ') });
     }
 
     await smartlead.sendReply(
@@ -610,7 +617,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
         return {
           clientNotifySkipped: true,
           clientNotifySkipReason: notifySkip,
-          prospectCcEmails: prospectCc || undefined,
+          prospectCcEmails: mergeCcLists(prospectCc, editCcList).join(', ') || undefined,
         };
       }
 
@@ -742,7 +749,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
-      prospectCcEmails: prospectCc || undefined,
+      prospectCcEmails: mergeCcLists(prospectCc, editCcList).join(', ') || undefined,
       referralCcEmails: referralList.length ? referralList.join(', ') : undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
