@@ -211,6 +211,7 @@ function leadFieldText({
   leadTimezone,
   enrichmentReceipt,
   leadIcpVerdict,
+  skipIcp = false,
 } = {}) {
   const name = bestFullName(leadName, leadFullName);
   return (
@@ -222,7 +223,7 @@ function leadFieldText({
     linkedinUrlLine(leadLinkedinUrl) +
     websiteUrlLine(normalizeWebsiteUrl(leadWebsite) || websiteFromLeadEmail(leadEmail)) +
     locationLine(leadLocation, leadTimezone) +
-    icpVerdictLine(leadIcpVerdict) +
+    (skipIcp ? '' : icpVerdictLine(leadIcpVerdict)) +
     enrichmentReceiptLine(enrichmentReceipt)
   );
 }
@@ -955,12 +956,15 @@ function buildDraftApprovalCard({
   leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   referredContacts = null,
   mention = null,
+  followupContext = null,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const leadLine = leadFieldText({
     leadName, leadEmail, leadPhone, phoneProvider, phoneEnrichmentStatus,
     leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
     leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
+    // The context block already shows the stored ICP + decision-maker verdicts.
+    skipIcp: Boolean(followupContext),
   });
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
   const review = needsReview === true
@@ -981,6 +985,7 @@ function buildDraftApprovalCard({
       type: 'header',
       text: { type: 'plain_text', text: headerText },
     },
+    ...(followupContext ? require('../utils/followup-card-context').followupContextBlocks(followupContext) : []),
     {
       type: 'section',
       fields: [
@@ -1503,6 +1508,9 @@ async function getPermalink(token, channelId, messageTs) {
 
 module.exports = {
   getClient,
+  escMrkdwn,
+  plainTextForSlack,
+  conversationStepBlocks,
   postDraftApproval,
   updateDraftApprovalCard,
   buildDraftApprovalCard,
