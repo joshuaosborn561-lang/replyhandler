@@ -433,6 +433,27 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
     sourceSlackTs,
   );
 
+  // Same context block as the sequence cards, from the stored source reply (no model calls).
+  let followupContext = null;
+  if (fu.source_pending_reply_id) {
+    try {
+      const { rows: [srcRow] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [fu.source_pending_reply_id]);
+      if (srcRow) {
+        const { loadFollowupContext } = require('./followup-card-context');
+        const { pickOffer } = require('../utils/followup-card-context');
+        followupContext = await loadFollowupContext({
+          client,
+          source: srcRow,
+          phone: leadPhone || '',
+          offer: pickOffer({ icpProfile: client.icp_profile }).text,
+          permalink: threadPermalink || null,
+        });
+      }
+    } catch (err) {
+      console.warn('[FollowUp] card context failed, posting without it', { followUpId: fu.id, err: err.message });
+    }
+  }
+
   // FOLLOW_UP bumps go to the dedicated follow-ups channel (top-level, not threaded
   // under the original card). WILL SEND + buttons first, then the full thread.
   const postedCard = await postProspectSlackCard({
@@ -467,6 +488,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
       lastOutboundMessage: lastOutbound || undefined,
       contextLabel: 'You sent',
       threadPermalink: threadPermalink || undefined,
+      followupContext: followupContext || undefined,
       threadMessages,
     },
   });

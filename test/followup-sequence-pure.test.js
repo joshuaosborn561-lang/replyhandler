@@ -92,9 +92,10 @@ test('call script is the exact spec line', () => {
   );
 });
 
-test('missing offer never invents one', () => {
+test('missing offer is left out, never invented and never shows a placeholder', () => {
   const s = text.callScript({ ...args, offerLine: null });
-  assert.ok(s.includes(text.OFFER_MISSING));
+  assert.equal(s, 'Hey Pat, this is (name) with Acme Co. We emailed you recently. Did you still want to take a peek at that in the next couple days?');
+  assert.doesNotMatch(s, /offer not found|\[/);
 });
 
 test('voicemails: Day 0, Day 3 and Day 6 leave one; the other calls leave none', () => {
@@ -256,8 +257,9 @@ test('Day 6 voicemail drops the proof sentence when there is no real proof, neve
     "Hey Pat, (name) with Acme Co. Last call from me. Quick recap: cutting your IT costs. If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.",
   );
   assert.equal(text.voicemailScript('call_day6', { ...args, proofPoint: '   ' }), none);
-  // A missing offer shows the placeholder, same as the call script.
-  assert.ok(text.voicemailScript('call_day6', { ...args, offerLine: null }).includes(text.OFFER_MISSING));
+  // A missing offer drops the recap, same as the call script. No placeholder.
+  const noOffer = text.voicemailScript('call_day6', { ...args, offerLine: null });
+  assert.doesNotMatch(noOffer, /offer not found|\[|Quick recap/);
 });
 
 test('Day 6 proof without trailing punctuation still reads as a sentence', () => {

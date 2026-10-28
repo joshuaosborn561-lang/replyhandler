@@ -1584,3 +1584,15 @@ Leads can be enrolled by hand with their own subject and body, no `pending_repli
 HubSpot contact. Dry run is the default; one bad lead blocks the whole batch; the endpoint takes no key
 (Josh, Oct 20) but only writes for clients listed in `NURTURE_CLIENT_IDS` and never returns names or emails.
 Manual rows are judged by email, from enrolment onward, so a lead's older replies don't pause it.
+
+## Context at the top of every #followups-ai-replies card (2026-10-28)
+*"i need more context in followups channel."* Every card there (Day 0 call, follow-up email, rebook / no-show) now opens with: the client name in
+bold; the lead's name, title, company, phone and email; their actual reply (quoted, short); our last sent message (short excerpt); the campaign and the
+offer; the meeting or no-show time when there is one; links to the original reply card and the Smartlead thread; and the ICP fit and decision-maker
+verdicts with a short reason each, worded like reply cards. Call cards also show the full email we sent and their full reply directly under the script.
+- The call script and the voicemail share their first line, so a call card has one script block: opening, "if they answer", "if it goes to voicemail".
+- The offer comes from config first (a hand-entered row, then the client's ICP offer) and from the campaign copy last. With no offer anywhere the line is
+  left out, and the scripts say "We emailed you recently." The "[offer not found in campaign copy ...]" placeholder is gone.
+- ICP and decision-maker lines are the verdicts already stored on the original reply row (`pending_replies.icp_verdict`). No model call.
+- Title and company are stored on `pending_replies` from now on (migration 050). Older rows fall back to the decision-maker title and the work-email domain.
+Guard: `test/followup-card-context.test.js`

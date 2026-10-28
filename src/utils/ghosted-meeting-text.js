@@ -41,6 +41,16 @@ function ghostVoicemail({ firstName, callerName, clientName }) {
   return `Hey ${first}, it's ${callerName} with ${clientName}. We had a meeting scheduled and I think we missed each other. I'll send you an email with a couple of new times. Just reply and we'll get it back on the calendar.`;
 }
 
+/** Merged call + voicemail script: the opening line is shared, said once. */
+function ghostCallCardScript({ firstName, callerName, clientName }) {
+  const first = firstName || 'there';
+  return {
+    opening: `Hey ${first}, this is ${callerName} with ${clientName}. We had a meeting on the calendar and it looks like we missed each other.`,
+    ifAnswer: 'Do you still want to find a time to talk this week?',
+    ifVoicemail: "I'll send you an email with a couple of new times. Just reply and we'll get it back on the calendar.",
+  };
+}
+
 function timesLine(slots, link) {
   const labels = (slots || []).map((s) => s.label).filter(Boolean);
   const linkLine = link ? ` If easier, grab a time here: ${link}` : '';
@@ -135,6 +145,7 @@ module.exports = {
   isGhostKind,
   ghostCallScript,
   ghostVoicemail,
+  ghostCallCardScript,
   emailBody,
   planGhostSequence,
 };
