@@ -40,9 +40,13 @@ test('agreed time: callback clause only, today anchored to the call day', () => 
   assert.equal(a, 'Gabe agreed to call him at 11:00 on Wednesday, Oct 28');
 });
 
-test('callback with no agreed time is skipped', async () => {
-  const r = await w.handleWarmLeadEmail(body({ summary: '# Call ## Summary He asked us to call back sometime.' }), deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' } }));
-  assert.equal(r.body.skipped, 'no_agreed_time');
+test('callback with no agreed time still sends, worded as a callback request with no time line', async () => {
+  const r = await w.handleWarmLeadEmail({ ...body({ summary: '# Call ## Summary He asked us to call back sometime.' }), dry_run: true }, deps());
+  assert.equal(r.body.dry_run, true);
+  assert.match(r.body.textBody, /asked for a callback on a cold call; Gabe will reach out\. No meeting is booked yet\./);
+  assert.ok(!/Agreed callback/.test(r.body.textBody));
+  assert.ok(!/ at \d{1,2}:\d{2}/.test(r.body.textBody.split('\n')[0]));
+  assert.match(r.body.subject, /^Callback requested: Pat Doe/);
 });
 
 test('off by default: nothing sent', async () => {
@@ -76,16 +80,41 @@ test('enabled: sends once, to the client always-CC, never to Josh', async () => 
   assert.ok(!sent[0].cc.includes('joshua@salesglidergrowth.com'));
 });
 
-test('interested wording is a warm lead, not a booking', async () => {
-  const r = await w.handleWarmLeadEmail({ ...body({ kind: 'interested', summary: '# Interest ## Outcome Meeting booked ## Summary He wants pricing.' }), dry_run: true }, deps());
-  assert.match(r.body.subject, /^Warm lead: Pat Doe/);
-  assert.ok(/warm lead, not a booked meeting/.test(r.body.textBody));
-  assert.ok(!/Meeting booked/.test(r.body.textBody));
+test('only a callback request triggers it: interested and other kinds are rejected', async () => {
+  const enabled = deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' } });
+  for (const kind of ['interested', 'booked', '', undefined]) {
+    const r = await w.handleWarmLeadEmail(body({ kind }), enabled);
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, 'unsupported_kind');
+  }
+  assert.deepEqual(w.KINDS, ['callback']);
 });
 
-test('only Vector falls back to the owner contact; others fall to Josh', () => {
+test('recipients: client list, Vector fallback, nobody otherwise; Josh is never To, CC or BCC', async () => {
   assert.deepEqual(w.warmLeadRecipients({ always: [], clientSlug: 'vector', env: {} }).to, ['agancman@vectorenergygroup.com']);
-  assert.deepEqual(w.warmLeadRecipients({ always: [], clientSlug: 'emcor', env: {} }).to, ['joshua@salesglidergrowth.com']);
+  assert.deepEqual(w.warmLeadRecipients({ always: [], clientSlug: 'emcor', env: {} }).to, []);
+  // Josh in a client's list, in the CC env, or as the fallback is stripped
+  const r = w.warmLeadRecipients({
+    always: ['joshua@salesglidergrowth.com', 'boss@client.com'], clientSlug: 'emcor',
+    env: { FYI_CC_EMAILS: 'cayden@salesglidergrowth.com,Joshua@SalesGliderGrowth.com', BOOKED_MEETING_EMAIL_CC_EXTRA: 'gabe@salesglidergrowth.com' },
+  });
+  assert.deepEqual(r.to, ['boss@client.com']);
+  assert.deepEqual(r.cc, ['cayden@salesglidergrowth.com', 'gabe@salesglidergrowth.com']);
+  const v = w.warmLeadRecipients({ always: [], clientSlug: 'vector', env: { WARM_LEAD_VECTOR_FALLBACK_TO: 'joshua@salesglidergrowth.com' } });
+  assert.deepEqual(v.to, []);
+});
+
+test('a client with no recipient list sends nothing and never falls back to Josh; no bcc is ever set', async () => {
+  const sent = [];
+  const d = deps({ env: { WARM_LEAD_EMAIL_ENABLED: 'true' }, send: async (m) => { sent.push(m); } });
+  const none = await w.handleWarmLeadEmail(body({ client_slug: 'emcor', client: 'Emcor' }), d);
+  assert.equal(none.body.skipped, 'no_client_recipient');
+  assert.equal(sent.length, 0);
+  const ok = await w.handleWarmLeadEmail(body({ allo_call_id: 'cll-2' }), d);
+  assert.equal(ok.body.sent, true);
+  assert.ok(!('bcc' in sent[0]));
+  const all = [].concat(sent[0].to, sent[0].cc).map((e) => e.toLowerCase());
+  assert.ok(!all.includes('joshua@salesglidergrowth.com'));
 });
 
 test('bad payloads are rejected', async () => {
@@ -134,7 +163,7 @@ test('unverified call email is labelled; verified email is plain and fixes the s
 test('agreed time in the email uses the prospect zone', async () => {
   const r = await w.handleWarmLeadEmail({ ...body({ prospect_zone: PT }), dry_run: true }, deps());
   assert.match(r.body.textBody, /Gabe agreed to call him at 11:00 AM PT \(1:00 PM CT\) on Wednesday, Oct 28/);
-  assert.match(r.body.subject, /Callback set/);
+  assert.match(r.body.subject, /Callback requested/);
 });
 
 test('a lookup title fills an empty title; a lookup failure changes nothing', async () => {

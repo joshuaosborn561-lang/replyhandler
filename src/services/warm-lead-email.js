@@ -1,14 +1,17 @@
 'use strict';
 
 /**
- * Warm-lead email to the client: a caller's cold call ended `interested`, or `to_call_back` with an agreed
- * time. Same layout and recipients as the booked-meeting email, but it never says a meeting is booked.
+ * Callback email to the client: a prospect on a cold call asked for a callback (Allo tag `to_call_back`). Nothing
+ * else triggers it (not `interested`). With an agreed time it is shown in the prospect's zone with CT in brackets;
+ * with none the email says the caller will reach out. Same layout as the booked-meeting email, but it never says a
+ * meeting is booked.
  *
  * allo-calling `log-booking` posts the already-resolved fields (Allo's own summary, prospect contact) to
  * POST /webhook/booking-bridge/warm-lead-email. Recipients are never taken from the request:
  *   To  = the client's always-CC list; when there is none, Vector falls back to its owner contact
- *         (WARM_LEAD_VECTOR_FALLBACK_TO, default Al Gancman), any other client falls to Josh like the booked email
- *   CC  = Cayden's ops address (FYI_CC_EMAILS) and Gabe (BOOKED_MEETING_EMAIL_CC_EXTRA); Josh is never CC'd
+ *         (WARM_LEAD_VECTOR_FALLBACK_TO, default Al Gancman); any other client with no list sends nothing
+ *   CC  = Cayden's ops address (FYI_CC_EMAILS) and Gabe (BOOKED_MEETING_EMAIL_CC_EXTRA)
+ *   Josh's address is stripped from To and CC whatever the lists hold, and there is no BCC.
  *
  * OFF unless WARM_LEAD_EMAIL_ENABLED=true. `dry_run: true` in the body returns the rendered email and
  * recipients without sending (allowed while the flag is off).
@@ -25,7 +28,7 @@ const { parseEmailList } = require('./client-cc');
 const { lookupMissingLinkedin } = require('./reply-card-identity');
 
 const EVENT = 'warm_lead_email';
-const KINDS = ['interested', 'callback'];
+const KINDS = ['callback'];
 const DEFAULT_VECTOR_FALLBACK = 'agancman@vectorenergygroup.com';
 const SEEN_TTL_MS = 6 * 60 * 60 * 1000;
 const seen = new Map();
@@ -299,7 +302,7 @@ function callerFirstName(caller) {
   return f || '';
 }
 
-/** Everything the email shows, from the payload. A callback with no agreed time returns { skip }. */
+/** Everything the email shows, from the payload. The agreed time is optional. */
 function prepareWarmLead(m) {
   const first = callerFirstName(m.caller);
   const { title, body } = splitAlloSummary(m.summary);
@@ -309,13 +312,13 @@ function prepareWarmLead(m) {
   const callAtMs = Date.parse(m.callAt);
   const zone = m.prospectZone || '';
   const agreed = swap(agreedTimeFrom(body, first, { today: callDay, callAtMs, zone }));
-  if (m.kind === 'callback' && !agreed) return { skip: 'no_agreed_time' };
   const safe = swap(fixHeardEmails(clientSafeSummary(body, first, { today: callDay, callAtMs, zone }), m.prospect.email, m.prospect.emailVerified));
   return {
     clientName,
     title: swap(title),
     summary: safe,
     agreedTime: agreed,
+    callerFirst: first,
     callAtLabel: whenLabel(m.callAt),
     callDay,
     zone,
@@ -327,12 +330,23 @@ function vectorFallback(env = process.env) {
   return v ? parseEmailList(v) : [];
 }
 
-/** To = client always-CC; else Vector -> its fallback contact; else Josh. CC = ops + Gabe, never Josh. */
+/** Every address that is Josh's: the booked-email owner, the default owner and the Reply-To. Never a recipient here. */
+function joshAddresses(env = process.env) {
+  return new Set([...parseEmailList(recipient(env)), 'joshua@salesglidergrowth.com', fyiReplyTo(env)].map((e) => String(e).toLowerCase()));
+}
+
+/**
+ * To = client always-CC; else Vector -> its fallback contact; else nobody (the caller then skips the send).
+ * CC = ops + Gabe. Josh is removed from both lists; there is no BCC.
+ */
 function warmLeadRecipients({ always, clientSlug, env = process.env }) {
-  const cc = mergeEmailLists(fyiCcEmails(env), ccExtra(env));
-  const fallback = clientSlug === 'vector' && !(always || []).length ? vectorFallback(env) : [];
-  const { to, cc: ccOut } = buildRecipients({ always: (always || []).length ? always : fallback, josh: recipient(env), cc });
-  return { to, cc: ccOut };
+  const josh = joshAddresses(env);
+  const notJosh = (list) => (list || []).filter((e) => !josh.has(String(e).toLowerCase()));
+  const clientList = notJosh(always);
+  const fallback = clientSlug === 'vector' && !clientList.length ? notJosh(vectorFallback(env)) : [];
+  const to = clientList.length ? clientList : fallback;
+  const cc = notJosh(mergeEmailLists(fyiCcEmails(env), ccExtra(env))).filter((e) => !to.includes(e));
+  return { to, cc };
 }
 
 function alreadySent(key, now = Date.now()) {
@@ -389,6 +403,7 @@ async function handleWarmLeadEmail(body, {
     if (!dryRun) return { status: 502, body: { ok: false, error: 'recipient_lookup_failed' } };
   }
   const { to, cc } = warmLeadRecipients({ always, clientSlug: m.clientSlug, env });
+  if (!to.length) return { status: 200, body: { ok: true, skipped: 'no_client_recipient' } };
   if (!dryRun && !m.prospect.linkedinUrl) {
     const hit = await safeLookup(linkedinFn, m);
     if (hit.linkedinUrl) m.prospect.linkedinUrl = hit.linkedinUrl;
@@ -396,7 +411,7 @@ async function handleWarmLeadEmail(body, {
   }
   const { subject, textBody, htmlBody } = buildWarmLeadNotifyEmail({
     kind: m.kind, prospect: m.prospect, clientName: prep.clientName, callAtLabel: prep.callAtLabel,
-    title: prep.title, summary: prep.summary, agreedTime: prep.agreedTime, noSummaryText: NO_SUMMARY,
+    title: prep.title, summary: prep.summary, agreedTime: prep.agreedTime, callerFirst: prep.callerFirst, noSummaryText: NO_SUMMARY,
   });
   if (dryRun) return { status: 200, body: { ok: true, dry_run: true, to, cc, subject, textBody, htmlBody } };
   try {
