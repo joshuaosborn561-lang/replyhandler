@@ -15,12 +15,17 @@ const {
   parseBookedMeetingPayload,
   buildBookedMeetingEmail,
   buildRecipients,
+  ccExtra,
+  useClientName,
   resolveClientAlwaysCc,
   handleBookedMeetingEmail,
   _resetSeenForTests,
 } = require('../src/services/booked-meeting-email');
 
 const OPS = DEFAULT_FYI_CC_EMAILS;
+const GABE = 'gabe@salesglidergrowth.com';
+const CC = [OPS, GABE];
+const noLinkedin = async () => '';
 
 function payload(over = {}) {
   return {
@@ -210,24 +215,30 @@ describe('booked meeting email: highlights', () => {
 });
 
 describe('booked meeting email: recipients', () => {
-  it('To = client always-CC, CC = Josh then the ops address', () => {
+  it('To = client always-CC, CC = ops (Cayden) and Gabe, never Josh', () => {
     assert.deepEqual(
-      buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO, ops: [OPS] }),
-      { to: ['client@example.test', 'second@example.test'], cc: [DEFAULT_TO, OPS] },
+      buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO, cc: CC }),
+      { to: ['client@example.test', 'second@example.test'], cc: CC },
     );
   });
 
-  it('no always-CC means To Josh, CC ops', () => {
-    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, ops: [OPS] }), { to: [DEFAULT_TO], cc: [OPS] });
-    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, ops: [] }), { to: [DEFAULT_TO], cc: [] });
+  it('no always-CC means To Josh (he is the client), same CC', () => {
+    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, cc: CC }), { to: [DEFAULT_TO], cc: CC });
+    assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, cc: [] }), { to: [DEFAULT_TO], cc: [] });
   });
 
-  it('Josh and ops are never duplicated or dropped when they are on the client list', () => {
+  it('nobody is listed twice when ops or Gabe are on the client list', () => {
     assert.deepEqual(
-      buildRecipients({ always: [DEFAULT_TO, OPS, 'client@example.test'], josh: DEFAULT_TO, ops: [OPS] }),
-      { to: ['client@example.test'], cc: [DEFAULT_TO, OPS] },
+      buildRecipients({ always: [OPS, GABE, 'client@example.test'], josh: DEFAULT_TO, cc: CC }),
+      { to: ['client@example.test'], cc: CC },
     );
-    assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO, ops: [OPS] }), { to: [DEFAULT_TO], cc: [OPS] });
+    assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO, cc: CC }), { to: [DEFAULT_TO], cc: CC });
+  });
+
+  it('CC extras default to Gabe and honor BOOKED_MEETING_EMAIL_CC_EXTRA', () => {
+    assert.deepEqual(ccExtra({}), [GABE]);
+    assert.deepEqual(ccExtra({ BOOKED_MEETING_EMAIL_CC_EXTRA: 'x@example.test, y@example.test' }), ['x@example.test', 'y@example.test']);
+    assert.deepEqual(ccExtra({ BOOKED_MEETING_EMAIL_CC_EXTRA: '' }), []);
   });
 
   it('honors BOOKED_MEETING_EMAIL_TO', () => {
@@ -271,17 +282,17 @@ describe('booked meeting email: recipients', () => {
 describe('booked meeting email: sending', () => {
   beforeEach(() => _resetSeenForTests());
 
-  it('sends to the client always-CC with Josh on CC, never to an address from the request', async () => {
+  it('sends to the client always-CC with ops and Gabe on CC (no Josh), never to an address from the request', async () => {
     const sent = [];
     const send = async (m) => { sent.push(m); };
     const a = await handleBookedMeetingEmail(
       payload({ to: 'attacker@example.test', cc: 'attacker@example.test' }),
-      { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights },
+      { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin },
     );
-    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: [DEFAULT_TO, OPS] } });
+    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, [DEFAULT_TO, OPS]);
+    assert.deepEqual(sent[0].cc, CC);
     assert.equal(sent[0].replyTo, 'joshua@salesglidergrowth.com');
     assert.ok(sent[0].subject.startsWith('Meeting booked:'));
     assert.ok(sent[0].htmlBody && sent[0].textBody);
@@ -292,11 +303,11 @@ describe('booked meeting email: sending', () => {
     const send = async (m) => { sent.push(m); };
     const seen = [];
     const hl = { painPoints: ['Wants fewer vendor calls.'], currentSetup: null, objections: [], nextStep: 'Call tomorrow.' };
-    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async (a) => { seen.push(a); return hl; } });
+    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async (a) => { seen.push(a); return hl; }, linkedinFn: noLinkedin });
     assert.equal(seen[0].transcript, 'USER: hi\nEXTERNAL: hello');
     assert.ok(sent[0].textBody.includes('Pain points:') && sent[0].textBody.includes('- Call tomorrow.'));
     _resetSeenForTests();
-    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async () => null });
+    await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: async () => null, linkedinFn: noLinkedin });
     assert.equal(sent.length, 2);
     assert.ok(!sent[1].textBody.includes('Pain points:') && sent[1].textBody.includes('Pat agreed to a demo'));
   });
@@ -304,12 +315,12 @@ describe('booked meeting email: sending', () => {
   it('sends to Josh only when the client has no always-CC, and dedupes a repeat', async () => {
     const sent = [];
     const send = async (m) => { sent.push(m); };
-    const a = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
-    const b = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
-    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: [OPS] });
+    const a = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
+    const b = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
+    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: CC });
     assert.deepEqual(b, { status: 200, body: { ok: true, deduped: true } });
     assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0].cc, [OPS]);
+    assert.deepEqual(sent[0].cc, CC);
   });
 
   it('a failed client lookup still sends Josh his copy', async () => {
@@ -318,6 +329,7 @@ describe('booked meeting email: sending', () => {
       send: async (m) => { sent.push(m); },
       env: {},
       highlightsFn: noHighlights,
+      linkedinFn: noLinkedin,
       resolveCc: async () => { throw new Error('db down'); },
     });
     assert.equal(r.status, 200);
@@ -331,16 +343,17 @@ describe('booked meeting email: sending', () => {
       env: {},
       resolveCc: noCc,
       highlightsFn: noHighlights,
+      linkedinFn: noLinkedin,
     });
     assert.deepEqual(bad, { status: 502, body: { ok: false, error: 'send_failed' } });
-    const ok = await handleBookedMeetingEmail(payload(), { send: async () => { calls.push('ok'); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
+    const ok = await handleBookedMeetingEmail(payload(), { send: async () => { calls.push('ok'); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
     assert.equal(ok.status, 200);
     assert.deepEqual(calls, ['fail', 'ok']);
   });
 
   it('400s a bad payload without sending', async () => {
     let called = false;
-    const r = await handleBookedMeetingEmail({ event: 'nope' }, { send: async () => { called = true; }, env: {}, resolveCc: noCc, highlightsFn: noHighlights });
+    const r = await handleBookedMeetingEmail({ event: 'nope' }, { send: async () => { called = true; }, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
     assert.equal(r.status, 400);
     assert.equal(called, false);
   });
@@ -362,6 +375,7 @@ describe('booked meeting email: route', () => {
     db.query = async () => ({ rows: [{ name: 'Acme Client', cc_emails: 'client@example.test', cc_email: 'client@example.test' }] });
     process.env.BOOKING_BRIDGE_WEBHOOK_SECRET = 'test-secret-value';
     delete process.env.ANTHROPIC_API_KEY; // never call the LLM from a test
+    process.env.BOOKED_MEETING_LINKEDIN_LOOKUP = 'off'; // never spend on a lookup from a test
     const app = express();
     app.use(express.json());
     app.use(require('../src/routes/booking-bridge-recap'));
@@ -372,6 +386,7 @@ describe('booked meeting email: route', () => {
   afterEach(async () => {
     gmail.sendMail = realSend;
     db.query = realQuery;
+    delete process.env.BOOKED_MEETING_LINKEDIN_LOOKUP;
     if (realAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = realAnthropic;
     if (realSecret === undefined) delete process.env.BOOKING_BRIDGE_WEBHOOK_SECRET;
     else process.env.BOOKING_BRIDGE_WEBHOOK_SECRET = realSecret;
@@ -395,11 +410,121 @@ describe('booked meeting email: route', () => {
     assert.equal((await post('Bearer anything', payload())).status, 503);
   });
 
-  it('sends with the right bearer secret: client To, Josh CC', async () => {
+  it('sends with the right bearer secret: client To, ops and Gabe CC', async () => {
     const res = await post('Bearer test-secret-value', payload());
     assert.equal(res.status, 200);
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, [DEFAULT_TO, OPS]);
+    assert.deepEqual(sent[0].cc, CC);
+  });
+});
+
+describe('booked meeting email: LinkedIn', () => {
+  beforeEach(() => _resetSeenForTests());
+  const li = 'https://www.linkedin.com/in/pat-example';
+
+  it('shows the LinkedIn URL from the payload and does not run a lookup', async () => {
+    const sent = [];
+    let lookups = 0;
+    const body = payload();
+    body.prospect.linkedin_url = li;
+    await handleBookedMeetingEmail(body, {
+      send: async (m) => { sent.push(m); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights,
+      linkedinFn: async () => { lookups += 1; return 'https://www.linkedin.com/in/other'; },
+    });
+    assert.equal(lookups, 0);
+    assert.ok(sent[0].textBody.includes(`LinkedIn: ${li}`));
+    assert.ok(sent[0].htmlBody.includes(`href="${li}"`));
+  });
+
+  it('falls back to the capped lookup when the payload has none', async () => {
+    const sent = [];
+    const seenArgs = [];
+    await handleBookedMeetingEmail(payload(), {
+      send: async (m) => { sent.push(m); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights,
+      linkedinFn: async (m) => { seenArgs.push(m.prospect.email); return li; },
+    });
+    assert.deepEqual(seenArgs, ['pat@example.test']);
+    assert.ok(sent[0].textBody.includes(`LinkedIn: ${li}`));
+  });
+
+  it('omits the LinkedIn row when nothing is found, a lookup throws, or the value is not a profile URL', async () => {
+    for (const linkedinFn of [async () => '', async () => { throw new Error('boom'); }, async () => 'https://example.test/not-linkedin']) {
+      _resetSeenForTests();
+      const sent = [];
+      const r = await handleBookedMeetingEmail(payload(), {
+        send: async (m) => { sent.push(m); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn,
+      });
+      assert.equal(r.status, 200);
+      assert.ok(!/linkedin/i.test(sent[0].textBody) && !/linkedin/i.test(sent[0].htmlBody));
+    }
+  });
+
+  it('ignores a non-LinkedIn URL in the payload', () => {
+    const body = payload();
+    body.prospect.linkedin_url = 'https://evil.example.test/in/x';
+    assert.equal(parseBookedMeetingPayload(body).value.prospect.linkedinUrl, '');
+  });
+});
+
+describe('booked meeting email: client name, never the caller-line brand', () => {
+  beforeEach(() => _resetSeenForTests());
+  const brandPayload = (over = {}) => payload({
+    client: 'Emcor',
+    client_display: 'EMCOR',
+    client_slug: 'emcor',
+    caller_brand: 'Mesa Energy',
+    summary: 'HVAC vendor Mesa Energy offers free PM scope and requests a follow-up call.',
+    ...over,
+  });
+  const brandHighlights = {
+    painPoints: ['Mesa Energy could not reach him before.'],
+    currentSetup: 'Two package units.',
+    objections: ['Asked whether mesa energy was a new vendor.'],
+    nextStep: 'Mesa Energy account executive calls Wednesday.',
+  };
+
+  it('replaces the caller-line brand with the client display name in the whole email', async () => {
+    const sent = [];
+    await handleBookedMeetingEmail(brandPayload(), {
+      send: async (m) => { sent.push(m); }, env: {}, resolveCc: noCc, highlightsFn: async () => brandHighlights, linkedinFn: noLinkedin,
+    });
+    const all = `${sent[0].subject}\n${sent[0].textBody}\n${sent[0].htmlBody}`;
+    assert.ok(!/mesa energy/i.test(all), 'brand must not appear anywhere');
+    assert.ok(sent[0].subject.endsWith('· EMCOR'));
+    assert.ok(sent[0].textBody.includes('HVAC vendor EMCOR offers free PM scope'));
+    assert.ok(sent[0].textBody.includes('- EMCOR account executive calls Wednesday.'));
+  });
+
+  it('knows the EMCOR caller-line brand even when the payload does not carry it', () => {
+    const m = parseBookedMeetingPayload(brandPayload({ caller_brand: undefined })).value;
+    const { textBody } = buildBookedMeetingEmail(m, null);
+    assert.ok(!/mesa energy/i.test(textBody) && textBody.includes('HVAC vendor EMCOR'));
+  });
+
+  it('tells the highlights model the client name and the call-line names to avoid', async () => {
+    let seen;
+    await handleBookedMeetingEmail(brandPayload(), {
+      send: async () => {}, env: {}, resolveCc: noCc, linkedinFn: noLinkedin,
+      highlightsFn: async (a) => { seen = a; return null; },
+    });
+    assert.equal(seen.clientName, 'EMCOR');
+    assert.ok(seen.brands.includes('Mesa Energy'));
+    let user = '';
+    await generateHighlights({ transcript: 't', summary: 's', clientName: 'EMCOR', brands: ['Mesa Energy'] }, { llm: async (a) => { user = a.user; return null; } });
+    assert.ok(user.includes('CLIENT: EMCOR') && user.includes('CALL-LINE NAMES: Mesa Energy'));
+  });
+
+  it('never rewrites the prospect\'s own company, even if it matches the brand', () => {
+    const m = parseBookedMeetingPayload(brandPayload({ prospect: { name: 'Sam', company: 'Mesa Energy', email: '', phone: '', title: '' } })).value;
+    const { textBody } = buildBookedMeetingEmail(m, null);
+    assert.ok(textBody.includes('Company: Mesa Energy'));
+    assert.ok(textBody.includes('HVAC vendor Mesa Energy offers'));
+  });
+
+  it('useClientName matches whole names only, case-insensitively', () => {
+    assert.equal(useClientName('MESA ENERGY and Mesa Energy Group', { clientName: 'EMCOR', brands: ['Mesa Energy'] }), 'EMCOR and EMCOR Group');
+    assert.equal(useClientName('Mesa Energyx', { clientName: 'EMCOR', brands: ['Mesa Energy'] }), 'Mesa Energyx');
+    assert.equal(useClientName('plain', { clientName: '', brands: ['Mesa Energy'] }), 'plain');
   });
 });

@@ -23,7 +23,8 @@ Rules:
 - current_setup: how they get work or handle this today (one or two sentences), or null.
 - objections: hesitations or pushback the prospect raised (max 4), including past bad experiences.
 - next_step: the agreed meeting: who, when (day and time as said), by phone or video, plus anything the prospect asked for. Null if nothing was agreed.
-- Never include phone numbers or email addresses.`;
+- Never include phone numbers or email addresses.
+- The client we book meetings for is named in CLIENT. Always call it by that name. Callers sometimes use a different company name on the call line (CALL-LINE NAMES); never write those names, write the CLIENT name instead.`;
 
 async function defaultLlm({ system, user }) {
   const { anthropicModel } = require('./anthropic-model');
@@ -81,13 +82,13 @@ function normalizeHighlights(parsed) {
   return any ? out : null;
 }
 
-async function generateHighlights({ transcript, summary }, { llm = defaultLlm } = {}) {
+async function generateHighlights({ transcript, summary, clientName = '', brands = [] }, { llm = defaultLlm } = {}) {
   const t = String(transcript || '').trim().slice(0, MAX_TRANSCRIPT_CHARS);
   if (!t) return null;
   try {
     const out = await llm({
       system: SYSTEM,
-      user: `ALLO SUMMARY:\n${String(summary || '(none)').slice(0, 1500)}\n\nTRANSCRIPT:\n"""\n${t}\n"""`,
+      user: `CLIENT: ${clientName || '(unknown)'}\nCALL-LINE NAMES: ${(brands || []).join(', ') || '(none)'}\n\nALLO SUMMARY:\n${String(summary || '(none)').slice(0, 1500)}\n\nTRANSCRIPT:\n"""\n${t}\n"""`,
     });
     return normalizeHighlights(parseJsonLoose(out));
   } catch (err) {

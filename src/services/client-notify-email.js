@@ -429,6 +429,8 @@ function buildBookedMeetingNotifyEmail({
     ['Title', p.title],
     ['Email', p.email],
     ['Cell', p.phone],
+    // LinkedIn is shown only when found; nothing is printed for a miss.
+    ...(p.linkedinUrl ? [['LinkedIn', p.linkedinUrl]] : []),
   ];
   const withCompany = person && company ? ` at ${company}` : '';
   const openerText = `FYI, we just booked a meeting with ${name}${withCompany} through a cold call.`;
