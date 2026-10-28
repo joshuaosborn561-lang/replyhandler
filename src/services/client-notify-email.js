@@ -482,18 +482,18 @@ function buildBookedMeetingNotifyEmail({
  * Warm lead from a cold call (interested, or a callback with an agreed time). Same layout as the booked-meeting
  * email; the copy never says a meeting is booked.
  */
-function buildWarmLeadNotifyEmail({ kind, prospect, clientName, callAtLabel, title, summary, agreedTime, noSummaryText }) {
+function buildWarmLeadNotifyEmail({ prospect, clientName, callAtLabel, title, summary, agreedTime, callerFirst, noSummaryText }) {
   const p = prospect || {};
   const person = String(p.name || '').trim();
   const company = String(p.company || '').trim();
   const name = person || company || 'Prospect';
-  const callback = kind === 'callback';
-  const subject = `${callback ? 'Callback set' : 'Warm lead'}: ${name}${clientName ? ` \u00b7 ${clientName}` : ''}`;
+  const subject = `Callback requested: ${name}${clientName ? ` \u00b7 ${clientName}` : ''}`;
   const withCompany = person && company ? ` at ${company}` : '';
-  const status = [callback ? 'Callback agreed on a cold call' : 'Interested on a cold call', callAtLabel].filter(Boolean).join(' \u00b7 ');
-  const openerText = callback
-    ? `FYI, ${name}${withCompany} asked for a callback on a cold call${agreedTime ? `. ${agreedTime}` : ''}. No meeting is booked yet.`
-    : `FYI, ${name}${withCompany} showed interest on a cold call. This is a warm lead, not a booked meeting; we are following up.`;
+  const status = ['Asked for a callback on a cold call', callAtLabel].filter(Boolean).join(' \u00b7 ');
+  const who = String(callerFirst || '').trim() || 'our caller';
+  const openerText = agreedTime
+    ? `FYI, ${name}${withCompany} asked for a callback on a cold call. ${agreedTime}. No meeting is booked yet.`
+    : `FYI, ${name}${withCompany} asked for a callback on a cold call; ${who} will reach out. No meeting is booked yet.`;
   const openerHtml = escapeHtml(openerText)
     .replace(escapeHtml(name), `<strong>${escapeHtml(name)}</strong>`);
   const rows = [
@@ -510,7 +510,7 @@ function buildWarmLeadNotifyEmail({ kind, prospect, clientName, callAtLabel, tit
   const head = String(title || '').trim();
   const bodyHtml = [
     head ? `<div style="font-weight:600;margin:0 0 6px 0;">${escapeHtml(head)}</div>` : '',
-    callback && agreedTime ? `<div style="margin:0 0 8px 0;"><strong>Agreed callback:</strong> ${escapeHtml(agreedTime)}</div>` : '',
+    agreedTime ? `<div style="margin:0 0 8px 0;"><strong>Agreed callback:</strong> ${escapeHtml(agreedTime)}</div>` : '',
     short ? `<div style="white-space:pre-wrap;line-height:1.45;color:#111;">${escapeHtml(short)}</div>` : '',
     !short && !head ? `<div style="color:#111;">${escapeHtml(noSummaryText)}</div>` : '',
   ].join('');
@@ -531,7 +531,7 @@ function buildWarmLeadNotifyEmail({ kind, prospect, clientName, callAtLabel, tit
     ...rows.map(([k, v]) => `${k}: ${v || 'not found'}`),
     '', 'Call summary', status, '',
     ...(head ? [head] : []),
-    ...(callback && agreedTime ? [`Agreed callback: ${agreedTime}`] : []),
+    ...(agreedTime ? [`Agreed callback: ${agreedTime}`] : []),
     ...(short ? [short] : []),
     ...(!short && !head ? [noSummaryText] : []),
   ].join('\n').trimEnd();
