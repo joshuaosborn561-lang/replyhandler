@@ -156,6 +156,30 @@ function startCron() {
     });
   }
 
+  // ─── Day-30 nurture (OFF by default; NURTURE_ENABLED=true turns it on) ──
+  // Enrols finished follow-up sequences, watches for exits, posts the Day 30 card.
+  // Nothing is sent from here: a person approves each card.
+  {
+    const nurtureEvery = (() => {
+      const n = parseInt(process.env.NURTURE_TICK_MINUTES || '10', 10);
+      return Number.isFinite(n) && n > 0 && n <= 59 ? n : 10;
+    })();
+    cron.schedule(`*/${nurtureEvery} * * * *`, async () => {
+      try {
+        const nurture = require('./services/nurture-day30');
+        if (!nurture.enabled()) return;
+        const result = await nurture.runNurtureTick();
+        const t = result.touches || {};
+        const e = result.entries || {};
+        if (e.enrolled || e.paused || e.exited || t.posted || t.stopped || t.failed) {
+          console.log('[Cron] Nurture tick', result);
+        }
+      } catch (err) {
+        console.error('[Cron] Nurture tick failed', { err: err.message });
+      }
+    });
+  }
+
   // ─── Follow-up card sequence for positive replies (OFF by default) ──
   // FOLLOWUP_SEQUENCE_ENABLED=true turns it on. Every step is a Slack card a
   // human clicks; nothing is sent to a lead from here.

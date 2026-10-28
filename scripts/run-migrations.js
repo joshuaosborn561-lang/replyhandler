@@ -53,6 +53,7 @@ const MIGRATION_FILES = [
   '045_followup_sequences.sql',
   '046_followup_sequence_caller.sql',
   '047_ghosted_meetings.sql',
+  '048_nurture_day30.sql',
 ];
 
 async function clientsTableExists(client) {
