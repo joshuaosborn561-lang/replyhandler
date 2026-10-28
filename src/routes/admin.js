@@ -548,6 +548,35 @@ router.post('/admin/nurture/run', async (req, res) => {
 });
 
 /**
+ * Hand-enrol leads into Day-30 nurture, each with its own subject and body. Body:
+ *   { clientId, leads: [{ email, name, subject, body, company?, phone?, summary?, note?,
+ *                         last_outreach_at?, due?, hubspot?: false, hubspot_contact_id? }], apply?, allowPartial? }
+ * Writes nothing unless apply is true. It never posts or sends; the nurture flags and the human
+ * Approve click still decide that. Like every admin route it takes no key (Josh, Oct 20). A write also
+ * needs the client to be in NURTURE_CLIENT_IDS, and the response has issue codes by row, no names or emails.
+ */
+router.post('/admin/nurture/enrol', async (req, res) => {
+  try {
+    const { clientId, leads, apply = false, allowPartial = false } = req.body || {};
+    const out = await require('../services/nurture-manual-enrol').enrolManual({
+      clientId, leads, apply: apply === true || apply === 'true', allowPartial: allowPartial === true,
+    });
+    if (out.error && !out.results) return res.status(out.error === 'client_not_in_NURTURE_CLIENT_IDS' ? 409 : 400).json({ error: out.error });
+    const slim = (out.results || []).map((r) => ({
+      index: r.index, ref: r.ref, status: r.status, errors: r.errors, warnings: r.warnings,
+      ...(r.nextTouchAt ? { nextTouchAt: r.nextTouchAt } : {}),
+    }));
+    return res.status(out.ok ? 200 : 409).json({
+      ok: out.ok, applied: out.applied, error: out.error, flags: out.flags, batchWarnings: out.batchWarnings,
+      summary: out.summary, results: slim,
+    });
+  } catch (err) {
+    console.error('[Admin] nurture enrol error', { err: err.message });
+    return res.status(500).json({ error: 'nurture enrol failed' });
+  }
+});
+
+/**
  * Set (or clear) a client's offer line and proof point for the follow-up card
  * sequence by hand. Like every admin route it takes no key (Josh, Oct 20: no
  * admin key checks). The proof point still has to carry a real number; a manual row is never overwritten by extraction.

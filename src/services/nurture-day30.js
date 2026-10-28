@@ -74,6 +74,11 @@ function smartleadKeyFor(client, env = process.env) {
  * Exits are checked before pauses.
  */
 async function evaluateLead(lead, { dbClient = db, deps } = {}) {
+  if (!lead.source_reply_id) {
+    // A hand-enrolled lead has no source reply: judge it by its email alone.
+    if (lead.origin === 'manual') return evaluateManual(lead, { dbClient, deps });
+    return { action: 'exit', reason: 'source_reply_missing' };
+  }
   const d = withDeps(deps);
   const source = await loadSource(lead.source_reply_id, dbClient);
   if (!source) return { action: 'exit', reason: 'source_reply_missing' };
@@ -141,11 +146,51 @@ async function evaluateLead(lead, { dbClient = db, deps } = {}) {
   return { action: 'ok' };
 }
 
+
+/**
+ * Exit rules for a hand-enrolled lead (no source reply, so everything is keyed on the email).
+ * Only what happens after enrolment can pause or stop the lead: it was enrolled on purpose, so
+ * its earlier replies are expected. A DQ, a booked meeting or a calendar event counts at any time.
+ */
+async function evaluateManual(lead, { dbClient = db, deps } = {}) {
+  const d = withDeps(deps);
+  const email = String(lead.lead_email || '').trim().toLowerCase();
+  const since = lead.enrolled_at || new Date();
+  if (await d.isDisqualified(lead.client_id, { leadEmail: email })) return { action: 'exit', reason: 'disqualified' };
+
+  const { rows: later } = await dbClient.query(
+    `SELECT upper(pr.classification) AS classification, pr.status
+       FROM pending_replies pr
+      WHERE pr.client_id = $1
+        AND $2::text <> '' AND lower(coalesce(pr.lead_email, '')) = $2
+        AND upper(pr.classification) <> 'FOLLOW_UP'
+        AND pr.created_at > $3`,
+    [lead.client_id, email, since],
+  );
+  for (const cls of ['REMOVE_ME', 'NOT_INTERESTED', 'WRONG_PERSON']) {
+    if (later.some((r) => r.classification === cls)) return { action: 'exit', reason: t.EXIT_CLASSIFICATIONS[cls] };
+  }
+  const { rows: ghost } = await dbClient.query(
+    `SELECT 1 FROM followup_sequences
+      WHERE client_id = $1 AND lead_key = $2 AND origin = 'ghosted_meeting' AND created_at > $3 LIMIT 1`,
+    [lead.client_id, lead.lead_key, since],
+  );
+  if (ghost.length) return { action: 'exit', reason: 'no_show_rebook' };
+  if (later.some((r) => t.POSITIVE_CLASSIFICATIONS.includes(r.classification))) return { action: 'pause', reason: 'positive_reply' };
+  if (later.some((r) => r.status === 'meeting_booked')) return { action: 'pause', reason: 'booked_meeting' };
+  const booked = await d.looksAlreadyBooked(lead.client_id, {
+    platform: null, leadEmail: email, leadName: lead.lead_name, leadId: null, since,
+  });
+  if (booked) return { action: 'pause', reason: 'booked_meeting' };
+  return { action: 'ok' };
+}
+
 // ─── HubSpot ──────────────────────────────────────────────────────────────────
 
 /** Write the lead's four properties when HubSpot sync is on and the state changed. */
 async function flushHubSpot(lead, { env = process.env, dbClient = db, deps } = {}) {
   if (!t.hubspotSyncEnabled(env)) return 'flag_off';
+  if (lead.hubspot_skip) return 'skipped'; // no HubSpot contact for this lead: nothing to write
   const d = withDeps(deps);
   const key = t.hubspotStateKey(lead);
   if (lead.hubspot_synced_state === key) return 'in_sync';
@@ -182,13 +227,14 @@ async function flushAllHubSpot({ env = process.env, dbClient = db, deps, limit =
   if (!t.hubspotSyncEnabled(env)) return { skipped: 'flag_off' };
   const { rows } = await dbClient.query(
     `SELECT * FROM nurture_leads
-      WHERE hubspot_synced_at IS NULL
+      WHERE NOT hubspot_skip
+        AND (hubspot_synced_at IS NULL
          OR hubspot_synced_at < updated_at
-         OR (hubspot_synced_state IS NULL AND hubspot_synced_at < now() - interval '1 day')
+         OR (hubspot_synced_state IS NULL AND hubspot_synced_at < now() - interval '1 day'))
       ORDER BY updated_at LIMIT $1`,
     [limit],
   );
-  const totals = { synced: 0, no_contact: 0, error: 0, in_sync: 0 };
+  const totals = { synced: 0, no_contact: 0, error: 0, in_sync: 0, skipped: 0 };
   for (const lead of rows) {
     const r = await flushHubSpot(lead, { env, dbClient, deps });
     if (totals[r] !== undefined) totals[r]++;
@@ -404,8 +450,10 @@ async function resolvePhone(lead, source, contact, { dbClient = db, deps } = {})
     leadEmail: lead.lead_email, linkedinUrl: lead.linkedin_url,
   });
   if (found && found.phone) return { phone: found.phone, note: null, source: 'reply' };
+  if (lead.phone) return { phone: lead.phone, note: null, source: 'manual' };
   if (contact && contact.phone) return { phone: contact.phone, note: null, source: 'hubspot' };
 
+  if (!source) return { phone: null, note: 'no lookup: no reply record on file', source: null };
   const replied = source && t.POSITIVE_CLASSIFICATIONS.includes(String(source.classification || '').toUpperCase());
   if (!replied) return { phone: null, note: 'no lookup: lead has not replied', source: null };
   const status = source.phone_enrichment_status;
@@ -465,9 +513,10 @@ async function dueLeads(now, limit, dbClient = db) {
 /** Build the card inputs for one lead (reads only, apart from the phone lookup). */
 async function buildCard(lead, { env = process.env, dbClient = db, deps, lookupPhone = true } = {}) {
   const d = withDeps(deps);
-  const source = await loadSource(lead.source_reply_id, dbClient);
+  const source = lead.source_reply_id ? await loadSource(lead.source_reply_id, dbClient) : null;
   let contact = null;
-  if (String(env.HUBSPOT_ACCESS_TOKEN || '').trim() || (deps && deps.hubspot)) {
+  // A lead flagged as having no HubSpot contact is never looked up.
+  if (!lead.hubspot_skip && (String(env.HUBSPOT_ACCESS_TOKEN || '').trim() || (deps && deps.hubspot))) {
     try { contact = await d.hubspot.findContactByEmail(lead.lead_email, { env }); }
     catch (err) { log('hubspot_lookup_failed', { leadId: lead.id, err: err.message }); }
   }
@@ -479,7 +528,11 @@ async function buildCard(lead, { env = process.env, dbClient = db, deps, lookupP
   const phone = lookupPhone
     ? await resolvePhone(lead, source, contact, { dbClient, deps })
     : { phone: null, note: 'not looked up (preview)', source: null };
-  const draft = t.composeDay30Draft({ leadName: lead.lead_name, repliedAt: source && source.created_at });
+  // A lead enrolled by hand carries its own copy; it replaces the template (and stays editable on the card).
+  const draft = lead.custom_subject && lead.custom_body
+    ? { subject: lead.custom_subject, body: lead.custom_body }
+    : t.composeDay30Draft({ leadName: lead.lead_name, repliedAt: source && source.created_at });
+  const contactId = contact ? contact.id : (lead.hubspot_contact_id || null);
   return {
     card: {
       name: lead.lead_name,
@@ -487,8 +540,9 @@ async function buildCard(lead, { env = process.env, dbClient = db, deps, lookupP
       lastOutreach: lead.last_outreach_at ? t.chicagoDateLabel(lead.last_outreach_at) : null,
       phone: phone.phone,
       phoneNote: phone.note,
-      summary: replySummary(source, lastCall),
-      hubspotUrl: contact ? t.hubspotContactUrl(contact.id, env) : null,
+      summary: lead.card_summary || replySummary(source, lastCall),
+      note: lead.card_note || null,
+      hubspotUrl: contactId ? t.hubspotContactUrl(contactId, env) : null,
       callMention: callMention(env),
       email: lead.lead_email,
       subject: draft.subject,
@@ -815,6 +869,8 @@ async function runNurtureTick({ now = new Date(), env = process.env, dbClient = 
 async function status({ dbClient = db, env = process.env } = {}) {
   const { rows: byStage } = await dbClient.query(
     `SELECT stage, count(*)::int AS n FROM nurture_leads GROUP BY stage ORDER BY stage`);
+  const { rows: byOrigin } = await dbClient.query(
+    `SELECT origin, count(*)::int AS n FROM nurture_leads GROUP BY origin ORDER BY origin`);
   const { rows: byReason } = await dbClient.query(
     `SELECT exit_reason, count(*)::int AS n FROM nurture_leads WHERE exit_reason IS NOT NULL GROUP BY exit_reason ORDER BY n DESC`);
   const { rows: touches } = await dbClient.query(
@@ -829,6 +885,7 @@ async function status({ dbClient = db, env = process.env } = {}) {
     clientsConfigured: t.nurtureClientIds(env).length,
     enrollStart: t.enrollStart(env),
     byStage,
+    byOrigin,
     exitReasons: byReason,
     touches,
   };
@@ -836,6 +893,7 @@ async function status({ dbClient = db, env = process.env } = {}) {
 
 module.exports = {
   evaluateLead,
+  evaluateManual,
   scanEntries,
   syncExits,
   runTouches,
