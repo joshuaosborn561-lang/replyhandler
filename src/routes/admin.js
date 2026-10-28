@@ -514,6 +514,40 @@ router.post('/admin/ghosted-meetings/run', async (req, res) => {
 });
 
 /**
+ * Day-30 nurture: flags, lead counts by stage, exit reasons, touch counts. Read only, counts only (no lead rows).
+ */
+router.get('/admin/nurture', async (_req, res) => {
+  try {
+    return res.json(await require('../services/nurture-day30').status());
+  } catch (err) {
+    console.error('[Admin] nurture status error', { err: err.message });
+    return res.status(500).json({ error: 'nurture status failed' });
+  }
+});
+
+/**
+ * Run one nurture pass now. Needs NURTURE_ENABLED. With ?dry=1 it enrols and checks exits
+ * (database only) and previews the cards that would post, but posts nothing.
+ */
+router.post('/admin/nurture/run', async (req, res) => {
+  try {
+    const svc = require('../services/nurture-day30');
+    if (!svc.enabled()) return res.status(409).json({ error: 'NURTURE_ENABLED is off' });
+    const dry = /^(1|true|yes)$/i.test(String(req.query.dry || ''));
+    if (!dry) return res.json({ dry: false, result: await svc.runNurtureTick() });
+    const result = {
+      entries: await svc.scanEntries(),
+      exits: await svc.syncExits(),
+      touches: await svc.runTouches({ dryRun: true }),
+    };
+    return res.json({ dry: true, result });
+  } catch (err) {
+    console.error('[Admin] nurture run error', { err: err.message });
+    return res.status(500).json({ error: 'nurture run failed' });
+  }
+});
+
+/**
  * Set (or clear) a client's offer line and proof point for the follow-up card
  * sequence by hand. Like every admin route it takes no key (Josh, Oct 20: no
  * admin key checks). The proof point still has to carry a real number; a manual row is never overwritten by extraction.

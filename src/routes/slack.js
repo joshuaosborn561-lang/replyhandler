@@ -167,6 +167,20 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
     return;
   }
 
+  // Nurture Day 30: edit modal. Validate before closing, then approve with the edited text.
+  if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'nurture_d30_edit_modal') {
+    const nurtureSvc = require('../services/nurture-day30');
+    const errors = nurtureSvc.validateEditSubmission(interaction);
+    if (errors) return res.status(200).json({ response_action: 'errors', errors });
+    res.status(200).json({ response_action: 'clear' });
+    try {
+      await nurtureSvc.handleEditSubmit(interaction);
+    } catch (err) {
+      console.error('[Slack] Nurture edit submit error', { err: err.message, stack: err.stack });
+    }
+    return;
+  }
+
   // Modal submissions must respond within 3s — acknowledge first
   if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'edit_reply_modal') {
     res.status(200).json({ response_action: 'clear' });
@@ -204,6 +218,8 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleToggleCcClient(action);
     } else if (String(action.action_id || '').startsWith('fseq_')) {
       await require('../services/followup-sequence').handleCallButton(action, interaction);
+    } else if (String(action.action_id || '').startsWith('nurture_d30_')) {
+      await require('../services/nurture-day30').handleButton(action, interaction);
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });

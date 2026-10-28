@@ -1564,3 +1564,17 @@ Josh's rule: a no-show is an obvious one, detected about 5 minutes after the mee
 On a no-show, ONE rebook email card goes to the follow-ups channel tagging Gabe and Cayden (first click claims it; the sent-confirmation card shows who clicked). Buttons are the standard FOLLOW_UP card: Approve & Send, Edit & send, Reject (on a follow-up card this reads as Skipped). It sends only on a click, through the existing send path. Copy is short, uses two live times plus the booking link, and claims nothing. The extra call cards, day 2 email and breakup only exist with `GHOSTED_MEETING_FULL_SEQUENCE=true`.
 
 Scan runs every 2 minutes. Knobs: `GHOSTED_MEETING_GRACE_MINUTES` (5), `GHOSTED_MEETING_MIN_MINUTES` (5), `GHOSTED_MEETING_MENTIONS`, `GHOSTED_MEETING_FULL_SEQUENCE`. Guard: `test/ghosted-meetings.test.js`.
+
+### Day-30 nurture (built, OFF by default, not enabled)
+
+Josh's spec (via CRM): a lead whose positive-reply follow-up sequence ran to the end gets a Day 30 nurture touch, as a human-approved card. Nothing sends on its own. Go-live steps live in `docs/nurture-day30.md`.
+
+- **Entry:** a `followup_sequences` row with `status = 'completed'` and `origin = 'reply'`, for a client listed in `NURTURE_CLIENT_IDS`, that finished after `NURTURE_ENROLL_START`. The last follow-up date is the latest email that was actually sent or call outcome logged, not a card that was only posted. If nothing went out the row is recorded as `exited / no_followup_sent`.
+- **Exits and pauses** (checked at entry, every 10 minutes, when the card is due, and again at the Approve click): DQ, client claimed, unsubscribe, NOT_INTERESTED, WRONG_PERSON and a no-show rebook sequence set `exited`. A positive reply (INTERESTED, MEETING_PROPOSED, QUESTION) or a booked meeting sets `paused`. Out-of-office and other automatic replies change nothing. A newer finished sequence for a paused lead supersedes the pause.
+- **Stages:** none / day30 / day90 / quarterly / paused / exited, mirrored to the HubSpot contact as `nurture_stage`, `nurture_next_touch_date`, `last_outreach_date`, `nurture_exit_reason`. Only day30 has copy. After a Day 30 send (or skip) the lead moves to day90 with an informational date; day90 and quarterly touches never post until Research sends copy.
+- **Card:** NURTURE-tagged, posted to `#nurture` (C0BHBDTMRFY) by the client's Slack bot. Name, company, last outreach, phone, last reply or call summary, HubSpot link, the email, and Approve & Send / Edit & send / Skip for Josh and Cayden only. No phone on file: the reply's own number, then HubSpot, then the existing reply phone lookup once (it keeps its own spend ceiling, and only runs for someone who replied positively).
+- **Send:** Approve imports the lead into Smartlead campaign `SMARTLEAD_NURTURE_CAMPAIGN_ID` (3122546) with the approved subject and body in custom fields. It refuses unless every step of that campaign's sequence renders `{{nurture_subject}}` and `{{nurture_body}}`, so the current generic sequence cannot send unapproved copy. It also refuses an unsubscribed lead, a lead already in the campaign, or a lead active in another campaign, and it never overrides the blocklist or unsubscribe list.
+- **Flags (all off):** `NURTURE_ENABLED`, `NURTURE_HUBSPOT_SYNC_ENABLED`, `NURTURE_POST_ENABLED`, `NURTURE_SEND_ENABLED`.
+- Admin routes follow the no-key rule: `GET /admin/nurture` (counts only) and `POST /admin/nurture/run?dry=1`.
+
+Guards: `test/nurture-day30-pure.test.js`, `test/nurture-day30-db.test.js` (PGlite).
