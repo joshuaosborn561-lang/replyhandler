@@ -203,10 +203,11 @@ test('follow-up email card: context under the header, ICP shown once, WILL SEND 
   });
   const b = card.blocks;
   assert.equal(b[0].type, 'header');
-  // Josh, Oct 29 2026: one-line header, buttons right under it, then contact, message, draft.
+  // Josh, Oct 29 2026: one-line header, then contact, message, draft, context, and the buttons stay at the bottom.
   assert.match(b[0].text.text, /Pat Prospect/);
   assert.match(b[0].text.text, /Acme Co/);
-  assert.equal(b[1].type, 'actions', 'buttons sit right under the header');
+  assert.equal(b[b.length - 1].type, 'actions', 'buttons stay at the bottom');
+  assert.equal(b[b.length - 2].type, 'context', 'context line sits right above the buttons');
   const all = flat(b);
   assert.match(all, /Decision maker: Yes/);
   assert.equal((all.match(/🎯/g) || []).length, 1, 'ICP appears once');
