@@ -80,6 +80,10 @@ it('Vector Energy Group raw Calendly is wrapped to book.gosalesglider.com/vector
     'https://book.gosalesglider.com/vector',
   );
   assert.strictEqual(
+    prospectBookingLink({ clientName: 'Vector Energy Group', bookingLink: 'https://tidycal.com/team/vector-energy-group/intro-call' }),
+    'https://book.gosalesglider.com/vector',
+  );
+  assert.strictEqual(
     prospectBookingLink({ clientName: 'Vector Energy Group', bookingLink: 'https://book.gosalesglider.com/vector' }),
     'https://book.gosalesglider.com/vector',
   );
