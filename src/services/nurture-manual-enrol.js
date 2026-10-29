@@ -13,7 +13,9 @@
  *     company, phone, summary, note,                    shown on the card
  *     last_outreach_at, due,                            ISO dates (due defaults to now, snapped into the send window)
  *     hubspot: false,                                   this lead has no HubSpot contact: skip every HubSpot call
- *     hubspot_contact_id }                              the contact, when already known
+ *     hubspot_contact_id,                               the contact, when already known
+ *     override_prior_negative: true }                   enrol despite an earlier unsubscribe / not interested / wrong person
+ *                                                       reply, for this lead only (a person decided it); a DQ still blocks
  * `flag` is accepted as a synonym for `note`; unknown fields are ignored.
  */
 
@@ -76,6 +78,7 @@ function normalizeLead(raw, { now = new Date() } = {}) {
       lastOutreachAt: last.value || null, due: due.value || null,
       hubspotSkip, hubspotContactId: contactId,
       ref: str(r.key || r.ref),
+      overridePriorNegative: r.override_prior_negative === true,
     },
     errors,
     warnings,
@@ -132,7 +135,8 @@ async function enrolManual({
       `SELECT DISTINCT upper(classification) AS c FROM pending_replies
         WHERE client_id = $1 AND lower(coalesce(lead_email, '')) = $2 AND upper(classification) = ANY($3::text[])`,
       [clientId, lead.email, NEGATIVE]);
-    if (neg.length) { res.status = 'blocked'; res.errors.push(`prior_${neg[0].c.toLowerCase()}_reply`); continue; }
+    if (neg.length && lead.overridePriorNegative) res.warnings.push(`prior_${neg[0].c.toLowerCase()}_reply_overridden`);
+    else if (neg.length) { res.status = 'blocked'; res.errors.push(`prior_${neg[0].c.toLowerCase()}_reply`); continue; }
     const verdict = await nurture.evaluateManual(
       { client_id: clientId, lead_key: key, lead_email: lead.email, lead_name: lead.name, enrolled_at: now },
       { dbClient, deps });
