@@ -313,3 +313,83 @@ test('icp helpers never write forbidden suppression columns', () => {
   ));
   assert.equal(parseStoredIcp({ status: 'qualified', confidence: 1 }).status, 'qualified');
 });
+
+test('SalesGlider grades against any B2B service business, not only trade contractors', async () => {
+  clearIcpMemoryCache();
+  const { DEFAULT_CLIENT_VARIANTS: V, PASS: P } = require('../src/services/reply-icp-variants');
+  assert.equal(V.salesglider.jev_variant, 'b2b_service');
+  assert.equal(P.b2b_service, 'b2b_service_business');
+  const spec = variantSpec('b2b_service');
+  assert.ok(spec.criteria.b2b_service_business, 'pass label has a criterion');
+  assert.match(spec.criteria.b2b_service_business, /staffing/i);
+  assert.match(spec.criteria.b2b_service_business, /\$36,000/);
+
+  const orig = process.env.SUPABASE_URL;
+  const origKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-key';
+  const examples = require('../src/services/reply-examples');
+  const real = examples.supabaseRequest;
+  const reads = [];
+  examples.supabaseRequest = async (path) => {
+    reads.push(path);
+    // topup still says `choice` for salesglider, and has a stale trade-contractor
+    // (and an unrelated other-client) verdict for the domain.
+    if (path.includes('icp_variants')) return [{ jev_variant: 'choice', disco_icp: 'salesglider' }];
+    if (path.includes('icp_llm_results')) {
+      return [
+        { fit: 'no', prob: 0.01, reason: 'other_not_contractor', model: 'jev:typesafe/jev-1.13|choice', answers: { category: { choice: 'other_not_contractor' } } },
+        { fit: 'no', prob: 0.1, reason: 'x', model: 'jev:typesafe/jev-1.13|bcp', answers: { category: { choice: 'operating_company_not_investor' } } },
+      ];
+    }
+    if (path.includes('icp_site_text')) return [{ body: 'We place staffing and recruiting talent for B2B companies. '.repeat(20), http_status: 200, chars: 1200 }];
+    return [];
+  };
+  try {
+    let graded = null;
+    const v = await resolveReplyIcp({
+      website: 'https://staffing-co.example',
+      clientName: 'SalesGlider',
+      grade: true,
+      gradeFn: async (s) => {
+        graded = s;
+        return { fit: 'yes', prob: 0.9, reason: 'staffing firm', answers: { category: { choice: 'b2b_service_business' } } };
+      },
+    });
+    assert.equal(graded.pass, 'b2b_service_business', 'local variant beats the topup `choice` row');
+    assert.equal(v.status, 'qualified');
+    assert.equal(v.source, 'gemini_icp_llm_port', 'stale choice/other-client cache rows are ignored');
+  } finally {
+    examples.supabaseRequest = real;
+    if (orig == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = orig;
+    if (origKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = origKey;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a cached verdict graded against an older pass label is ignored', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_URL;
+  const stale = {
+    query: async (sql) => {
+      if (/FROM clients/.test(sql)) return { rows: [{ name: 'SalesGlider' }] };
+      if (/FROM reply_icp_verdicts/.test(sql)) {
+        return { rows: [{ verdict: 'disqualified', confidence: 100, reason: 'old', label: 'other_not_contractor', pass_label: 'commercial_trade_contractor', source: 'x', cost_usd: 0 }] };
+      }
+      return { rows: [] };
+    },
+  };
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://staffing-co.example',
+      clientName: 'SalesGlider',
+      db: stale,
+      grade: false,
+    });
+    assert.notEqual(v.status, 'disqualified', 'old DQ is not served');
+  } finally {
+    if (prevUrl != null) process.env.SUPABASE_URL = prevUrl;
+    clearIcpMemoryCache();
+  }
+});

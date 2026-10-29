@@ -77,3 +77,20 @@ test('decision maker survives storage and changes trigger card update', () => {
   assert.deepEqual(parseStoredIcp({ status: 'qualified', decision_maker: d }).decision_maker, d);
   assert.equal(icpVerdictEquals({ status: 'qualified' }, { status: 'qualified', decision_maker: d }), false);
 });
+
+test('SalesGlider buyers: owners, founders, CEOs, presidents, partners, heads of sales/growth', async () => {
+  const db = {
+    query: async () => ({
+      rows: [{ name: 'SalesGlider', icp_profile: { titles: ['Plant Manager'] } }],
+    }),
+  };
+  const personas = await dm.loadClientPersonas(db, 'sg');
+  assert.ok(personas.includes('Head of Sales') && personas.includes('Head of Growth'));
+  assert.ok(!personas.includes('Plant Manager'), 'code-owned titles win for SalesGlider');
+  for (const t of ['Owner', 'Founder', 'CEO', 'President', 'Managing Partner', 'Head of Sales', 'Head of Growth', 'VP of Sales']) {
+    assert.equal(dm.judgeDecisionMaker(t, personas).status, 'yes', t);
+  }
+  for (const t of ['Account Executive', 'Sales Representative', 'Marketing Coordinator', 'Recruiter']) {
+    assert.equal(dm.judgeDecisionMaker(t, personas).status, 'no', t);
+  }
+});

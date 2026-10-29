@@ -190,6 +190,10 @@ async function loadStoredClientVariant(db, { clientId, clientTag } = {}) {
 
 async function loadVariant(clientTag, { db, clientId } = {}) {
   const local = DEFAULT_CLIENT_VARIANTS[clientTag];
+  // Code-owned ICP (e.g. SalesGlider's own) beats the topup row.
+  if (local?.localOverride && variantSpec(local.jev_variant)) {
+    return { ...local, spec: variantSpec(local.jev_variant) };
+  }
   if (supabaseReady()) {
     try {
       const rows = await supabaseSchema(
@@ -215,7 +219,7 @@ async function loadVariant(clientTag, { db, clientId } = {}) {
   return loadStoredClientVariant(db, { clientId, clientTag });
 }
 
-async function readTopupLlm(domain, jevVariant) {
+async function readTopupLlm(domain, jevVariant, { strict = false } = {}) {
   if (!supabaseReady() || !domain) return null;
   try {
     const rows = await supabaseSchema(
@@ -225,6 +229,7 @@ async function readTopupLlm(domain, jevVariant) {
     const list = Array.isArray(rows) ? rows : [];
     const jevHit = list.find((r) => String(r.model || '').includes(`|${jevVariant}`));
     if (jevHit) return jevHit;
+    if (strict) return null;
     const anyJev = list.find((r) => String(r.model || '').startsWith('jev:'));
     if (anyJev) return anyJev;
     return list.find((r) => String(r.model || '') === 'discolike:website') || list[0] || null;
@@ -339,9 +344,14 @@ async function gradeWithGemini(spec, domain, siteText) {
   };
 }
 
-async function readLocalCache(db, clientTag, domain) {
+/** A cached verdict graded against a different pass label is stale (ICP changed). */
+function staleForPass(verdict, expectedPass) {
+  return Boolean(expectedPass && verdict?.passLabel && verdict.passLabel !== expectedPass);
+}
+
+async function readLocalCache(db, clientTag, domain, expectedPass = null) {
   const hit = memoryCache.get(memoryKey(clientTag, domain));
-  if (hit) return { ...hit, source: hit.source || 'memory' };
+  if (hit && !staleForPass(hit, expectedPass)) return { ...hit, source: hit.source || 'memory' };
   if (!db) return null;
   try {
     const { rows } = await db.query(
@@ -352,6 +362,7 @@ async function readLocalCache(db, clientTag, domain) {
     );
     const row = rows[0];
     if (!row) return null;
+    if (staleForPass({ passLabel: row.pass_label }, expectedPass)) return null;
     return {
       status: row.verdict,
       confidence: row.confidence == null ? null : Number(row.confidence),
@@ -467,10 +478,10 @@ async function resolveReplyIcp({
     return unknownVerdict('no ICP', { domain, clientTag, source: 'icp_variants' });
   }
 
-  const cached = await readLocalCache(db, clientTag, domain);
+  const cached = await readLocalCache(db, clientTag, domain, variant.spec.pass);
   if (cached && cached.status !== 'unknown') return cached;
 
-  const topup = await readTopupLlm(domain, variant.jev_variant);
+  const topup = await readTopupLlm(domain, variant.jev_variant, { strict: Boolean(variant.spec.strictCache) });
   if (topup) {
     const verdict = fromLlmRow(topup, variant.spec, {
       domain, clientTag, source: 'topup_llm_results',

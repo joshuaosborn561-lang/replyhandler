@@ -1584,6 +1584,18 @@ Leads can be enrolled by hand with their own subject and body, no `pending_repli
 HubSpot contact. Dry run is the default; one bad lead blocks the whole batch; the endpoint takes no key
 (Josh, Oct 20) but only writes for clients listed in `NURTURE_CLIENT_IDS` and never returns names or emails.
 Manual rows are judged by email, from enrolment onward, so a lead's older replies don't pause it.
+
+## SalesGlider's own ICP: any B2B service business (2026-10-28)
+Josh set SalesGlider's own ICP to any B2B service business with roughly $36K+ customer lifetime value. It is no longer
+limited to trade contractors. Decision makers are owners, founders, CEOs, presidents, partners, and heads of sales or growth.
+The old grader (`choice`, pass = `commercial_trade_contractor`) disqualified staffing firms with 99-100% confidence.
+- Reply cards for SalesGlider use the code-owned variant `b2b_service` (pass `b2b_service_business`), which wins over
+  `topup.icp_variants` (still `choice` for topup's own pipeline). Cached results are only reused when graded for that variant.
+- Buyer titles for SalesGlider are `DEFAULT_CLIENT_PERSONAS.salesglider`, not `clients.icp_profile.titles`.
+- A cached `reply_icp_verdicts` row graded against a different pass label is ignored, so changed ICPs regrade by themselves.
+- Guards: `test/reply-icp.test.js` (SalesGlider grades against any B2B service business; cached verdict with an older pass label),
+  `test/decision-maker.test.js` (SalesGlider buyers).
+
 A meeting that was booked but never held (no-show, cancelled, moved) does not exclude a manual lead (Josh, Oct 29: "no-shows count for nurture"). Only a meeting still upcoming on the calendar, a reply marked `meeting_booked` after enrolment, or a later positive reply pauses it. The old check (any meeting row, bridge booking, earlier reply or past call that said "booked") is still used for sequence leads.
 
 ## Context at the top of every #followups-ai-replies card (2026-10-28)
