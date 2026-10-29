@@ -87,7 +87,7 @@ async function markMeetingBooked({
 
   // Close sibling open cards for the same lead so we don't keep approving dead nudges.
   if (keys.leadId || keys.leadEmail) {
-    await db.query(
+    const siblings = await db.query(
       `UPDATE pending_replies
           SET status = 'meeting_booked',
               draft_reply = NULL,
@@ -99,7 +99,8 @@ async function markMeetingBooked({
           AND (
             ($4::text <> '' AND COALESCE(lead_id, '') = $4)
             OR ($5::text <> '' AND lower(lead_email) = $5)
-          )`,
+          )
+        RETURNING *`,
       [
         clientId,
         keys.platform,
@@ -108,6 +109,8 @@ async function markMeetingBooked({
         keys.leadEmail || '',
       ]
     );
+    // Their Slack cards still show buttons; retire them (best effort).
+    await require('./retire-slack-cards').retireSlackCards(siblings?.rows, { actionKind: 'meeting_booked_auto' });
   }
 
   const { cancelPendingForThread } = require('./outbound-follow-up');

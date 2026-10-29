@@ -73,6 +73,8 @@ CREATE TABLE pending_replies (
   lead_full_name TEXT,
   lead_location TEXT,
   lead_timezone TEXT,
+  lead_title TEXT,
+  lead_company TEXT,
   enrichment_receipt JSONB,
   phone_enrichment_status TEXT CHECK (
     phone_enrichment_status IS NULL

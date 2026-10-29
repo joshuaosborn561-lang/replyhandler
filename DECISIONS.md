@@ -1595,3 +1595,52 @@ The old grader (`choice`, pass = `commercial_trade_contractor`) disqualified sta
 - A cached `reply_icp_verdicts` row graded against a different pass label is ignored, so changed ICPs regrade by themselves.
 - Guards: `test/reply-icp.test.js` (SalesGlider grades against any B2B service business; cached verdict with an older pass label),
   `test/decision-maker.test.js` (SalesGlider buyers).
+
+A meeting that was booked but never held (no-show, cancelled, moved) does not exclude a manual lead (Josh, Oct 29: "no-shows count for nurture"). Only a meeting still upcoming on the calendar, a reply marked `meeting_booked` after enrolment, or a later positive reply pauses it. The old check (any meeting row, bridge booking, earlier reply or past call that said "booked") is still used for sequence leads.
+
+## Context at the top of every #followups-ai-replies card (2026-10-28)
+*"i need more context in followups channel."* Every card there (Day 0 call, follow-up email, rebook / no-show) now opens with: the client name in
+bold; the lead's name, title, company, phone and email; their actual reply (quoted, short); our last sent message (short excerpt); the campaign and the
+offer; the meeting or no-show time when there is one; links to the original reply card and the Smartlead thread; and the ICP fit and decision-maker
+verdicts with a short reason each, worded like reply cards. Call cards also show the full email we sent and their full reply directly under the script.
+- The call script and the voicemail share their first line, so a call card has one script block: opening, "if they answer", "if it goes to voicemail".
+- The offer comes from config first (a hand-entered row, then the client's ICP offer) and from the campaign copy last. With no offer anywhere the line is
+  left out, and the scripts say "We emailed you recently." The "[offer not found in campaign copy ...]" placeholder is gone.
+- ICP and decision-maker lines are the verdicts already stored on the original reply row (`pending_replies.icp_verdict`). No model call.
+- Title and company are stored on `pending_replies` from now on (migration 050). Older rows fall back to the decision-maker title and the work-email domain.
+Guard: `test/followup-card-context.test.js`
+
+## Lead emails: instant "Meeting booked" brief, one daily positive-reply roll-up, no callback email (Josh, Oct 29 2026)
+Approved by Josh on Oct 29 ("a b b a perfect brief make sure i get these too"). This reverses the earlier "client notify on every send" call.
+- **Meeting booked** is the only instant lead email, for every channel (Allo calls, Calendly, anything that reaches `/webhook/booking-bridge/booked-email`).
+  It is a full brief: opener, when and where, who they are, their company, how they booked, the conversation so far, call notes, talking points, watch-outs,
+  links. Data is best effort (Smartlead thread, one Serper search plus a homepage fetch, one model call, the client's calendar for the time); any piece that
+  fails is left out or printed as "not found", and the email still goes. `BOOKED_BRIEF_DATA=off` skips the lookups. Josh is ALWAYS on To or CC, on top of the client list and Cayden/Gabe.
+- **Positive replies** (INTERESTED, MEETING_PROPOSED) reach the client as ONE email per client, weekdays 4:00pm CT, `PROSPECT_REPLY_NOTIFY_MODE=rollup` (default;
+  `instant` restores the per-send email, `off` sends none). Only replies we actually sent an answer to (the Smartlead send succeeded) are queued; follow-up nudges
+  are not. To = the client's notify list, CC = Josh and Cayden. Weekend replies ride in Monday's email; an empty day sends nothing. Queue = `pending_replies.client_digest_status`
+  (migration 051). Slack cards say "Queued for the 4:00 PM CT client roll-up" for queued replies and nothing for the rest.
+- **Callback ("Warm lead:") emails are removed**: allo-calling flag `WARM_LEAD_EMAIL_ENABLED` is off and the route and email builder are deleted. A callback that is a booked meeting still sends the Meeting booked brief.
+Guards: `test/invariants.test.js`, `test/booked-brief.test.js`, `test/client-reply-digest.test.js`.
+
+## Edit modal: "CC client on this reply" (Josh, Oct 29 2026)
+Josh: "Still need to be able to cc client when I edit." Before the roll-up, Edit & send always emailed the client instantly; the roll-up (#177) turned that into a queue, and the Edit modal had no way to copy the client (only the card's Send + CC client button did).
+- The Edit modal shows an optional **CC client on this reply** checkbox listing the client's Always-CC addresses (smartlead replies with a list only). Ticked: those addresses go on the prospect reply, exactly like the card's Approve & Send + CC client button (Always-CC only, never round-robin). Unticked: unchanged.
+- The 4:00pm CT roll-up is independent: the reply is still queued for it either way. The no-CC card notice now says the client gets the roll-up while `PROSPECT_REPLY_NOTIFY_MODE` is rollup.
+Guard: `test/edit-cc-client.test.js`
+
+## Dead Slack buttons: retire closed cards, tell the clicker, cap the CC label (Josh, Oct 29 2026)
+Josh: "Ship the card fixes." A card's buttons sometimes did nothing. Cause: the booking bridge closed the reply (`meeting_booked`) but left the card's Approve / Edit / Reject buttons up, and every handler returned silently on a non-pending reply.
+- **Closers retire the card.** When the booking bridge, or a sibling close from Meeting booked / DQ, closes a reply, its Slack card is flipped to the confirmation card with no buttons ("Meeting booked, no action needed", or the DQ card). Best effort (`services/retire-slack-cards.js`): a Slack error never fails the booking. Follow-up-sequence cards and cards never posted are skipped.
+- **Dead click = private notice.** Clicking a reply-card button (Approve, Edit, Reject, DQ, Meeting booked) on a reply that is no longer open shows an ephemeral "Already handled (status)" via the interaction `response_url` (`services/card-click-guard.js`). Fails open. Approve still runs its own handler so the stale card is relabelled. Follow-up-sequence and nurture buttons keep their own handling.
+- **CC checkbox label is capped at Slack's 75 characters** (`ccClientOptionText`). A long Always-CC list used to make `views.open` fail with invalid_blocks.
+Guard: `test/stale-card-retire.test.js`
+## "We just CC'd you" notice to the client (Josh, Oct 29 2026)
+Josh: "when we cc a client we need an email from my inbox saying hey we just ccd you check your spam heres the sender." Approved with his edits at 10:23am CT.
+- Whenever a reply goes out with the client CC'd (Approve & Send + CC client, or Edit with the "CC client on this reply" box ticked), EACH always-CC contact gets their own short plain email from Josh's primary Gmail (same sender as the booked-meeting and roll-up emails). Subject `Hot lead: we CC'd you`. Body: `Hi {first name},` / `We just CC'd you on our reply to {lead_name} at {company}. If you don't see it, check your spam and promotions folders. It came from {sender_email}.` / `Thanks,` / `Josh`. No add-to-contacts line.
+- First name comes from the contact's email (the client record stores addresses only): john.smith@ -> John. Role mailboxes (info@, office@), initials and junk fall back to `Hi there,`.
+- Cayden is CC'd on every one, from the same setting as the booked-meeting email (`BOOKED_MEETING_EMAIL_CC`, default cayden@salesglidergrowth.com).
+- **Flag `CC_NOTICE_EMAIL_ENABLED`, default OFF.**
+- Sent only after the SmartLead send succeeded with the client addresses on it. Never the prospect, Josh, the sending inbox or the round-robin rep. A failed notice never fails the reply.
+- The sending address is the mailbox of the SENT message we replied to (the stats_id), else the latest SENT message, else the address the prospect wrote to. If it cannot be found the sentence is left out.
+Guard: `test/cc-notice-email.test.js`

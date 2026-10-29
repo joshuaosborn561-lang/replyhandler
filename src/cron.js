@@ -357,6 +357,27 @@ function startCron() {
     }, { timezone: ICP_BUILD_TZ });
   }
 
+  // ─── Client positive-reply roll-up — weekdays 4:00pm CT ───────────
+  // One email per client listing the positive replies we answered (weekend replies ride in Monday's
+  // email; an empty day sends nothing). See services/client-reply-digest.js. Off with CLIENT_DIGEST_ENABLED=false.
+  if (String(process.env.CLIENT_DIGEST_ENABLED || '').toLowerCase() !== 'false') {
+    const digestCron = process.env.CLIENT_DIGEST_CRON || '0 16 * * 1-5';
+    if (!cron.validate(digestCron)) {
+      console.error('[Cron] Invalid CLIENT_DIGEST_CRON — client roll-up not scheduled', { expr: digestCron });
+    } else {
+      cron.schedule(digestCron, async () => {
+        try {
+          const { runClientReplyDigest, clientNotifyMode } = require('./services/client-reply-digest');
+          if (clientNotifyMode() === 'off') return;
+          const result = await runClientReplyDigest();
+          console.log('[Cron] Client reply roll-up complete', result);
+        } catch (err) {
+          console.error('[Cron] Client reply roll-up failed', { err: err.message });
+        }
+      }, { timezone: 'America/Chicago' });
+    }
+  }
+
   // Background calendar cache — 8 minutes (inside the 5–10 minute window).
   cron.schedule('*/8 * * * *', async () => {
     try {

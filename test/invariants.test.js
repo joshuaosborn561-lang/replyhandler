@@ -209,7 +209,27 @@ test('client notification stays on the enriched send path', () => {
     'campaign inbound forward must not read clients.cc_emails'
   );
   const send = read('src/services/reply-send.js');
-  assert.match(send, /buildClientNotifyEmail/, 'on-send client notify must remain');
+  assert.match(send, /buildClientNotifyEmail/, 'on-send client notify must remain (PROSPECT_REPLY_NOTIFY_MODE=instant)');
+});
+
+// Josh, Oct 29 2026: positive replies reach the client as ONE roll-up a day, not an email per send.
+test('client positive-reply notify defaults to the 4:00pm CT roll-up', () => {
+  const { clientNotifyMode } = require('../src/services/client-reply-digest');
+  assert.strictEqual(clientNotifyMode({}), 'rollup', 'the default must be the roll-up, not the per-send email');
+  assert.strictEqual(clientNotifyMode({ PROSPECT_REPLY_NOTIFY_MODE: 'instant' }), 'instant');
+  assert.strictEqual(clientNotifyMode({ PROSPECT_REPLY_NOTIFY_MODE: 'off' }), 'off');
+  const cron = read('src/cron.js');
+  assert.match(cron, /'0 16 \* \* 1-5'/, 'roll-up runs weekdays at 4:00pm');
+  assert.match(cron, /timezone: 'America\/Chicago'/);
+  const send = read('src/services/reply-send.js');
+  assert.match(send, /hasForwardConfig && notifyMode === 'instant'/, 'the per-send client email must be instant-mode only');
+  assert.match(send, /queueForDigest\(reply\.id\)/, 'a sent positive reply must be queued for the roll-up');
+});
+
+// Josh, Oct 29 2026: callback ("Warm lead:") emails are gone; only a booked meeting emails the client at once.
+test('no callback (warm lead) email path', () => {
+  assert.ok(!fs.existsSync(path.join(__dirname, '..', 'src/services/warm-lead-email.js')));
+  assert.ok(!/warm-lead-email/.test(read('src/routes/booking-bridge-recap.js')));
 });
 
 // OOO / REMOVE_ME may still alert in Slack, but never burn enrichment credits.

@@ -66,8 +66,11 @@ template, and Edit still works on it.
   `hubspot: false` (no HubSpot contact) or `hubspot_contact_id`. `flag` is a synonym for `note`.
 - Checks per lead: valid email, the same copy rules as the card (guarantee line, sign-off, no dashes,
   110 words, no placeholders), not a duplicate in the file, not already live in nurture, not DQ'd, no
-  earlier unsubscribe / not interested / wrong person reply, no booked meeting. One problem blocks the
+  earlier unsubscribe / not interested / wrong person reply, no meeting still upcoming on the calendar (a meeting that was booked but never held does not exclude a lead). One problem blocks the
   whole batch unless `allowPartial`. Re-running a load enrols nobody twice.
+- `override_prior_negative: true` on a lead enrols it despite an earlier unsubscribe / not interested / wrong person
+  reply (only that lead; a person decides it; a DQ still blocks). The result carries a `prior_*_reply_overridden` warning.
+  Replies that arrive after enrolment still exit it.
 - No HubSpot contact: `hubspot_skip` leads are never looked up or written, and the card says "no contact found".
   Leads with neither flag set are looked up at sync time; no contact is fine.
 - Exit rules for a manual lead look at its email from enrolment on: later unsubscribe / not interested /

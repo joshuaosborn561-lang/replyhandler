@@ -138,6 +138,7 @@ function fromHit(hit, input) {
   return {
     email: workEmail,
     phone,
+    title: String(hit?.job_title || hit?.title || '').trim() || null,
     linkedinUrl,
     website,
     domain: domainHint,

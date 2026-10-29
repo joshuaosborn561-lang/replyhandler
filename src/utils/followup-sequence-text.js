@@ -9,7 +9,8 @@
  * the client's campaign copy.
  */
 
-const OFFER_MISSING = '[offer not found in campaign copy - say what we emailed about in your own words]';
+// Kept for old imports only. A missing offer is now omitted from the scripts, never shown.
+const OFFER_MISSING = '';
 
 function firstNameOf(name) {
   const s = String(name || '').trim().split(/\s+/)[0] || '';
@@ -63,14 +64,19 @@ function callerName() {
 }
 
 function offerText(offerLine) {
-  const o = String(offerLine || '').trim();
-  return o || OFFER_MISSING;
+  return String(offerLine || '').trim().replace(/[.!\s]+$/, '');
+}
+
+/** "We emailed you about X." or, with no known offer, "We emailed you recently." */
+function emailedYouSentence(offerLine) {
+  const o = offerText(offerLine);
+  return o ? `We emailed you about ${o}.` : 'We emailed you recently.';
 }
 
 /** The line on every call card. */
 function callScript({ firstName, callerName: caller, clientName, offerLine }) {
   const first = firstName || 'there';
-  return `Hey ${first}, this is ${caller} with ${clientName}. We emailed you about ${offerText(offerLine)}. Did you still want to take a peek at that in the next couple days?`;
+  return `Hey ${first}, this is ${caller} with ${clientName}. ${emailedYouSentence(offerLine)} Did you still want to take a peek at that in the next couple days?`;
 }
 
 const CALL_KINDS = {
@@ -87,16 +93,45 @@ function voicemailScript(kind, { firstName, callerName: caller, clientName, offe
   if (!type) return null;
   const first = firstName || 'there';
   const offer = offerText(offerLine);
+  const calling = offer ? `calling about ${offer}` : 'following up on my email';
   if (type === 'day0') {
-    return `Hey ${first}, it's ${caller} with ${clientName}, calling about ${offer}. I'll follow up by email with a couple of times that could work.`;
+    return `Hey ${first}, it's ${caller} with ${clientName}, ${calling}. I'll follow up by email with a couple of times that could work.`;
   }
   if (type === 'day3') {
-    return `Hey ${first}, it's ${caller} with ${clientName}, calling about ${offer}. I'll send you one more email. If you're still interested, we can get this scheduled.`;
+    return `Hey ${first}, it's ${caller} with ${clientName}, ${calling}. I'll send you one more email. If you're still interested, we can get this scheduled.`;
   }
-  // Day 6: breakup voicemail. Recaps the offer and, only when real proof exists, the proof.
+  // Day 6: breakup voicemail. Recaps the offer (when known) and, only when real proof exists, the proof.
   const proof = String(proofPoint || '').trim().replace(/[.!\s]+$/, '');
   const proofSentence = proof ? ` ${proof}.` : '';
-  return `Hey ${first}, ${caller} with ${clientName}. Last call from me. Quick recap: ${offer}.${proofSentence} If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.`;
+  const recap = offer ? ` Quick recap: ${offer}.` : '';
+  return `Hey ${first}, ${caller} with ${clientName}. Last call from me.${recap}${proofSentence} If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.`;
+}
+
+/**
+ * One merged script for a call card. The call and the voicemail share the same
+ * opening line, so it is said once:
+ *   opening       both: who is calling and what we emailed about
+ *   ifAnswer      only when they pick up
+ *   ifVoicemail   what to add when it goes to voicemail (null: no voicemail on this call)
+ */
+function callCardScript(kind, { firstName, callerName: caller, clientName, offerLine, proofPoint }) {
+  const first = firstName || 'there';
+  const opening = `Hey ${first}, this is ${caller} with ${clientName}. ${emailedYouSentence(offerLine)}`;
+  const type = CALL_KINDS[kind]?.voicemail;
+  let ifVoicemail = null;
+  if (type === 'day0') {
+    ifVoicemail = "I'll follow up by email with a couple of times that could work.";
+  } else if (type === 'day3') {
+    ifVoicemail = "I'll send you one more email. If you're still interested, we can get this scheduled.";
+  } else if (type === 'day6') {
+    const proof = String(proofPoint || '').trim().replace(/[.!\s]+$/, '');
+    ifVoicemail = `Last call from me.${proof ? ` ${proof}.` : ''} If it's still a priority, reply to my email and we'll get it scheduled; if not, no worries.`;
+  }
+  return {
+    opening,
+    ifAnswer: 'Did you still want to take a peek at that in the next couple days?',
+    ifVoicemail,
+  };
 }
 
 function timesSentence(slots, link) {
@@ -182,6 +217,8 @@ module.exports = {
   CALLER_PLACEHOLDER,
   callScript,
   voicemailScript,
+  callCardScript,
+  emailedYouSentence,
   emailBody,
   timesSentence,
   stepLabel,

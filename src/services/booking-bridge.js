@@ -194,7 +194,7 @@ async function resolveClients({ clientSlug, clientName, email }) {
  * Stop follow-ups + close open Slack cards for this email on one client.
  * Mirrors Slack "Meeting booked" without requiring a pending_reply id.
  *
- * @returns {{ cancelledFollowUps: number, closedReplies: number, meetingsUpserted: number }}
+ * @returns {{ cancelledFollowUps: number, closedReplies: number, meetingsUpserted: number, retiredCards: number }}
  */
 async function stopFollowUpsForEmail({
   clientId,
@@ -226,10 +226,23 @@ async function stopFollowUpsForEmail({
       WHERE client_id = $1
         AND status IN ('pending', 'alert_only', 'flagged')
         AND lower(lead_email) = $2
-      RETURNING id, lead_name, linkedin_url`,
+      RETURNING *`,
     [clientId, email]
   );
   const closedReplies = closed.rowCount || 0;
+
+  // The closed reply's Slack card still shows Approve / Edit / Reject. Retire it so a click
+  // cannot silently do nothing. Best effort: never blocks or fails the booking.
+  let retiredCards = 0;
+  if (closedReplies > 0) {
+    try {
+      const { retireSlackCards } = require('./retire-slack-cards');
+      const r = await retireSlackCards(closed.rows, { actionKind: 'meeting_booked_auto' });
+      retiredCards = r.retired;
+    } catch (err) {
+      console.warn('[BookingBridge] Card retire failed', { err: err.message });
+    }
+  }
 
   let meetingsUpserted = 0;
   // Prefer attaching a meeting to the newest closed reply; otherwise insert a
@@ -290,7 +303,7 @@ async function stopFollowUpsForEmail({
     }
   }
 
-  return { cancelledFollowUps, closedReplies, meetingsUpserted };
+  return { cancelledFollowUps, closedReplies, meetingsUpserted, retiredCards };
 }
 
 /**

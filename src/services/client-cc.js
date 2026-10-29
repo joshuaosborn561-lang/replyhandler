@@ -4,6 +4,7 @@
  * - Round-robin pool contributes exactly one address per send, rotating evenly.
  */
 const db = require('../db');
+const { filterOwnAddresses } = require('../utils/own-addresses');
 
 function parseEmailList(raw) {
   const seen = new Set();
@@ -30,12 +31,23 @@ function alwaysCcEmails(client) {
 }
 
 /**
- * Prospect-thread CC for "Approve & Send + CC client".
- * Same Always-forward list the client already receives — not round-robin,
- * not a new field.
+ * Client contacts who may be CC'd on a prospect thread: the always-CC list minus anyone who is not a
+ * client contact — Josh, Cayden, the primary Gmail and anything on our own domains, the lead
+ * (`leadEmail`), the sending inbox and our sending domains (`exclude`, `excludeDomains`). Lowercased,
+ * deduped case-insensitively.
  */
-function alwaysForwardEmailsForProspectCc(client) {
-  return formatEmailList(alwaysCcEmails(client));
+function clientContactEmails(client, { leadEmail = '', exclude = [], excludeDomains = [] } = {}) {
+  const extra = [leadEmail, ...(Array.isArray(exclude) ? exclude : [exclude])].filter(Boolean);
+  return filterOwnAddresses(alwaysCcEmails(client).join(','), { extra, extraDomains: excludeDomains });
+}
+
+/**
+ * Prospect-thread CC for "Approve & Send + CC client" and the Edit modal's "CC client on this reply"
+ * checkbox. Same Always-forward list the client already receives, minus anything that is us or the
+ * lead (see clientContactEmails) — not round-robin, not a new field.
+ */
+function alwaysForwardEmailsForProspectCc(client, opts = {}) {
+  return formatEmailList(clientContactEmails(client, opts));
 }
 
 function roundRobinEmails(client) {
@@ -95,6 +107,7 @@ module.exports = {
   parseEmailList,
   formatEmailList,
   alwaysCcEmails,
+  clientContactEmails,
   alwaysForwardEmailsForProspectCc,
   roundRobinEmails,
   claimNextRoundRobinEmail,

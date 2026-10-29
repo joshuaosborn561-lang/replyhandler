@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const express = require('express');
 
+process.env.BOOKED_BRIEF_DATA = 'off'; // no network from the legacy handler tests
 const gmail = require('../src/services/gmail-send');
 const db = require('../src/db');
 const { DEFAULT_FYI_CC_EMAILS } = require('../src/utils/fyi-notify');
@@ -15,7 +16,8 @@ const {
   parseBookedMeetingPayload,
   buildBookedMeetingEmail,
   buildRecipients,
-  ccExtra,
+  bookedCcEmails,
+  callerLabel,
   useClientName,
   resolveClientAlwaysCc,
   handleBookedMeetingEmail,
@@ -23,8 +25,9 @@ const {
 } = require('../src/services/booked-meeting-email');
 
 const OPS = DEFAULT_FYI_CC_EMAILS;
-const GABE = 'gabe@salesglidergrowth.com';
-const CC = [OPS, GABE];
+const GABE = 'gabe@salesglidergrowth.com'; // never copied on a booked-meeting email (Josh, Oct 29)
+const CC = [OPS];
+const CC_JOSH = [OPS, DEFAULT_TO]; // Cayden and Josh; Josh is always on To or CC (Oct 29)
 const noLinkedin = async () => '';
 
 function payload(over = {}) {
@@ -215,10 +218,10 @@ describe('booked meeting email: highlights', () => {
 });
 
 describe('booked meeting email: recipients', () => {
-  it('To = client always-CC, CC = ops (Cayden) and Gabe, never Josh', () => {
+  it('To = client always-CC, CC = Cayden and Josh (no Gabe)', () => {
     assert.deepEqual(
       buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO, cc: CC }),
-      { to: ['client@example.test', 'second@example.test'], cc: CC },
+      { to: ['client@example.test', 'second@example.test'], cc: CC_JOSH },
     );
   });
 
@@ -227,18 +230,27 @@ describe('booked meeting email: recipients', () => {
     assert.deepEqual(buildRecipients({ always: [], josh: DEFAULT_TO, cc: [] }), { to: [DEFAULT_TO], cc: [] });
   });
 
-  it('nobody is listed twice when ops or Gabe are on the client list', () => {
+  it('nobody is listed twice when Cayden is on the client list', () => {
     assert.deepEqual(
-      buildRecipients({ always: [OPS, GABE, 'client@example.test'], josh: DEFAULT_TO, cc: CC }),
-      { to: ['client@example.test'], cc: CC },
+      buildRecipients({ always: [OPS, 'client@example.test'], josh: DEFAULT_TO, cc: CC }),
+      { to: ['client@example.test'], cc: CC_JOSH },
     );
     assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO, cc: CC }), { to: [DEFAULT_TO], cc: CC });
   });
 
-  it('CC extras default to Gabe and honor BOOKED_MEETING_EMAIL_CC_EXTRA', () => {
-    assert.deepEqual(ccExtra({}), [GABE]);
-    assert.deepEqual(ccExtra({ BOOKED_MEETING_EMAIL_CC_EXTRA: 'x@example.test, y@example.test' }), ['x@example.test', 'y@example.test']);
-    assert.deepEqual(ccExtra({ BOOKED_MEETING_EMAIL_CC_EXTRA: '' }), []);
+  it('CC defaults to Cayden, honors BOOKED_MEETING_EMAIL_CC, and ignores the retired Gabe CC var', () => {
+    assert.deepEqual(bookedCcEmails({}), [OPS]);
+    assert.deepEqual(bookedCcEmails({ BOOKED_MEETING_EMAIL_CC: 'x@example.test, y@example.test' }), ['x@example.test', 'y@example.test']);
+    assert.deepEqual(bookedCcEmails({ BOOKED_MEETING_EMAIL_CC: '' }), []);
+    assert.deepEqual(bookedCcEmails({ BOOKED_MEETING_EMAIL_CC_EXTRA: GABE, FYI_CC_EMAILS: GABE }), [OPS], 'old Gabe vars no longer add anyone');
+  });
+
+  it('names whoever made the call, any Allo caller, and never needs an allowlist', () => {
+    assert.equal(callerLabel({ caller: 'Cayden Martini' }), 'Cayden Martini');
+    assert.equal(callerLabel({ caller: '  New   Caller ' }), 'New Caller');
+    assert.equal(callerLabel({ caller: '' }), '');
+    assert.equal(callerLabel({ caller: 'Unknown caller' }), '');
+    assert.equal(callerLabel({}), '');
   });
 
   it('honors BOOKED_MEETING_EMAIL_TO', () => {
@@ -282,17 +294,18 @@ describe('booked meeting email: recipients', () => {
 describe('booked meeting email: sending', () => {
   beforeEach(() => _resetSeenForTests());
 
-  it('sends to the client always-CC with ops and Gabe on CC (no Josh), never to an address from the request', async () => {
+  it('sends to the client always-CC with Cayden and Josh on CC (not Gabe), never to an address from the request', async () => {
     const sent = [];
     const send = async (m) => { sent.push(m); };
     const a = await handleBookedMeetingEmail(
       payload({ to: 'attacker@example.test', cc: 'attacker@example.test' }),
       { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin },
     );
-    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC } });
+    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC_JOSH } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, CC);
+    assert.deepEqual(sent[0].cc, CC_JOSH);
+    assert.ok(![...sent[0].to, ...sent[0].cc].includes(GABE), 'Gabe is not on the email');
     assert.equal(sent[0].replyTo, 'joshua@salesglidergrowth.com');
     assert.ok(sent[0].subject.startsWith('Meeting booked:'));
     assert.ok(sent[0].htmlBody && sent[0].textBody);
@@ -410,12 +423,51 @@ describe('booked meeting email: route', () => {
     assert.equal((await post('Bearer anything', payload())).status, 503);
   });
 
-  it('sends with the right bearer secret: client To, ops and Gabe CC', async () => {
+  it('sends with the right bearer secret: client To, Cayden and Josh CC', async () => {
     const res = await post('Bearer test-secret-value', payload());
     assert.equal(res.status, 200);
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, CC);
+    assert.deepEqual(sent[0].cc, CC_JOSH);
+  });
+});
+
+describe('booked meeting email: any caller', () => {
+  beforeEach(() => _resetSeenForTests());
+  for (const name of ['Cayden Martini', 'Joshua Osborn', 'Gabe Lopez', 'Maria Newhire']) {
+    it(`sends the same way and names ${name}`, async () => {
+      const sent = [];
+      const r = await handleBookedMeetingEmail(payload({ caller: name }), {
+        send: async (m) => { sent.push(m); }, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin,
+      });
+      assert.equal(r.status, 200);
+      assert.deepEqual(sent[0].to, ['client@example.test']);
+      assert.deepEqual(sent[0].cc, CC_JOSH);
+      assert.ok(sent[0].textBody.includes(`Booked on a cold call by ${name}`), 'the brief names the caller');
+      assert.ok(sent[0].htmlBody.includes(`Booked on a cold call by ${name}`));
+      for (const other of ['Cayden Martini', 'Joshua Osborn', 'Gabe Lopez', 'Maria Newhire']) {
+        if (other !== name) assert.ok(!sent[0].textBody.includes(other), `${other} is not mentioned`);
+      }
+    });
+  }
+
+  it('a booking with no caller still sends, without a "by" line', async () => {
+    const sent = [];
+    await handleBookedMeetingEmail(payload({ caller: '' }), {
+      send: async (m) => { sent.push(m); }, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin,
+    });
+    assert.equal(sent.length, 1);
+    assert.ok(sent[0].textBody.includes('Booked on a cold call') && !/cold call by/.test(sent[0].textBody));
+  });
+
+  it('dry_run shows To and CC without sending', async () => {
+    const sent = [];
+    const r = await handleBookedMeetingEmail(payload({ caller: 'Maria Newhire', dry_run: true }), {
+      send: async (m) => { sent.push(m); }, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin,
+    });
+    assert.equal(r.body.dry_run, true);
+    assert.deepEqual(r.body.cc, CC_JOSH);
+    assert.equal(sent.length, 0);
   });
 });
 

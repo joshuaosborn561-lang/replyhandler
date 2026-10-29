@@ -135,6 +135,7 @@ function fakes({ contact = null, booked = null } = {}) {
       importNurtureLead: async (...a) => { calls.imports.push(a); return { ok: true, uploaded: 1 }; },
     },
     looksAlreadyBooked: async () => booked,
+    hasUpcomingMeeting: async () => false,
     enrichPhone: async (id) => { calls.enrich.push(id); return { status: 'found', phone: '+15555550123' }; },
   };
   return { deps, calls };
@@ -226,7 +227,7 @@ test('running the same load twice enrols each lead once', { skip }, async () => 
   assert.equal(await count(pg, 'nurture_leads'), 1);
 });
 
-test('leads that must not be nurtured are blocked: DQ, earlier no, booked meeting', { skip }, async () => {
+test('leads that must not be nurtured are blocked: DQ, earlier no, a meeting still ahead', { skip }, async () => {
   const { pg, man, clientId, env } = await setup();
   await pg.query(`INSERT INTO disqualified_prospects (client_id, platform, lead_email) VALUES ($1,'smartlead','dq@acme.co')`, [clientId]);
   await pg.query(
@@ -234,12 +235,62 @@ test('leads that must not be nurtured are blocked: DQ, earlier no, booked meetin
      VALUES ($1,'NOT_INTERESTED','pending','1.1','no@acme.co','no thanks','smartlead')`, [clientId]);
   const leads = [lead({ email: 'dq@acme.co' }), lead({ email: 'no@acme.co' }), lead({ email: 'booked@acme.co' }), lead({ email: 'fine@acme.co' })];
   const f = fakes();
-  f.deps.looksAlreadyBooked = async (_c, o) => (o.leadEmail === 'booked@acme.co' ? 'meeting_row_exists' : null);
+  f.deps.hasUpcomingMeeting = async (_c, o) => o.leadEmail === 'booked@acme.co';
   const out = await man.enrolManual({ clientId, env, now: NOW, deps: f.deps, leads });
   assert.deepEqual(out.results.map((r) => r.status), ['blocked', 'blocked', 'blocked', 'ok']);
   assert.deepEqual(out.results[0].errors, ['disqualified']);
   assert.deepEqual(out.results[1].errors, ['prior_not_interested_reply']);
   assert.deepEqual(out.results[2].errors, ['would_pause_booked_meeting']);
+});
+
+test('a meeting that was booked but never held does not exclude a manual lead', { skip }, async () => {
+  const { pg, man, clientId, env } = await setup();
+  const f = fakes();
+  // Every "already booked" signal says yes (a meeting row, a bridge booking, a past calendar event...),
+  // but nothing is still ahead on the calendar: the lead is a no-show and must be loadable.
+  f.deps.looksAlreadyBooked = async () => 'meeting_row_exists';
+  f.deps.hasUpcomingMeeting = async () => false;
+  await pg.query(
+    `INSERT INTO meetings (client_id, lead_email, lead_name, status) VALUES ($1,'noshow@acme.co','No Show','booked')`, [clientId]);
+  const dry = await man.enrolManual({ clientId, env, now: NOW, deps: f.deps, leads: [lead({ email: 'noshow@acme.co' })] });
+  assert.equal(dry.results[0].status, 'ok', JSON.stringify(dry.results[0]));
+  const out = await man.enrolManual({ clientId, env, now: NOW, apply: true, deps: f.deps, leads: [lead({ email: 'noshow@acme.co' })] });
+  assert.equal(out.results[0].status, 'enrolled');
+  // The next exit check (the 10 minute tick) leaves it alone too.
+  const { rows: [row] } = await pg.query('SELECT * FROM nurture_leads WHERE lead_email = $1', ['noshow@acme.co']);
+  const verdict = await require('../src/services/nurture-day30').evaluateManual(row, { deps: f.deps });
+  assert.equal(verdict.action, 'ok');
+  // A booking made after enrolment (a reply marked meeting_booked) still pauses it.
+  await pg.query(
+    `INSERT INTO pending_replies (client_id, classification, status, slack_message_ts, lead_email, inbound_message, platform, created_at)
+     VALUES ($1,'MEETING_PROPOSED','meeting_booked','1.2','noshow@acme.co','Tuesday works','smartlead', $2)`, [clientId, new Date(NOW.getTime() + 3600000)]);
+  const later = await require('../src/services/nurture-day30').evaluateManual(row, { deps: f.deps });
+  assert.equal(later.action, 'pause');
+});
+
+test('override_prior_negative enrols one lead despite an earlier not-interested reply, and only that lead', { skip }, async () => {
+  const { pg, man, clientId, env } = await setup();
+  for (const e of ['a@acme.co', 'b@acme.co']) {
+    await pg.query(
+      `INSERT INTO pending_replies (client_id, classification, status, slack_message_ts, lead_email, inbound_message, platform)
+       VALUES ($1,'NOT_INTERESTED','pending','1.1',$2,'no thanks','smartlead')`, [clientId, e]);
+  }
+  await pg.query(`INSERT INTO disqualified_prospects (client_id, platform, lead_email) VALUES ($1,'smartlead','c@acme.co')`, [clientId]);
+  const leads = [lead({ email: 'a@acme.co', override_prior_negative: true }), lead({ email: 'b@acme.co' }), lead({ email: 'c@acme.co', override_prior_negative: true })];
+  const out = await man.enrolManual({ clientId, env, now: NOW, deps: fakes().deps, leads });
+  assert.deepEqual(out.results.map((r) => r.status), ['ok', 'blocked', 'blocked']);
+  assert.deepEqual(out.results[0].warnings, ['prior_not_interested_reply_overridden']);
+  assert.deepEqual(out.results[1].errors, ['prior_not_interested_reply']);
+  assert.deepEqual(out.results[2].errors, ['disqualified']);
+  const applied = await man.enrolManual({ clientId, env, now: NOW, apply: true, allowPartial: true, deps: fakes().deps, leads });
+  assert.equal(applied.results[0].status, 'enrolled');
+  // Replies after enrolment still exit it.
+  const { rows: [row] } = await pg.query('SELECT * FROM nurture_leads WHERE lead_email = $1', ['a@acme.co']);
+  await pg.query(
+    `INSERT INTO pending_replies (client_id, classification, status, slack_message_ts, lead_email, inbound_message, platform, created_at)
+     VALUES ($1,'NOT_INTERESTED','pending','1.9','a@acme.co','still no','smartlead', $2)`, [clientId, new Date(NOW.getTime() + 3600000)]);
+  const v = await require('../src/services/nurture-day30').evaluateManual(row, { deps: fakes().deps });
+  assert.equal(v.action, 'exit');
 });
 
 test('a hand-made row cannot be a sequence row without its source (CHECK)', { skip }, async () => {

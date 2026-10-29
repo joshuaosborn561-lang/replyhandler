@@ -342,6 +342,27 @@ async function persistSourcePhone(dbClient, replyId, phone) {
   }
 }
 
+/** Best effort: keep the lead's title and company so follow-up cards can show them. */
+async function persistLeadTitleCompany(dbClient, replyId, { title, company } = {}) {
+  const t = String(title || '').trim().slice(0, 200);
+  const c = String(company || '').trim().slice(0, 200);
+  if (!dbClient || !replyId || (!t && !c)) return;
+  try {
+    await dbClient.query(
+      `UPDATE pending_replies
+          SET lead_title = COALESCE(NULLIF($1, ''), lead_title),
+              lead_company = COALESCE(NULLIF($2, ''), lead_company),
+              updated_at = now()
+        WHERE id = $3`,
+      [t, c, replyId]
+    );
+  } catch (err) {
+    if (!/lead_title|lead_company/.test(err.message || '')) {
+      console.warn('[Slack] persist lead title/company skipped', { replyId, err: err.message });
+    }
+  }
+}
+
 function firePortalNotify(card, {
   clientId, platform, campaignId, leadId, replyId, extra = {}, dbClient = db,
 } = {}) {
@@ -556,6 +577,7 @@ async function completeCardLinks({
 
   await persistCardIdentity(dbClient, replyId, { linkedinUrl, website, email });
   await persistLeadLocation(dbClient, replyId, { location, timezone, fullName });
+  await persistLeadTitleCompany(dbClient, replyId, { title, company: card.leadCompany });
   firePortalNotify(updatedCard, {
     clientId, platform, campaignId, leadId, replyId, extra, dbClient,
   });

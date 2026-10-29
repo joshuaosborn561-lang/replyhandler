@@ -7,6 +7,7 @@
  */
 
 const { humanTextForClassification } = require('./smartlead-webhook-helpers');
+const { isOwnAddress } = require('./own-addresses');
 
 const AUTO_REPLY_LOCAL = /^(no[-_]?reply|do[-_]?not[-_]?reply|donotreply|mailer-daemon|postmaster|bounce|bounces|notifications?|alerts?|automated?|mailer|daemon|noreply)$/i;
 
@@ -185,6 +186,8 @@ function shouldExclude(email, { ourEmails, ourDomains, recipient }) {
   if (!e) return true;
   if (e === recipient) return true;
   if (ourEmails.has(e)) return true;
+  // Josh, Cayden, the primary Gmail and our own domains are never "another contact" on the thread.
+  if (isOwnAddress(e)) return true;
   const d = domainOf(e);
   if (d && ourDomains.has(d)) return true;
   if (isAutoReplyAddress(e)) return true;

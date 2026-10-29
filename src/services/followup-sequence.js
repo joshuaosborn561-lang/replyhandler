@@ -23,6 +23,8 @@ const { isPostedSlackTs } = require('./reply-dedupe');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { followUpSlackChannelId } = require('./follow-up-runner');
 const { resolveOfferAndProof } = require('./followup-sequence-copy');
+const cardCtx = require('../utils/followup-card-context');
+const { loadFollowupContext } = require('./followup-card-context');
 const { inSendWindow, snapDueToSendWindow } = require('./outbound-follow-up');
 const { isDisqualified } = require('./disqualified-prospects');
 const { isLeadClaimed } = require('./client-claimed');
@@ -326,29 +328,48 @@ function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, s
     type: 'header',
     text: { type: 'plain_text', text: `📞 ${card.label}: ${card.leadName || 'Lead'}`.slice(0, 150) },
   });
+  if (card.context) {
+    // Client, lead, their reply, our last send, offer, links, ICP + decision maker.
+    blocks.push(...cardCtx.followupContextBlocks(card.context));
+  }
   const facts = [
-    `*Phone:* ${card.phone}`,
-    `*Client:* ${card.clientName}`,
+    card.context ? null : `*Phone:* ${card.phone}`,
+    card.context ? null : `*Client:* ${card.clientName}`,
     card.claimedBy ? `*Caller:* ${card.claimedBy}` : null,
     card.localTime ? `*Their time now:* ${card.localTime}` : null,
-    card.campaignDisplay ? `*Campaign:* ${card.campaignDisplay}` : null,
+    card.context ? null : (card.campaignDisplay ? `*Campaign:* ${card.campaignDisplay}` : null),
     card.linkedinUrl ? `*LinkedIn:* ${card.linkedinUrl}` : null,
-    card.permalink ? `<${card.permalink}|Original reply card>` : null,
+    card.context ? null : (card.permalink ? `<${card.permalink}|Original reply card>` : null),
   ].filter(Boolean).join('\n');
-  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: facts } });
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: `*Say this:*\n>${String(card.script).replace(/\n/g, '\n>')}` },
-  });
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: card.voicemail
-        ? `*If it goes to voicemail, say:*\n>${String(card.voicemail).replace(/\n/g, '\n>')}`
-        : '_No voicemail on this call. Just hang up if no one answers._',
-    },
-  });
+  if (facts) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: facts } });
+  const quote = (t) => `>${String(t).replace(/\n/g, '\n>')}`;
+  if (card.scriptParts) {
+    // One block: the call and the voicemail share the same opening line, so it is said once.
+    const p = card.scriptParts;
+    const lines = [`*Say this:*\n${quote(p.opening)}`, `*If they answer, then say:*\n${quote(p.ifAnswer)}`];
+    lines.push(p.ifVoicemail
+      ? `*If it goes to voicemail, then say:*\n${quote(p.ifVoicemail)}`
+      : '_No voicemail on this call. Just hang up if no one answers._');
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Say this:*\n>${String(card.script).replace(/\n/g, '\n>')}` },
+    });
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: card.voicemail
+          ? `*If it goes to voicemail, say:*\n>${String(card.voicemail).replace(/\n/g, '\n>')}`
+          : '_No voicemail on this call. Just hang up if no one answers._',
+      },
+    });
+  }
+  if (card.context) {
+    // Directly under the script: the full email we sent and their full reply.
+    blocks.push(...cardCtx.followupFullTextBlocks(card.context));
+  }
   if (outcome || stopped) {
     const label = stopped
       ? `🛑 Sequence stopped (${String(stopped).replace(/_/g, ' ')})`
@@ -404,7 +425,14 @@ async function offerFor(client, source, deps = {}) {
       platform: source.platform,
       threadContext: parseJson(source.thread_context),
     });
-    return r;
+    // Config first (manual row, then the client's ICP offer), campaign copy last.
+    // No offer anywhere: offerLine stays empty and the line is left out of the card.
+    const picked = cardCtx.pickOffer({
+      manualOffer: r.source === 'manual' ? r.offerLine : null,
+      icpProfile: client.icp_profile,
+      copyOffer: r.offerLine,
+    });
+    return { ...r, offerLine: picked.text || null, offerSource: picked.source };
   } catch (err) {
     console.warn('[FollowupSeq] offer lookup failed', { err: err.message });
     return { offerLine: null, proofPoint: null, source: 'error' };
@@ -446,11 +474,24 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   const isGhost = ghostText.isGhostKind(step.kind);
   const script = isGhost ? ghostText.ghostCallScript(args) : text.callScript(args);
   const voicemail = isGhost ? ghostText.ghostVoicemail(args) : text.voicemailScript(step.kind, args);
+  // The card shows one merged block (shared opening, then answer / voicemail); the two
+  // full strings above stay on the card for old rows and the plain-text notification.
+  const scriptParts = isGhost ? ghostText.ghostCallCardScript(args) : text.callCardScript(step.kind, args);
   let permalink = null;
   try {
     permalink = await slackApi.getPermalink(client.slack_bot_token, client.slack_channel_id, source.slack_message_ts);
   } catch { /* link is optional */ }
   const mentionIds = claimed ? [claimed.id] : callers.map((c) => c.id).filter(Boolean);
+  const stepPayload = parseJson(step.payload) || {};
+  let context = null;
+  try {
+    context = await (deps.loadContext || loadFollowupContext)({
+      client, source, phone: found.phone, offer: offerLine || '', permalink,
+      ghost: isGhost ? stepPayload.ghost || null : null, env,
+    });
+  } catch (err) {
+    console.warn('[FollowupSeq] card context failed, posting without it', { err: err.message });
+  }
   const card = {
     label: text.stepLabel(step.kind),
     leadName: source.lead_full_name || source.lead_name,
@@ -462,6 +503,8 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
     permalink,
     script,
     voicemail,
+    scriptParts,
+    context,
     mention: mentionIds.length ? mentionIds.map((id) => `<@${id}>`).join(' ') : null,
     claimedBy: claimed ? claimed.name : null,
   };
@@ -621,6 +664,17 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
     permalink = await slackApi.getPermalink(client.slack_bot_token, client.slack_channel_id, source.slack_message_ts);
   } catch { /* optional */ }
 
+  let followupContext = null;
+  try {
+    const { offerLine: ctxOffer } = await offerFor(client, source, deps);
+    followupContext = await (deps.loadContext || loadFollowupContext)({
+      client, source, phone: found.phone || '', offer: ctxOffer || '', permalink,
+      ghost: ghostText.isGhostKind(step.kind) ? payload.ghost || null : null, env,
+    });
+  } catch (err) {
+    console.warn('[FollowupSeq] card context failed, posting without it', { err: err.message });
+  }
+
   const channel = followUpSlackChannelId();
   const posted = await (deps.postCard || postProspectSlackCard)({
     token: client.slack_bot_token,
@@ -653,6 +707,7 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       contextLabel: 'You sent',
       threadPermalink: permalink || undefined,
       mention: ghostText.isGhostKind(step.kind) ? (ghostText.mentionLine(env) || undefined) : undefined,
+      followupContext: followupContext || undefined,
     },
   });
   if (!posted || !isPostedSlackTs(posted.ts)) {
@@ -1153,6 +1208,7 @@ module.exports = {
   applyCallOutcome,
   handleCallButton,
   buildCallCardBlocks,
+  offerFor,
   CALLBACK_MODAL_ID,
   claimLead,
   claimNote,

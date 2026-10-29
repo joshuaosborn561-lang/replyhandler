@@ -4,8 +4,12 @@ const db = require('../db');
 const slackService = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
+const { digestRecipients } = require('../services/client-reply-digest');
+const { alwaysForwardEmailsForProspectCc } = require('../services/client-cc');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
+const { filterOwnAddresses } = require('../utils/own-addresses');
+const { ourIdentitiesFromThread } = require('../utils/reply-all');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
 const { markMeetingBooked } = require('../services/meeting-booked');
@@ -15,6 +19,7 @@ const { learnFromApprovedReply } = require('../services/approved-reply-learning'
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
+const { noticeIfClosed } = require('../services/card-click-guard');
 
 const router = Router();
 
@@ -132,6 +137,13 @@ function ccUsedLabel(reply, client, sendResult) {
   if (reply.platform !== 'smartlead') return undefined;
   if (sendResult?.clientNotifySkipped) return undefined;
   if (sendResult?.clientCcWarning) return undefined;
+  if (sendResult?.clientNotifyMode === 'rollup' || sendResult?.clientNotifyMode === 'off') {
+    // Roll-up mode: the client is NOT emailed now. Say so only for replies queued for the 4:00pm CT email.
+    if (sendResult.clientNotifyMode === 'off' || !sendResult.clientDigestQueued) return undefined;
+    const to = digestRecipients(client).to.join(', ');
+    if (!to) return undefined;
+    return { email: to, mode: 'rollup', roundRobin: null, cellPhone: sendResult?.leadCellPhone || null };
+  }
   const email = String(sendResult?.clientCcEmails || '').trim()
     || String(client.cc_emails || client.cc_email || '').trim();
   if (!email) return undefined;
@@ -200,6 +212,13 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 
     console.log('[Slack] Action received', { actionId: action.action_id, value: action.value });
 
+    // A button on a reply someone else (or the booking bridge) already closed: say so, privately.
+    // Approve still falls through so its handler can relabel the stale card.
+    if (await noticeIfClosed(action, interaction)
+      && !String(action.action_id).startsWith('approve_reply')) {
+      return;
+    }
+
     if (action.action_id === 'approve_reply') {
       await handleApprove(action.value, interaction);
     } else if (action.action_id === 'approve_reply_cc_client') {
@@ -237,12 +256,14 @@ async function handleOpenEditModal(replyId, interaction) {
   }
 
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
+  // Never offer Josh's inbox, Cayden or our own domains as a referral CC (older rows may have stored one).
   const detectedCc = reply.platform === 'smartlead'
-    ? (String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
+    ? filterOwnAddresses(String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
       prospectEmail: reply.lead_email,
       prospectName: reply.lead_name,
-    })))
+    }))).join(', ')
     : '';
+  const sendingInboxes = reply.platform === 'smartlead' ? ourIdentitiesFromThread(reply.thread_context) : [];
   await slackService.openEditReplyModal(client.slack_bot_token, interaction.trigger_id, {
     replyId,
     initialDraft: reply.draft_reply || '',
@@ -252,6 +273,15 @@ async function handleOpenEditModal(replyId, interaction) {
     ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
     referralCc: detectedCc,
+    // "CC client on this reply" checkbox: the Always-CC list, same as the card's Send + CC client button.
+    ccClientEmails: reply.platform === 'smartlead'
+      ? alwaysForwardEmailsForProspectCc(client, {
+        leadEmail: reply.lead_email,
+        exclude: sendingInboxes,
+        excludeDomains: sendingInboxes.map((e) => e.split('@')[1]).filter(Boolean),
+      })
+      : '',
+    ccOnSend: Boolean(reply.cc_on_send),
   });
 }
 
@@ -315,7 +345,10 @@ async function handleEditModalSubmit(interaction) {
       if (parsed.error) throw new Error(parsed.error);
       referralCc = parsed.emails;
     }
+    const ccClientOnProspect = reply.platform === 'smartlead'
+      && slackService.ccClientSelectedInModal(interaction.view.state.values);
     const sendResult = await sendReplyToPlatform(client, reply, messageText, {
+      ccClientOnProspect,
       referralCc,
     }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
@@ -358,6 +391,9 @@ async function handleEditModalSubmit(interaction) {
       }
       if (sendResult.clientNotifySkipped) {
         extraFooter += `\nTyler notify skipped — ${sendResult.clientNotifySkipReason}`;
+      }
+      if (sendResult.prospectCcEmails) {
+        extraFooter += `\nProspect thread CC: ${sendResult.prospectCcEmails}`;
       }
     }
 
@@ -701,5 +737,9 @@ async function handleMeetingBooked(replyId, interaction) {
     replyId, lead: reply.lead_name, cancelledFollowUps: cancelled,
   });
 }
+
+// Card builders reused by services that retire a card outside a button click
+// (services/retire-slack-cards.js). Kept here so the card-layout guard tests still see them.
+router.cardHelpers = { slackCardContextFromReply, sentCardPayload };
 
 module.exports = router;
