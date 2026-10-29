@@ -1597,3 +1597,16 @@ verdicts with a short reason each, worded like reply cards. Call cards also show
 - ICP and decision-maker lines are the verdicts already stored on the original reply row (`pending_replies.icp_verdict`). No model call.
 - Title and company are stored on `pending_replies` from now on (migration 050). Older rows fall back to the decision-maker title and the work-email domain.
 Guard: `test/followup-card-context.test.js`
+
+## Lead emails: instant "Meeting booked" brief, one daily positive-reply roll-up, no callback email (Josh, Oct 29 2026)
+Approved by Josh on Oct 29 ("a b b a perfect brief make sure i get these too"). This reverses the earlier "client notify on every send" call.
+- **Meeting booked** is the only instant lead email, for every channel (Allo calls, Calendly, anything that reaches `/webhook/booking-bridge/booked-email`).
+  It is a full brief: opener, when and where, who they are, their company, how they booked, the conversation so far, call notes, talking points, watch-outs,
+  links. Data is best effort (Smartlead thread, one Serper search plus a homepage fetch, one model call, the client's calendar for the time); any piece that
+  fails is left out or printed as "not found", and the email still goes. `BOOKED_BRIEF_DATA=off` skips the lookups. Josh is ALWAYS on To or CC, on top of the client list and Cayden/Gabe.
+- **Positive replies** (INTERESTED, MEETING_PROPOSED) reach the client as ONE email per client, weekdays 4:00pm CT, `PROSPECT_REPLY_NOTIFY_MODE=rollup` (default;
+  `instant` restores the per-send email, `off` sends none). Only replies we actually sent an answer to (the Smartlead send succeeded) are queued; follow-up nudges
+  are not. To = the client's notify list, CC = Josh and Cayden. Weekend replies ride in Monday's email; an empty day sends nothing. Queue = `pending_replies.client_digest_status`
+  (migration 051). Slack cards say "Queued for the 4:00 PM CT client roll-up" for queued replies and nothing for the rest.
+- **Callback ("Warm lead:") emails are removed**: allo-calling flag `WARM_LEAD_EMAIL_ENABLED` is off and the route and email builder are deleted. A callback that is a booked meeting still sends the Meeting booked brief.
+Guards: `test/invariants.test.js`, `test/booked-brief.test.js`, `test/client-reply-digest.test.js`.

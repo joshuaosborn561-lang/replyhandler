@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const express = require('express');
 
+process.env.BOOKED_BRIEF_DATA = 'off'; // no network from the legacy handler tests
 const gmail = require('../src/services/gmail-send');
 const db = require('../src/db');
 const { DEFAULT_FYI_CC_EMAILS } = require('../src/utils/fyi-notify');
@@ -25,6 +26,7 @@ const {
 const OPS = DEFAULT_FYI_CC_EMAILS;
 const GABE = 'gabe@salesglidergrowth.com';
 const CC = [OPS, GABE];
+const CC_JOSH = [OPS, GABE, DEFAULT_TO]; // Josh is always on To or CC (Oct 29)
 const noLinkedin = async () => '';
 
 function payload(over = {}) {
@@ -215,10 +217,10 @@ describe('booked meeting email: highlights', () => {
 });
 
 describe('booked meeting email: recipients', () => {
-  it('To = client always-CC, CC = ops (Cayden) and Gabe, never Josh', () => {
+  it('To = client always-CC, CC = ops (Cayden), Gabe and Josh', () => {
     assert.deepEqual(
       buildRecipients({ always: ['client@example.test', 'second@example.test'], josh: DEFAULT_TO, cc: CC }),
-      { to: ['client@example.test', 'second@example.test'], cc: CC },
+      { to: ['client@example.test', 'second@example.test'], cc: CC_JOSH },
     );
   });
 
@@ -230,7 +232,7 @@ describe('booked meeting email: recipients', () => {
   it('nobody is listed twice when ops or Gabe are on the client list', () => {
     assert.deepEqual(
       buildRecipients({ always: [OPS, GABE, 'client@example.test'], josh: DEFAULT_TO, cc: CC }),
-      { to: ['client@example.test'], cc: CC },
+      { to: ['client@example.test'], cc: CC_JOSH },
     );
     assert.deepEqual(buildRecipients({ always: [DEFAULT_TO], josh: DEFAULT_TO, cc: CC }), { to: [DEFAULT_TO], cc: CC });
   });
@@ -282,17 +284,17 @@ describe('booked meeting email: recipients', () => {
 describe('booked meeting email: sending', () => {
   beforeEach(() => _resetSeenForTests());
 
-  it('sends to the client always-CC with ops and Gabe on CC (no Josh), never to an address from the request', async () => {
+  it('sends to the client always-CC with ops, Gabe and Josh on CC, never to an address from the request', async () => {
     const sent = [];
     const send = async (m) => { sent.push(m); };
     const a = await handleBookedMeetingEmail(
       payload({ to: 'attacker@example.test', cc: 'attacker@example.test' }),
       { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin },
     );
-    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC } });
+    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC_JOSH } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, CC);
+    assert.deepEqual(sent[0].cc, CC_JOSH);
     assert.equal(sent[0].replyTo, 'joshua@salesglidergrowth.com');
     assert.ok(sent[0].subject.startsWith('Meeting booked:'));
     assert.ok(sent[0].htmlBody && sent[0].textBody);
@@ -410,12 +412,12 @@ describe('booked meeting email: route', () => {
     assert.equal((await post('Bearer anything', payload())).status, 503);
   });
 
-  it('sends with the right bearer secret: client To, ops and Gabe CC', async () => {
+  it('sends with the right bearer secret: client To, ops, Gabe and Josh CC', async () => {
     const res = await post('Bearer test-secret-value', payload());
     assert.equal(res.status, 200);
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
-    assert.deepEqual(sent[0].cc, CC);
+    assert.deepEqual(sent[0].cc, CC_JOSH);
   });
 });
 

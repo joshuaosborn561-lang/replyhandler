@@ -4,6 +4,7 @@ const db = require('../db');
 const slackService = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
+const { digestRecipients } = require('../services/client-reply-digest');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
@@ -132,6 +133,13 @@ function ccUsedLabel(reply, client, sendResult) {
   if (reply.platform !== 'smartlead') return undefined;
   if (sendResult?.clientNotifySkipped) return undefined;
   if (sendResult?.clientCcWarning) return undefined;
+  if (sendResult?.clientNotifyMode === 'rollup' || sendResult?.clientNotifyMode === 'off') {
+    // Roll-up mode: the client is NOT emailed now. Say so only for replies queued for the 4:00pm CT email.
+    if (sendResult.clientNotifyMode === 'off' || !sendResult.clientDigestQueued) return undefined;
+    const to = digestRecipients(client).to.join(', ');
+    if (!to) return undefined;
+    return { email: to, mode: 'rollup', roundRobin: null, cellPhone: sendResult?.leadCellPhone || null };
+  }
   const email = String(sendResult?.clientCcEmails || '').trim()
     || String(client.cc_emails || client.cc_email || '').trim();
   if (!email) return undefined;
