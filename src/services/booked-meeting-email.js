@@ -6,9 +6,12 @@
  * prospect's name, company, email, phone, title); this module resolves recipients and sends.
  * Recipients are never taken from the request:
  *   To  = the booked client's always-CC list (clients.cc_emails / cc_email)
- *   CC  = Cayden's ops address (FYI_CC_EMAILS), Gabe (BOOKED_MEETING_EMAIL_CC_EXTRA) and Josh
+ *   CC  = Cayden (BOOKED_MEETING_EMAIL_CC, default cayden@salesglidergrowth.com) and Josh
  *   no always-CC configured (or the client cannot be resolved) = To Josh (he is the client), same CC.
  *   Josh (BOOKED_MEETING_EMAIL_TO) is ALWAYS on To or CC (Josh, Oct 29).
+ *   Nobody else is copied: the caller is not on the CC, whoever it is (Josh, Oct 29: "CC Cayden, and me
+ *   instead of Gabe, and the client's always-CC addressed"). Any Allo caller works; the brief names the
+ *   caller from the booking payload (caller).
  * The client is always called by its display name; the caller line's brand (e.g. the name on the
  * outbound number) is replaced with it in the summary and highlights.
  * Layout is the approved brief (booked-brief.js); the data comes from booked-brief-data.js.
@@ -22,12 +25,12 @@ const { buildBookedBrief } = require('./booked-brief');
 const { gatherBrief } = require('./booked-brief-data');
 const { alwaysCcEmails, parseEmailList } = require('./client-cc');
 const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
-const { fyiReplyTo, fyiCcEmails, mergeEmailLists } = require('../utils/fyi-notify');
+const { fyiReplyTo } = require('../utils/fyi-notify');
 const { generateHighlights } = require('./booked-meeting-highlights');
 const { lookupMissingLinkedin } = require('./reply-card-identity');
 
 const DEFAULT_TO = 'joshua@salesglidergrowth.com';
-const DEFAULT_CC_EXTRA = 'gabe@salesglidergrowth.com';
+const DEFAULT_CC = 'cayden@salesglidergrowth.com';
 // Caller-line brands per client slug, used when the booking payload does not carry one.
 const KNOWN_CALLER_BRANDS = { emcor: ['Mesa Energy'], deeproots: ['Deep Roots Capital'] };
 const EVENT = 'booked_meeting_email';
@@ -45,11 +48,18 @@ function recipient(env = process.env) {
   return v || DEFAULT_TO;
 }
 
-function ccExtra(env = process.env) {
-  if (Object.prototype.hasOwnProperty.call(env, 'BOOKED_MEETING_EMAIL_CC_EXTRA')) {
-    return parseEmailList(env.BOOKED_MEETING_EMAIL_CC_EXTRA);
+/** CC list for booked-meeting emails. Cayden by default; BOOKED_MEETING_EMAIL_CC replaces it. Josh is added by buildRecipients. */
+function bookedCcEmails(env = process.env) {
+  if (Object.prototype.hasOwnProperty.call(env, 'BOOKED_MEETING_EMAIL_CC')) {
+    return parseEmailList(env.BOOKED_MEETING_EMAIL_CC);
   }
-  return parseEmailList(DEFAULT_CC_EXTRA);
+  return parseEmailList(DEFAULT_CC);
+}
+
+/** The caller's name for the brief, from the booking payload. Empty when the payload has none. */
+function callerLabel(m) {
+  const n = String((m && m.caller) || '').replace(/\s+/g, ' ').trim();
+  return n && !/^(unknown|unknown caller|n\/a|none|null)$/i.test(n) ? n : '';
 }
 
 function escapeRegExp(s) {
@@ -178,7 +188,7 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
 }
 
 /**
- * To = client always-CC (else Josh, who is the client then). CC = the ops FYI CC plus Gabe, plus Josh
+ * To = client always-CC (else Josh, who is the client then). CC = Cayden, plus Josh
  * whenever he is not already on To. Nobody is listed twice, and Josh is always on To or CC.
  */
 function buildRecipients({ always, josh, cc = [] }) {
@@ -249,7 +259,7 @@ async function handleBookedMeetingEmail(body, {
   const { to, cc } = buildRecipients({
     always,
     josh: recipient(env),
-    cc: mergeEmailLists(fyiCcEmails(env), ccExtra(env)),
+    cc: bookedCcEmails(env),
   });
   const clientName = m.clientDisplay || m.client;
   const [highlights, linkedinUrl] = await Promise.all([
@@ -292,7 +302,7 @@ async function handleBookedMeetingEmail(body, {
     summary: swap(m.summary),
     highlights: h,
     isCall,
-    callNotesLabel: isCall ? ['Booked on a cold call', whenLabel(m.callAt)].filter(Boolean).join(' \u00b7 ') : '',
+    callNotesLabel: isCall ? [callerLabel(m) ? `Booked on a cold call by ${callerLabel(m)}` : 'Booked on a cold call', whenLabel(m.callAt)].filter(Boolean).join(' \u00b7 ') : '',
     noSummaryText: NO_SUMMARY,
   });
   // Ops checks (bearer-protected route): dry_run returns the brief unsent; josh_only sends one copy to
@@ -332,7 +342,8 @@ module.exports = {
   buildBookedBrief,
   resolveClientAlwaysCc,
   buildRecipients,
-  ccExtra,
+  bookedCcEmails,
+  callerLabel,
   useClientName,
   brandsFor,
   KNOWN_CALLER_BRANDS,

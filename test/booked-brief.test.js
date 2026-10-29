@@ -163,7 +163,7 @@ describe('booked brief: non-call booking (Calendly)', () => {
     });
     assert.equal(r.status, 200);
     assert.deepEqual(sent[0].to, ['owner@client.test']);
-    assert.ok(sent[0].cc.includes(DEFAULT_TO) && sent[0].cc.includes(OPS) && sent[0].cc.includes(GABE));
+    assert.ok(sent[0].cc.includes(DEFAULT_TO) && sent[0].cc.includes(OPS) && !sent[0].cc.includes(GABE), 'Cayden and Josh copied, not Gabe');
     assert.match(sent[0].subject, /^Meeting booked: Pat Example/);
     for (const needle of ['Central TX Owners', 'HVAC installer', 'Ask about capacity', 'Yes, lets talk']) {
       assert.ok(sent[0].htmlBody.includes(needle), `html should include ${needle}`);
