@@ -815,9 +815,11 @@ function buildSentConfirmationBlocks({
     const email = typeof ccUsed === 'object' ? ccUsed.email : ccUsed;
     const mode = typeof ccUsed === 'object' ? (ccUsed.mode || 'gmail') : 'gmail';
     const rr = typeof ccUsed === 'object' ? ccUsed.roundRobin : null;
-    let line = mode === 'gmail'
-      ? `Primary Gmail notify → ${escMrkdwn(email)}`
-      : `Copy forwarded to ${escMrkdwn(email)}`;
+    let line = mode === 'rollup'
+      ? `Queued for the 4:00 PM CT client roll-up → ${escMrkdwn(email)}`
+      : mode === 'gmail'
+        ? `Primary Gmail notify → ${escMrkdwn(email)}`
+        : `Copy forwarded to ${escMrkdwn(email)}`;
     if (rr) line += ` · RR this send: ${escMrkdwn(rr)}`;
     if (typeof ccUsed === 'object' && ccUsed.cellPhone) {
       line += ` · Cell: ${escMrkdwn(ccUsed.cellPhone)}`;

@@ -1,23 +1,25 @@
 /**
- * Email the booked client (and Josh) when a meeting a caller booked on a call lands in the
- * #meetings-booked Slack channel.
+ * Email the booked client (and Josh) the moment a meeting is booked: a call booked by a caller (Allo)
+ * or a booking made on a scheduler page (Calendly, TidyCal, ...). It is a full brief (booked-brief.js).
  *
  * booking-bridge `log-booking` posts the already-resolved fields here (Allo call summary and the
  * prospect's name, company, email, phone, title); this module resolves recipients and sends.
  * Recipients are never taken from the request:
- *   To  = the booked client's always-CC list (clients.cc_emails / cc_email), the same list the
- *         positive-reply notify email goes to
- *   CC  = Cayden's ops address (FYI_CC_EMAILS) and Gabe (BOOKED_MEETING_EMAIL_CC_EXTRA); Josh is not CC'd
+ *   To  = the booked client's always-CC list (clients.cc_emails / cc_email)
+ *   CC  = Cayden's ops address (FYI_CC_EMAILS), Gabe (BOOKED_MEETING_EMAIL_CC_EXTRA) and Josh
  *   no always-CC configured (or the client cannot be resolved) = To Josh (he is the client), same CC.
+ *   Josh (BOOKED_MEETING_EMAIL_TO) is ALWAYS on To or CC (Josh, Oct 29).
  * The client is always called by its display name; the caller line's brand (e.g. the name on the
  * outbound number) is replaced with it in the summary and highlights.
- * Layout, subject style and notes line match the positive-reply notify email
- * (buildBookedMeetingNotifyEmail in client-notify-email.js). Reply-To is the same FYI reply-to.
+ * Layout is the approved brief (booked-brief.js); the data comes from booked-brief-data.js.
+ * Reply-To is the same FYI reply-to.
  */
 
 const gmail = require('./gmail-send');
 const db = require('../db');
 const { buildBookedMeetingNotifyEmail } = require('./client-notify-email');
+const { buildBookedBrief } = require('./booked-brief');
+const { gatherBrief } = require('./booked-brief-data');
 const { alwaysCcEmails, parseEmailList } = require('./client-cc');
 const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
 const { fyiReplyTo, fyiCcEmails, mergeEmailLists } = require('../utils/fyi-notify');
@@ -86,6 +88,11 @@ function parseBookedMeetingPayload(body) {
     callerBrand: str(b.caller_brand, 200),
     list: str(b.list, 200),
     callAt: str(b.call_at, 60),
+    platform: str(b.platform, 40).toLowerCase(),
+    meetingAt: isoOrEmpty(b.meeting_at),
+    bookedAt: isoOrEmpty(b.booked_at),
+    smartleadCampaignId: str(b.smartlead_campaign_id, 40),
+    smartleadLeadId: str(b.smartlead_lead_id, 40),
     summary: String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000),
     summarySource: str(b.summary_source, 40),
     transcript: String(b.transcript || '').replace(/\r\n/g, '\n').trim().slice(0, 12000),
@@ -100,6 +107,11 @@ function parseBookedMeetingPayload(body) {
   };
   if (!parsed.bookingId && !parsed.alloCallId) return { ok: false, error: 'missing_booking_id' };
   return { ok: true, value: parsed };
+}
+
+function isoOrEmpty(v) {
+  const d = v ? new Date(String(v)) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString() : '';
 }
 
 function cleanLinkedinUrl(v) {
@@ -151,9 +163,9 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
     ...(CLIENT_SLUG_ALIASES[clientSlug] || []),
     ...(clientName ? [clientName] : []),
   ].map((n) => String(n).trim().toLowerCase()).filter(Boolean);
-  if (!names.length) return { clients: [], always: [] };
+  if (!names.length) return { clients: [], always: [], rows: [] };
   const { rows } = await query(
-    `SELECT id, name, cc_emails, cc_email FROM clients
+    `SELECT id, name, cc_emails, cc_email, smartlead_api_key FROM clients
       WHERE active IS DISTINCT FROM false
         AND lower(name) = ANY($1::text[])`,
     [names]
@@ -162,19 +174,21 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
   for (const row of rows) {
     for (const email of alwaysCcEmails(row)) if (!always.includes(email)) always.push(email);
   }
-  return { clients: rows.map((r) => r.name), always };
+  return { clients: rows.map((r) => r.name), always, rows };
 }
 
 /**
- * To = client always-CC (else Josh, who is the client then). CC = the ops FYI CC plus Gabe.
- * Josh is not CC'd. Nobody is listed twice.
+ * To = client always-CC (else Josh, who is the client then). CC = the ops FYI CC plus Gabe, plus Josh
+ * whenever he is not already on To. Nobody is listed twice, and Josh is always on To or CC.
  */
 function buildRecipients({ always, josh, cc = [] }) {
   const owner = parseEmailList(josh);
   const ccList = parseEmailList(Array.isArray(cc) ? cc.join(',') : cc);
   const clientList = (always || []).filter((e) => !ccList.includes(e));
   const to = clientList.length ? clientList : owner;
-  return { to, cc: ccList.filter((e) => !to.includes(e)) };
+  const out = ccList.filter((e) => !to.includes(e));
+  for (const o of owner) if (!to.includes(o) && !out.includes(o)) out.push(o);
+  return { to, cc: out };
 }
 
 function alreadySent(key, now = Date.now()) {
@@ -214,6 +228,7 @@ async function handleBookedMeetingEmail(body, {
   resolveCc = resolveClientAlwaysCc,
   highlightsFn = generateHighlights,
   linkedinFn = defaultLinkedinLookup,
+  briefDataFn = gatherBrief,
 } = {}) {
   const parsed = parseBookedMeetingPayload(body);
   if (!parsed.ok) return { status: 400, body: { ok: false, error: parsed.error } };
@@ -222,8 +237,11 @@ async function handleBookedMeetingEmail(body, {
   if (alreadySent(key, now)) return { status: 200, body: { ok: true, deduped: true } };
 
   let always = [];
+  let clientRows = [];
   try {
-    ({ always } = await resolveCc({ clientSlug: m.clientSlug, clientName: m.client }));
+    const resolved = await resolveCc({ clientSlug: m.clientSlug, clientName: m.client });
+    always = resolved.always || [];
+    clientRows = resolved.rows || [];
   } catch (err) {
     // Never lose Josh's copy because the client lookup failed.
     console.warn('[BookedMeetingEmail] client always-CC lookup failed, sending to Josh only', { err: err.message });
@@ -244,7 +262,52 @@ async function handleBookedMeetingEmail(body, {
     m.prospect.linkedinUrl ? m.prospect.linkedinUrl : safeLinkedin(linkedinFn, m),
   ]);
   if (linkedinUrl) m.prospect.linkedinUrl = linkedinUrl;
-  const { subject, textBody, htmlBody } = buildBookedMeetingEmail(m, highlights);
+  const swap = (t) => useClientName(t, { clientName, brands: brandsFor(m), keep: [m.prospect && m.prospect.company] });
+  const h = highlights && {
+    painPoints: (highlights.painPoints || []).map(swap),
+    currentSetup: highlights.currentSetup ? swap(highlights.currentSetup) : null,
+    objections: (highlights.objections || []).map(swap),
+    nextStep: highlights.nextStep ? swap(highlights.nextStep) : null,
+  };
+  // The brief's extra sections (thread, company, talking points) are best effort: a failure here
+  // still sends the email with what the booking itself carries.
+  let data = null;
+  const briefOff = briefDataFn === gatherBrief && String(env.BOOKED_BRIEF_DATA || process.env.BOOKED_BRIEF_DATA || '').toLowerCase() === 'off';
+  if (!briefOff) {
+    try {
+      data = await briefDataFn(m, { clients: clientRows, linkedinUrl: m.prospect.linkedinUrl, highlights: h, swap }, { callBrands: brandsFor(m), env });
+    } catch (err) {
+      console.warn('[BookedMeetingEmail] brief data failed, sending the short brief', { err: String(err && err.message || err).slice(0, 200) });
+    }
+  }
+  const isCall = Boolean(m.alloCallId) || m.platform === 'allo';
+  const { subject, textBody, htmlBody } = buildBookedBrief({
+    ...(data || {
+      clientName,
+      prospect: { ...m.prospect, linkedinUrl: m.prospect.linkedinUrl },
+      when: { label: '', fallback: isCall ? 'Agreed on the call. See Next step in the call notes.' : 'See the calendar invite.' },
+      company: {},
+      how: { client: clientName, channel: isCall ? 'Cold call' : '' },
+    }),
+    summary: swap(m.summary),
+    highlights: h,
+    isCall,
+    callNotesLabel: isCall ? ['Booked on a cold call', whenLabel(m.callAt)].filter(Boolean).join(' \u00b7 ') : '',
+    noSummaryText: NO_SUMMARY,
+  });
+  // Ops checks (bearer-protected route): dry_run returns the brief unsent; josh_only sends one copy to
+  // Josh and nobody else, so a test never reaches a client. Neither marks the booking as emailed.
+  if (body && body.dry_run === true) {
+    return { status: 200, body: { ok: true, dry_run: true, to, cc, subject, textBody } };
+  }
+  if (body && body.josh_only === true) {
+    try {
+      await send({ to: [DEFAULT_TO], cc: [], replyTo: fyiReplyTo(env), subject: `[TEST] ${subject}`, htmlBody, textBody });
+    } catch (err) {
+      return { status: 502, body: { ok: false, error: 'send_failed' } };
+    }
+    return { status: 200, body: { ok: true, josh_only: true, to: [DEFAULT_TO] } };
+  }
   try {
     await send({ to, cc, replyTo: fyiReplyTo(env), subject, htmlBody, textBody });
   } catch (err) {
@@ -266,6 +329,7 @@ module.exports = {
   recipient,
   parseBookedMeetingPayload,
   buildBookedMeetingEmail,
+  buildBookedBrief,
   resolveClientAlwaysCc,
   buildRecipients,
   ccExtra,

@@ -56,6 +56,7 @@ const MIGRATION_FILES = [
   '048_nurture_day30.sql',
   '049_nurture_manual_enrol.sql',
   '050_lead_title_company.sql',
+  '051_client_reply_digest.sql',
 ];
 
 async function clientsTableExists(client) {

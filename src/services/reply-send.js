@@ -11,6 +11,7 @@ const {
 } = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
+const clientDigest = require('./client-reply-digest');
 const gmail = require('./gmail-send');
 const clientClaimed = require('./client-claimed');
 const {
@@ -513,7 +514,10 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
-    if (hasForwardConfig) {
+    // Client notify mode (Josh, Oct 29): 'rollup' (default) queues positive replies for the 4:00pm CT
+    // roll-up instead of emailing the client now; 'instant' is the old per-send email; 'off' sends none.
+    const notifyMode = clientDigest.clientNotifyMode();
+    if (hasForwardConfig && notifyMode === 'instant') {
       ccMeta = await buildSmartleadCcList(client, { claimRoundRobin: true });
       forwardEmails = ccMeta.ccEmails;
     }
@@ -723,6 +727,34 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     }
     }
 
+    // Roll-up: the reply is answered (the Smartlead send above succeeded). Queue it for the client's
+    // 4:00pm CT email when it is a positive reply, the client has a notify list, and the Deep Roots
+    // gate would not have skipped it. The queue is a flag on the row; nothing is emailed here.
+    let digestQueued = false;
+    if (notifyMode === 'rollup' && hasForwardConfig && !isSlackTestFixtureReply(reply)
+        && clientDigest.isDigestEligible(reply)) {
+      let skip = null;
+      if (/deep\s*roots/i.test(String(client.name || ''))) {
+        try {
+          const { threadContext, extraMessages } = await resolveClientNotifyThread(client, reply);
+          skip = deepRootsClientNotifySkipReason({
+            clientName: client.name,
+            inboundMessage: reply.inbound_message,
+            threadContext,
+            extraMessages,
+            classification: reply.classification,
+          });
+        } catch (err) {
+          console.warn('[ReplySend] Deep Roots gate check failed, queuing anyway', { replyId: reply.id, err: err.message });
+        }
+      }
+      if (skip) {
+        console.log('[ReplySend] Deep Roots client notify skipped', { replyId: reply.id, reason: skip });
+      } else {
+        digestQueued = await clientDigest.queueForDigest(reply.id);
+      }
+    }
+
     if (referralList.length) {
       try {
         await db.query(
@@ -741,6 +773,8 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       clientCcWarning: clientCcWarning || undefined,
       clientCcMode: clientCcMode || undefined,
       clientCcEmails: forwardEmails || undefined,
+      clientNotifyMode: notifyMode,
+      clientDigestQueued: digestQueued || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
       prospectCcEmails: prospectCc || undefined,
       referralCcEmails: referralList.length ? referralList.join(', ') : undefined,
