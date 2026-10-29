@@ -8,6 +8,8 @@ const { digestRecipients } = require('../services/client-reply-digest');
 const { alwaysForwardEmailsForProspectCc } = require('../services/client-cc');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
+const { filterOwnAddresses } = require('../utils/own-addresses');
+const { ourIdentitiesFromThread } = require('../utils/reply-all');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
 const { markDisqualified } = require('../services/disqualified-prospects');
 const { markMeetingBooked } = require('../services/meeting-booked');
@@ -254,12 +256,14 @@ async function handleOpenEditModal(replyId, interaction) {
   }
 
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
+  // Never offer Josh's inbox, Cayden or our own domains as a referral CC (older rows may have stored one).
   const detectedCc = reply.platform === 'smartlead'
-    ? (String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
+    ? filterOwnAddresses(String(reply.referral_cc || '').trim() || referralCcCsv(extractReferredContacts(reply.inbound_message, {
       prospectEmail: reply.lead_email,
       prospectName: reply.lead_name,
-    })))
+    }))).join(', ')
     : '';
+  const sendingInboxes = reply.platform === 'smartlead' ? ourIdentitiesFromThread(reply.thread_context) : [];
   await slackService.openEditReplyModal(client.slack_bot_token, interaction.trigger_id, {
     replyId,
     initialDraft: reply.draft_reply || '',
@@ -270,7 +274,13 @@ async function handleOpenEditModal(replyId, interaction) {
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
     referralCc: detectedCc,
     // "CC client on this reply" checkbox: the Always-CC list, same as the card's Send + CC client button.
-    ccClientEmails: reply.platform === 'smartlead' ? alwaysForwardEmailsForProspectCc(client) : '',
+    ccClientEmails: reply.platform === 'smartlead'
+      ? alwaysForwardEmailsForProspectCc(client, {
+        leadEmail: reply.lead_email,
+        exclude: sendingInboxes,
+        excludeDomains: sendingInboxes.map((e) => e.split('@')[1]).filter(Boolean),
+      })
+      : '',
     ccOnSend: Boolean(reply.cc_on_send),
   });
 }

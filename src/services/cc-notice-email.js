@@ -20,6 +20,7 @@
 
 const gmail = require('./gmail-send');
 const { parseEmailList } = require('./client-cc');
+const { filterOwnAddresses } = require('../utils/own-addresses');
 const { escapeHtml } = require('./client-notify-email');
 const { fyiReplyTo } = require('../utils/fyi-notify');
 const { historyMessages, normalizeEmail, emailsFromValue } = require('../utils/reply-all');
@@ -79,13 +80,23 @@ function pickSendingInbox({ history, emailStatsId, accountEmails = [] } = {}) {
   return '';
 }
 
-/** Who gets the notice: the CC'd client contacts, minus the prospect, Josh, and the sending inbox. */
-function noticeRecipients({ ccEmails, leadEmail, exclude = [] } = {}) {
-  const skip = new Set(
-    [leadEmail, ...exclude].flatMap((e) => emailsFromValue(e)).map((e) => e.toLowerCase())
-  );
-  return parseEmailList(Array.isArray(ccEmails) ? ccEmails.join(',') : ccEmails)
-    .filter((e) => !skip.has(e));
+function domainOfEmail(e) {
+  const at = String(e || '').lastIndexOf('@');
+  return at >= 0 ? String(e).slice(at + 1).toLowerCase() : '';
+}
+
+/**
+ * Who gets the notice: the CC'd client contacts, minus the prospect, Josh, Cayden, anything on our own
+ * domains, the sending inbox and our sending domains (`accountEmails`, `exclude`). Lowercased, deduped.
+ */
+function noticeRecipients({ ccEmails, leadEmail, exclude = [], accountEmails = [] } = {}) {
+  const sending = [...[].concat(exclude), ...emailsFromValue(accountEmails)].flatMap((e) => emailsFromValue(e));
+  const ours = [leadEmail, ...sending].flatMap((e) => emailsFromValue(e));
+  const sendingDomains = sending.map(domainOfEmail).filter(Boolean);
+  return filterOwnAddresses(Array.isArray(ccEmails) ? ccEmails.join(',') : ccEmails, {
+    extra: ours,
+    extraDomains: sendingDomains.filter((d) => d !== 'gmail.com' && d !== 'googlemail.com'),
+  });
 }
 
 const DEFAULT_NOTICE_CC = 'cayden@salesglidergrowth.com';
@@ -157,7 +168,9 @@ async function sendCcNotice(p = {}, { mailer = gmail, env = process.env } = {}) 
     const senderEmail = pickSendingInbox({
       history: p.history, emailStatsId: p.emailStatsId, accountEmails: p.accountEmails,
     });
-    const to = noticeRecipients({ ccEmails: p.ccEmails, leadEmail: p.leadEmail, exclude: [...josh, senderEmail] });
+    const to = noticeRecipients({
+      ccEmails: p.ccEmails, leadEmail: p.leadEmail, exclude: [...josh, senderEmail], accountEmails: p.accountEmails,
+    });
     if (!to.length) return { sent: false, skipped: 'no_recipients' };
 
     pruneSeen();

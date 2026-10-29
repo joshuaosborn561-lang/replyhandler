@@ -22,7 +22,10 @@ const {
 } = require('./reply-dedupe');
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
-const { buildReplyAll, mergeCcLists } = require('../utils/reply-all');
+const {
+  buildReplyAll, mergeCcLists, emailsFromValue, ourIdentitiesFromThread,
+} = require('../utils/reply-all');
+const { filterOwnAddresses } = require('../utils/own-addresses');
 const { sendCcNotice } = require('./cc-notice-email');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
@@ -562,7 +565,13 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     if (replyAll.replyEmailBody) sendOpts.replyEmailBody = replyAll.replyEmailBody;
 
     if (ccClientOnProspect) {
-      prospectCc = alwaysForwardEmailsForProspectCc(client);
+      // Client contacts only: never Josh/Cayden/our domains, the lead, the sending inbox or sending domains.
+      const sendingInboxes = [...emailsFromValue(accountEmails), ...ourIdentitiesFromThread(threadForReplyAll)];
+      prospectCc = alwaysForwardEmailsForProspectCc(client, {
+        leadEmail: reply.lead_email,
+        exclude: [replyAll.recipient, ...sendingInboxes],
+        excludeDomains: sendingInboxes.map((e) => e.split('@')[1]).filter(Boolean),
+      });
       if (!prospectCc) {
         console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
           replyId: reply.id,
@@ -574,7 +583,8 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     // still applies on Send + CC client and is merged in.
     // A referred-contact CC is explicit. If we cannot put it on the payload,
     // send nothing.
-    const referralList = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
+    // A referral CC the prospect or Josh typed is explicit, but our own addresses are never a referral.
+    const referralList = filterOwnAddresses(Array.isArray(referralCc) ? referralCc.filter(Boolean) : []);
     const ccMerged = mergeCcLists(replyAll.cc, prospectCc, referralList);
     if (ccMerged.length) sendOpts.cc = ccMerged.join(', ');
     if (referralList.length) {
