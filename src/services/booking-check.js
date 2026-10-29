@@ -196,6 +196,7 @@ async function looksAlreadyBooked(clientId, { platform, leadEmail, leadName, lea
 
 module.exports = {
   looksAlreadyBooked,
+  calendarHasEventWith,
   meetingRowExists,
   laterReplySaysBooked,
   calendarHasEventWith,
