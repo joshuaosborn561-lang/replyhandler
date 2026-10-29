@@ -44,6 +44,7 @@ function shouldSkipEnrichment(classification) {
 const { phoneLookupFromHit, phoneLookupFromError } = require('../utils/phone-lookup-reason');
 const { allowsTier } = require('./reply-enrich-policy');
 const { callNowDraft, CALL_NOW_VARIANT } = require('../utils/call-now-variant');
+const { verifyPhone: verifyPhoneVeriphone } = require('./veriphone');
 
 function storedResult(reply) {
   return {
@@ -151,7 +152,10 @@ async function runWaterfallStep({
  * Claims one pending row so duplicate webhook/poller paths do not spend twice.
  * Completed `not_found` rows are not retried automatically.
  */
-async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyIdentity } = {}) {
+async function enrichPendingReplyPhone(replyId, {
+  identityLookup = lookupReplyIdentity,
+  verifyPhoneFn = verifyPhoneVeriphone,
+} = {}) {
   if (!replyId) return { status: 'skipped', error: 'missing_reply_id' };
 
   const existing = await getReply(replyId);
@@ -294,10 +298,26 @@ async function enrichPendingReplyPhone(replyId, { identityLookup = lookupReplyId
     });
     spentUsd += phoneStep.spentUsd;
     if (phoneStep.hit) {
+      // The waterfall never returns phone_valid, so we ask Veriphone ourselves.
+      // If Veriphone fails the number stays "not a confirmed mobile".
+      let phoneValid = phoneStep.hit.phoneValid;
+      let phoneType = phoneStep.hit.phoneType;
+      if (phoneStep.hit.phone && (phoneValid == null || phoneValid === '')) {
+        const v = await verifyPhoneFn(phoneStep.hit.phone).catch(() => null);
+        if (v && v.ok) {
+          phoneValid = v.valid;
+          phoneType = v.type || phoneType;
+          receipt.phoneLabel = v.label;
+          receipt.phoneCheck = 'veriphone';
+        } else {
+          receipt.phoneLabel = 'unverified';
+          receipt.phoneCheck = `veriphone_failed:${(v && v.reason) || 'error'}`;
+        }
+      }
       const gated = gateMobilePhone({
         phone: phoneStep.hit.phone,
-        phone_valid: phoneStep.hit.phoneValid,
-        phone_type: phoneStep.hit.phoneType,
+        phone_valid: phoneValid,
+        phone_type: phoneType,
       });
       receipt.phoneGate = gated.reason;
       if (gated.mobile) {

@@ -158,7 +158,9 @@ describe('FOLLOW_UP card conversation layout', () => {
     const types = blocks.map((b) => b.type);
     const willIdx = blocks.findIndex((b) => b.type === 'section' && /\*WILL SEND\*/.test(b.text?.text || ''));
     const actionIdx = types.indexOf('actions');
-    assert.ok(willIdx >= 0 && actionIdx > willIdx, 'buttons sit under WILL SEND');
+    assert.ok(willIdx >= 0 && actionIdx >= 0 && actionIdx < willIdx, 'buttons sit above WILL SEND, right under the header (Josh, Oct 29 2026)');
+    assert.equal(types[0], 'header');
+    assert.equal(types[1], 'actions');
     const actionIds = blocks
       .filter((b) => b.type === 'actions')
       .flatMap((b) => b.elements.map((e) => e.action_id));

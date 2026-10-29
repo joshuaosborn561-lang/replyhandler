@@ -14,7 +14,7 @@ const OPEN_FOR_ACTION = {
   approve_reply_cc_client: OPEN_FOR_EDIT_OR_SEND,
   approve_reply_cc_referral: OPEN_FOR_EDIT_OR_SEND,
   open_edit_modal: OPEN_FOR_EDIT_OR_SEND,
-  reject_reply: ['pending'],
+  reject_reply: ['pending', 'flagged'],
   dq_prospect: ['pending', 'alert_only', 'flagged'],
   meeting_booked: ['pending', 'alert_only', 'flagged'],
 };

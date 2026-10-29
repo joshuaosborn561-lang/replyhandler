@@ -179,9 +179,9 @@ describe('click on a closed reply shows a private notice', () => {
     assert.equal(fetched, 0);
   });
 
-  it('per-button open states: reject only on pending, DQ and booked also on alert_only', async () => {
+  it('per-button open states: reject on pending or flagged, DQ and booked also on alert_only', async () => {
     const q = (status) => async () => ({ rows: [{ status }] });
-    assert.equal((await guard.checkReplyOpen('reject_reply', 'r1', { query: q('flagged') })).open, false);
+    assert.equal((await guard.checkReplyOpen('reject_reply', 'r1', { query: q('flagged') })).open, true);
     assert.equal((await guard.checkReplyOpen('dq_prospect', 'r1', { query: q('alert_only') })).open, true);
     assert.equal((await guard.checkReplyOpen('meeting_booked', 'r1', { query: q('alert_only') })).open, true);
     assert.equal((await guard.checkReplyOpen('open_edit_modal', 'r1', { query: q('alert_only') })).open, false);

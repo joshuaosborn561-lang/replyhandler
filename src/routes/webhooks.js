@@ -43,6 +43,7 @@ const {
   smartleadWebhookEnhancementsEnabled,
 } = require('../utils/smartlead-webhook-helpers');
 const { slackChannelSuppressionReason } = require('../utils/slack-channel-policy');
+const { leadSuppressionReason } = require('../services/lead-suppression');
 const { maybeForwardInboundReply } = require('../services/inbound-forward');
 const {
   acceptInboundDelivery,
@@ -868,6 +869,16 @@ async function processSmartleadWebhookAsync({
     isColdInbound: false,
     pitchToUsProb: result.pitchToUsProb,
   });
+  // Josh, Oct 29 2026: no card for a lead we DQ'd (or that is unsubscribed / Do Not Contact).
+  if (!suppressedReason) {
+    const leadSuppressed = await leadSuppressionReason(client, {
+      platform: 'smartlead',
+      campaignId: resolvedCampaignId,
+      leadId: resolvedLeadId,
+      leadEmail,
+    });
+    if (leadSuppressed) suppressedReason = leadSuppressed;
+  }
 
   if (!replyRow) {
     const claimed = await claimNewInbound({

@@ -63,7 +63,7 @@ test('Jev P(PASS) becomes the displayed confidence', () => {
 
 test('card line formats qualified, disqualified, and unknown', () => {
   assert.match(icpVerdictLine({ status: 'unknown', reason: 'no website' }), /ICP: unknown \(no website\)/);
-  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no ICP' }), /ICP: unknown \(no ICP\)/);
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no ICP' }), /ICP: not on file/);
   assert.match(
     icpVerdictLine({
       status: 'disqualified',

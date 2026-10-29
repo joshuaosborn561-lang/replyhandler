@@ -215,7 +215,7 @@ describe('disclaimer and scanner footers are automated notices', () => {
       campaignDisplay: 'Parlay FinServ IT SEG Tickets (4161772)',
     });
     const shown = JSON.stringify(blocks);
-    assert.match(shown, /SMARTLEAD — INTERESTED/);
+    assert.match(shown, /SMARTLEAD · INTERESTED/);
     assert.match(shown, /Yes, I want the Cavaliers tickets/);
     assert.match(shown, /What times work next week/);
     assert.match(shown, /disclosure, copying, distribution/);

@@ -271,6 +271,7 @@ function samePersonSql(leadIdParam, leadEmailParam) {
  * during that window and we double-carded / double-sent (Casey Buckstaff,
  * 2026-10-05 — webhook card + "polling backstop" card 2 seconds later).
  */
+const CAMPAIGN_DEDUPE_MIN_LEN = 40;
 const INBOUND_ROW_COLUMNS = `id, status, inbound_message, inbound_message_id, classification, suppression_reason, slack_message_ts`;
 
 /**
@@ -334,7 +335,9 @@ async function inboundAlreadyRecorded(queryable, {
       LIMIT 1`,
     [clientId, platform, normalized, fullNorm, lid, email, mid]
   );
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+
+  return null;
 }
 
 async function alreadyPostedToSlack({
@@ -730,6 +733,7 @@ async function siblingHasSlackCard({
   inboundMessage,
   exceptReplyId,
   messageId,
+  campaignId,
 }) {
   const normalized = inboundPrefix(inboundMessage);
   const fullNorm = normalizeInboundText(inboundMessage);
@@ -737,7 +741,7 @@ async function siblingHasSlackCard({
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
   const mid = canonicalInboundMessageId(messageId);
   if (!normalized && !mid) return null;
-  if (!lid && !email) return null;
+  if (!lid && !email && !(campaignId != null && String(campaignId).trim())) return null;
 
   const { rows } = await db.query(
     `SELECT id, slack_message_ts
@@ -747,7 +751,15 @@ async function siblingHasSlackCard({
         AND id <> $3
         AND slack_message_ts IS NOT NULL
         AND COALESCE(classification, '') <> 'FOLLOW_UP'
-        AND ${samePersonSql('$6', '$7')}
+        AND (
+          ${samePersonSql('$6', '$7')}
+          OR (
+            $9::text <> ''
+            AND length($4::text) >= ${CAMPAIGN_DEDUPE_MIN_LEN}
+            AND COALESCE(campaign_id, '') = $9
+            AND created_at > now() - interval '48 hours'
+          )
+        )
         AND (
           ($8::text <> '' AND lower(COALESCE(inbound_message_id, '')) = $8)
           OR (
@@ -757,7 +769,8 @@ async function siblingHasSlackCard({
         )
       ORDER BY created_at ASC
       LIMIT 1`,
-    [clientId, platform, exceptReplyId, normalized, fullNorm, lid, email, mid]
+    [clientId, platform, exceptReplyId, normalized, fullNorm, lid, email, mid,
+      platform === 'smartlead' && campaignId != null ? String(campaignId).trim() : '']
   );
   return rows[0] || null;
 }
@@ -775,7 +788,7 @@ async function claimSlackCard({
   const token = slackClaimToken(replyId);
 
   const { rows: [row] } = await db.query(
-    'SELECT slack_message_ts, inbound_message_id, inbound_message FROM pending_replies WHERE id = $1',
+    'SELECT slack_message_ts, inbound_message_id, inbound_message, campaign_id FROM pending_replies WHERE id = $1',
     [replyId]
   );
   if (!row) return { claimed: false, reason: 'missing_row' };
@@ -798,8 +811,17 @@ async function claimSlackCard({
       inboundMessage: inboundMessage || row.inbound_message,
       exceptReplyId: replyId,
       messageId: row.inbound_message_id,
+      campaignId: row.campaign_id,
     });
     if (sibling) {
+      // This row is a second copy of a reply that already has a card. Close it
+      // so the recovery sweep stops re-trying it every cycle.
+      await db.query(
+        `UPDATE pending_replies
+            SET status = 'suppressed', suppression_reason = 'duplicate_of_posted_card', updated_at = now()
+          WHERE id = $1 AND slack_message_ts IS NULL AND status IN ('pending', 'alert_only')`,
+        [replyId]
+      ).catch((err) => console.warn('[ReplyDedupe] could not close duplicate row', { err: err.message }));
       return { claimed: false, reason: 'sibling_posted' };
     }
   }

@@ -19,7 +19,7 @@ const { learnFromApprovedReply } = require('../services/approved-reply-learning'
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
-const { noticeIfClosed } = require('../services/card-click-guard');
+const { noticeIfClosed, sendEphemeralNotice } = require('../services/card-click-guard');
 
 const router = Router();
 
@@ -239,11 +239,22 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await require('../services/followup-sequence').handleCallButton(action, interaction);
     } else if (String(action.action_id || '').startsWith('nurture_d30_')) {
       await require('../services/nurture-day30').handleButton(action, interaction);
+    } else {
+      // Every click acts or says why it did not (Josh, 2026-10-29: dead buttons).
+      console.warn('[Slack] Unknown action id', { actionId: action.action_id });
+      await sendEphemeralNotice(interaction, 'That button is not active anymore, so nothing was done. Use the newest card for this lead.');
     }
   } catch (err) {
     console.error('[Slack] Action handler error', { err: err.message, stack: err.stack });
+    // Never leave the clicker with silence: tell them privately that it failed.
+    await sendEphemeralNotice(
+      interaction,
+      `That click did not go through (${String(err.message || 'unexpected error').slice(0, 140)}). Nothing was changed. Try once more; if it fails again, the reply is still open on this card.`
+    );
   }
 });
+
+const CLICK_NOT_OPEN = 'This reply is no longer open, so nothing was done.';
 
 async function handleOpenEditModal(replyId, interaction) {
   const { rows: [reply] } = await db.query(
@@ -252,6 +263,7 @@ async function handleOpenEditModal(replyId, interaction) {
   );
   if (!reply) {
     console.warn('[Slack] open_edit_modal: reply not pending/flagged', { replyId });
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
     return;
   }
 
@@ -557,10 +569,13 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false,
 
 async function handleReject(replyId, interaction) {
   const { rows: [pending] } = await db.query(
-    `SELECT * FROM pending_replies WHERE id = $1 AND status = 'pending'`,
+    `SELECT * FROM pending_replies WHERE id = $1 AND status IN ('pending', 'flagged')`,
     [replyId]
   );
-  if (!pending) return;
+  if (!pending) {
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
+    return;
+  }
 
   // FOLLOW_UP reject skips this step only — do not mark Not Interested
   // and do not cancel later cadence steps. The next scheduled follow-up
@@ -569,11 +584,14 @@ async function handleReject(replyId, interaction) {
     const { rows: [reply] } = await db.query(
       `UPDATE pending_replies
           SET status = 'skipped', updated_at = now()
-        WHERE id = $1 AND status = 'pending' AND classification = 'FOLLOW_UP'
+        WHERE id = $1 AND status IN ('pending', 'flagged') AND classification = 'FOLLOW_UP'
         RETURNING *`,
       [replyId]
     );
-    if (!reply) return;
+    if (!reply) {
+      await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
+      return;
+    }
     const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
     const ctx = await slackCardContextFromReply(reply, client);
     await slackService.updateSentConfirmationCard(
@@ -594,12 +612,15 @@ async function handleReject(replyId, interaction) {
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies
         SET status = $1, classification = 'NOT_INTERESTED', updated_at = now()
-      WHERE id = $2 AND status = $3
+      WHERE id = $2 AND status IN ('pending', 'flagged')
       RETURNING *`,
-    ['rejected', replyId, 'pending']
+    ['rejected', replyId]
   );
 
-  if (!reply) return;
+  if (!reply) {
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
+    return;
+  }
 
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   const ctx = await slackCardContextFromReply(reply, client);
@@ -666,6 +687,7 @@ async function handleDisqualify(replyId, interaction) {
   );
   if (!reply) {
     console.warn('[Slack] DQ: reply not found or already actioned', { replyId });
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
     return;
   }
 
@@ -709,6 +731,7 @@ async function handleMeetingBooked(replyId, interaction) {
   );
   if (!reply) {
     console.warn('[Slack] Meeting booked: reply not found or already actioned', { replyId });
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
     return;
   }
 

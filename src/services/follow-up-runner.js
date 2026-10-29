@@ -659,7 +659,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
     });
 
     try {
-      const { isDisqualified } = require('./disqualified-prospects');
+      const { leadSuppressionReason } = require('./lead-suppression');
       if (await isLeadClaimed({ leadEmail: fu.lead_email, campaignId: fu.campaign_id })) {
         await resolve(fu, 'skipped', 'client_claimed');
         const cancelled = await cancelClaimedLeadWork({
@@ -674,7 +674,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
         continue;
       }
 
-      if (await isDisqualified(fu.client_id, {
+      if (await leadSuppressionReason(client, {
         platform: fu.platform,
         campaignId: fu.campaign_id,
         leadId: fu.lead_id,

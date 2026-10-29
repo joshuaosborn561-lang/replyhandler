@@ -12,6 +12,7 @@
  * Pass need, approve_cost_usd, and verify_phone. Never log lead rows.
  */
 
+const { linkedinMatchesLead } = require('../utils/linkedin-match');
 const {
   TIER_ORDER,
   normalizeMaxTier,
@@ -236,9 +237,32 @@ async function enrichProspect({
   if (!hit || typeof hit !== 'object') {
     throw new Error('email-waterfall returned a non-JSON enrich-one body');
   }
-  return fromHit(hit, {
+  const result = fromHit(hit, {
     email: workEmail, linkedinUrl, maxTier: cap, need, domain: domainHint,
   });
+  return dropForeignLinkedin(result, { suppliedLinkedin: linkedinUrl, leadName, email: workEmail });
+}
+
+/**
+ * The waterfall's decision-maker search can hand back someone else at the lead's
+ * company. A LinkedIn we did not supply must carry the lead's own name (or email
+ * local part); otherwise show none (Josh, Oct 29 2026).
+ */
+function dropForeignLinkedin(result, { suppliedLinkedin, leadName, email } = {}) {
+  const li = result.linkedinUrl;
+  if (!li) return result;
+  const norm = (u) => String(u || '').trim().toLowerCase().replace(/\/$/, '');
+  if (norm(suppliedLinkedin) && norm(suppliedLinkedin) === norm(li)) return result;
+  if (linkedinMatchesLead({ url: li, leadName, email })) return result;
+  console.warn('[ProspectEnrich] Dropped a LinkedIn that does not match the lead name', {
+    tier: result.sources?.linkedin || null,
+  });
+  return {
+    ...result,
+    linkedinUrl: null,
+    sources: { ...result.sources, linkedin: null },
+    linkedinRejected: true,
+  };
 }
 
 /** @deprecated use enrichProspect — kept for older callers */
@@ -248,6 +272,7 @@ async function enrichCellPhone(input) {
 }
 
 module.exports = {
+  dropForeignLinkedin,
   enrichTimeoutMs,
   DEFAULT_ENRICH_TIMEOUT_MS,
   enrichProspect,

@@ -188,10 +188,23 @@ async function loadStoredClientVariant(db, { clientId, clientTag } = {}) {
   }
 }
 
+/**
+ * Which ICP grades a client's replies. Josh, Oct 29 2026: a client's ICP and target
+ * decision-makers always come from that client's onboarding call (Fireflies transcript
+ * or onboarding notes), never from a generic default.
+ *   1. clients.icp_profile, built from the client's onboarding call (icp_status 'ready')
+ *   2. a per-client variant recorded in code (BCP, Emcor, Deep Roots, SalesGlider's own)
+ *   3. a per-client topup.icp_variants row, except the generic trade-contractor
+ *      `choice` variant, which used to be applied to clients it was never written for
+ * Anything else: no ICP on file. The card says so and shows no disqualified score.
+ */
+const GENERIC_DEFAULT_VARIANTS = new Set(['choice']);
+
 async function loadVariant(clientTag, { db, clientId } = {}) {
+  const stored = await loadStoredClientVariant(db, { clientId, clientTag });
+  if (stored) return stored;
   const local = DEFAULT_CLIENT_VARIANTS[clientTag];
-  // Code-owned ICP (e.g. SalesGlider's own) beats the topup row.
-  if (local?.localOverride && variantSpec(local.jev_variant)) {
+  if (local && variantSpec(local.jev_variant)) {
     return { ...local, spec: variantSpec(local.jev_variant) };
   }
   if (supabaseReady()) {
@@ -201,7 +214,7 @@ async function loadVariant(clientTag, { db, clientId } = {}) {
         `/rest/v1/icp_variants?client_tag=eq.${encodeURIComponent(clientTag)}&select=jev_variant,disco_icp,note&limit=1`,
       );
       const row = Array.isArray(rows) ? rows[0] : null;
-      if (row?.jev_variant) {
+      if (row?.jev_variant && !GENERIC_DEFAULT_VARIANTS.has(String(row.jev_variant))) {
         const spec = variantSpec(row.jev_variant);
         if (spec) {
           return {
@@ -215,8 +228,7 @@ async function loadVariant(clientTag, { db, clientId } = {}) {
       console.warn('[Icp] icp_variants read skipped', { err: err.message });
     }
   }
-  if (local) return { ...local, spec: variantSpec(local.jev_variant) };
-  return loadStoredClientVariant(db, { clientId, clientTag });
+  return null;
 }
 
 async function readTopupLlm(domain, jevVariant, { strict = false } = {}) {

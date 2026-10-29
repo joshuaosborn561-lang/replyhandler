@@ -93,8 +93,8 @@ test('draft approval, alert, and sent confirmation all render both links', () =>
     inboundMessage: 'Hi',
   });
   const emptyText = JSON.stringify(emptyDraft.blocks);
-  assert.match(emptyText, /LinkedIn: not found/);
-  assert.match(emptyText, /Website: not found/);
+  assert.match(emptyText, /no LinkedIn/);
+  assert.match(emptyText, /no website/);
 });
 
 test('every Slack reply-card path goes through postProspectSlackCard or leadFieldText', () => {

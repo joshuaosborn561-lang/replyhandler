@@ -722,12 +722,18 @@ async function processInboxRow(sourceClient, row, options) {
     }
   }
 
-  const suppressed = slackChannelSuppressionReason({
+  let suppressed = slackChannelSuppressionReason({
     classification,
     inboundMessage: inbound,
     isColdInbound: false,
     pitchToUsProb: result.pitchToUsProb,
   });
+  if (!suppressed) {
+    // Josh, Oct 29 2026: no card for a lead we DQ'd (or that is unsubscribed / Do Not Contact).
+    suppressed = await require('./lead-suppression').leadSuppressionReason(client, {
+      platform: 'smartlead', campaignId, leadId, leadEmail,
+    });
+  }
   if (suppressed) {
     await recordSuppressedReply({
       clientId: client.id, platform: 'smartlead', campaignId, leadId,

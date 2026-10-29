@@ -99,6 +99,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
         AND pr.slack_message_ts IS NOT NULL
         AND pr.status NOT IN ('suppressed')
         AND c.slack_bot_token IS NOT NULL
+        AND c.active IS DISTINCT FROM false
         AND pr.created_at > now() - ($1::text || ' days')::interval
       ORDER BY pr.created_at DESC
       LIMIT $2`,
