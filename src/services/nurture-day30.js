@@ -35,6 +35,7 @@ function defaultDeps() {
     isDisqualified: (...a) => require('./disqualified-prospects').isDisqualified(...a),
     isLeadClaimed: (...a) => require('./client-claimed').isLeadClaimed(...a),
     looksAlreadyBooked: (...a) => require('./booking-check').looksAlreadyBooked(...a),
+    hasUpcomingMeeting: (...a) => require('./booking-check').calendarHasEventWith(...a),
     phoneForFollowUp: (...a) => require('./follow-up-call-reminder').phoneForFollowUp(...a),
     enrichPhone: (...a) => require('./reply-phone-enrichment').enrichPendingReplyPhone(...a),
   };
@@ -150,7 +151,8 @@ async function evaluateLead(lead, { dbClient = db, deps } = {}) {
 /**
  * Exit rules for a hand-enrolled lead (no source reply, so everything is keyed on the email).
  * Only what happens after enrolment can pause or stop the lead: it was enrolled on purpose, so
- * its earlier replies are expected. A DQ, a booked meeting or a calendar event counts at any time.
+ * its earlier replies are expected. A DQ counts at any time; a meeting counts only when it is still upcoming
+ * (a booked meeting that never happened does not exclude the lead) or was booked after enrolment.
  */
 async function evaluateManual(lead, { dbClient = db, deps } = {}) {
   const d = withDeps(deps);
@@ -178,10 +180,10 @@ async function evaluateManual(lead, { dbClient = db, deps } = {}) {
   if (ghost.length) return { action: 'exit', reason: 'no_show_rebook' };
   if (later.some((r) => t.POSITIVE_CLASSIFICATIONS.includes(r.classification))) return { action: 'pause', reason: 'positive_reply' };
   if (later.some((r) => r.status === 'meeting_booked')) return { action: 'pause', reason: 'booked_meeting' };
-  const booked = await d.looksAlreadyBooked(lead.client_id, {
-    platform: null, leadEmail: email, leadName: lead.lead_name, leadId: null, since,
-  });
-  if (booked) return { action: 'pause', reason: 'booked_meeting' };
+  // A meeting that was booked and never held (a no-show, a cancelled or moved slot) is why a manual lead
+  // is here, so a past booking never excludes it (Josh, Oct 29). Only a meeting still ahead of us does.
+  const upcoming = await d.hasUpcomingMeeting(lead.client_id, { leadEmail: email, leadName: lead.lead_name });
+  if (upcoming) return { action: 'pause', reason: 'booked_meeting' };
   return { action: 'ok' };
 }
 
