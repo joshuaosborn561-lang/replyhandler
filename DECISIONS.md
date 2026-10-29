@@ -1623,3 +1623,10 @@ Josh: "Ship the card fixes." A card's buttons sometimes did nothing. Cause: the 
 - **Dead click = private notice.** Clicking a reply-card button (Approve, Edit, Reject, DQ, Meeting booked) on a reply that is no longer open shows an ephemeral "Already handled (status)" via the interaction `response_url` (`services/card-click-guard.js`). Fails open. Approve still runs its own handler so the stale card is relabelled. Follow-up-sequence and nurture buttons keep their own handling.
 - **CC checkbox label is capped at Slack's 75 characters** (`ccClientOptionText`). A long Always-CC list used to make `views.open` fail with invalid_blocks.
 Guard: `test/stale-card-retire.test.js`
+## "We just CC'd you" notice to the client (Josh, Oct 29 2026)
+Josh: "when we cc a client we need an email from my inbox saying hey we just ccd you check your spam heres the sender."
+- Whenever a reply goes out with the client CC'd (Approve & Send + CC client, or Edit with the "CC client on this reply" box ticked), the client's Always-CC contacts also get ONE short plain email from Josh's primary Gmail (the same sender as the booked-meeting and roll-up emails): we just CC'd you on our reply to the lead, check spam and promotions, and the address the reply came from so they can whitelist it.
+- **Flag `CC_NOTICE_EMAIL_ENABLED`, default OFF.** Nothing is sent until it is turned on.
+- Sent only after the SmartLead send succeeded with the client addresses on it. One email per send to all CC'd contacts together, deduped. Never the prospect, never Josh, never the round-robin rep. A failed notice never fails the reply.
+- The sending address is the mailbox of the SENT message we replied to (the stats_id), else the latest SENT message, else the address the prospect wrote to. If it cannot be found the email omits the address line.
+Guard: `test/cc-notice-email.test.js`

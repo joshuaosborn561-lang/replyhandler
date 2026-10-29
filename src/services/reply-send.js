@@ -23,6 +23,7 @@ const {
 const { deepRootsClientNotifySkipReason } = require('../utils/deep-roots-client-notify');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
 const { buildReplyAll, mergeCcLists } = require('../utils/reply-all');
+const { sendCcNotice } = require('./cc-notice-email');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -596,6 +597,28 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       sendOpts
     );
 
+    // "We just CC'd you" notice (CC_NOTICE_EMAIL_ENABLED, default off): the reply above went out with
+    // the client's always-CC addresses on it, so tell those contacts to check spam and which inbox it
+    // came from. One email per send, from Josh's inbox. Never throws, never blocks the card.
+    let ccNotice = null;
+    if (ccClientOnProspect && prospectCc) {
+      ccNotice = await sendCcNotice({
+        replyId: reply.id,
+        leadName: reply.lead_name,
+        company: reply.lead_company,
+        leadEmail: reply.lead_email,
+        ccEmails: prospectCc,
+        history: threadForReplyAll,
+        emailStatsId,
+        accountEmails,
+      });
+      if (ccNotice.sent) {
+        console.log('[ReplySend] CC notice sent from primary Gmail', {
+          replyId: reply.id, recipients: ccNotice.to.length, from: ccNotice.from,
+        });
+      }
+    }
+
     let clientNotifyError = null;
     if (forwardEmails) {
     try {
@@ -777,6 +800,8 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       clientDigestQueued: digestQueued || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
       prospectCcEmails: prospectCc || undefined,
+      ccNoticeSent: ccNotice?.sent || undefined,
+      ccNoticeSkipped: ccNotice && !ccNotice.sent ? (ccNotice.skipped || ccNotice.error) : undefined,
       referralCcEmails: referralList.length ? referralList.join(', ') : undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,
