@@ -268,6 +268,31 @@ test('a meeting that was booked but never held does not exclude a manual lead', 
   assert.equal(later.action, 'pause');
 });
 
+test('override_prior_negative enrols one lead despite an earlier not-interested reply, and only that lead', { skip }, async () => {
+  const { pg, man, clientId, env } = await setup();
+  for (const e of ['a@acme.co', 'b@acme.co']) {
+    await pg.query(
+      `INSERT INTO pending_replies (client_id, classification, status, slack_message_ts, lead_email, inbound_message, platform)
+       VALUES ($1,'NOT_INTERESTED','pending','1.1',$2,'no thanks','smartlead')`, [clientId, e]);
+  }
+  await pg.query(`INSERT INTO disqualified_prospects (client_id, platform, lead_email) VALUES ($1,'smartlead','c@acme.co')`, [clientId]);
+  const leads = [lead({ email: 'a@acme.co', override_prior_negative: true }), lead({ email: 'b@acme.co' }), lead({ email: 'c@acme.co', override_prior_negative: true })];
+  const out = await man.enrolManual({ clientId, env, now: NOW, deps: fakes().deps, leads });
+  assert.deepEqual(out.results.map((r) => r.status), ['ok', 'blocked', 'blocked']);
+  assert.deepEqual(out.results[0].warnings, ['prior_not_interested_reply_overridden']);
+  assert.deepEqual(out.results[1].errors, ['prior_not_interested_reply']);
+  assert.deepEqual(out.results[2].errors, ['disqualified']);
+  const applied = await man.enrolManual({ clientId, env, now: NOW, apply: true, allowPartial: true, deps: fakes().deps, leads });
+  assert.equal(applied.results[0].status, 'enrolled');
+  // Replies after enrolment still exit it.
+  const { rows: [row] } = await pg.query('SELECT * FROM nurture_leads WHERE lead_email = $1', ['a@acme.co']);
+  await pg.query(
+    `INSERT INTO pending_replies (client_id, classification, status, slack_message_ts, lead_email, inbound_message, platform, created_at)
+     VALUES ($1,'NOT_INTERESTED','pending','1.9','a@acme.co','still no','smartlead', $2)`, [clientId, new Date(NOW.getTime() + 3600000)]);
+  const v = await require('../src/services/nurture-day30').evaluateManual(row, { deps: fakes().deps });
+  assert.equal(v.action, 'exit');
+});
+
 test('a hand-made row cannot be a sequence row without its source (CHECK)', { skip }, async () => {
   const { pg, clientId } = await setup();
   await assert.rejects(
