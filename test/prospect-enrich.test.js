@@ -17,7 +17,7 @@ test('enrichProspect POSTs /enrich-one on the email-waterfall MCP host', async (
           ok: true,
           email: 'jane@roofco.com',
           phone: '+12015550100',
-          linkedin_url: 'https://linkedin.com/in/jane',
+          linkedin_url: 'https://linkedin.com/in/jane-smith',
           website: 'https://roofco.com',
           phone_tier: 'fullenrich',
           sources: { phone: 'fullenrich' },
@@ -39,7 +39,7 @@ test('enrichProspect POSTs /enrich-one on the email-waterfall MCP host', async (
     assert.strictEqual(seen.body.first_name, 'Jane');
     assert.strictEqual(hit.phone, '+12015550100');
     assert.strictEqual(hit.sources.phone, 'fullenrich');
-    assert.strictEqual(hit.linkedinUrl, 'https://linkedin.com/in/jane');
+    assert.strictEqual(hit.linkedinUrl, 'https://linkedin.com/in/jane-smith');
   } finally {
     global.fetch = originalFetch;
     if (prev == null) delete process.env.EMAIL_WATERFALL_URL;

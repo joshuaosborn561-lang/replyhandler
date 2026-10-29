@@ -208,9 +208,19 @@ function buildReplyAll({
 } = {}) {
   const inbound = latestInboundMessage(history);
   const headers = extractInboundHeaders(inbound);
-  const recipient = headers.from || normalizeEmail(originalLeadEmail);
   const ourEmails = collectOurEmails(accountEmails, history);
   const ourDomains = collectOurDomains(ourEmails, extraOurDomains);
+  // A history row mislabelled as inbound that is really from one of our own inboxes must not
+  // become the recipient or the person we greet (Oct 29 2026: "Hey Allisonb").
+  const fromIsUs = Boolean(headers.from) && (
+    ourEmails.has(headers.from) || isOwnAddress(headers.from) || ourDomains.has(domainOf(headers.from))
+  );
+  if (fromIsUs) {
+    headers.fromName = '';
+    headers.from = '';
+    headers.fromRaw = '';
+  }
+  const recipient = headers.from || normalizeEmail(originalLeadEmail);
 
   const seen = new Set();
   const cc = [];
@@ -227,11 +237,25 @@ function buildReplyAll({
     cc.push(e);
   }
 
-  const senderFirstName = firstNameFromSender({
+  let senderFirstName = firstNameFromSender({
     fromName: headers.fromName,
-    from: headers.from,
+    from: headers.from || normalizeEmail(originalLeadEmail),
     fallbackName,
   });
+  // Never greet the person by one of our own names (sender persona / inbox local part).
+  const ourTokens = new Set();
+  for (const e of ourEmails) {
+    const local = String(e).split('@')[0] || '';
+    ourTokens.add(local.toLowerCase().replace(/[^a-z]/g, ''));
+    ourTokens.add((local.split(/[._+-]+/)[0] || '').toLowerCase().replace(/[^a-z]/g, ''));
+  }
+  ourTokens.delete('');
+  if (ourTokens.has(String(senderFirstName).toLowerCase().replace(/[^a-z]/g, ''))) {
+    senderFirstName = firstNameFromSender({
+      fromName: '', from: normalizeEmail(originalLeadEmail), fallbackName: '',
+    });
+    if (ourTokens.has(String(senderFirstName).toLowerCase().replace(/[^a-z]/g, ''))) senderFirstName = 'there';
+  }
   const senderDisplayName = headers.fromName
     || (senderFirstName !== 'there' ? senderFirstName : fallbackName)
     || '';

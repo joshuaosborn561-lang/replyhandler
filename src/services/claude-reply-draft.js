@@ -2,6 +2,16 @@ const { anthropicModel } = require('./anthropic-model');
 const replyExamples = require('./reply-examples');
 const { enforcePrincipalVoice } = require('../utils/principal-draft-guard');
 const { FACT_GROUNDING_RULES } = require('../utils/draft-fact-check');
+const { enforceLeadGreeting } = require('../utils/greeting-guard');
+
+/**
+ * Josh, Oct 29 2026: a draft opened "Hey Allisonb" (our own sender) and skipped what
+ * the lead asked for (a back-of-the-napkin pitch). Both rules sit in every draft prompt.
+ */
+const GREETING_AND_REQUEST_RULES = [
+  '- GREETING: Address the PROSPECT by the first name in "Prospect name". Never greet, thank, or sign off with the name of anyone on our side: not the sending persona, not the inbox name, not a name that only appears as the sender of our own earlier emails. If the prospect name is missing or looks like a mailbox name, open with "Hey there".',
+  '- ANSWER THE ACTUAL REQUEST: Before any meeting ask, do exactly what the prospect asked for in their latest reply. If they asked for a rough pitch, outline, summary, pricing idea, example, or "a back of the napkin" version, write that short version in the reply, using only what our own earlier emails in the thread and the client notes say. Only if the thread truly lacks the facts, say plainly what you will send and when. A reply that only proposes times, when they asked for something else, is wrong.',
+].join('\n');
 
 const JOSH_VOICE_STYLE_GUIDE = `JOSH'S VOICE — RULES:
 - ACK FIRST: React to what they actually said before any CTA. If they asked a question, answer it. If they mentioned tickets/offer/catch/location/skepticism, acknowledge that point in the first line.
@@ -286,6 +296,7 @@ async function generateClaudeReply({
     '- Final fact check: every person name, company name, product name, domain, and acronym in your draft must appear in the current thread/latest reply, the scheduling guidance, or the CLIENT NOTES above. If it appears only in a retrieved example, remove it.',
     teammateRule,
     FACT_GROUNDING_RULES,
+    GREETING_AND_REQUEST_RULES,
     '- Never state a seat, section, row, venue, date, or ticket quantity — tickets get worked out after a quick call.',
     '- Never state meeting times that did not come from the scheduling guidance / calendar.',
     '- Before writing, silently check every factual claim against the provided context. If it is not explicitly supported there, leave it out.',
@@ -364,6 +375,11 @@ async function generateClaudeReply({
     console.warn('[ClaudeDraft] Scrubbed principal handoff leak', { leadName, mode });
     text = guarded.text;
   }
+  const greet = enforceLeadGreeting(text, { leadName, threadContext });
+  if (greet.fixed) {
+    console.warn('[ClaudeDraft] Fixed a greeting that named our own side', { mode });
+    text = greet.text;
+  }
 
   return {
     text,
@@ -385,6 +401,7 @@ const FOLLOW_UP_RULES = `FOLLOW-UP MODE (cadence bump after we already sent a re
 - ONE-PAGER / DECK / "email me some info" / "send details" / "send it over" when that means collateral we cannot attach from this inbox: the draft says we are looping in the CLIENT CONTACT FIRST NAME from our side to send it. Copy that first name character-for-character from the CLIENT CONTACT FIRST NAME line — do not respell it, do not substitute a lookalike. Style: "looping in <that exact first name> from our side". Name only — no title. Never say founder. Never invent a name. Set needs_client=true and what_to_send to a short label (one-pager, deck, info). Cayden sends these follow-ups — never stall for Josh.
 - Tickets or a specific address they gave us: acknowledge and continue. needs_client=false unless they asked for client-owned collateral.
 - A different need than we originally pitched: follow their need. Do not drag them back to the original offer.
+${GREETING_AND_REQUEST_RULES}
 - No sign-off. No markdown. No surrounding quotes.
 - Output JSON only.`;
 
@@ -672,6 +689,11 @@ async function generateFollowUpClaudeDraft({
     console.warn('[FollowUp] Scrubbed principal handoff leak', { leadName });
     parsed.draft = guarded.text;
   }
+  const greetFu = enforceLeadGreeting(parsed.draft, { leadName, threadContext });
+  if (greetFu.fixed) {
+    console.warn('[FollowUp] Fixed a greeting that named our own side');
+    parsed.draft = greetFu.text;
+  }
 
   return {
     text: parsed.draft,
@@ -684,6 +706,7 @@ async function generateFollowUpClaudeDraft({
 }
 
 module.exports = {
+  GREETING_AND_REQUEST_RULES,
   JOSH_VOICE_STYLE_GUIDE,
   JOSH_AS_CEO_STYLE_GUIDE,
   FIRST_TOUCH_RULES,

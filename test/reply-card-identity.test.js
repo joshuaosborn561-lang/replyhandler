@@ -90,7 +90,7 @@ test('paid LinkedIn lookup estimates first and stays under the $0.05 ceiling', a
       ok: true,
       text: async () => JSON.stringify({
         email: 'pat@acme.com',
-        linkedin_url: 'https://linkedin.com/in/pat',
+        linkedin_url: 'https://linkedin.com/in/pat-riley',
         website: 'https://acme.com',
         spent_usd: 0.0037,
         sources: { linkedin: 'aiark' },
@@ -105,7 +105,7 @@ test('paid LinkedIn lookup estimates first and stays under the $0.05 ceiling', a
       leadName: 'Pat Riley',
       ceilingUsd: 0.05,
     });
-    assert.equal(hit.linkedinUrl, 'https://linkedin.com/in/pat');
+    assert.equal(hit.linkedinUrl, 'https://linkedin.com/in/pat-riley');
     assert.equal(calls[0].body.need, 'email');
     assert.ok(calls[0].body.max_tier !== 'fullenrich');
     assert.equal(calls[0].body.approve_cost_usd, 0.05);

@@ -1164,7 +1164,7 @@ test('every Slack reply card shows the topup ICP verdict', () => {
     inboundMessage: 'When',
     leadIcpVerdict: { status: 'unknown', reason: 'no ICP' },
   }).blocks);
-  assert.match(alert, /ICP: unknown \(no ICP\)/,
+  assert.match(alert, /ICP: not on file/,
     reversal('every Slack reply card shows the topup ICP verdict',
       'alert card dropped the ICP line'));
 

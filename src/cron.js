@@ -575,7 +575,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
   }
 
   let posted = 0;
-  const { isDisqualified } = require('./services/disqualified-prospects');
+  const { leadSuppressionReason } = require('./services/lead-suppression');
   const { postFollowUpCard, threadHasOurSend } = require('./services/follow-up-runner');
   const { resetFollowUpClaudeBudget, followUpClaudeBudgetSnapshot } = require('./services/follow-up-drafts');
   resetFollowUpClaudeBudget();
@@ -617,7 +617,7 @@ async function buildAndPostAttentionDigest(client, { digestDate, tz, digestType,
         });
         continue;
       }
-      if (await isDisqualified(client.id, {
+      if (await leadSuppressionReason(require('./services/campaign-routing').withSmartleadKey(client), {
         platform: fu.platform,
         campaignId: fu.campaign_id,
         leadId: fu.lead_id,

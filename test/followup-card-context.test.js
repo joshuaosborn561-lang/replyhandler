@@ -203,9 +203,12 @@ test('follow-up email card: context under the header, ICP shown once, WILL SEND 
   });
   const b = card.blocks;
   assert.equal(b[0].type, 'header');
-  assert.ok(b[1].text.text.startsWith('*Acme Co*'));
-  assert.match(b[2].text.text, /Decision maker: Yes/);
+  // Josh, Oct 29 2026: one-line header, buttons right under it, then contact, message, draft.
+  assert.match(b[0].text.text, /Pat Prospect/);
+  assert.match(b[0].text.text, /Acme Co/);
+  assert.equal(b[1].type, 'actions', 'buttons sit right under the header');
   const all = flat(b);
+  assert.match(all, /Decision maker: Yes/);
   assert.equal((all.match(/🎯/g) || []).length, 1, 'ICP appears once');
   assert.match(all, /WILL SEND/);
   assert.match(all, /approve_reply/);
@@ -218,7 +221,7 @@ test('rebook / no-show card carries the no-show time', () => {
     draft: 'Hey Pat, looks like we missed each other.', inboundMessage: 'x',
     followupContext: ctx({ meeting: { label: 'No-show', text: noShow } }),
   });
-  assert.match(flat(card.blocks), /🗓️ \*No-show:\* Tue, Oct 27, 2:00 PM CDT/);
+  assert.match(flat(card.blocks), /🗓️ No-show: Tue, Oct 27, 2:00 PM CDT/);
 });
 
 test('a FOLLOW_UP card without context is unchanged', () => {

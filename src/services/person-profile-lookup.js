@@ -9,6 +9,7 @@
  */
 
 const aiark = require('./aiark');
+const { linkedinMatchesLead } = require('../utils/linkedin-match');
 const { pickLocation, timezoneForLocation } = require('./lead-location');
 const { domainFromEmail, CONSUMER_DOMAINS } = require('./prospect-enrich');
 
@@ -124,7 +125,8 @@ async function lookupPersonProfile({
       const raw = await aiarkApi.reverseLookupByEmail(workEmail);
       const p = raw && raw.rawBody ? parseAiArkPerson(raw.rawBody) : parseAiArkPerson(raw);
       const li = p.linkedinUrl || cleanLinkedin(raw?.linkedinUrl);
-      if (!out.linkedinUrl && li) { out.linkedinUrl = li; out.sources.linkedin = 'aiark'; }
+      const liOk = li && linkedinMatchesLead({ url: li, leadName: p.fullName || raw?.rawName || leadName, email: workEmail });
+      if (!out.linkedinUrl && liOk) { out.linkedinUrl = li; out.sources.linkedin = 'aiark'; }
       if (!out.location && p.location) { out.location = p.location; out.sources.location = 'aiark'; }
       const fn = p.fullName || raw?.rawName || null;
       if (fn) { out.fullName = fn; out.sources.name = 'aiark'; }

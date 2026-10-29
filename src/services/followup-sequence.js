@@ -26,7 +26,7 @@ const { resolveOfferAndProof } = require('./followup-sequence-copy');
 const cardCtx = require('../utils/followup-card-context');
 const { loadFollowupContext } = require('./followup-card-context');
 const { inSendWindow, snapDueToSendWindow } = require('./outbound-follow-up');
-const { isDisqualified } = require('./disqualified-prospects');
+const { leadSuppressionReason } = require('./lead-suppression');
 const { isLeadClaimed } = require('./client-claimed');
 const { looksAlreadyBooked } = require('./booking-check');
 const { isSlackTestFixtureReply } = require('./reply-send');
@@ -165,7 +165,12 @@ async function stopReasonForLead(source, { dbClient = db, includeInbound = true,
     leadEmail: source.lead_email,
     linkedinUrl: source.linkedin_url,
   };
-  if (await isDisqualified(clientId, keys)) return 'disqualified';
+  // Disqualified in any way we record it, or unsubscribed / Do Not Contact in SmartLead.
+  const suppressed = await leadSuppressionReason(
+    (await loadClient(clientId, dbClient)) || { id: clientId },
+    { ...keys, leadEmail: source.lead_email },
+  );
+  if (suppressed) return suppressed;
   if (await isLeadClaimed({ leadEmail: source.lead_email, campaignId: source.campaign_id })) return 'client_claimed';
   if (checkBooked) {
     const booked = await looksAlreadyBooked(clientId, {
@@ -743,7 +748,8 @@ async function releaseStalePosting(dbClient = db) {
 async function applyStopRules({ dbClient = db, slackApi = slack, limit = 200, onlyGhost = false, deps = {} } = {}) {
   const { rows } = await dbClient.query(
     `SELECT s.id AS seq_id, s.origin AS seq_origin, s.enrolled_at AS seq_enrolled_at,
-            s.client_id AS seq_client_id, s.lead_email AS seq_lead_email, pr.*
+            s.client_id AS seq_client_id, s.lead_email AS seq_lead_email,
+            (SELECT c.active FROM clients c WHERE c.id = s.client_id) AS seq_client_active, pr.*
        FROM followup_sequences s
        JOIN pending_replies pr ON pr.id = s.source_reply_id
       WHERE s.status = 'active'
@@ -756,10 +762,11 @@ async function applyStopRules({ dbClient = db, slackApi = slack, limit = 200, on
   for (const row of rows) {
     const {
       seq_id: seqId, seq_origin: seqOrigin, seq_enrolled_at: seqEnrolledAt,
-      seq_client_id: seqClientId, seq_lead_email: seqLeadEmail, ...source
+      seq_client_id: seqClientId, seq_lead_email: seqLeadEmail, seq_client_active: seqClientActive, ...source
     } = row;
     let reason = null;
-    if (seqOrigin === ghost.ORIGIN) {
+    if (seqClientActive === false) reason = 'client_inactive';
+    else if (seqOrigin === ghost.ORIGIN) {
       // The source reply is already booked (the meeting was ghosted), so only the ghost rules apply.
       reason = await ghost.stopReason({ id: seqId, client_id: seqClientId, lead_email: seqLeadEmail, enrolled_at: seqEnrolledAt }, source, { dbClient, deps });
     } else if (['meeting_booked'].includes(source.status)) reason = 'booked';
@@ -835,6 +842,12 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
         if (!seq || !source || !client || !client.slack_bot_token) {
           await setStep(step.id, { status: 'skipped', skip_reason: 'missing_context' }, dbClient);
           totals.skipped++;
+          continue;
+        }
+        // Deleted or deactivated client (Deep Roots, Oct 29 2026): no more cards. Nothing is deleted.
+        if (client.active === false) {
+          await stopSequence(seq.id, 'client_inactive', { dbClient, slackApi });
+          totals.stopped++;
           continue;
         }
         const reason = seq.origin === ghost.ORIGIN
