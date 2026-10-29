@@ -173,7 +173,6 @@ describe('referral CC is only an address the prospect typed', () => {
     assert.match(shown, /Hi please talk to Guy at our office/);
     assert.match(shown, /Guy@orioncityscape\.com/);
     assert.match(shown, /Ariel Isaac Franco/);
-    assert.match(shown, /tickets@vectorenergyrun\.info/);
     assert.match(shown, /Referred contact/);
     assert.match(shown, /approve_reply_cc_referral/);
     assert.match(shown, /Approve & send with CC Guy@orioncityscape\.com/);

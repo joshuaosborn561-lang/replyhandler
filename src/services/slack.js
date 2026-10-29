@@ -419,6 +419,57 @@ function conversationStepBlocks({ emoji, label, body }) {
   }));
 }
 
+
+/**
+ * One message for the card body: HTML/quoted history/signature stripped, cut at a
+ * word boundary near `max` chars. Josh, Oct 29 2026: he must never click into a
+ * thread to understand the context before sending.
+ */
+function trimForCard(raw, { max = 600, ours = false } = {}) {
+  let t = ours ? plainTextForSlack(raw) : cleanInboundReply(raw);
+  if (!t) return '';
+  t = String(t).replace(/\r\n/g, '\n');
+  t = t.replace(/-{2,}\s*Original Message\s*-{2,}[\s\S]*$/i, '');
+  t = t.replace(/\n\s*On\s[^\n]{0,200}(?:\n[^\n]{0,120})?\bwrote:[\s\S]*$/i, '');
+  t = t.replace(/^\s*On\s[^\n]{0,200}\bwrote:[\s\S]*$/i, '');
+  t = t.replace(/\n\s*From:\s[^\n]+\n\s*(?:Sent|Date):[\s\S]*$/i, '');
+  t = t.replace(/\n\s*On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s[^\n]*[\s\S]*$/i, '');
+  t = t.replace(/\n\s*>[\s\S]*$/, '');
+  t = t.replace(/\n\s*-- ?\n[\s\S]*$/, '');
+  t = t.replace(/\n\s*Sent from my [\s\S]*$/i, '');
+  t = t.replace(/\n\s*(?:Best|Thanks|Thank you|Regards|Best regards|Kind regards|Cheers|Sincerely|Talk soon),?\s*\n[\s\S]*$/i, '');
+  t = t.trim();
+  if (ours) {
+    // A trailing "Name Company" line with no sentence punctuation is our signature.
+    const parts = t.split(/\n\s*\n/);
+    if (parts.length > 1) {
+      const last = parts[parts.length - 1].trim();
+      if (last.length <= 70 && !/[.?!:]/.test(last) && last.split(/\s+/).length <= 7) parts.pop();
+    }
+    t = parts.join('\n\n').trim();
+  }
+  t = t.replace(/\n\s*\n+/g, '\n').trim();
+  if (t.length > max) {
+    const cut = t.slice(0, max);
+    const sp = cut.lastIndexOf(' ');
+    t = `${(sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+  }
+  return t;
+}
+
+/** "🗣 You said": our last sent message, about 300 chars. Empty when we have none. */
+function youSaidBlocks(lastOutbound) {
+  const t = trimForCard(lastOutbound, { max: 300, ours: true });
+  if (!t) return [];
+  return conversationStepBlocks({ emoji: '🗣', label: 'You said', body: t });
+}
+
+/** "📥 They replied": their latest message, about 600 chars. */
+function theyRepliedBlocks(inbound) {
+  const t = trimForCard(inbound, { max: 600 });
+  return conversationStepBlocks({ emoji: '📥', label: 'They replied', body: t || inbound });
+}
+
 const SLACK_BLOCK_LIMIT = 50;
 
 /** Keep header and tail on the card. Extra body blocks go to a thread reply. */
@@ -1003,8 +1054,6 @@ function secondaryContextBlock({
   if (loc && !/not found$/.test(loc)) bits.push(loc);
   const receipt = enrichmentReceiptLine(enrichmentReceipt).replace(/^\n/, '');
   if (receipt) bits.push(receipt);
-  const sent = oneLineText(plainTextForSlack(lastOutboundMessage), 160);
-  if (sent && !isFollowUp) bits.push(`📤 We sent: _${escMrkdwn(sent)}_`);
   for (const e of extra) if (e) bits.push(e);
   if (threadPermalink) bits.push(`<${threadPermalink}|${isFollowUp ? 'Original thread' : 'Earlier card'}>`);
   return {
@@ -1148,16 +1197,20 @@ function buildDraftApprovalCard({
   let blocks;
   if (isFollowUp) {
     const latestReply = (followupContext && followupContext.reply) || inboundMessage;
-    const theirBlocks = String(latestReply || '').trim() && !isPlaceholderInbound(latestReply)
-      ? conversationStepBlocks({ emoji: '📥', label: 'They replied', body: latestReply })
-      : [];
+    const sentText = lastOutboundMessage || followupContext?.lastSent || '';
+    const theirBlocks = [
+      ...youSaidBlocks(sentText),
+      ...(String(latestReply || '').trim() && !isPlaceholderInbound(latestReply)
+        ? theyRepliedBlocks(latestReply)
+        : []),
+    ];
     const assembled = assembleFollowUpApprovalBlocks({
       replyId,
       topBlocks,
       contactBlock,
       theirBlocks,
       draft,
-      threadMessages: threadWithoutLatestReply(threadMessages, latestReply),
+      threadMessages: [],
       needsClient,
       whatToSend,
       canCcClient: shouldShowCcClientButton({
@@ -1170,7 +1223,8 @@ function buildDraftApprovalCard({
     overflowThread = assembled.overflowThread || [];
   } else {
     const body = [
-      ...conversationStepBlocks({ emoji: '📥', label: 'They replied', body: inboundMessage }),
+      ...youSaidBlocks(lastOutboundMessage),
+      ...theyRepliedBlocks(inboundMessage),
     ];
     if (draft != null && String(draft).trim() !== '') {
       body.push(dividerBlock());

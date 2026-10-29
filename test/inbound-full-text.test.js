@@ -137,7 +137,7 @@ test('a preview and its full text dedupe as one reply', () => {
   assert.ok(!sameReply(SCOTT_FULL, 'Actually let us do Thursday instead, Scott.'));
 });
 
-test('Slack card shows the full Scott reply and a 6000+ reply without cutting it', () => {
+test('Slack card shows Scott\'s reply and cuts a 6000+ reply at about 600 chars, nothing in a thread', () => {
   const card = buildDraftApprovalCard({
     replyId: 'scott-1',
     leadName: 'Scott Payea',
@@ -151,8 +151,7 @@ test('Slack card shows the full Scott reply and a 6000+ reply without cutting it
   });
   const shown = sectionText(card.blocks);
   assert.match(shown, /They replied/);
-  assert.ok(shown.includes('Scott Payea'));
-  assert.ok(shown.includes('I am in Austin'));
+  assert.ok(shown.includes('Thanks for reaching out'));
   assert.doesNotMatch(shown, /_\(truncated\)_/);
   for (const block of card.blocks) {
     if (block.text && block.text.text) assert.ok(block.text.text.length <= 3000);
@@ -171,15 +170,12 @@ test('Slack card shows the full Scott reply and a 6000+ reply without cutting it
     lastOutboundMessage: 'Wanted to send a note.',
     campaignDisplay: 'TechEvo | Intro',
   });
-  const longShown = [
-    sectionText(longCard.blocks),
-    sectionText(longCard.overflowBlocks),
-  ].join('\n');
+  const longShown = sectionText(longCard.blocks);
   assert.ok(longShown.includes('Opening line about the integration path.'));
-  assert.ok(longShown.includes('calendar hold.'));
-  assert.doesNotMatch(longShown, /_\(truncated\)_/);
+  assert.ok(longShown.includes('…'), 'long reply is cut at about 600 chars');
+  assert.equal((longCard.overflowBlocks || []).length, 0, 'no part of the reply lives only in a thread');
   assert.ok(longCard.blocks.length <= 50);
-  for (const block of [...longCard.blocks, ...(longCard.overflowBlocks || [])]) {
+  for (const block of longCard.blocks) {
     if (block.text && block.text.text) {
       assert.ok(block.text.text.length <= 3000, `section is ${block.text.text.length} chars`);
     }
@@ -197,14 +193,10 @@ test('Slack card shows the full Scott reply and a 6000+ reply without cutting it
     campaignDisplay: 'TechEvo | Intro',
   });
   assert.ok(hugeCard.blocks.length <= 50);
-  assert.ok(hugeCard.overflowBlocks && hugeCard.overflowBlocks.length > 0);
-  const hugeShown = [
-    sectionText(hugeCard.blocks),
-    sectionText(hugeCard.overflowBlocks),
-  ].join('\n');
+  assert.equal((hugeCard.overflowBlocks || []).length, 0);
+  const hugeShown = sectionText(hugeCard.blocks);
   assert.ok(hugeShown.includes('paragraph of the prospect reply'));
-  assert.ok(hugeShown.includes('END-OF-REPLY'));
-  assert.doesNotMatch(hugeShown, /_\(truncated\)_/);
+  assert.ok(hugeShown.length < 1500, 'card shows about 600 chars of the reply');
 });
 
 test('ampersand-heavy reply stays under the 3000-char section limit', () => {
@@ -220,7 +212,7 @@ test('ampersand-heavy reply stays under the 3000-char section limit', () => {
     campaignDisplay: 'TechEvo',
   });
   const shown = [sectionText(card.blocks), sectionText(card.overflowBlocks)].join('\n');
-  assert.equal(shown.split('&amp;').length - 1, 4000);
+  assert.equal(shown.split('&amp;').length - 1, 600, 'reply is cut at about 600 chars');
   for (const block of [...card.blocks, ...(card.overflowBlocks || [])]) {
     if (block.text && block.text.text) assert.ok(block.text.text.length <= 3000);
   }
