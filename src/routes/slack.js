@@ -17,6 +17,7 @@ const { learnFromApprovedReply } = require('../services/approved-reply-learning'
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
+const { noticeIfClosed } = require('../services/card-click-guard');
 
 const router = Router();
 
@@ -208,6 +209,13 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
     if (!action) return;
 
     console.log('[Slack] Action received', { actionId: action.action_id, value: action.value });
+
+    // A button on a reply someone else (or the booking bridge) already closed: say so, privately.
+    // Approve still falls through so its handler can relabel the stale card.
+    if (await noticeIfClosed(action, interaction)
+      && !String(action.action_id).startsWith('approve_reply')) {
+      return;
+    }
 
     if (action.action_id === 'approve_reply') {
       await handleApprove(action.value, interaction);
@@ -719,5 +727,9 @@ async function handleMeetingBooked(replyId, interaction) {
     replyId, lead: reply.lead_name, cancelledFollowUps: cancelled,
   });
 }
+
+// Card builders reused by services that retire a card outside a button click
+// (services/retire-slack-cards.js). Kept here so the card-layout guard tests still see them.
+router.cardHelpers = { slackCardContextFromReply, sentCardPayload };
 
 module.exports = router;

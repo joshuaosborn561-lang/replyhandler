@@ -754,6 +754,8 @@ function buildSentConfirmationBlocks({
     skipped: '⏭️ Skipped — next follow-up still scheduled',
     disqualified: '🚫 DQ — no follow-ups',
     meeting_booked: '📅 Meeting booked — follow-ups stopped',
+    // Closed by the booking bridge (or as a sibling of another card), not by a button click.
+    meeting_booked_auto: '📅 Meeting booked — no action needed',
     failed: '⚠️ Send failed',
   };
   const footers = {
@@ -763,6 +765,7 @@ function buildSentConfirmationBlocks({
     skipped: 'Skipped · next follow-up still scheduled',
     disqualified: 'Disqualified · excluded from follow-up nudges',
     meeting_booked: 'Meeting booked · follow-up sequence cancelled',
+    meeting_booked_auto: 'Meeting booked · no action needed',
     failed: 'Send failed',
   };
   // Reject on a follow-up card skips that one send. It does not mean the
@@ -789,7 +792,7 @@ function buildSentConfirmationBlocks({
           lastOutboundMessage,
           inboundMessage,
           draft: (sentReply && String(sentReply).trim()
-            && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked')
+            && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked' && kind !== 'meeting_booked_auto')
             ? sentReply
             : null,
           threadMessages,
@@ -807,7 +810,7 @@ function buildSentConfirmationBlocks({
   ];
 
   if (!isFollowUp && sentReply && String(sentReply).trim()
-      && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked') {
+      && kind !== 'rejected' && kind !== 'disqualified' && kind !== 'meeting_booked' && kind !== 'meeting_booked_auto') {
     blocks.push(dividerBlock());
     blocks.push(
       ...conversationStepBlocks({
@@ -866,8 +869,8 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
     ? 'Rejected — not interested'
     : opts.actionKind === 'disqualified'
       ? 'DQ'
-      : opts.actionKind === 'meeting_booked'
-        ? 'Meeting booked'
+      : (opts.actionKind === 'meeting_booked' || opts.actionKind === 'meeting_booked_auto')
+        ? (opts.actionKind === 'meeting_booked_auto' ? 'Meeting booked, no action needed' : 'Meeting booked')
         : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
@@ -1369,12 +1372,23 @@ const CC_CLIENT_ACTION_ID = 'cc_client_input';
  * Optional "CC client on this reply" checkbox for the Edit modal. Same effect as the card's
  * "Approve & Send + CC client" button: the client's Always-CC list goes on the prospect thread.
  */
+// Slack caps checkbox/option text at 75 characters; a longer label makes views.open fail
+// with invalid_blocks and the Edit button looks dead.
+const OPTION_TEXT_MAX = 75;
+const CC_CLIENT_LABEL_PREFIX = 'CC client on this reply: ';
+
+function ccClientOptionText(emails) {
+  const list = String(emails || '').trim();
+  const room = OPTION_TEXT_MAX - CC_CLIENT_LABEL_PREFIX.length;
+  const label = list.length > room ? `${list.slice(0, room - 1)}…` : list;
+  return `${CC_CLIENT_LABEL_PREFIX}${label}`;
+}
+
 function ccClientModalBlock({ ccClientEmails, ccOnSend } = {}) {
   const emails = String(ccClientEmails || '').trim();
   if (!emails) return null;
-  const label = emails.length > 60 ? `${emails.slice(0, 57)}…` : emails;
   const option = {
-    text: { type: 'plain_text', text: `CC client on this reply: ${label}` },
+    text: { type: 'plain_text', text: ccClientOptionText(emails) },
     value: 'cc_client',
   };
   return {
@@ -1589,6 +1603,7 @@ module.exports = {
   openEditReplyModal,
   buildEditReplyBlocks,
   ccClientModalBlock,
+  ccClientOptionText,
   ccClientSelectedInModal,
   notifyModeIsRollup,
   referralCcActionsBlock,

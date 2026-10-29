@@ -138,7 +138,7 @@ async function markDisqualified({
 
   // Also drop any other open approval cards for the same thread.
   if (keys.leadId || keys.conversationId || keys.leadEmail) {
-    await db.query(
+    const siblings = await db.query(
       `UPDATE pending_replies
           SET status = 'disqualified',
               draft_reply = NULL,
@@ -150,7 +150,8 @@ async function markDisqualified({
           AND (
             ($4::text <> '' AND COALESCE(lead_id, '') = $4)
             OR ($5::text <> '' AND lower(lead_email) = $5)
-          )`,
+          )
+        RETURNING *`,
       [
         clientId,
         keys.platform,
@@ -159,6 +160,8 @@ async function markDisqualified({
         keys.leadEmail || '',
       ]
     );
+    // Their Slack cards still show buttons; retire them (best effort).
+    await require('./retire-slack-cards').retireSlackCards(siblings?.rows, { actionKind: 'disqualified' });
   }
 
   // Follow-up card sequence (no-op unless it ever enrolled this lead).

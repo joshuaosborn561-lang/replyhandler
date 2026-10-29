@@ -1616,3 +1616,10 @@ Josh: "Still need to be able to cc client when I edit." Before the roll-up, Edit
 - The Edit modal shows an optional **CC client on this reply** checkbox listing the client's Always-CC addresses (smartlead replies with a list only). Ticked: those addresses go on the prospect reply, exactly like the card's Approve & Send + CC client button (Always-CC only, never round-robin). Unticked: unchanged.
 - The 4:00pm CT roll-up is independent: the reply is still queued for it either way. The no-CC card notice now says the client gets the roll-up while `PROSPECT_REPLY_NOTIFY_MODE` is rollup.
 Guard: `test/edit-cc-client.test.js`
+
+## Dead Slack buttons: retire closed cards, tell the clicker, cap the CC label (Josh, Oct 29 2026)
+Josh: "Ship the card fixes." A card's buttons sometimes did nothing. Cause: the booking bridge closed the reply (`meeting_booked`) but left the card's Approve / Edit / Reject buttons up, and every handler returned silently on a non-pending reply.
+- **Closers retire the card.** When the booking bridge, or a sibling close from Meeting booked / DQ, closes a reply, its Slack card is flipped to the confirmation card with no buttons ("Meeting booked, no action needed", or the DQ card). Best effort (`services/retire-slack-cards.js`): a Slack error never fails the booking. Follow-up-sequence cards and cards never posted are skipped.
+- **Dead click = private notice.** Clicking a reply-card button (Approve, Edit, Reject, DQ, Meeting booked) on a reply that is no longer open shows an ephemeral "Already handled (status)" via the interaction `response_url` (`services/card-click-guard.js`). Fails open. Approve still runs its own handler so the stale card is relabelled. Follow-up-sequence and nurture buttons keep their own handling.
+- **CC checkbox label is capped at Slack's 75 characters** (`ccClientOptionText`). A long Always-CC list used to make `views.open` fail with invalid_blocks.
+Guard: `test/stale-card-retire.test.js`
