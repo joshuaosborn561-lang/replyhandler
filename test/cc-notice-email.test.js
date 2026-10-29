@@ -73,20 +73,33 @@ describe('cc-notice: recipients', () => {
 });
 
 describe('cc-notice: template', () => {
-  it('has the lead, company and sending address', () => {
-    const e = notice.buildCcNoticeEmail({ leadName: 'Pat Doe', company: 'Doe Co', senderEmail: 'jo.box@sender-two.test' });
-    assert.equal(e.subject, "Heads up: we just CC'd you on a reply to Pat Doe");
-    assert.match(e.textBody, /CC'd you on our reply to Pat Doe at Doe Co/);
-    assert.match(e.textBody, /spam and promotions/);
-    assert.match(e.textBody, /It came from jo\.box@sender-two\.test/);
-    assert.match(e.textBody, /Josh$/);
+  it('matches the approved wording exactly', () => {
+    const e = notice.buildCcNoticeEmail({
+      firstName: 'Sam', leadName: 'Pat Doe', company: 'Doe Co', senderEmail: 'jo.box@sender-two.test',
+    });
+    assert.equal(e.subject, "Hot lead: we CC'd you");
+    assert.equal(e.textBody, [
+      'Hi Sam,',
+      '',
+      "We just CC'd you on our reply to Pat Doe at Doe Co. If you don't see it, check your spam and promotions folders. It came from jo.box@sender-two.test.",
+      '',
+      'Thanks,',
+      'Josh',
+    ].join('\n'));
     assert.match(e.htmlBody, /jo\.box@sender-two\.test/);
   });
-  it('drops the company when unknown and the address line when the inbox is unknown', () => {
-    const e = notice.buildCcNoticeEmail({ leadName: 'Pat Doe' });
-    assert.match(e.textBody, /our reply to Pat Doe\./);
+  it('has no add-to-contacts / whitelist line', () => {
+    const e = notice.buildCcNoticeEmail({ firstName: 'Sam', leadName: 'Pat', senderEmail: 'a@b.test' });
+    assert.doesNotMatch(e.textBody, /contacts|not spam|whitelist|safe/i);
+  });
+  it('greets "Hi there," without a first name', () => {
+    assert.match(notice.buildCcNoticeEmail({ leadName: 'Pat' }).textBody, /^Hi there,\n/);
+  });
+  it('drops the company when unknown and the sender sentence when the inbox is unknown', () => {
+    const e = notice.buildCcNoticeEmail({ firstName: 'Sam', leadName: 'Pat Doe' });
+    assert.match(e.textBody, /our reply to Pat Doe\. If you don't see it/);
     assert.doesNotMatch(e.textBody, /It came from/);
-    assert.match(notice.buildCcNoticeEmail({ leadName: 'Unknown' }).subject, /reply to a prospect$/);
+    assert.match(notice.buildCcNoticeEmail({ leadName: 'Unknown' }).textBody, /reply to a prospect\./);
   });
   it('escapes HTML in names', () => {
     const e = notice.buildCcNoticeEmail({ leadName: '<b>X</b>', company: 'A & B' });
@@ -95,11 +108,37 @@ describe('cc-notice: template', () => {
   });
 });
 
+describe('cc-notice: first name from the contact email', () => {
+  it('takes the first token of the local part', () => {
+    assert.equal(notice.firstNameFromEmail('john.smith@acme.test'), 'John');
+    assert.equal(notice.firstNameFromEmail('Maria_Lopez@acme.test'), 'Maria');
+    assert.equal(notice.firstNameFromEmail('dave-k@acme.test'), 'Dave');
+    assert.equal(notice.firstNameFromEmail('sam@acme.test'), 'Sam');
+    assert.equal(notice.firstNameFromEmail('Pat+leads@acme.test'), 'Pat');
+  });
+  it('falls back to empty for role mailboxes, initials, digits and junk', () => {
+    for (const e of ['info@a.test', 'office@a.test', 'sales.team@a.test', 'j@a.test', 'j.smith@a.test', '1234@a.test', 'not-an-email', '']) {
+      assert.equal(notice.firstNameFromEmail(e), '', e);
+    }
+  });
+});
+
+describe('cc-notice: Cayden CC', () => {
+  it('defaults to the same address the booked-meeting email uses', () => {
+    const booked = require('../src/services/booked-meeting-email');
+    assert.deepEqual(notice.noticeCcEmails({}), booked.bookedCcEmails({}));
+    assert.deepEqual(notice.noticeCcEmails({}), ['cayden@salesglidergrowth.com']);
+  });
+  it('follows BOOKED_MEETING_EMAIL_CC when it is set', () => {
+    assert.deepEqual(notice.noticeCcEmails({ BOOKED_MEETING_EMAIL_CC: 'a@x.test, b@x.test' }), ['a@x.test', 'b@x.test']);
+  });
+});
+
 describe('cc-notice: sendCcNotice', () => {
   beforeEach(() => notice._resetSeenForTests());
   const base = {
     replyId: 'r1', leadName: 'Pat Doe', company: 'Doe Co', leadEmail: 'lead@prospect.test',
-    ccEmails: 'owner@acme.test, ops@acme.test', history: HISTORY, emailStatsId: 'stats1', accountEmails: [],
+    ccEmails: 'sam.owner@acme.test, ops@acme.test', history: HISTORY, emailStatsId: 'stats1', accountEmails: [],
   };
 
   it('sends nothing when the flag is off', async () => {
@@ -110,22 +149,34 @@ describe('cc-notice: sendCcNotice', () => {
     assert.equal(calls.length, 0);
   });
 
-  it('sends ONE email to all CC contacts from the primary Gmail, replies to Josh', async () => {
+  it('sends one personal email per CC contact from the primary Gmail, Cayden CC\'d on each', async () => {
     const calls = [];
     const r = await notice.sendCcNotice(base, { mailer: fakeMailer(calls), env: ON });
     assert.equal(r.sent, true);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].to, ['owner@acme.test', 'ops@acme.test']);
-    assert.match(calls[0].textBody, /jo\.box@sender-two\.test/);
-    assert.equal(calls[0].replyTo, 'joshua@salesglidergrowth.com');
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map((c) => c.to), [['sam.owner@acme.test'], ['ops@acme.test']]);
+    for (const c of calls) {
+      assert.deepEqual(c.cc, ['cayden@salesglidergrowth.com']);
+      assert.equal(c.subject, "Hot lead: we CC'd you");
+      assert.match(c.textBody, /jo\.box@sender-two\.test/);
+      assert.equal(c.replyTo, 'joshua@salesglidergrowth.com');
+    }
+    assert.match(calls[0].textBody, /^Hi Sam,\n/);
+    assert.match(calls[1].textBody, /^Hi there,\n/);
   });
 
-  it('does not send twice for the same reply and recipients', async () => {
+  it('CC follows BOOKED_MEETING_EMAIL_CC', async () => {
+    const calls = [];
+    await notice.sendCcNotice(base, { mailer: fakeMailer(calls), env: { ...ON, BOOKED_MEETING_EMAIL_CC: 'boss@x.test' } });
+    assert.deepEqual(calls[0].cc, ['boss@x.test']);
+  });
+
+  it('does not send twice for the same reply and contact', async () => {
     const calls = [];
     await notice.sendCcNotice(base, { mailer: fakeMailer(calls), env: ON });
     const again = await notice.sendCcNotice(base, { mailer: fakeMailer(calls), env: ON });
     assert.equal(again.skipped, 'duplicate');
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
   });
 
   it('skips with no recipients and when Gmail is not configured', async () => {
@@ -208,13 +259,16 @@ describe('sendReplyToPlatform: CC notice wiring', () => {
     }
   });
 
-  it('CC ticked + flag on: one notice to the always-CC contacts, not the round-robin rep', async () => {
+  it('CC ticked + flag on: one notice per always-CC contact, Cayden CC\'d, not the round-robin rep', async () => {
     const res = await sendReplyToPlatform(CLIENT, REPLY, 'Sounds good', { ccClientOnProspect: true });
     assert.equal(sent.length, 1);
     const notices = mails.filter((m) => /CC'd you/.test(m.subject));
-    assert.equal(notices.length, 1);
-    assert.deepEqual(notices[0].to, ['owner@acme.test', 'ops@acme.test']);
-    assert.match(notices[0].textBody, /jo\.box@sender-two\.test/);
+    assert.equal(notices.length, 2);
+    assert.deepEqual(notices.map((m) => m.to).flat(), ['owner@acme.test', 'ops@acme.test']);
+    for (const n of notices) {
+      assert.deepEqual(n.cc, ['cayden@salesglidergrowth.com']);
+      assert.match(n.textBody, /jo\.box@sender-two\.test/);
+    }
     assert.equal(res.ccNoticeSent, true);
   });
 

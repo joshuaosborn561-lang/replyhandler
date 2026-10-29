@@ -10,10 +10,11 @@
  *
  *   - OFF unless CC_NOTICE_EMAIL_ENABLED is true. Nothing is sent when it is off.
  *   - Only after the SmartLead reply was sent with the client CC on it (the caller checks that).
- *   - ONE email per send. To = the CC'd contacts (deduped, lowercased). Never the prospect, never
- *     Josh himself. Nobody is mailed separately.
- *   - Dedupe: the same reply + same recipients is only mailed once per process lifetime window.
- *     The send itself is already single-shot (claimOutboundSend), so this guards re-entry.
+ *   - ONE email per CC'd client contact ("Hi <first name>,"), deduped and lowercased. Never the
+ *     prospect, never Josh himself. Cayden is CC'd on every one (same list as the booked-meeting
+ *     email: BOOKED_MEETING_EMAIL_CC, default cayden@salesglidergrowth.com).
+ *   - Dedupe: the same reply + same contact is only mailed once per window. The send itself is
+ *     already single-shot (claimOutboundSend), so this guards re-entry.
  *   - Never throws. A failed notice must never turn a sent reply into a failed card.
  */
 
@@ -87,36 +88,56 @@ function noticeRecipients({ ccEmails, leadEmail, exclude = [] } = {}) {
     .filter((e) => !skip.has(e));
 }
 
-/** Subject and body. {lead_name}, {company}, {sender_email} are filled in; no other lead data. */
-function buildCcNoticeEmail({ leadName, company, senderEmail } = {}) {
+const DEFAULT_NOTICE_CC = 'cayden@salesglidergrowth.com';
+
+/** Cayden on every notice. Same source as the booked-meeting email: BOOKED_MEETING_EMAIL_CC, default Cayden. */
+function noticeCcEmails(env = process.env) {
+  if (Object.prototype.hasOwnProperty.call(env, 'BOOKED_MEETING_EMAIL_CC')) {
+    return parseEmailList(env.BOOKED_MEETING_EMAIL_CC);
+  }
+  return parseEmailList(DEFAULT_NOTICE_CC);
+}
+
+// Mailbox names that are not a person's first name.
+const ROLE_LOCALS = new Set([
+  'info', 'office', 'admin', 'administrator', 'sales', 'team', 'hello', 'hi', 'contact', 'support', 'service',
+  'services', 'accounting', 'accounts', 'billing', 'ops', 'operations', 'marketing', 'mail', 'email', 'inbox',
+  'leads', 'lead', 'reception', 'general', 'enquiries', 'inquiries', 'help', 'hr', 'jobs', 'careers', 'bookings',
+  'booking', 'orders', 'noreply', 'owner', 'manager', 'dispatch', 'estimating', 'estimates', 'customerservice',
+]);
+
+/**
+ * First name for "Hi <name>," from the contact's email local part (the client record only stores
+ * addresses, no names). john.smith@ -> John, john@ -> John. Role mailboxes (info@, office@),
+ * initials, digits-only and one-letter locals give '' so the greeting falls back to "Hi there,".
+ */
+function firstNameFromEmail(email) {
+  const local = String(normalizeEmail(email) || '').split('@')[0] || '';
+  const withoutTag = local.split('+')[0];
+  const token = withoutTag.split(/[._-]+/).find((t) => t) || '';
+  if (!/^[a-z]{2,20}$/.test(token)) return '';
+  if (ROLE_LOCALS.has(token) || ROLE_LOCALS.has(withoutTag.replace(/[._-]+/g, ''))) return '';
+  return token.charAt(0).toUpperCase() + token.slice(1);
+}
+
+/** Subject and body. {first_name}, {lead_name}, {company}, {sender_email} are filled in; no other lead data. */
+function buildCcNoticeEmail({ firstName, leadName, company, senderEmail } = {}) {
   const lead = str(leadName) && str(leadName).toLowerCase() !== 'unknown' ? str(leadName) : 'a prospect';
   const co = str(company);
   const sender = normalizeEmail(senderEmail);
   const who = co ? `${lead} at ${co}` : lead;
+  const name = str(firstName, 40);
 
-  const subject = `Heads up: we just CC'd you on a reply to ${lead}`;
-  const lines = [
-    'Hi,',
-    '',
-    `We just CC'd you on our reply to ${who}. If you don't see it in your inbox, please check your spam and promotions folders.`,
-  ];
-  if (sender) {
-    lines.push(
-      '',
-      `It came from ${sender}. Adding that address to your contacts (or marking it "not spam") makes sure the rest land in your inbox.`,
-    );
-  }
-  lines.push('', 'Thanks,', 'Josh');
+  const subject = 'Hot lead: we CC\'d you';
+  let para = `We just CC'd you on our reply to ${who}. If you don't see it, check your spam and promotions folders.`;
+  if (sender) para += ` It came from ${sender}.`;
+  const lines = [name ? `Hi ${name},` : 'Hi there,', '', para, '', 'Thanks,', 'Josh'];
   const textBody = lines.join('\n');
   const htmlBody = lines
     .map((l) => (l === '' ? '' : escapeHtml(l)))
     .join('<br>\n')
     .replace(/(<br>\n){2,}/g, '<br><br>\n');
   return { subject, textBody, htmlBody: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${htmlBody}</div>` };
-}
-
-function seenKey(replyId, to) {
-  return `${replyId}|${[...to].sort().join(',')}`;
 }
 
 function pruneSeen(now = Date.now()) {
@@ -140,25 +161,35 @@ async function sendCcNotice(p = {}, { mailer = gmail, env = process.env } = {}) 
     if (!to.length) return { sent: false, skipped: 'no_recipients' };
 
     pruneSeen();
-    const key = seenKey(p.replyId, to);
-    if (p.replyId && seen.has(key)) return { sent: false, skipped: 'duplicate' };
-
     if (!mailer.isConfigured()) return { sent: false, skipped: 'gmail_not_configured' };
-    const email = buildCcNoticeEmail({ leadName: p.leadName, company: p.company, senderEmail });
-    if (p.replyId) seen.set(key, Date.now());
-    try {
-      const res = await mailer.sendMail({
-        to,
-        replyTo: fyiReplyTo(env),
-        subject: email.subject,
-        htmlBody: email.htmlBody,
-        textBody: email.textBody,
+    const cc = noticeCcEmails(env);
+    const sentTo = [];
+    const failed = [];
+    for (const contact of to) {
+      const key = `${p.replyId}|${contact}`;
+      if (p.replyId && seen.has(key)) continue;
+      const email = buildCcNoticeEmail({
+        firstName: firstNameFromEmail(contact), leadName: p.leadName, company: p.company, senderEmail,
       });
-      return { sent: true, to, from: res?.from || null, senderEmail: senderEmail || null };
-    } catch (err) {
-      if (p.replyId) seen.delete(key);
-      throw err;
+      if (p.replyId) seen.set(key, Date.now());
+      try {
+        await mailer.sendMail({
+          to: [contact],
+          cc: cc.filter((e) => e !== contact),
+          replyTo: fyiReplyTo(env),
+          subject: email.subject,
+          htmlBody: email.htmlBody,
+          textBody: email.textBody,
+        });
+        sentTo.push(contact);
+      } catch (err) {
+        if (p.replyId) seen.delete(key);
+        failed.push(err.message);
+      }
     }
+    if (!sentTo.length && !failed.length) return { sent: false, skipped: 'duplicate' };
+    if (!sentTo.length) throw new Error(failed[0]);
+    return { sent: true, to: sentTo, cc, senderEmail: senderEmail || null, failed: failed.length || undefined };
   } catch (err) {
     console.warn('[CcNotice] notice not sent (reply already went out)', { replyId: p.replyId, err: err.message });
     return { sent: false, error: err.message };
@@ -166,5 +197,6 @@ async function sendCcNotice(p = {}, { mailer = gmail, env = process.env } = {}) 
 }
 
 module.exports = {
-  ccNoticeEnabled, pickSendingInbox, noticeRecipients, buildCcNoticeEmail, sendCcNotice, _resetSeenForTests,
+  ccNoticeEnabled, pickSendingInbox, noticeRecipients, noticeCcEmails, firstNameFromEmail, buildCcNoticeEmail, sendCcNotice,
+  _resetSeenForTests,
 };

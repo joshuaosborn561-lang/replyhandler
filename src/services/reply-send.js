@@ -614,7 +614,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       });
       if (ccNotice.sent) {
         console.log('[ReplySend] CC notice sent from primary Gmail', {
-          replyId: reply.id, recipients: ccNotice.to.length, from: ccNotice.from,
+          replyId: reply.id, recipients: ccNotice.to.length,
         });
       }
     }
