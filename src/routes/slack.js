@@ -5,6 +5,7 @@ const slackService = require('../services/slack');
 const { postProspectSlackCard } = require('../services/slack-reply-post');
 const slackVerify = require('../middleware/slackVerify');
 const { digestRecipients } = require('../services/client-reply-digest');
+const { alwaysForwardEmailsForProspectCc } = require('../services/client-cc');
 const { sendReplyToPlatform, maybeBookMeetingAfterSend, isSlackTestFixtureReply } = require('../services/reply-send');
 const { extractReferredContacts, parseReferralCcInput, referralCcCsv } = require('../utils/referred-contact');
 const { scheduleAfterOutboundSend, cancelPendingForThread, heyreachConversationId } = require('../services/outbound-follow-up');
@@ -260,6 +261,9 @@ async function handleOpenEditModal(replyId, interaction) {
     ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
     referralCc: detectedCc,
+    // "CC client on this reply" checkbox: the Always-CC list, same as the card's Send + CC client button.
+    ccClientEmails: reply.platform === 'smartlead' ? alwaysForwardEmailsForProspectCc(client) : '',
+    ccOnSend: Boolean(reply.cc_on_send),
   });
 }
 
@@ -323,7 +327,10 @@ async function handleEditModalSubmit(interaction) {
       if (parsed.error) throw new Error(parsed.error);
       referralCc = parsed.emails;
     }
+    const ccClientOnProspect = reply.platform === 'smartlead'
+      && slackService.ccClientSelectedInModal(interaction.view.state.values);
     const sendResult = await sendReplyToPlatform(client, reply, messageText, {
+      ccClientOnProspect,
       referralCc,
     }) || {};
     const skippedDuplicate = Boolean(sendResult.skippedDuplicate);
@@ -366,6 +373,9 @@ async function handleEditModalSubmit(interaction) {
       }
       if (sendResult.clientNotifySkipped) {
         extraFooter += `\nTyler notify skipped — ${sendResult.clientNotifySkipReason}`;
+      }
+      if (sendResult.prospectCcEmails) {
+        extraFooter += `\nProspect thread CC: ${sendResult.prospectCcEmails}`;
       }
     }
 

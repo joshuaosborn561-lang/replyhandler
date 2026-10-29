@@ -280,6 +280,12 @@ function ccCheckboxBlock({ replyId, ccEmail, ccOnSend }) {
   };
 }
 
+/** True while client notifications go out as the 4:00pm CT roll-up (PROSPECT_REPLY_NOTIFY_MODE, default rollup). */
+function notifyModeIsRollup(env = process.env) {
+  const v = String(env.PROSPECT_REPLY_NOTIFY_MODE || '').trim().toLowerCase();
+  return v !== 'instant' && v !== 'off';
+}
+
 /** Always-on client-notify notice — forward list + round-robin pool. */
 function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllCc }) {
   const always = String(ccEmails || '').trim();
@@ -304,11 +310,14 @@ function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllC
       : `*Always notify:* ${escMrkdwn(always)}`);
   }
   if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
+  const rollup = notifyModeIsRollup();
   const intro = isDeepRootsClient(clientName)
     ? '📬 Tyler is emailed only when they look qualified (employees + $1–10M EBITDA) and want to schedule a call — not on every send'
     : extra.length
-      ? `📬 Reply-all: CC ${extra.length} other ${extra.length === 1 ? 'person' : 'people'} on the thread (${escMrkdwn(extra.join(', '))}) — primary Gmail notify on Approve`
-      : '📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)';
+      ? `📬 Reply-all: CC ${extra.length} other ${extra.length === 1 ? 'person' : 'people'} on the thread (${escMrkdwn(extra.join(', '))}) — ${rollup ? 'client gets the 4:00 PM CT roll-up' : 'primary Gmail notify on Approve'}`
+      : rollup
+        ? '📬 Prospect reply has no CC — the client gets the 4:00 PM CT roll-up (use "Send + CC client" to copy them on this reply)'
+        : '📬 Prospect reply has no CC — primary Gmail notify on Approve (thread + LinkedIn/website/email/cell)';
   return {
     type: 'context',
     elements: [{
@@ -1353,7 +1362,42 @@ async function updateMessage(token, channelId, messageTs, text) {
   });
 }
 
-function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
+const CC_CLIENT_BLOCK_ID = 'cc_client_block';
+const CC_CLIENT_ACTION_ID = 'cc_client_input';
+
+/**
+ * Optional "CC client on this reply" checkbox for the Edit modal. Same effect as the card's
+ * "Approve & Send + CC client" button: the client's Always-CC list goes on the prospect thread.
+ */
+function ccClientModalBlock({ ccClientEmails, ccOnSend } = {}) {
+  const emails = String(ccClientEmails || '').trim();
+  if (!emails) return null;
+  const label = emails.length > 60 ? `${emails.slice(0, 57)}…` : emails;
+  const option = {
+    text: { type: 'plain_text', text: `CC client on this reply: ${label}` },
+    value: 'cc_client',
+  };
+  return {
+    type: 'input',
+    optional: true,
+    block_id: CC_CLIENT_BLOCK_ID,
+    label: { type: 'plain_text', text: 'Client copy' },
+    element: {
+      type: 'checkboxes',
+      action_id: CC_CLIENT_ACTION_ID,
+      options: [option],
+      ...(ccOnSend ? { initial_options: [option] } : {}),
+    },
+  };
+}
+
+/** True when the Edit modal's "CC client" box is ticked. */
+function ccClientSelectedInModal(values) {
+  const sel = values?.[CC_CLIENT_BLOCK_ID]?.[CC_CLIENT_ACTION_ID]?.selected_options;
+  return Array.isArray(sel) && sel.length > 0;
+}
+
+function buildEditReplyBlocks({ initialDraft, referralCc, ccClientEmails, ccOnSend } = {}) {
   const blocks = [
     {
       type: 'input',
@@ -1383,17 +1427,19 @@ function buildEditReplyBlocks({ initialDraft, referralCc } = {}) {
       },
     });
   }
+  const ccClient = ccClientModalBlock({ ccClientEmails, ccOnSend });
+  if (ccClient) blocks.push(ccClient);
   return blocks;
 }
 
 async function openEditReplyModal(token, triggerId, {
   replyId, initialDraft, channelId, messageTs, ccEmail, ccOnSend, ccEmails, ccRoundRobinEmails,
-  referralCc,
+  referralCc, ccClientEmails,
 }) {
   const slack = getClient(token);
   const meta = JSON.stringify({ replyId, channelId, messageTs });
 
-  const blocks = buildEditReplyBlocks({ initialDraft, referralCc });
+  const blocks = buildEditReplyBlocks({ initialDraft, referralCc, ccClientEmails, ccOnSend });
 
   const notice = ccAutoNoticeBlock({
     ccEmails: ccEmails || ccEmail,
@@ -1542,6 +1588,9 @@ module.exports = {
   draftApprovalActionsBlock,
   openEditReplyModal,
   buildEditReplyBlocks,
+  ccClientModalBlock,
+  ccClientSelectedInModal,
+  notifyModeIsRollup,
   referralCcActionsBlock,
   postMorningDigestHeader,
   postAttentionDigestHeader,

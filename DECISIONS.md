@@ -1610,3 +1610,9 @@ Approved by Josh on Oct 29 ("a b b a perfect brief make sure i get these too"). 
   (migration 051). Slack cards say "Queued for the 4:00 PM CT client roll-up" for queued replies and nothing for the rest.
 - **Callback ("Warm lead:") emails are removed**: allo-calling flag `WARM_LEAD_EMAIL_ENABLED` is off and the route and email builder are deleted. A callback that is a booked meeting still sends the Meeting booked brief.
 Guards: `test/invariants.test.js`, `test/booked-brief.test.js`, `test/client-reply-digest.test.js`.
+
+## Edit modal: "CC client on this reply" (Josh, Oct 29 2026)
+Josh: "Still need to be able to cc client when I edit." Before the roll-up, Edit & send always emailed the client instantly; the roll-up (#177) turned that into a queue, and the Edit modal had no way to copy the client (only the card's Send + CC client button did).
+- The Edit modal shows an optional **CC client on this reply** checkbox listing the client's Always-CC addresses (smartlead replies with a list only). Ticked: those addresses go on the prospect reply, exactly like the card's Approve & Send + CC client button (Always-CC only, never round-robin). Unticked: unchanged.
+- The 4:00pm CT roll-up is independent: the reply is still queued for it either way. The no-CC card notice now says the client gets the roll-up while `PROSPECT_REPLY_NOTIFY_MODE` is rollup.
+Guard: `test/edit-cc-client.test.js`
