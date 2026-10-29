@@ -1054,12 +1054,11 @@ function assembleFollowUpApprovalBlocks({
 }) {
   const willSend = buildWillSendBlocks({ draft, outgoingLabel: 'WILL SEND' });
   const loop = loopInClientBlock(needsClient, whatToSend);
-  const head = [
-    ...topBlocks,
-    draftApprovalActionsBlock(replyId),
-  ];
+  // Josh, Oct 29 2026: the buttons stay at the bottom, after the draft and the context line.
+  const head = [...topBlocks];
+  const buttons = [draftApprovalActionsBlock(replyId)];
   if (canCcClient) {
-    head.push(sendCcClientActionsBlock(replyId));
+    buttons.push(sendCcClientActionsBlock(replyId));
   }
   const afterButtons = [contactBlock, ...theirBlocks, ...(theirBlocks.length && willSend.length ? [dividerBlock()] : []), ...willSend];
   if (loop) afterButtons.push(loop);
@@ -1067,6 +1066,7 @@ function assembleFollowUpApprovalBlocks({
   const tail = [];
   if (review) tail.push(needsReviewBlock());
   tail.push(contextBlock);
+  tail.push(...buttons);
 
   const used = head.length + afterButtons.length + tail.length;
   const remaining = Math.max(4, SLACK_BLOCK_LIMIT - used - 1);
@@ -1176,18 +1176,7 @@ function buildDraftApprovalCard({
       body.push(dividerBlock());
       body.push(...conversationStepBlocks({ emoji: '✍️', label: 'Suggested reply', body: draft }));
     }
-    const head = [
-      ...topBlocks,
-      draftApprovalActionsBlock(replyId),
-    ];
-    if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
-      head.push(sendCcClientActionsBlock(replyId));
-    }
-    if (String(platform || '').toLowerCase() === 'smartlead') {
-      const referralBtn = referralCcActionsBlock(replyId, referredContacts);
-      if (referralBtn) head.push(referralBtn);
-    }
-    head.push(contactBlock);
+    const head = [...topBlocks, contactBlock];
 
     const tail = [];
     if (review) tail.push(needsReviewBlock());
@@ -1204,6 +1193,15 @@ function buildDraftApprovalCard({
     if (String(platform || '').toLowerCase() === 'smartlead') {
       const referred = referredContactSection(referredContacts);
       if (referred) tail.push(referred);
+    }
+    // Buttons last, after the draft and the context line.
+    tail.push(draftApprovalActionsBlock(replyId));
+    if (String(platform || '').toLowerCase() === 'smartlead') {
+      const referralBtn = referralCcActionsBlock(replyId, referredContacts);
+      if (referralBtn) tail.push(referralBtn);
+    }
+    if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
+      tail.push(sendCcClientActionsBlock(replyId));
     }
     const fitted = fitCardBlocks(head, body, tail);
     blocks = fitted.blocks;
