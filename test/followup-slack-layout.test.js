@@ -230,7 +230,7 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.doesNotMatch(texts, /\*Suggested follow-up\*/);
   });
 
-  it('posts overflow history when the thread does not fit the card', () => {
+  it('keeps a long thread off the card: You said / They replied / draft carry the context', () => {
     const threadMessages = Array.from({ length: 45 }, (_, i) => ({
       role: i % 2 === 0 ? 'us' : 'them',
       body: `Turn ${i + 1} ${'word '.repeat(30)}`,
@@ -246,7 +246,8 @@ describe('FOLLOW_UP card conversation layout', () => {
       threadMessages,
     });
     assert.ok(blocks.length <= 50, `card has ${blocks.length} blocks`);
-    assert.ok(overflowThread && overflowThread.length, 'overflow thread is populated');
+    assert.equal((overflowThread || []).length, 0, 'nothing the sender needs lives only in a thread (Josh, Oct 29 2026)');
+    assert.doesNotMatch(JSON.stringify(blocks), /Turn 1 /);
   });
 
   it('strips Outlook CSS from the last-message line', () => {

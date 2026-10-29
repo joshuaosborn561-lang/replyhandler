@@ -220,11 +220,9 @@ describe('disclaimer and scanner footers are automated notices', () => {
     assert.match(shown, /What times work next week/);
     assert.match(shown, /disclosure, copying, distribution/);
     assert.match(shown, /scanned for viruses and malware/);
-    assert.match(shown, /Mimecast/);
-    assert.match(shown, /visit our website/);
+    // Josh, Oct 29 2026: the card shows about 600 chars of their reply, human text first.
     assert.doesNotMatch(shown, /_\(truncated\)_/);
     assert.equal(shown.includes(KAYLA_HUMAN), true);
-    assert.equal(shown.includes('automatically archived by Mimecast'), true);
   });
 
   it('a short human reply is not dropped because a disclaimer footer is attached', () => {
