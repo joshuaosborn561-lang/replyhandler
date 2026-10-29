@@ -6,6 +6,7 @@
  */
 
 const { looksLikeReferral, normalizeEmail, isAutoReplyAddress } = require('./reply-all');
+const { isOwnAddress } = require('./own-addresses');
 const {
   humanTextForClassification,
   looksLikeHtml,
@@ -290,7 +291,7 @@ function extractReferredContacts(raw, opts = {}) {
   const candidates = [...emailsInText(human), ...mailtoEmails(cleanedHtml)];
   for (const email of candidates) {
     const key = normalizeEmail(email);
-    if (!key || seen.has(key) || skip.has(key) || isAutoReplyAddress(key)) continue;
+    if (!key || seen.has(key) || skip.has(key) || isAutoReplyAddress(key) || isOwnAddress(key)) continue;
     // A mailto that survived only inside a signature line we already cut
     // is not the human reply. It has to appear in the human text, or be a
     // mailto whose visible message we kept.
@@ -453,7 +454,7 @@ function parseReferralCcInput(raw, { prospectEmail, ourEmails } = {}) {
   const seen = new Set();
   for (const email of found) {
     const key = normalizeEmail(email);
-    if (!key || seen.has(key) || isAutoReplyAddress(key)) continue;
+    if (!key || seen.has(key) || isAutoReplyAddress(key) || isOwnAddress(key)) continue;
     if (skip.has(key)) continue;
     seen.add(key);
     emails.push(email);
