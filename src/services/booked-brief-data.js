@@ -235,7 +235,8 @@ function normalizeSynthesis(parsed) {
     size: str(co.size, 300) || null,
     notes: cleanList(co.notes, 4),
     hook: str(parsed.hook, 300) || null,
-    talkingPoints: cleanList(parsed.talking_points, 7),
+    // The brief numbers the list itself; the model sometimes numbers its points too ("1. 1. Open by ...").
+    talkingPoints: cleanList(parsed.talking_points, 7).map((t) => t.replace(/^\s*\d{1,2}[.)]\s+/, '')).filter(Boolean),
     watchOuts: cleanList(parsed.watch_outs, 4),
   };
   const any = out.title || out.whatTheyDo || out.talkingPoints.length || out.notes.length || out.watchOuts.length;
