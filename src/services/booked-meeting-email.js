@@ -28,6 +28,7 @@ const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
 const { fyiReplyTo } = require('../utils/fyi-notify');
 const { generateHighlights } = require('./booked-meeting-highlights');
 const { lookupMissingLinkedin } = require('./reply-card-identity');
+const { resolveSchedulerContact } = require('./scheduler-contact');
 
 const DEFAULT_TO = 'joshua@salesglidergrowth.com';
 const DEFAULT_CC = 'cayden@salesglidergrowth.com';
@@ -84,6 +85,21 @@ function brandsFor(m) {
   return [...new Set([m.callerBrand, ...(KNOWN_CALLER_BRANDS[m.clientSlug] || [])].filter(Boolean))];
 }
 
+/**
+ * The client's display name for the email. The booking row carries the bare slug ("vector") when the lead
+ * could not be matched to a campaign, so a slug-shaped name is replaced by the matched client's real name,
+ * then by the booking bridge's first alias for the slug.
+ */
+function displayNameFor(m, clientRows = []) {
+  const current = String(m.clientDisplay || m.client || '').trim();
+  const slugShaped = !current || current === String(m.clientSlug || '');
+  if (!slugShaped) return current;
+  const row = (clientRows || []).find((r) => r && r.name);
+  if (row) return String(row.name).trim();
+  const alias = (CLIENT_SLUG_ALIASES[m.clientSlug] || [])[0];
+  return alias || current;
+}
+
 function parseBookedMeetingPayload(body) {
   const b = body && typeof body === 'object' ? body : {};
   if (String(b.event || '') !== EVENT) return { ok: false, error: 'unsupported_event' };
@@ -101,6 +117,9 @@ function parseBookedMeetingPayload(body) {
     platform: str(b.platform, 40).toLowerCase(),
     meetingAt: isoOrEmpty(b.meeting_at),
     bookedAt: isoOrEmpty(b.booked_at),
+    // Scheduler bookings (Calendly, TidyCal, ...): the id / invitee URI the scheduler's own API answers to.
+    schedulerBookingId: str(b.scheduler_booking_id, 100),
+    schedulerInviteeUri: str(b.scheduler_invitee_uri, 500),
     smartleadCampaignId: str(b.smartlead_campaign_id, 40),
     smartleadLeadId: str(b.smartlead_lead_id, 40),
     summary: String(b.summary || '').replace(/\r\n/g, '\n').trim().slice(0, 6000),
@@ -239,6 +258,7 @@ async function handleBookedMeetingEmail(body, {
   highlightsFn = generateHighlights,
   linkedinFn = defaultLinkedinLookup,
   briefDataFn = gatherBrief,
+  contactFn = resolveSchedulerContact,
 } = {}) {
   const parsed = parseBookedMeetingPayload(body);
   if (!parsed.ok) return { status: 400, body: { ok: false, error: parsed.error } };
@@ -261,7 +281,30 @@ async function handleBookedMeetingEmail(body, {
     josh: recipient(env),
     cc: bookedCcEmails(env),
   });
+  if (!always.length) {
+    console.warn('[BookedMeetingEmail] client has no always-CC address, so this brief goes to Josh and Cayden only', { client: m.clientSlug || m.client });
+  }
+  m.clientDisplay = displayNameFor(m, clientRows);
   const clientName = m.clientDisplay || m.client;
+  // A booking made on a scheduler page reaches us before the scheduler's webhook, with no name. Ask the
+  // scheduler's API who booked, so the brief, the LinkedIn match and the research all have a real person.
+  const isCallBooking = Boolean(m.alloCallId) || m.platform === 'allo';
+  if (!isCallBooking && !m.prospect.name && (m.schedulerBookingId || m.schedulerInviteeUri)) {
+    const hit = await contactFn({
+      platform: m.platform,
+      bookingId: m.schedulerBookingId,
+      inviteeUri: m.schedulerInviteeUri,
+      email: m.prospect.email,
+    }).catch(() => null);
+    if (hit) {
+      m.prospect.name = m.prospect.name || hit.name || '';
+      m.prospect.company = m.prospect.company || hit.company || '';
+      m.prospect.title = m.prospect.title || hit.title || '';
+      m.prospect.phone = m.prospect.phone || hit.phone || '';
+      m.prospect.email = m.prospect.email || hit.email || '';
+      m.meetingAt = m.meetingAt || isoOrEmpty(hit.startsAt);
+    }
+  }
   const [highlights, linkedinUrl] = await Promise.all([
     highlightsFn({
       transcript: m.transcript,
@@ -269,7 +312,9 @@ async function handleBookedMeetingEmail(body, {
       clientName,
       brands: brandsFor(m),
     }),
-    m.prospect.linkedinUrl ? m.prospect.linkedinUrl : safeLinkedin(linkedinFn, m),
+    // The lookup only trusts a profile that carries the lead's own name (PR #183), so with no name there is
+    // nothing to check a hit against: skip it rather than pay for a result that would be thrown away.
+    m.prospect.linkedinUrl ? m.prospect.linkedinUrl : (m.prospect.name ? safeLinkedin(linkedinFn, m) : ''),
   ]);
   if (linkedinUrl) m.prospect.linkedinUrl = linkedinUrl;
   const swap = (t) => useClientName(t, { clientName, brands: brandsFor(m), keep: [m.prospect && m.prospect.company] });
@@ -325,7 +370,7 @@ async function handleBookedMeetingEmail(body, {
     return { status: 502, body: { ok: false, error: 'send_failed' } };
   }
   seen.set(key, now);
-  return { status: 200, body: { ok: true, sent: true, to, cc } };
+  return { status: 200, body: { ok: true, sent: true, to, cc, client_recipients: always.length } };
 }
 
 function _resetSeenForTests() {
@@ -338,6 +383,7 @@ module.exports = {
   NO_SUMMARY,
   recipient,
   parseBookedMeetingPayload,
+  displayNameFor,
   buildBookedMeetingEmail,
   buildBookedBrief,
   resolveClientAlwaysCc,

@@ -301,7 +301,7 @@ describe('booked meeting email: sending', () => {
       payload({ to: 'attacker@example.test', cc: 'attacker@example.test' }),
       { send, env: {}, resolveCc: withCc('client@example.test'), highlightsFn: noHighlights, linkedinFn: noLinkedin },
     );
-    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC_JOSH } });
+    assert.deepEqual(a, { status: 200, body: { ok: true, sent: true, to: ['client@example.test'], cc: CC_JOSH, client_recipients: 1 } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['client@example.test']);
     assert.deepEqual(sent[0].cc, CC_JOSH);
@@ -330,7 +330,7 @@ describe('booked meeting email: sending', () => {
     const send = async (m) => { sent.push(m); };
     const a = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
     const b = await handleBookedMeetingEmail(payload(), { send, env: {}, resolveCc: noCc, highlightsFn: noHighlights, linkedinFn: noLinkedin });
-    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: CC });
+    assert.deepEqual(a.body, { ok: true, sent: true, to: [DEFAULT_TO], cc: CC, client_recipients: 0 });
     assert.deepEqual(b, { status: 200, body: { ok: true, deduped: true } });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].cc, CC);
