@@ -480,6 +480,8 @@ async function processConversation(client, conv, options) {
     inboundMessage: inbound.text,
     isColdInbound: coldInbound,
     pitchToUsProb: result.pitchToUsProb,
+    // Every LinkedIn reply gets a card (Josh, Oct 30 2026), so this never suppresses.
+    platform: 'heyreach',
   });
   if (suppressed) {
     await recordSuppressedReply({

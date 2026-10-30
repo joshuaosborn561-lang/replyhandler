@@ -18,6 +18,9 @@ const {
 
 const DRAFT_CLASSIFICATIONS = new Set(['INTERESTED', 'MEETING_PROPOSED', 'QUESTION']);
 
+/** Any other label (OTHER, NOT_INTERESTED, WRONG_PERSON, ...) posts as an alert card with no draft. */
+const CLASSIFICATION_PATTERN = /^[A-Z][A-Z_]{1,39}$/;
+
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -69,19 +72,23 @@ async function findPostedSibling(row, query) {
 async function postStoredHeyreachApprovalCard({
   replyId,
   draft,
-  classification = 'INTERESTED',
-  reasoning = 'Manually promoted to an approval card from the stored LinkedIn reply.',
+  classification,
+  reasoning,
   query = (...args) => db.query(...args),
   postFn = postProspectSlackCard,
 } = {}) {
   const id = String(replyId || '').trim();
   if (!id) throw httpError(400, 'replyId is required');
   const draftText = String(draft || '').trim();
-  if (!draftText) throw httpError(400, 'draft is required');
-  const cls = String(classification || 'INTERESTED').trim().toUpperCase();
-  if (!DRAFT_CLASSIFICATIONS.has(cls)) {
-    throw httpError(400, 'classification must be INTERESTED, MEETING_PROPOSED, or QUESTION');
+  const requested = String(classification || '').trim().toUpperCase();
+  if (requested && !CLASSIFICATION_PATTERN.test(requested)) {
+    throw httpError(400, 'classification must be a label like INTERESTED, QUESTION, OTHER, NOT_INTERESTED');
   }
+  // A draft with no label keeps the old default (INTERESTED). No draft and no label
+  // re-posts the stored label as an alert card (neutral replies have no draft).
+  let cls = requested || (draftText ? 'INTERESTED' : '');
+  const asDraft = DRAFT_CLASSIFICATIONS.has(cls);
+  if (asDraft && !draftText) throw httpError(400, 'draft is required');
 
   const { rows } = await query(
     `SELECT pr.*,
@@ -101,6 +108,15 @@ async function postStoredHeyreachApprovalCard({
   if (!row.slack_bot_token || !row.slack_channel_id) {
     throw httpError(409, 'client has no Slack channel');
   }
+
+  if (!cls) cls = String(row.classification || '').trim().toUpperCase() || 'OTHER';
+  if (DRAFT_CLASSIFICATIONS.has(cls) && !draftText) {
+    throw httpError(400, 'draft is required for INTERESTED, MEETING_PROPOSED, or QUESTION');
+  }
+  const isDraft = DRAFT_CLASSIFICATIONS.has(cls);
+  const cardReasoning = reasoning || (isDraft
+    ? 'Manually promoted to an approval card from the stored LinkedIn reply.'
+    : 'LinkedIn reply posted for visibility (no draft).');
 
   if (row.status === 'sent') {
     return { ok: true, posted: false, reason: 'already_sent', replyId: row.id };
@@ -131,12 +147,12 @@ async function postStoredHeyreachApprovalCard({
     `UPDATE pending_replies
         SET classification = $1,
             draft_reply = $2,
-            status = 'pending',
+            status = $4,
             updated_at = now()
       WHERE id = $3
         AND status IN ('suppressed', 'pending', 'flagged', 'alert_only')
       RETURNING *`,
-    [cls, draftText, row.id]
+    [cls, isDraft ? draftText : null, row.id, isDraft ? 'pending' : 'alert_only']
   );
   const updated = updatedRows[0];
   if (!updated) {
@@ -155,7 +171,7 @@ async function postStoredHeyreachApprovalCard({
     campaignId: updated.campaign_id,
     leadId: updated.lead_id,
     threadContext,
-    isDraft: true,
+    isDraft,
     replyId: updated.id,
     card: {
       replyId: updated.id,
@@ -164,8 +180,8 @@ async function postStoredHeyreachApprovalCard({
       linkedinUrl: updated.linkedin_url || undefined,
       platform: 'heyreach',
       classification: cls,
-      draft: draftText,
-      reasoning,
+      draft: isDraft ? draftText : null,
+      reasoning: cardReasoning,
       inboundMessage: updated.inbound_message,
       campaignDisplay: formatCampaignDisplay(updated.campaign_name, updated.campaign_id) || undefined,
       lastOutboundMessage: lastOutbound || undefined,

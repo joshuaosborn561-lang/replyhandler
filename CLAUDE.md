@@ -52,6 +52,12 @@ just vanish. This cost us a day of missed replies across every client.
 
 ## Suppression policy — AI reply channels are interested-only
 
+**Exception: LinkedIn (HeyReach) replies are never suppressed** (Josh, Oct 30 2026).
+Every inbound HeyReach reply for every client posts a card, whatever its label.
+Pass `platform` to `slackChannelSuppressionReason()`; for `'heyreach'` it returns
+null. Do not add a new filter on the HeyReach webhook or poller that records a
+LinkedIn reply as suppressed. See DECISIONS.md and `test/heyreach-all-replies.test.js`.
+
 Final Slack gate: `slackChannelSuppressionReason()` in
 `src/utils/slack-channel-policy.js`. Only **`INTERESTED`**,
 **`MEETING_PROPOSED`**, and **`QUESTION`** post to the AI reply channels.

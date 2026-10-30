@@ -292,6 +292,18 @@ function normalizeHeyreachPayload(payload) {
 
 const heyreachDedupe = new Map();
 
+/**
+ * Thread key for a LinkedIn reply whose payload carries neither a lead id nor a
+ * conversation id. Stable for the same person and the same text, so a redelivery
+ * still dedupes. Never empty, so the reply is never dropped for want of an id.
+ */
+function heyreachFallbackThreadKey({ linkedinUrl, leadName, inboundMessage } = {}) {
+  const who = String(linkedinUrl || leadName || '').trim().toLowerCase();
+  const digest = require('crypto').createHash('sha1')
+    .update(`${who}|${inboundPrefix(inboundMessage)}`).digest('hex').slice(0, 16);
+  return `hr-derived:${digest}`;
+}
+
 function heyreachDedupeKey({
   clientId, campaignId, leadId, conversationId, inboundMessage, linkedinUrl, listId, linkedinAccountId,
 }) {
@@ -1201,19 +1213,18 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
       hasLinkedinUrl: !!linkedinUrl,
     });
 
+    // Oct 30 2026: every LinkedIn reply posts a card. A missing API key or missing
+    // ids used to drop the reply with a 200. Neither stops us from showing it:
+    // the key only powers enrichment and sending, and a thread key can be
+    // derived from the profile URL. No key just means no inbox enrichment.
     if (!client.heyreach_api_key) {
-      console.warn('[Webhook] HeyReach skipped — no API key on client', { clientId, client: client.name });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'no_heyreach_api_key' });
+      console.warn('[Webhook] HeyReach client has no API key — posting without inbox enrichment', { clientId, client: client.name });
     }
-
-    if (!campaignId && !hrConversationId) {
-      console.warn('[Webhook] HeyReach skipped — missing campaign id and conversation_id', { clientId });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'missing_campaign_id' });
-    }
-
     if (!leadId && !hrConversationId) {
-      console.warn('[Webhook] HeyReach skipped — missing lead id and conversation_id', { clientId });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'missing_thread_ids' });
+      leadId = heyreachFallbackThreadKey({ linkedinUrl, leadName, inboundMessage });
+      console.warn('[Webhook] HeyReach payload has no lead id or conversation id — using a derived thread key', {
+        clientId, derived: true, hasLinkedinUrl: !!linkedinUrl,
+      });
     }
 
     const dedupeKey = heyreachDedupeKey({
@@ -1236,16 +1247,25 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
     }
 
     let heyreachCampaignOk = true;
-    if (campaignId) {
+    if (campaignId && client.heyreach_api_key) {
       try {
         heyreachCampaignOk = await heyreach.verifyCampaignAccess(client.heyreach_api_key, campaignId);
       } catch (err) {
-        console.error('[Webhook] HeyReach campaign verification failed', { clientId, err: err.message });
-        return res.status(200).json({ ok: true, skipped: true, reason: 'heyreach_api_error' });
+        // Cannot verify. A HeyReach API blip used to drop the reply. Show it.
+        console.error('[Webhook] HeyReach campaign verification failed — posting anyway', { clientId, err: err.message });
+        heyreachCampaignOk = true;
       }
       if (!heyreachCampaignOk) {
+        // The campaign belongs to another client's workspace (wrong webhook URL),
+        // so a card here would land in the wrong client's channel. Keep an audit row.
         console.warn('[Webhook] HeyReach campaign not in this workspace (wrong webhook URL or key)', {
           clientId, client: client.name, campaignId,
+        });
+        await recordSuppressedReply({
+          clientId, platform: 'heyreach', campaignId, campaignName: hrCampaignName,
+          leadId: leadId || hrConversationId, leadName, linkedinUrl,
+          inboundMessage, threadContext: payload,
+          classification: null, reason: 'campaign_not_in_client_workspace',
         });
         return res.status(200).json({ ok: true, skipped: true, reason: 'campaign_not_in_client_workspace' });
       }
@@ -1288,7 +1308,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         let resolvedLinkedinUrl = linkedinUrl;
         let fullConv = null;
 
-        if (hrConversationId) {
+        if (hrConversationId && client.heyreach_api_key) {
           try {
             const full = await heyreach.findConversation(client.heyreach_api_key, {
               conversationId: hrConversationId,
@@ -1341,11 +1361,15 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             },
           );
         } catch (err) {
-          console.error('[Classifier] Failed for HeyReach reply', { clientId, client: client.name, err: err.message });
-          await slack.postError(client.slack_bot_token, client.slack_channel_id, {
-            leadName: resolvedLeadName, platform: 'heyreach', error: err.message,
-          });
-          return;
+          // classifyAndDraft is meant never to throw. If it does, the LinkedIn reply
+          // still gets a card (no draft) instead of an error line and nothing else.
+          console.error('[Classifier] Failed for HeyReach reply — posting as OTHER', { clientId, client: client.name, err: err.message });
+          result = {
+            classification: 'OTHER',
+            draft: '',
+            proposed_time: null,
+            reasoning: `Classifier failed: ${err.message}`,
+          };
         }
 
         let { classification, draft, proposed_time, reasoning } = result;
@@ -1354,11 +1378,13 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           : { campaignId, campaign_id: campaignId, campaign: payload.campaign };
         const coldInbound = isColdInbound(convForCold, threadContext);
         classification = applyPositiveIntentGuard(classification, inboundMessage).classification;
+        // platform: 'heyreach' means this never suppresses (every LinkedIn reply gets a card).
         const hrSuppressed = slackChannelSuppressionReason({
           classification,
           inboundMessage,
           isColdInbound: coldInbound,
           pitchToUsProb: result.pitchToUsProb,
+          platform: 'heyreach',
         });
         const contextWithMeta = {
           messages: threadContext,
@@ -1537,3 +1563,4 @@ module.exports.smartleadCategoryResult = smartleadCategoryResult;
 module.exports.automatedNoticeResult = automatedNoticeResult;
 module.exports.promoteReferral = promoteReferral;
 module.exports.SMARTLEAD_DRAFT_ALWAYS = SMARTLEAD_DRAFT_ALWAYS;
+module.exports.heyreachFallbackThreadKey = heyreachFallbackThreadKey;
