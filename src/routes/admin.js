@@ -56,7 +56,7 @@ router.post('/admin/clients', async (req, res) => {
     const {
       name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token,
       slack_channel_id, booking_link, voice_prompt, digest_timezone,
-      cc_email, cc_emails, cc_round_robin_emails, contact_email,
+      cc_email, cc_emails, cc_round_robin_emails, contact_email, notify_emails,
     } = req.body;
 
     if (!name || !slack_bot_token || !slack_channel_id) {
@@ -65,6 +65,7 @@ router.post('/admin/clients', async (req, res) => {
 
     const alwaysCc = normalizeCcListField(cc_emails || cc_email);
     const rr = normalizeCcListField(cc_round_robin_emails);
+    const notifyList = normalizeCcListField(notify_emails);
     const legacyCc = alwaysCc ? alwaysCc.split(',')[0].trim() : null;
 
     const contactEmail = portalContactEmail({ cc_emails: alwaysCc, cc_email: legacyCc });
@@ -74,9 +75,9 @@ router.post('/admin/clients', async (req, res) => {
       `INSERT INTO clients (
          name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token, slack_channel_id,
          booking_link, booking_destination_url, voice_prompt, digest_timezone,
-         cc_email, cc_emails, cc_round_robin_emails, contact_email
+         cc_email, cc_emails, cc_round_robin_emails, contact_email, notify_emails
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -92,6 +93,7 @@ router.post('/admin/clients', async (req, res) => {
         alwaysCc,
         rr,
         contactEmail,
+        notifyList,
       ]
     );
 
@@ -205,7 +207,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
       'name', 'smartlead_api_key', 'heyreach_api_key', 'allo_api_key', 'slack_bot_token',
       'slack_channel_id', 'booking_link', 'booking_destination_url', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
-      'contact_email',
+      'contact_email', 'notify_emails',
     ];
 
     const updates = [];
@@ -222,6 +224,9 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'cc_round_robin_emails')) {
       fields.cc_round_robin_emails = normalizeCcListField(fields.cc_round_robin_emails);
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'notify_emails')) {
+      fields.notify_emails = normalizeCcListField(fields.notify_emails);
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'contact_email')
       && !Object.prototype.hasOwnProperty.call(fields, 'cc_emails')
@@ -269,7 +274,8 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     }
 
     console.log('[Admin] Client updated', { id: client.id, name: client.name });
-    const portal = await provisionClientToPortal(client);
+    // An update re-syncs the portal record and must not email another invite.
+    const portal = await provisionClientToPortal(client, { invite: false });
     res.json({
       ...formatClient(client),
       portal_login_link: portal.loginLink || null,

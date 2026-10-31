@@ -482,7 +482,7 @@ async function postFollowUpCard(client, fu, { reasoningExtra } = {}) {
         `No reply since our last send (${sentAt}). Follow-up ${stepLabel(fu)}${daysSince != null ? ` · ${daysSince}d since last message` : ''}${drafted && drafted.source && drafted.source !== 'claude' ? ` · ${drafted.source}` : ''}.`),
       needsClient,
       whatToSend,
-      ccEmails: client.cc_emails || client.cc_email || undefined,
+      ccEmails: client.notify_emails || undefined,
       inboundMessage: inboundForCard,
       campaignDisplay,
       lastOutboundMessage: lastOutbound || undefined,
@@ -596,7 +596,7 @@ async function dueFollowUps(limit) {
     `SELECT DISTINCT ON (f.client_id, f.platform, COALESCE(f.campaign_id, ''), COALESCE(f.lead_id, ''), COALESCE(f.conversation_id, ''))
             f.*, c.name AS client_name, c.slack_bot_token, c.slack_channel_id,
             c.voice_prompt, c.booking_link, c.digest_timezone, c.smartlead_api_key, c.smartlead_use_master_key,
-            c.cc_email, c.cc_emails
+            c.cc_email, c.cc_emails, c.notify_emails
        FROM outbound_follow_ups f
        JOIN clients c ON c.id = f.client_id
       WHERE f.status = 'pending'
@@ -656,6 +656,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       smartlead_use_master_key: fu.smartlead_use_master_key,
       cc_email: fu.cc_email,
       cc_emails: fu.cc_emails,
+      notify_emails: fu.notify_emails,
     });
 
     try {

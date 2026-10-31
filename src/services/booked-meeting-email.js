@@ -5,12 +5,12 @@
  * booking-bridge `log-booking` posts the already-resolved fields here (Allo call summary and the
  * prospect's name, company, email, phone, title); this module resolves recipients and sends.
  * Recipients are never taken from the request:
- *   To  = the booked client's always-CC list (clients.cc_emails / cc_email)
+ *   To  = the booked client's notify_emails (not cc_emails / cc_email / contact_email)
  *   CC  = Cayden (BOOKED_MEETING_EMAIL_CC, default cayden@salesglidergrowth.com) and Josh
  *   no always-CC configured (or the client cannot be resolved) = To Josh (he is the client), same CC.
  *   Josh (BOOKED_MEETING_EMAIL_TO) is ALWAYS on To or CC (Josh, Oct 29).
  *   Nobody else is copied: the caller is not on the CC, whoever it is (Josh, Oct 29: "CC Cayden, and me
- *   instead of Gabe, and the client's always-CC addressed"). Any Allo caller works; the brief names the
+ *   instead of Gabe, and the client's notify_emails"). Any Allo caller works; the brief names the
  *   caller from the booking payload (caller).
  * The client is always called by its display name; the caller line's brand (e.g. the name on the
  * outbound number) is replaced with it in the summary and highlights.
@@ -23,7 +23,7 @@ const db = require('../db');
 const { buildBookedMeetingNotifyEmail } = require('./client-notify-email');
 const { buildBookedBrief } = require('./booked-brief');
 const { gatherBrief } = require('./booked-brief-data');
-const { alwaysCcEmails, parseEmailList } = require('./client-cc');
+const { notifyEmails, parseEmailList } = require('./client-cc');
 const { CLIENT_SLUG_ALIASES } = require('./booking-bridge');
 const { fyiReplyTo } = require('../utils/fyi-notify');
 const { generateHighlights } = require('./booked-meeting-highlights');
@@ -183,9 +183,10 @@ function buildBookedMeetingEmail(m, highlights = null) {
 }
 
 /**
- * The booked client's always-CC addresses. Matches the booking's client to active ReplyHandler
+ * The booked client's notify_emails. Matches the booking's client to active ReplyHandler
  * clients the same way the booking bridge does (slug aliases, then exact client name); when more
- * than one active client matches, their lists are merged. Throws on a DB error.
+ * than one active client matches, their lists are merged. cc_emails / cc_email are ignored.
+ * Throws on a DB error.
  */
 async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.query.bind(db) } = {}) {
   const names = [
@@ -194,14 +195,14 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
   ].map((n) => String(n).trim().toLowerCase()).filter(Boolean);
   if (!names.length) return { clients: [], always: [], rows: [] };
   const { rows } = await query(
-    `SELECT id, name, cc_emails, cc_email, smartlead_api_key FROM clients
+    `SELECT id, name, notify_emails, smartlead_api_key FROM clients
       WHERE active IS DISTINCT FROM false
         AND lower(name) = ANY($1::text[])`,
     [names]
   );
   const always = [];
   for (const row of rows) {
-    for (const email of alwaysCcEmails(row)) if (!always.includes(email)) always.push(email);
+    for (const email of notifyEmails(row)) if (!always.includes(email)) always.push(email);
   }
   return { clients: rows.map((r) => r.name), always, rows };
 }

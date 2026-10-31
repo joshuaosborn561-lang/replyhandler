@@ -4,10 +4,10 @@ const heyreach = require('./heyreach');
 const calendar = require('./calendar');
 const { parseProposedTime } = require('../utils/parse-proposed-time');
 const {
-  buildSmartleadCcList,
-  alwaysCcEmails,
+  notifyEmails,
+  formatEmailList,
+  stripClientSendAddresses,
   alwaysForwardEmailsForProspectCc,
-  roundRobinEmails,
 } = require('./client-cc');
 const { enrichProspect } = require('./prospect-enrich');
 const { buildClientNotifyEmail, pickRicherThreadContext } = require('./client-notify-email');
@@ -438,6 +438,7 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
     }
   }
 
+  // LinkedIn sends have no email CC field. Client addresses stay off this payload.
   await sendMessage(client.heyreach_api_key, {
     conversationId: meta.conversationId || null,
     linkedInAccountId: meta.linkedinAccountId ?? meta.linkedInAccountId ?? null,
@@ -510,20 +511,18 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
       });
     }
 
-    // Deliverability: reply to the prospect with NO CC by default.
-    // Then notify Always-forward + round-robin from primary Gmail with thread + enrichment.
-    // Optional exception: "Approve & Send + CC client" CCs the same Always-forward
-    // addresses this client already receives (not round-robin, not a new field).
-    // FYI notify still fires. Regular Approve still omits SmartLead cc.
-    const hasForwardConfig = alwaysCcEmails(client).length > 0 || roundRobinEmails(client).length > 0;
+    // Prospect reply has no client CC unless Josh hits "Approve & Send + CC client"
+    // or ticks the Edit modal checkbox. That choice uses notify_emails only.
+    // cc_emails, cc_email, and contact_email never ride on the send.
+    // Instant mode (PROSPECT_REPLY_NOTIFY_MODE=instant) is the old per-send
+    // Gmail, and it goes to notify_emails — not the portal CC list. Default
+    // is the 4:00pm CT roll-up. 'off' sends none.
+    const hasForwardConfig = notifyEmails(client).length > 0;
     let forwardEmails = '';
     let ccMeta = null;
-    // Client notify mode (Josh, Oct 29): 'rollup' (default) queues positive replies for the 4:00pm CT
-    // roll-up instead of emailing the client now; 'instant' is the old per-send email; 'off' sends none.
     const notifyMode = clientDigest.clientNotifyMode();
     if (hasForwardConfig && notifyMode === 'instant') {
-      ccMeta = await buildSmartleadCcList(client, { claimRoundRobin: true });
-      forwardEmails = ccMeta.ccEmails;
+      forwardEmails = formatEmailList(notifyEmails(client));
     }
 
     let clientCcWarning = '';
@@ -565,7 +564,7 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
     if (replyAll.replyEmailBody) sendOpts.replyEmailBody = replyAll.replyEmailBody;
 
     if (ccClientOnProspect) {
-      // Client contacts only: never Josh/Cayden/our domains, the lead, the sending inbox or sending domains.
+      // Manual choice only. notify_emails, minus Josh/Cayden/our domains, the lead, the sending inbox.
       const sendingInboxes = [...emailsFromValue(accountEmails), ...ourIdentitiesFromThread(threadForReplyAll)];
       prospectCc = alwaysForwardEmailsForProspectCc(client, {
         leadEmail: reply.lead_email,
@@ -573,19 +572,19 @@ async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspec
         excludeDomains: sendingInboxes.map((e) => e.split('@')[1]).filter(Boolean),
       });
       if (!prospectCc) {
-        console.warn('[ReplySend] Send + CC client requested but Always-forward is empty', {
+        console.warn('[ReplySend] Send + CC client requested but notify_emails is empty', {
           replyId: reply.id,
         });
       }
-      sendOpts.cc = prospectCc;
+      if (prospectCc) sendOpts.cc = prospectCc;
     }
-    // Reply-all: CC other humans on the inbound. Loop-in client CC (#106)
-    // still applies on Send + CC client and is merged in.
-    // A referred-contact CC is explicit. If we cannot put it on the payload,
-    // send nothing.
+    // Reply-all: CC other humans on the inbound. The manual client CC is merged
+    // after client addresses are stripped, so a plain Approve cannot keep a
+    // client who was already on the thread. A referred-contact CC is explicit.
     // A referral CC the prospect or Josh typed is explicit, but our own addresses are never a referral.
     const referralList = filterOwnAddresses(Array.isArray(referralCc) ? referralCc.filter(Boolean) : []);
-    const ccMerged = mergeCcLists(replyAll.cc, prospectCc, referralList);
+    let ccMerged = stripClientSendAddresses(mergeCcLists(replyAll.cc, referralList), client);
+    if (prospectCc) ccMerged = mergeCcLists(ccMerged, prospectCc);
     if (ccMerged.length) sendOpts.cc = ccMerged.join(', ');
     if (referralList.length) {
       const ccLower = String(sendOpts.cc || '').toLowerCase();

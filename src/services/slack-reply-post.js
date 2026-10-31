@@ -17,6 +17,7 @@ const {
 } = require('./reply-card-identity');
 const { resolvePersonLocation, timezoneForLocation } = require('./lead-location');
 const { lookupPersonProfile } = require('./person-profile-lookup');
+const { alwaysForwardEmailsForProspectCc } = require('./client-cc');
 const {
   resolveReplyIcp,
   checkingVerdict,
@@ -391,17 +392,19 @@ function firePortalNotify(card, {
 async function attachDraftCc(dbClient, { replyId, platform, isDraft, payload }) {
   if (!isDraft || !replyId || platform !== 'smartlead') return payload;
   const { rows: [ccRow] } = await dbClient.query(
-    `SELECT c.cc_email, c.cc_emails, c.cc_round_robin_emails, c.name AS client_name, pr.cc_on_send
+    `SELECT c.cc_email, c.cc_emails, c.notify_emails, c.cc_round_robin_emails,
+            c.name AS client_name, pr.cc_on_send, pr.lead_email
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
       WHERE pr.id = $1`,
     [replyId]
   );
   if (!ccRow) return payload;
+  const ccClientEmails = alwaysForwardEmailsForProspectCc(ccRow, { leadEmail: ccRow.lead_email });
   return {
     ...payload,
-    ccEmail: ccRow.cc_email,
-    ccEmails: ccRow.cc_emails || ccRow.cc_email,
+    ccEmail: ccClientEmails || null,
+    ccEmails: ccClientEmails || null,
     ccRoundRobinEmails: ccRow.cc_round_robin_emails,
     ccOnSend: !!ccRow.cc_on_send,
     clientName: ccRow.client_name,

@@ -201,7 +201,11 @@ describe('cc-notice: sendCcNotice', () => {
 describe('sendReplyToPlatform: CC notice wiring', () => {
   const CLIENT = {
     id: 'c1', name: 'Acme', smartlead_api_key: 'k',
-    cc_emails: 'owner@acme.test, ops@acme.test', cc_round_robin_emails: 'rep@acme.test',
+    notify_emails: 'owner@acme.test, ops@acme.test',
+    cc_emails: 'portal@acme.test',
+    cc_email: 'legacy@acme.test',
+    contact_email: 'contact@acme.test',
+    cc_round_robin_emails: 'rep@acme.test',
   };
   const REPLY = {
     id: 'r1', platform: 'smartlead', classification: 'INTERESTED', client_id: 'c1',
@@ -288,7 +292,7 @@ describe('sendReplyToPlatform: CC notice wiring', () => {
   });
 
   it('client with no always-CC list: nothing was CC\'d, so no notice', async () => {
-    const res = await sendReplyToPlatform({ ...CLIENT, cc_emails: '', cc_email: '' }, REPLY, 'Sounds good', { ccClientOnProspect: true });
+    const res = await sendReplyToPlatform({ ...CLIENT, notify_emails: '', cc_emails: '', cc_email: '' }, REPLY, 'Sounds good', { ccClientOnProspect: true });
     assert.equal(mails.length, 0);
     assert.equal(res.ccNoticeSent, undefined);
   });

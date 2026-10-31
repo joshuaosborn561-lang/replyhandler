@@ -1,5 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   normalizeContactEmail,
   portalContactEmail,
@@ -7,6 +9,7 @@ const {
   extractLoginLink,
   extractWarning,
   provisionClientToPortal,
+  provisionAllClients,
 } = require('../src/services/portal-provision');
 
 const sample = {
@@ -147,6 +150,48 @@ describe('portal provision transport', () => {
       else process.env.PORTAL_URL = prevUrl;
       if (prevSecret == null) delete process.env.PORTAL_WEBHOOK_SECRET;
       else process.env.PORTAL_WEBHOOK_SECRET = prevSecret;
+    }
+  });
+
+  it('an update never re-sends a portal invite; first provisioning still may', async () => {
+    const prevUrl = process.env.PORTAL_URL;
+    const prevSecret = process.env.PORTAL_WEBHOOK_SECRET;
+    const prevSkip = process.env.PORTAL_SKIP_INVITE;
+    process.env.PORTAL_URL = 'https://portal.example';
+    process.env.PORTAL_WEBHOOK_SECRET = 'portal-secret';
+    process.env.PORTAL_SKIP_INVITE = 'false';
+    const bodies = [];
+    const fetchFn = async (_url, opts) => {
+      bodies.push(JSON.parse(opts.body));
+      return { ok: true, status: 200, text: async () => '{}' };
+    };
+    const admin = fs.readFileSync(path.join(__dirname, '../src/routes/admin.js'), 'utf8');
+    const createFn = admin.slice(admin.indexOf("router.post('/admin/clients'"), admin.indexOf("router.get('/admin/clients'"));
+    const patchFn = admin.slice(admin.indexOf("router.patch('/admin/clients/:clientId'"));
+    try {
+      assert.equal(buildProvisionPayload(sample).skip_invite, false);
+      assert.equal(buildProvisionPayload(sample, { invite: false }).skip_invite, true);
+      assert.equal(buildProvisionPayload(sample, { invite: false }).contact_email, 'ae@acme.com');
+
+      await provisionClientToPortal(sample, { fetchFn, sleepFn: async () => {}, invite: false });
+      assert.equal(bodies[0].skip_invite, true);
+      assert.equal(bodies[0].contact_email, 'ae@acme.com');
+
+      bodies.length = 0;
+      await provisionAllClients([sample], { fetchFn, sleepFn: async () => {} });
+      assert.equal(bodies.length, 1);
+      assert.equal(bodies[0].skip_invite, true);
+
+      assert.match(patchFn, /provisionClientToPortal\(client,\s*\{\s*invite:\s*false\s*\}\)/);
+      assert.match(createFn, /provisionClientToPortal\(client\)/);
+      assert.doesNotMatch(createFn, /invite:\s*false/);
+    } finally {
+      if (prevUrl == null) delete process.env.PORTAL_URL;
+      else process.env.PORTAL_URL = prevUrl;
+      if (prevSecret == null) delete process.env.PORTAL_WEBHOOK_SECRET;
+      else process.env.PORTAL_WEBHOOK_SECRET = prevSecret;
+      if (prevSkip == null) delete process.env.PORTAL_SKIP_INVITE;
+      else process.env.PORTAL_SKIP_INVITE = prevSkip;
     }
   });
 

@@ -16,6 +16,7 @@ CREATE TABLE clients (
   cc_emails TEXT,
   cc_round_robin_emails TEXT,
   contact_email TEXT,
+  notify_emails TEXT,
   reply_enrich_ceiling_usd NUMERIC,
   reply_enrich_ceiling_hot_usd NUMERIC,
   cc_round_robin_index INTEGER NOT NULL DEFAULT 0,

@@ -10,15 +10,16 @@
  *
  *   - Only INTERESTED / MEETING_PROPOSED replies we SENT a reply to (not follow-up nudges, not
  *     replies nobody answered). Same positive set the client portal uses.
- *   - To = the client's always-notify list (plus its round-robin pool); CC = Cayden (FYI_CC_EMAILS)
- *     and Josh. Nobody is listed twice.
+ *   - To = the client's notify_emails list; CC = Cayden (FYI_CC_EMAILS) and Josh.
+ *     cc_emails, cc_email, contact_email, and the round-robin pool are not copied.
+ *     Nobody is listed twice.
  *   - Queue = pending_replies.client_digest_status ('pending' when queued at send time).
  *   - PROSPECT_REPLY_NOTIFY_MODE: rollup (default) | instant (the old per-send email) | off.
  */
 
 const db = require('../db');
 const gmail = require('./gmail-send');
-const { alwaysCcEmails, roundRobinEmails, parseEmailList } = require('./client-cc');
+const { notifyEmails, parseEmailList } = require('./client-cc');
 const { escapeHtml, plainFromHtmlish } = require('./client-notify-email');
 const { fyiCcEmails, fyiReplyTo, mergeEmailLists } = require('../utils/fyi-notify');
 const { stripQuoted } = require('./booked-brief-data');
@@ -43,11 +44,11 @@ function isDigestEligible(reply) {
     && !reply.follow_up_id;
 }
 
-/** Who gets a client's roll-up. Josh and Cayden are copied; a client list address is never duplicated. */
+/** Who gets a client's roll-up. Josh and Cayden are copied; a notify address is never duplicated. */
 function digestRecipients(client, env = process.env) {
   const josh = parseEmailList(String(env.CLIENT_DIGEST_JOSH_EMAIL || DEFAULT_JOSH));
   const cc = mergeEmailLists(fyiCcEmails(env), josh);
-  const list = mergeEmailLists(alwaysCcEmails(client), roundRobinEmails(client)).filter((e) => !cc.includes(e));
+  const list = notifyEmails(client).filter((e) => !cc.includes(e));
   return { to: list, cc };
 }
 
@@ -212,7 +213,7 @@ async function runClientReplyDigest({
     summary.clients += 1;
     try {
       const { rows: [client] } = await query(
-        'SELECT id, name, cc_emails, cc_email, cc_round_robin_emails FROM clients WHERE id = $1',
+        'SELECT id, name, notify_emails FROM clients WHERE id = $1',
         [clientId],
       );
       const { to, cc } = client ? digestRecipients(client, env) : { to: [], cc: [] };

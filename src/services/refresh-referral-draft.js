@@ -144,8 +144,8 @@ function cardPayload(row, draft, contacts) {
     inboundMessage: row.inbound_message,
     campaignDisplay: formatCampaignDisplay(row.campaign_name, row.campaign_id) || undefined,
     lastOutboundMessage: lastOutbound || undefined,
-    ccEmails: row.cc_emails || row.cc_email || undefined,
-    ccEmail: row.cc_email || undefined,
+    ccEmails: row.notify_emails || undefined,
+    ccEmail: row.notify_emails || undefined,
     ccRoundRobinEmails: row.cc_round_robin_emails || undefined,
     clientName: row.client_name || undefined,
     referredContacts: contacts,
@@ -208,6 +208,7 @@ async function findReferralRows({ leadEmail, replyId, campaignId, query }) {
             c.name AS client_name,
             c.cc_email,
             c.cc_emails,
+            c.notify_emails,
             c.cc_round_robin_emails
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id

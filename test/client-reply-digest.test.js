@@ -40,13 +40,19 @@ describe('client roll-up: mode and eligibility', () => {
 });
 
 describe('client roll-up: recipients', () => {
-  it('To is the client list and round-robin pool, CC is Cayden and Josh, nobody twice', () => {
-    const r = digestRecipients({ cc_emails: 'a@client.test, b@client.test', cc_round_robin_emails: 'b@client.test, c@client.test' }, {});
-    assert.deepEqual(r.to, ['a@client.test', 'b@client.test', 'c@client.test']);
+  it('To is notify_emails, not the portal CC list or round-robin, and nobody is listed twice', () => {
+    const r = digestRecipients({
+      notify_emails: 'a@client.test, b@client.test',
+      cc_emails: 'cc@client.test',
+      cc_email: 'legacy@client.test',
+      contact_email: 'contact@client.test',
+      cc_round_robin_emails: 'b@client.test, c@client.test',
+    }, {});
+    assert.deepEqual(r.to, ['a@client.test', 'b@client.test']);
     assert.deepEqual(r.cc, [CAYDEN, JOSH]);
   });
-  it('a client list that includes Josh or Cayden does not list them twice', () => {
-    const r = digestRecipients({ cc_emails: `a@client.test, ${JOSH}` }, {});
+  it('a notify list that includes Josh or Cayden does not list them twice', () => {
+    const r = digestRecipients({ notify_emails: `a@client.test, ${JOSH}`, cc_emails: 'cc@client.test' }, {});
     assert.deepEqual(r.to, ['a@client.test']);
     assert.ok(r.cc.includes(JOSH));
   });
@@ -102,9 +108,9 @@ function fakeDb(rowsByClient, clients) {
 
 describe('client roll-up: run', () => {
   const clients = {
-    c1: { id: 'c1', name: 'Acme', cc_emails: 'a@client.test' },
-    c2: { id: 'c2', name: 'Beta', cc_emails: 'b@client.test' },
-    c3: { id: 'c3', name: 'Gamma', cc_emails: '' },
+    c1: { id: 'c1', name: 'Acme', notify_emails: 'a@client.test', cc_emails: 'cc@client.test' },
+    c2: { id: 'c2', name: 'Beta', notify_emails: 'b@client.test', cc_email: 'legacy@client.test' },
+    c3: { id: 'c3', name: 'Gamma', notify_emails: '', cc_emails: 'gamma-cc@client.test', contact_email: 'gamma@client.test' },
   };
 
   it('sends nothing on an empty day', async () => {

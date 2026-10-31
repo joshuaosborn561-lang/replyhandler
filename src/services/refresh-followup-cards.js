@@ -92,7 +92,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
             pr.platform, pr.campaign_id, pr.campaign_name,
             c.slack_bot_token,
             c.slack_channel_id AS client_slack_channel_id,
-            c.cc_email, c.cc_emails
+            c.cc_email, c.cc_emails, c.notify_emails
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
       WHERE upper(pr.classification) = 'FOLLOW_UP'
@@ -145,7 +145,7 @@ async function refreshFollowUpSlackCards({ days = 21, limit = 80 } = {}) {
       contextLabel: 'You sent',
       needsClient: followMeta.needsClient,
       whatToSend: followMeta.whatToSend,
-      ccEmails: reply.cc_emails || reply.cc_email || undefined,
+      ccEmails: reply.notify_emails || undefined,
     };
 
     let updated = false;

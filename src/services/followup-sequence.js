@@ -705,7 +705,7 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       phoneProvider: found.provider || undefined,
       reasoning: notes.join(' · '),
       needsClient: false,
-      ccEmails: client.cc_emails || client.cc_email || undefined,
+      ccEmails: client.notify_emails || undefined,
       inboundMessage: source.inbound_message || '(no new reply from prospect)',
       campaignDisplay: formatCampaignDisplay(campaignNameFromReply(source), source.campaign_id) || undefined,
       lastOutboundMessage: source.sent_reply || undefined,

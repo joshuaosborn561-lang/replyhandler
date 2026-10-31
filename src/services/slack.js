@@ -290,15 +290,14 @@ function notifyModeIsRollup(env = process.env) {
   return v !== 'instant' && v !== 'off';
 }
 
-/** Always-on client-notify notice — forward list + round-robin pool. */
-function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllCc }) {
+/** Client-notify notice. ccEmails here is notify_emails (the roll-up list), not portal CC. */
+function ccAutoNoticeBlock({ ccEmails, clientName, replyAllCc }) {
   const always = String(ccEmails || '').trim();
-  const rr = String(ccRoundRobinEmails || '').trim();
   const extra = (Array.isArray(replyAllCc) ? replyAllCc : String(replyAllCc || '').split(/[,;]+/))
     .map((e) => String(e || '').trim())
     .filter(Boolean);
-  if (!always && !rr && !extra.length) return null;
-  if (!always && !rr) {
+  if (!always && !extra.length) return null;
+  if (!always) {
     return {
       type: 'context',
       elements: [{
@@ -311,9 +310,8 @@ function ccAutoNoticeBlock({ ccEmails, ccRoundRobinEmails, clientName, replyAllC
   if (always) {
     lines.push(isDeepRootsClient(clientName)
       ? `*Tyler notify (qualified + wants a call only):* ${escMrkdwn(always)}`
-      : `*Always notify:* ${escMrkdwn(always)}`);
+      : `*Client notifications:* ${escMrkdwn(always)}`);
   }
-  if (rr) lines.push(`*Round-robin (1 per send):* ${escMrkdwn(rr)}`);
   const rollup = notifyModeIsRollup();
   const intro = isDeepRootsClient(clientName)
     ? '📬 Tyler is emailed only when they look qualified (employees + $1–10M EBITDA) and want to schedule a call — not on every send'

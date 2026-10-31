@@ -75,8 +75,10 @@ describe('referral CC never offers our own address', () => {
 
 describe('client CC list (checkbox label + recipients)', () => {
   const client = {
-    cc_emails: 'Owner@Acme.test, owner@acme.test, joshua@salesglidergrowth.com, cayden@salesglidergrowth.com, '
+    notify_emails: 'Owner@Acme.test, owner@acme.test, joshua@salesglidergrowth.com, cayden@salesglidergrowth.com, '
       + 'lead@prospect.test, ae@sender-one.test, bot@sender-one.test, ops@acme.test',
+    cc_emails: 'portal@acme.test',
+    contact_email: 'contact@acme.test',
   };
   it('keeps only real client contacts', () => {
     assert.deepEqual(
@@ -96,7 +98,12 @@ describe('client CC list (checkbox label + recipients)', () => {
     assert.doesNotMatch(JSON.stringify(b), /joshua@|cayden@/i);
   });
   it('an old client record with only our own addresses gives an empty list (no checkbox)', () => {
-    assert.equal(alwaysForwardEmailsForProspectCc({ cc_emails: 'joshua@salesglidergrowth.com' }), '');
+    assert.equal(alwaysForwardEmailsForProspectCc({ notify_emails: 'joshua@salesglidergrowth.com' }), '');
+  });
+  it('portal CC and contact_email are not the manual CC list', () => {
+    assert.equal(alwaysForwardEmailsForProspectCc({
+      cc_emails: 'owner@acme.test', cc_email: 'owner@acme.test', contact_email: 'owner@acme.test',
+    }), '');
   });
 });
 

@@ -1655,3 +1655,16 @@ Josh: "I'd like to see any heyreach reply from now on. For all clients." Trigger
 - **Duplicate guard is unchanged:** same person plus the same text is still one card.
 - `POST /admin/heyreach/approval-card` accepts any label. A positive label still needs a draft. A neutral label (or no label and no draft) posts an alert card from the stored row, which is how an older suppressed reply is shown. It never inserts a second row and never double-posts.
 Guard: `test/heyreach-all-replies.test.js`.
+
+## Clients get three automatic updates, and prospect sends never CC them (Josh, Oct 31 2026)
+
+Josh: clients get exactly three automatic updates — (1) the weekday EOD roll-up of positive replies, (2) the instant meeting-booked brief, and (3) the day-of meeting brief. Clients are never CC'd on a Smartlead or HeyReach prospect reply. This supersedes "CC client uses Always-forward (`cc_emails`)" and the line that setting `contact_email` later re-sends a portal invite.
+
+- **`clients.notify_emails`** is the only list for those updates. Migration 052 copies the current `cc_emails` into it once. Later edits to Always-notify do not overwrite it. Portal login stays the first Always-notify address (`cc_emails` / legacy `cc_email` → `contact_email`). Do not provision the portal from `notify_emails`.
+- **Plain Approve does not CC the client.** Smartlead and HeyReach sends strip `cc_emails`, `cc_email`, `contact_email`, and `notify_emails` even when reply-all already has them on the thread. Josh's, Cayden's, the lead's, and SalesGlider's own inboxes stay stripped too. HeyReach `sendMessage` has no email CC field.
+- **Keep both manual copies.** The card's **Approve & Send + CC client** button and the Edit modal's **CC client** checkbox still put `notify_emails` on the Smartlead `cc` string. They do not pull `cc_emails`, `cc_email`, `contact_email`, or round-robin.
+- **The two updates that live here** (roll-up and meeting-booked brief) send To `notify_emails`. `PROSPECT_REPLY_NOTIFY_MODE=instant` is the old per-send Gmail and uses the same list; it does not also queue the roll-up and it does not CC the prospect send. Round-robin is stored and is not emailed. The Deep Roots gate still applies to the digest and the instant email. Gabe Calls inbound forward stays a campaign map and does not read `cc_emails`.
+- **The day-of meeting brief is not in this repo.** `reminder-email.js` emails the prospect (`meeting.lead_email`) one hour before. There is no Resend client here. Point that brief at `notify_emails` in the service that sends it.
+- **Portal updates never re-invite.** First-time provisioning may invite when Always-notify has an address and `PORTAL_SKIP_INVITE` is not true. Admin PATCH and sync-all call `provisionClientToPortal` with `invite: false`, so `skip_invite` is true. Adding an email later updates the portal record and does not email another invite.
+
+Guards: `test/client-notify-emails.test.js`, `test/portal-provision.test.js` (`an update never re-sends a portal invite`).

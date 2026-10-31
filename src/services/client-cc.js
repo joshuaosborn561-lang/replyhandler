@@ -1,7 +1,9 @@
 /**
- * Resolve SmartLead CC recipients for a client.
- * - Always-CC list is included on every send when configured.
- * - Round-robin pool contributes exactly one address per send, rotating evenly.
+ * Client address lists.
+ * - notify_emails: the automatic client updates and the manual "CC client" choice.
+ * - cc_emails / cc_email: portal Always-notify (login). Not copied onto prospect sends.
+ * - Round-robin remains a stored pool. It is not added to prospect sends or the
+ *   three client notifications.
  */
 const db = require('../db');
 const { filterOwnAddresses } = require('../utils/own-addresses');
@@ -23,28 +25,57 @@ function formatEmailList(emails) {
   return (emails || []).join(', ');
 }
 
-/** Always-CC addresses (legacy cc_email folded in). */
+/** Always-CC addresses (legacy cc_email folded in). Portal login only — not prospect CC. */
 function alwaysCcEmails(client) {
   const fromList = parseEmailList(client?.cc_emails);
   if (fromList.length) return fromList;
   return parseEmailList(client?.cc_email);
 }
 
-/**
- * Client contacts who may be CC'd on a prospect thread: the always-CC list minus anyone who is not a
- * client contact — Josh, Cayden, the primary Gmail and anything on our own domains, the lead
- * (`leadEmail`), the sending inbox and our sending domains (`exclude`, `excludeDomains`). Lowercased,
- * deduped case-insensitively.
- */
-function clientContactEmails(client, { leadEmail = '', exclude = [], excludeDomains = [] } = {}) {
-  const extra = [leadEmail, ...(Array.isArray(exclude) ? exclude : [exclude])].filter(Boolean);
-  return filterOwnAddresses(alwaysCcEmails(client).join(','), { extra, extraDomains: excludeDomains });
+/** Addresses for the three client notifications and the manual CC button. */
+function notifyEmails(client) {
+  return parseEmailList(client?.notify_emails);
 }
 
 /**
- * Prospect-thread CC for "Approve & Send + CC client" and the Edit modal's "CC client on this reply"
- * checkbox. Same Always-forward list the client already receives, minus anything that is us or the
- * lead (see clientContactEmails) — not round-robin, not a new field.
+ * Every client address that must stay off an automatic Smartlead / HeyReach
+ * prospect send: the portal lists, the leftover contact column, and the
+ * notification list. The manual CC button adds notify_emails back afterwards.
+ */
+function clientSendBlocklist(client) {
+  return parseEmailList([
+    client?.cc_emails,
+    client?.cc_email,
+    client?.contact_email,
+    client?.notify_emails,
+  ].filter(Boolean).join(','));
+}
+
+/** Drop blocklisted client addresses from a CC list. Keeps everyone else. */
+function stripClientSendAddresses(list, client) {
+  const blocked = new Set(clientSendBlocklist(client));
+  const raw = Array.isArray(list) ? list : parseEmailList(list);
+  return raw
+    .map((email) => String(email || '').trim().toLowerCase())
+    .filter((email) => email.includes('@') && !blocked.has(email));
+}
+
+/**
+ * Client contacts who may be CC'd on a prospect thread when Josh chooses it:
+ * notify_emails, minus Josh, Cayden, the primary Gmail and anything on our own
+ * domains, the lead (`leadEmail`), the sending inbox and our sending domains
+ * (`exclude`, `excludeDomains`). Lowercased, deduped case-insensitively.
+ * cc_emails / cc_email / contact_email are not included.
+ */
+function clientContactEmails(client, { leadEmail = '', exclude = [], excludeDomains = [] } = {}) {
+  const extra = [leadEmail, ...(Array.isArray(exclude) ? exclude : [exclude])].filter(Boolean);
+  return filterOwnAddresses(notifyEmails(client).join(','), { extra, extraDomains: excludeDomains });
+}
+
+/**
+ * Prospect-thread CC for "Approve & Send + CC client" and the Edit modal's
+ * "CC client on this reply" checkbox. notify_emails only, minus anything that
+ * is us or the lead (see clientContactEmails) — not round-robin, not cc_emails.
  */
 function alwaysForwardEmailsForProspectCc(client, opts = {}) {
   return formatEmailList(clientContactEmails(client, opts));
@@ -107,6 +138,9 @@ module.exports = {
   parseEmailList,
   formatEmailList,
   alwaysCcEmails,
+  notifyEmails,
+  clientSendBlocklist,
+  stripClientSendAddresses,
   clientContactEmails,
   alwaysForwardEmailsForProspectCc,
   roundRobinEmails,
