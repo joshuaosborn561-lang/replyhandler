@@ -690,4 +690,60 @@ router.post('/admin/followup-sequence/copy', async (req, res) => {
   }
 });
 
+/**
+ * Render a day-of brief for one meeting and send nothing. Does not queue it.
+ * Query: ?meetingId=
+ */
+router.get('/admin/client-briefs/preview', async (req, res) => {
+  try {
+    const { previewBrief } = require('../services/client-dayof-brief');
+    const meetingId = req.query.meetingId || req.query.meeting_id;
+    const out = await previewBrief({ meetingId });
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] client brief preview error', { err: err.message });
+    return res.status(500).json({ error: 'preview_failed' });
+  }
+});
+
+/** Briefs waiting on a reviewer. Held only. Nothing here has been emailed. */
+router.get('/admin/client-briefs/pending', async (_req, res) => {
+  try {
+    const { listPendingBriefs } = require('../services/client-dayof-brief');
+    const out = await listPendingBriefs();
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] client brief pending error', { err: err.message });
+    return res.status(500).json({ error: 'pending_failed' });
+  }
+});
+
+/**
+ * Release a held brief. Optional JSON body merges enriched fields, then re-renders.
+ * A zero-context brief stays held and is not sent. The client email goes out only
+ * when CLIENT_DAYOF_BRIEF_ENABLED is on.
+ */
+router.post('/admin/client-briefs/:id/release', async (req, res) => {
+  try {
+    const { releaseBrief } = require('../services/client-dayof-brief');
+    const out = await releaseBrief(req.params.id, req.body || {});
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] client brief release error', { err: err.message });
+    return res.status(500).json({ error: 'release_failed' });
+  }
+});
+
+/** Drop a brief. A blocked brief is never emailed. */
+router.post('/admin/client-briefs/:id/block', async (req, res) => {
+  try {
+    const { blockBrief } = require('../services/client-dayof-brief');
+    const out = await blockBrief(req.params.id);
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] client brief block error', { err: err.message });
+    return res.status(500).json({ error: 'block_failed' });
+  }
+});
+
 module.exports = router;

@@ -147,6 +147,31 @@ CREATE INDEX idx_pending_replies_status ON pending_replies(status);
 CREATE INDEX idx_meetings_client_id ON meetings(client_id);
 CREATE INDEX idx_meetings_status ON meetings(status);
 
+-- Day-of client briefs. Held for review; only status released may be emailed.
+CREATE TABLE client_dayof_briefs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  meeting_id UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  client_id UUID NOT NULL REFERENCES clients(id),
+  status TEXT NOT NULL DEFAULT 'held' CHECK (status IN ('held', 'released', 'blocked')),
+  subject TEXT,
+  html_body TEXT,
+  text_body TEXT,
+  facts JSONB NOT NULL DEFAULT '{}'::jsonb,
+  to_emails TEXT,
+  cc_emails TEXT,
+  meeting_starts_at TIMESTAMPTZ,
+  held_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  released_at TIMESTAMPTZ,
+  blocked_at TIMESTAMPTZ,
+  sent_at TIMESTAMPTZ,
+  send_error TEXT,
+  reviewer_notified_at TIMESTAMPTZ,
+  reviewer_notify_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (meeting_id)
+);
+
 CREATE TABLE outbound_follow_ups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,

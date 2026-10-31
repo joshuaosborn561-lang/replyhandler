@@ -251,6 +251,21 @@ function startCron() {
     }
   }
 
+  // ─── Client day-of briefs — hold ~45 min before, send only on release ─
+  // CLIENT_DAYOF_BRIEF_ENABLED defaults off. A held brief is never emailed.
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      const briefs = require('./services/client-dayof-brief');
+      if (!briefs.dayofBriefEnabled()) return;
+      const result = await briefs.runClientDayofBriefs();
+      if (result.held || result.notified || result.sent || result.blocked_by_context) {
+        console.log('[Cron] Client day-of briefs', result);
+      }
+    } catch (err) {
+      console.error('[Cron] Client day-of briefs failed', { err: err.message });
+    }
+  });
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
@@ -443,7 +458,10 @@ function startCron() {
   const icpNote = icpAutoBuildEnabled()
     ? `ICP auto-build (hourly weekdays 6am-8pm ${ICP_BUILD_TZ})`
     : 'ICP auto-build disabled (DISABLE_ICP_AUTO_BUILD)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}`);
+  const dayofNote = require('./services/client-dayof-brief').dayofBriefEnabled()
+    ? 'client day-of briefs ON (held for review)'
+    : 'client day-of briefs off (CLIENT_DAYOF_BRIEF_ENABLED)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}, ${dayofNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {
