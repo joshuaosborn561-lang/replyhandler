@@ -12,6 +12,7 @@ const {
   ensureClientIcp,
   backfillMissingClientIcp,
   summarizeIcpResult,
+  saveManualIcpProfile,
 } = require('../services/client-icp-profile');
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
@@ -195,6 +196,29 @@ router.post('/admin/clients/:clientId/rebuild-icp', async (req, res) => {
     res.json({ ok: true, force, icp: summarizeIcpResult(result), regrade });
   } catch (err) {
     console.error('[Admin] rebuild-icp error', { err: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hand-entered ICP. Same open admin surface as the other client routes.
+router.post('/admin/clients/:clientId/icp-profile', async (req, res) => {
+  try {
+    const result = await saveManualIcpProfile(db, req.params.clientId, req.body);
+    if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
+    console.log('[Admin] icp-profile saved', {
+      status: result.icp_status,
+      source: result.icp_source,
+      transcript_count: result.icp_transcript_count,
+    });
+    res.json({
+      ok: true,
+      icp_profile: result.icp_profile,
+      icp_status: result.icp_status,
+      icp_source: result.icp_source,
+      icp_transcript_count: result.icp_transcript_count,
+    });
+  } catch (err) {
+    console.error('[Admin] icp-profile error', { err: err.message });
     res.status(500).json({ error: err.message });
   }
 });

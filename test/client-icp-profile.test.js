@@ -17,6 +17,8 @@ const {
   backfillMissingClientIcp,
   summarizeIcpResult,
   needsIcpWork,
+  parseManualIcpBody,
+  saveManualIcpProfile,
 } = require('../src/services/client-icp-profile');
 const { loadVariant, resolveReplyIcp, clearIcpMemoryCache } = require('../src/services/reply-icp');
 const fireflies = require('../src/services/fireflies');
@@ -323,6 +325,79 @@ test('needsIcpWork retries stale needs_review and ignores fresh ones', () => {
   }, { includeNeedsReview: false, now }), false);
 });
 
+test('a hand-entered ICP accepts the six fields and rejects a bad shape', () => {
+  const ok = parseManualIcpBody({
+    icp_profile: {
+      industries: ['independent HVAC contractors'],
+      titles: 'owner, service manager',
+      company_size: ['10-50'],
+      geos: ['Midwest'],
+      offer: ['outbound for HVAC shops'],
+      exclusions: ['national chains'],
+    },
+    icp_transcript_count: '2',
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.status, 'ready');
+  assert.equal(ok.source, 'manual');
+  assert.equal(ok.transcript_count, 2);
+  assert.deepEqual(ok.profile.titles, ['owner', 'service manager']);
+
+  const empty = parseManualIcpBody({ icp_profile: {} });
+  assert.equal(empty.status, 'needs_review');
+
+  assert.equal(parseManualIcpBody({ icp_profile: { city: ['Denver'] } }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: { industries: [1] } }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: { industries: ['hvac'] }, icp_status: 'published' }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, icp_transcript_count: -1 }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, icp_source: 'x'.repeat(65) }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, smartlead_api_key: 'secret' }).ok, false);
+});
+
+test('saveManualIcpProfile writes the ICP columns and does not return the client row', async () => {
+  const writes = [];
+  const db = {
+    query: async (sql, params) => {
+      writes.push({ sql, params });
+      if (/SELECT id FROM clients/.test(sql)) return { rows: [{ id: 'c1' }] };
+      return {
+        rows: [{
+          icp_profile: JSON.parse(params[0]),
+          icp_status: params[1],
+          icp_source: params[2],
+          icp_transcript_count: params[3],
+          smartlead_api_key: 'should-not-leak',
+          name: 'New Co LLC',
+        }],
+      };
+    },
+  };
+  const saved = await saveManualIcpProfile(db, 'c1', {
+    icp_profile: { industries: ['independent HVAC contractors'], titles: ['owner'] },
+    icp_status: 'ready',
+    icp_source: 'onboarding-notes',
+    icp_transcript_count: 1,
+  });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.icp_status, 'ready');
+  assert.equal(saved.icp_source, 'onboarding-notes');
+  assert.deepEqual(Object.keys(saved).sort(), [
+    'icp_profile', 'icp_source', 'icp_status', 'icp_transcript_count', 'ok',
+  ]);
+  assert.equal(saved.smartlead_api_key, undefined);
+  assert.equal(saved.name, undefined);
+  const update = writes.find((w) => /UPDATE clients SET/.test(w.sql));
+  assert.match(update.sql, /icp_profile/);
+  assert.match(update.sql, /icp_built_at = now\(\)/);
+  assert.equal(update.params[4], 'c1');
+
+  const missing = await saveManualIcpProfile({
+    query: async () => ({ rows: [] }),
+  }, 'missing', { icp_profile: { industries: ['hvac'] } });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.statusCode, 404);
+});
+
 test('admin create and backfill are wired to ensureClientIcp', () => {
   const admin = read('src/routes/admin.js');
   assert.match(admin, /ensureClientIcp/);
@@ -330,6 +405,10 @@ test('admin create and backfill are wired to ensureClientIcp', () => {
   assert.match(admin, /backfillMissingClientIcp/);
   const migrate = read('scripts/run-migrations.js');
   assert.match(migrate, /033_client_icp_profile\.sql/);
+  const route = admin.slice(admin.indexOf("router.post('/admin/clients/:clientId/icp-profile'"));
+  const routeBody = route.slice(0, route.indexOf("router.patch('/admin/clients/:clientId'"));
+  assert.match(routeBody, /saveManualIcpProfile/);
+  assert.doesNotMatch(routeBody, /formatClient|requireAdminApiKey|smartlead_api_key/);
 });
 
 test('client search hints take first names from person emails and skip role mailboxes', () => {

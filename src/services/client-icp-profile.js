@@ -618,6 +618,93 @@ async function backfillMissingClientIcp({
   return counts;
 }
 
+const MANUAL_ICP_STATUSES = Object.freeze(['ready', 'needs_review', 'skipped_existing']);
+const MANUAL_ICP_BODY_KEYS = Object.freeze([
+  'icp_profile', 'icp_status', 'icp_source', 'icp_transcript_count',
+]);
+
+/**
+ * Validate a hand-entered ICP. Unknown profile keys and non-string items
+ * are rejected. Status defaults to ready when the profile has facts.
+ */
+function parseManualIcpBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be an object' };
+  }
+  const extra = Object.keys(body).filter((k) => !MANUAL_ICP_BODY_KEYS.includes(k));
+  if (extra.length) return { ok: false, error: `unknown field: ${extra[0]}` };
+  const profileIn = body.icp_profile;
+  if (!profileIn || typeof profileIn !== 'object' || Array.isArray(profileIn)) {
+    return { ok: false, error: 'icp_profile must be an object' };
+  }
+  const unknown = Object.keys(profileIn).filter((k) => !ICP_FIELDS.includes(k));
+  if (unknown.length) return { ok: false, error: `unknown icp_profile field: ${unknown[0]}` };
+  for (const field of ICP_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(profileIn, field)) continue;
+    const v = profileIn[field];
+    if (Array.isArray(v)) {
+      if (v.some((x) => typeof x !== 'string')) {
+        return { ok: false, error: `${field} items must be strings` };
+      }
+    } else if (typeof v !== 'string') {
+      return { ok: false, error: `${field} must be a string or an array of strings` };
+    }
+  }
+  const profile = normalizeProfile(profileIn);
+  let status = body.icp_status;
+  if (status == null || String(status).trim() === '') {
+    status = profileHasFacts(profile) ? 'ready' : 'needs_review';
+  } else {
+    status = String(status).trim();
+  }
+  if (!MANUAL_ICP_STATUSES.includes(status)) {
+    return { ok: false, error: 'icp_status must be ready, needs_review, or skipped_existing' };
+  }
+  let source = 'manual';
+  if (body.icp_source != null && String(body.icp_source).trim() !== '') {
+    source = String(body.icp_source).trim();
+  }
+  if (source.length > 64 || /[\r\n]/.test(source)) {
+    return { ok: false, error: 'icp_source must be a short string' };
+  }
+  let count = body.icp_transcript_count;
+  if (count == null || count === '') count = 0;
+  else if (typeof count === 'string' && /^\d+$/.test(count.trim())) count = Number(count.trim());
+  if (!Number.isInteger(count) || count < 0) {
+    return { ok: false, error: 'icp_transcript_count must be an integer >= 0' };
+  }
+  return { ok: true, profile, status, source, transcript_count: count };
+}
+
+/** Write a validated ICP. Returns the ICP columns only — never the client row. */
+async function saveManualIcpProfile(db, clientId, body) {
+  const parsed = parseManualIcpBody(body);
+  if (!parsed.ok) return { ok: false, statusCode: 400, error: parsed.error };
+  if (!db || !clientId) return { ok: false, statusCode: 400, error: 'client id is required' };
+  const { rows } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
+  if (!rows[0]) return { ok: false, statusCode: 404, error: 'Client not found' };
+  const { rows: written } = await db.query(
+    `UPDATE clients SET
+       icp_profile = $1::jsonb,
+       icp_status = $2,
+       icp_source = $3,
+       icp_transcript_count = $4,
+       icp_built_at = now(),
+       updated_at = now()
+     WHERE id = $5
+     RETURNING icp_profile, icp_status, icp_source, icp_transcript_count`,
+    [JSON.stringify(parsed.profile), parsed.status, parsed.source, parsed.transcript_count, clientId]
+  );
+  const row = written[0] || {};
+  return {
+    ok: true,
+    icp_profile: normalizeProfile(row.icp_profile || parsed.profile),
+    icp_status: row.icp_status || parsed.status,
+    icp_source: row.icp_source || parsed.source,
+    icp_transcript_count: Number(row.icp_transcript_count ?? parsed.transcript_count) || 0,
+  };
+}
+
 function tally(counts, result) {
   if (result.status === 'skipped_existing') counts.skipped_existing += 1;
   else if (result.status === 'ready') counts.ready += 1;
@@ -649,4 +736,6 @@ module.exports = {
   summarizeIcpResult,
   persistIcp,
   needsIcpWork,
+  parseManualIcpBody,
+  saveManualIcpProfile,
 };

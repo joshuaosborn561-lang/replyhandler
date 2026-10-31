@@ -1697,3 +1697,9 @@ A client's ICP is still built only from facts in their Fireflies transcripts, an
 The weekday auto-build also scans the last 90 days of transcripts for those same matches. Invented cities and other unsupported phrases are still dropped.
 
 Guard: `a call matches on attendee domain or Onboarding/Discovery plus a first name` in `test/client-icp-profile.test.js`. The 90-day window is `automatic build searches Fireflies across a 90 day window` in `test/icp-auto-build.test.js`.
+
+## A hand-entered ICP can be saved on the client (2026-10-31)
+
+`POST /admin/clients/:clientId/icp-profile` sets `icp_profile`, `icp_status`, `icp_source`, and `icp_transcript_count`. Same open admin surface as the other client routes — no API key. The profile may only contain industries, titles, company_size, geos, offer, and exclusions, each a string or a list of strings. Status is `ready`, `needs_review`, or `skipped_existing` (default `ready` when the profile has facts). The response is those ICP columns only, never the client row (that row carries API keys). This write does not re-provision the portal.
+
+Guard: `a hand-entered ICP accepts the six fields and rejects a bad shape` and `saveManualIcpProfile writes the ICP columns and does not return the client row` in `test/client-icp-profile.test.js`.
