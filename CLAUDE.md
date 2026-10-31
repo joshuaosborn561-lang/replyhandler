@@ -240,9 +240,13 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
    never auto-sends. A brief with no source, no company info, no past emails
    or calls, and no stated ask cannot be released or sent. Missing LinkedIn
    alone does not trip that guard. The hold and the preview use the same
-   gather: stored reply, cached ICP only, then Smartlead history, person
-   profile, the email waterfall, HeyReach, Allo, and the company site when
-   those facts are missing. A failed lookup leaves the fact out. To =
+   gather: stored reply, then Smartlead history, person profile, the email
+   waterfall, HeyReach, Allo, and the company site when those facts are
+   missing. ICP is `resolveReplyIcp` (the Jev website check on a reply card):
+   `Fit — reason`, `Not a fit — reason`, `ICP: not on file`, or
+   `ICP: check failed`. The decision-maker line is the card's title check
+   against the client's target titles. The email has no source-campaign
+   section. A failed lookup leaves the fact out. To =
    `notify_emails`, CC = Josh.
    `reminder-email.js` is still the one-hour reminder to the prospect
    (`meeting.lead_email`), not this brief.

@@ -21,8 +21,10 @@
  * stored reply, then fills gaps from the lookups already used on reply cards:
  * Smartlead thread and lead, person profile (LinkedIn, title, location), the
  * email waterfall (phone and LinkedIn), HeyReach when a LinkedIn URL is known,
- * Allo call history, and the company site. ICP is the cached verdict only.
- * This job does not call Jev or Claude. A failed lookup leaves that fact out.
+ * Allo call history, and the company site. ICP is `resolveReplyIcp` (the same
+ * Jev website check as a reply card) and the decision-maker line is the same
+ * title check as the card. The email does not include a source-campaign
+ * section. This job does not call Claude. A failed lookup leaves that fact out.
  *
  * POST /admin/client-briefs/:id/release is the only way a brief becomes
  * `released`. The client email goes out only then, and only when
@@ -332,14 +334,11 @@ function exampleHost(url) {
   }
 }
 
+/** Reply-card words: "Fit — …", "Not a fit — …", "ICP: not on file", "ICP: check failed". */
 function icpPlain(raw) {
   const v = parseObj(raw);
   if (!v || !v.status) return '';
-  const reason = oneLine(v.reason, 180);
-  if (v.status === 'unknown' && /^no ICP$/i.test(reason)) return 'ICP fit: not on file';
-  if (v.status === 'qualified') return `ICP fit: qualified${reason ? ` (${reason})` : ''}`;
-  if (v.status === 'disqualified') return `ICP fit: not a fit${reason ? ` (${reason})` : ''}`;
-  return reason ? `ICP fit: unknown (${reason})` : 'ICP fit: unknown';
+  return require('./slack').icpFitPlain(v);
 }
 
 function noShowLine(priorNoShows, email, tz) {
@@ -376,11 +375,16 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
   })).filter((q) => q.text);
   const callNotes = callNotesFrom(src);
   const openItems = asksFrom([...emailMsgs, ...dmMsgs]);
-  const icpFit = icpPlain(src.icp_verdict);
+  const icp = parseObj(src.icp_verdict);
+  const icpFit = icpPlain(icp);
+  const storedDm = icp && (icp.decision_maker || icp.decisionMaker);
+  const { judgeDecisionMaker, decisionMakerText } = require('./decision-maker');
+  const decisionMaker = decisionMakerText(
+    storedDm && storedDm.status ? storedDm : judgeDecisionMaker(oneLine(src.lead_title, 200), []),
+  ) || '';
   const noShowHistory = noShowLine(priorNoShows, src.lead_email, tz);
   const risks = [];
-  const icp = parseObj(src.icp_verdict);
-  if (icp && icp.status === 'disqualified') risks.push(icpFit || 'ICP fit: not a fit');
+  if (icp && icp.status === 'disqualified') risks.push(icpFit || 'Not a fit — does not fit the ICP');
   if (Array.isArray(priorNoShows) && priorNoShows.length) risks.push('They have a no-show on a previous meeting.');
   const joinUrl = safeUrl(src.meeting_link);
   const where = whereLabel(joinUrl);
@@ -412,7 +416,7 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
     },
     history: { summary, quotes, callNotes, ask: '', emailLines, dmLines },
     openItems,
-    flags: { icpFit, risks, noShowHistory },
+    flags: { icpFit, decisionMaker, risks, noShowHistory },
   };
 }
 
@@ -470,6 +474,15 @@ function liveDeps() {
     async fetchSiteText(url, opts) {
       return require('./booked-brief-data').fetchSiteText(url, opts);
     },
+    async resolveReplyIcp(input) {
+      return require('./reply-icp').resolveReplyIcp(input);
+    },
+    async loadClientPersonas(database, clientId) {
+      return require('./decision-maker').loadClientPersonas(database, clientId);
+    },
+    judgeDecisionMaker(title, personas) {
+      return require('./decision-maker').judgeDecisionMaker(title, personas);
+    },
   };
 }
 
@@ -520,11 +533,12 @@ function prospectTexts(src) {
 /**
  * Same gather for the cron hold and the dry-run preview.
  * Reads the stored reply, then fills gaps from the lookups this repo already
- * uses. A failed lookup omits that fact. Cached ICP only — this does not
- * call Jev or Claude. It does not invent a title, size, or profile.
+ * uses. ICP is resolveReplyIcp (Jev, same as a reply card). The decision-maker
+ * line uses the client's target titles. A failed lookup omits that fact.
+ * It does not call Claude. It does not invent a title, size, or profile.
  */
 async function gatherBriefFacts(row, {
-  priorNoShows = null, env = process.env, fetchImpl = fetch, deps = null,
+  priorNoShows = null, env = process.env, fetchImpl = fetch, deps = null, db = null,
 } = {}) {
   const src = { ...(row || {}) };
   const d = { ...liveDeps(), ...(deps || {}) };
@@ -645,7 +659,7 @@ async function gatherBriefFacts(row, {
   }
 
   const facts = assembleBriefFacts(src, { priorNoShows });
-  if (!filled(facts.flags.icpFit)) facts.flags.icpFit = 'ICP fit: not on file';
+  await attachCardIcp(src, facts, { db, fetchImpl, deps: d, injected });
   if (callLines.length) {
     facts.history.callLines = callLines;
     facts.history.callNotes = facts.history.callNotes || callLines.join(' ');
@@ -675,6 +689,44 @@ async function gatherBriefFacts(row, {
     facts.flags.risks.push(`Email signature lists ${fromEmail}. The company site lists ${fromSite}.`);
   }
   return facts;
+}
+
+/**
+ * ICP and decision maker, same as a reply card. Example hosts stay offline
+ * unless the caller injects resolveReplyIcp (tests). A real site always
+ * goes through resolveReplyIcp, which calls Jev on a cache miss.
+ */
+async function attachCardIcp(src, facts, { db, fetchImpl, deps, injected }) {
+  const website = (facts.company && facts.company.website) || '';
+  const callLive = Boolean(injected.resolveReplyIcp) || (website && !exampleHost(website));
+  let verdict = parseObj(src.icp_verdict);
+  if (callLive) {
+    const resolved = await safeLookup('icp', () => (injected.resolveReplyIcp || deps.resolveReplyIcp)({
+      website,
+      clientName: src.client_name || src.name || facts.clientName,
+      clientId: src.client_id,
+      replyId: src.pending_reply_id,
+      db: db || null,
+      grade: true,
+      fetchImpl,
+    }));
+    if (resolved && resolved.status) verdict = resolved;
+    else if (!verdict || !verdict.status) verdict = { status: 'unknown', reason: 'check failed' };
+  }
+  facts.flags.icpFit = icpPlain(verdict) || require('./slack').icpFitPlain(verdict);
+  const loaded = await safeLookup('decision maker', () => (
+    (injected.loadClientPersonas || deps.loadClientPersonas)(db, src.client_id)
+  ));
+  const personas = Array.isArray(loaded) ? loaded : [];
+  const title = (facts.prospect && facts.prospect.title) || '';
+  const judge = injected.judgeDecisionMaker || deps.judgeDecisionMaker;
+  const dm = judge(title, personas);
+  const line = require('./decision-maker').decisionMakerText(dm);
+  if (line) facts.flags.decisionMaker = line;
+  facts.flags.risks = (facts.flags.risks || []).filter((r) => !/^(Fit —|Not a fit —|ICP:|ICP fit:)/.test(String(r)));
+  if (verdict && verdict.status === 'disqualified' && facts.flags.icpFit) {
+    facts.flags.risks.push(facts.flags.icpFit);
+  }
 }
 
 function hasEmailBody(row) {
@@ -734,7 +786,7 @@ function mergeFacts(base, edits) {
   take('company', ['name', 'whatTheyDo', 'size', 'website']);
   take('how', ['campaign', 'channel', 'source']);
   take('history', ['summary', 'callNotes', 'ask']);
-  take('flags', ['icpFit', 'noShowHistory']);
+  take('flags', ['icpFit', 'decisionMaker', 'noShowHistory']);
   if (Array.isArray(patch.openItems)) {
     out.openItems = patch.openItems.map((item) => oneLine(item, 600)).filter(Boolean).slice(0, 8);
   }
@@ -783,7 +835,6 @@ function quoteLines(hist) {
 function sectionBullets(facts) {
   const p = facts.prospect || {};
   const c = facts.company || {};
-  const h = facts.how || {};
   const hist = facts.history || {};
   const flags = facts.flags || {};
   const who = [];
@@ -794,23 +845,14 @@ function sectionBullets(facts) {
   const place = [p.location, filled(p.linkedinUrl) ? `LinkedIn: ${p.linkedinUrl}` : ''].filter(filled).join('. ');
   if (place) who.push(place);
 
-  const icp = filled(flags.icpFit) ? [flags.icpFit] : [];
+  const icp = [];
+  if (filled(flags.icpFit)) icp.push(flags.icpFit);
+  if (filled(flags.decisionMaker)) icp.push(flags.decisionMaker);
   const linkedin = Array.isArray(hist.dmLines) ? bulletList(hist.dmLines) : [];
   const email = Array.isArray(hist.emailLines) ? bulletList(hist.emailLines) : quoteLines(hist);
   const calls = [];
   if (filled(hist.callNotes)) calls.push(oneLine(hist.callNotes, 2000));
   for (const line of bulletList(hist.callLines)) calls.push(line);
-
-  const source = [];
-  if (filled(h.campaign)) source.push(h.campaign);
-  if (filled(h.channel)) source.push(h.channel);
-  if (filled(h.source)) {
-    const low = h.source.toLowerCase();
-    const restates = (!filled(h.campaign) || low.includes(String(h.campaign).toLowerCase()))
-      && (!filled(h.channel) || low.includes(String(h.channel).toLowerCase()))
-      && (filled(h.campaign) || filled(h.channel));
-    if (!restates) source.push(h.source);
-  }
 
   const company = [];
   if (filled(c.website)) company.push(c.website);
@@ -825,7 +867,7 @@ function sectionBullets(facts) {
   for (const risk of flags.risks || []) if (filled(risk)) flagLines.push(risk);
   if (filled(flags.noShowHistory)) flagLines.push(flags.noShowHistory);
 
-  return { who, icp, linkedin, email, calls, source, company, companyTitle, open, flagLines };
+  return { who, icp, linkedin, email, calls, company, companyTitle, open, flagLines };
 }
 
 function headerLine(facts) {
@@ -858,7 +900,6 @@ function buildClientDayofBrief(facts = {}) {
     ['LinkedIn', sections.linkedin],
     ['Email thread', sections.email],
     ['Call history', sections.calls],
-    ['Source campaign', sections.source],
     [sections.companyTitle, sections.company],
     ['Open items', sections.open],
     ['Flags', sections.flagLines],
@@ -942,7 +983,8 @@ const EXAMPLE_BRIEF_FACTS = {
     'Asked what they should send ahead of Thursday',
   ],
   flags: {
-    icpFit: 'ICP fit: qualified (commercial roofer, operations lead)',
+    icpFit: 'Fit — commercial roofer, operations lead',
+    decisionMaker: 'Decision maker: Yes, matches ICP buyer (Owner) (VP of Operations)',
     risks: ['First meeting. No prior thread beyond the booking reply.'],
     noShowHistory: 'No prior no-shows on file.',
   },
@@ -1047,6 +1089,7 @@ async function notifyReviewer(brief, { env = process.env, fetchImpl = fetch, sen
 function sqlStore(db) {
   const q = (sql, params) => db.query(sql, params);
   return {
+    db,
     async dueMeetings(now, minutes) {
       const { rows } = await q(
         `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
@@ -1248,7 +1291,7 @@ function sqlStore(db) {
         `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
                 c.name AS client_name, c.notify_emails, c.digest_timezone,
-                pr.platform, pr.campaign_name, pr.lead_title, pr.lead_company,
+                pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
                 pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
                 pr.thread_context, pr.icp_verdict, pr.updated_at
@@ -1325,7 +1368,7 @@ async function holdOne(row, { store, env, now, fetchImpl, send, deps }) {
       console.warn('[DayofBrief] no-show lookup skipped', { err: String(err && err.message || err).slice(0, 160) });
     }
   }
-  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps });
+  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps, db: store.db });
   const rendered = buildClientDayofBrief(facts);
   const recipients = clientBriefRecipients(row, env);
   const inserted = await store.insertHeld({
@@ -1418,7 +1461,7 @@ async function previewBrief({ meetingId, store, env = process.env, fetchImpl = f
     try { prior = await dbStore.priorNoShows(row.client_id, row.lead_email, row.confirmed_time || new Date()); }
     catch { prior = null; }
   }
-  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps });
+  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps, db: dbStore.db });
   const rendered = buildClientDayofBrief(facts);
   const recipients = clientBriefRecipients(row, env);
   return {

@@ -1753,3 +1753,14 @@ Josh rejected a brief that only had a name, a campaign, and a bare website. The 
 - **What it may not do.** Invent a title, a headcount, a profile, or a call. A lookup that fails or is not configured leaves that fact out.
 
 Guard: `test/client-dayof-brief.test.js` (`the live hold and the preview pull the same sections`).
+
+## Client briefs use the reply-card ICP line and drop the campaign (Josh, Oct 31 2026)
+
+Josh, on the held client brief: explain ICP fit from the Jev website check the same way a reply card does, add the decision-maker line, and take the source campaign off the email.
+
+- **ICP.** `gatherBriefFacts` calls `resolveReplyIcp` (`src/services/reply-icp.js`) with `grade: true`, on both the cron hold and the preview. The line is the card's words from `icpFitPlain`: `Fit — {reason}`, `Not a fit — {reason}`, `ICP: not on file`, `ICP: check failed` (and the card's other unknown reasons, such as `ICP: site unreachable`). A failed check is not replaced with a softer line.
+- **Decision maker.** Same function as the card: `loadClientPersonas` then `judgeDecisionMaker`, printed with `decisionMakerText`. The line says whether this person's title matches the client's target titles. It does not invent another person's name.
+- **No source campaign.** The campaign can still sit on the stored facts (the zero-context guard still counts how they came in). It is not a section in the email.
+- **Shape.** The HTML shell stays the one `send-brief` already uses (Arial 14px, `h3`, bold section title, bullets). A search of Josh's Gmail for a brief he answered "yes this is awesome" did not find that reply. The briefs from `briefs@reports.salesglidergrowth.com` already use this shell.
+
+Guard: `test/client-dayof-brief.test.js` (`prints the reply-card ICP line and a decision-maker line, and leaves the campaign out`, and `the live hold and the preview pull the same sections`).

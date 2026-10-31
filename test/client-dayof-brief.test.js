@@ -209,7 +209,7 @@ describe('day-of brief schedule and flag', () => {
 describe('day-of brief rendering', () => {
   it('uses the short bullet layout and leaves empty sections out', () => {
     const sample = exampleClientBrief();
-    for (const section of ['Who', 'ICP fit', 'LinkedIn', 'Email thread', 'Call history', 'Source campaign', 'About Northwind Roofing Co.', 'Open items', 'Flags']) {
+    for (const section of ['Who', 'ICP fit', 'Decision maker', 'LinkedIn', 'Email thread', 'Call history', 'About Northwind Roofing Co.', 'Open items', 'Flags']) {
       assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(sample.htmlBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
@@ -221,7 +221,10 @@ describe('day-of brief rendering', () => {
     assert.match(sample.textBody, /Rockwall, TX/);
     assert.match(sample.textBody, /jordan-hale-example/);
     assert.match(sample.textBody, /northwind-roofing\.example/);
-    assert.match(sample.textBody, /Spring owners, north Texas/);
+    assert.match(sample.textBody, /Fit — commercial roofer, operations lead/);
+    assert.match(sample.textBody, /Decision maker: Yes, matches ICP buyer/);
+    assert.equal(sample.textBody.includes('Source campaign'), false);
+    assert.equal(sample.textBody.includes('Spring owners'), false);
     assert.match(sample.textBody, /walk us through pricing/);
     assert.match(sample.htmlBody, /<b>Who<\/b>/);
     assert.equal(sample.htmlBody.includes('<script>'), false);
@@ -259,7 +262,8 @@ describe('day-of brief rendering', () => {
     assert.equal(facts.history.dmLines.length, 0);
     assert.match(facts.history.quotes[0].text, /pricing/);
     assert.match(facts.openItems.join(' '), /pricing/);
-    assert.match(facts.flags.icpFit, /qualified/);
+    assert.match(facts.flags.icpFit, /Fit — commercial roofer/);
+    assert.match(facts.flags.decisionMaker, /Decision maker: Yes, senior leader \(VP of Operations\)/);
     assert.equal(facts.flags.noShowHistory, 'No prior no-shows on file.');
     assert.equal(hasZeroContext(facts), false);
     const noshow = assembleBriefFacts(meeting(), {
@@ -283,7 +287,29 @@ describe('day-of brief rendering', () => {
     const brief = buildClientDayofBrief(facts);
     assert.match(brief.textBody, /LinkedIn/);
     assert.equal(brief.textBody.includes('Email thread'), false);
-    assert.match(brief.textBody, /Owners, LinkedIn/);
+    assert.match(facts.how.campaign, /Owners, LinkedIn/);
+    assert.equal(brief.textBody.includes('Owners, LinkedIn'), false);
+    assert.equal(brief.textBody.includes('Source campaign'), false);
+  });
+
+  it('prints the reply-card ICP line and a decision-maker line, and leaves the campaign out', () => {
+    const fit = buildClientDayofBrief({
+      prospect: { name: 'Jordan Hale', title: 'Coordinator' },
+      flags: {
+        icpFit: 'Not a fit — website says distributor; client only works with commercial trade contractor',
+        decisionMaker: 'Decision maker: No, not an ICP buyer title (Coordinator)',
+      },
+      how: { campaign: 'Spring owners', channel: 'Email', source: 'Cold email' },
+    });
+    assert.match(fit.textBody, /Not a fit — website says distributor/);
+    assert.match(fit.textBody, /Decision maker: No, not an ICP buyer title \(Coordinator\)/);
+    assert.equal(fit.textBody.includes('Source campaign'), false);
+    assert.equal(fit.textBody.includes('Spring owners'), false);
+    assert.match(buildClientDayofBrief({ flags: { icpFit: 'ICP: check failed' } }).textBody, /ICP: check failed/);
+    assert.match(buildClientDayofBrief({ flags: { icpFit: 'ICP: not on file' } }).textBody, /ICP: not on file/);
+    assert.match(buildClientDayofBrief({
+      flags: { icpFit: 'Fit — commercial roofer' },
+    }).textBody, /Fit — commercial roofer/);
   });
 });
 
@@ -546,6 +572,17 @@ describe('day-of brief hold, release, block', () => {
         seen.push('site');
         return 'Northwind Roofing Co. We handle commercial roofing for property managers across north Texas.';
       },
+      async resolveReplyIcp(input) {
+        seen.push('icp');
+        assert.equal(input.grade, true);
+        assert.match(String(input.website), /northwind-roofing\.example/);
+        assert.equal(input.clientName, 'Vector');
+        return { status: 'qualified', reason: 'commercial roofer' };
+      },
+      async loadClientPersonas() {
+        seen.push('personas');
+        return ['Owner', 'VP of Operations'];
+      },
     };
     const row = meeting({
       lead_phone: '',
@@ -561,7 +598,7 @@ describe('day-of brief hold, release, block', () => {
       campaign_id: '99',
       lead_id: '88',
     });
-    const steps = ['thread', 'lead', 'profile', 'phone', 'heyreach', 'allo', 'site'];
+    const steps = ['thread', 'lead', 'profile', 'phone', 'heyreach', 'allo', 'site', 'icp', 'personas'];
     const preview = await previewBrief({ meetingId: 'meet-1', store: memoryStore({ meetings: [row] }), env: env(), deps });
     assert.equal(preview.body.dry_run, true);
     assert.equal(preview.body.sent, false);
@@ -570,15 +607,16 @@ describe('day-of brief hold, release, block', () => {
     const text = preview.body.text_body;
     assert.match(text, /Email thread/);
     assert.match(text, /\bInfo\b/);
-    assert.match(text, /ICP fit: not on file/);
+    assert.match(text, /Fit — commercial roofer/);
+    assert.match(text, /Decision maker: Yes, matches ICP buyer \(VP of Operations\)/);
     assert.match(text, /Thursday still works on LinkedIn/);
     assert.match(text, /Thursday walkthrough/);
     assert.match(text, /commercial roofing/);
     assert.match(text, /555-0199/);
     assert.match(text, /jordan-hale-example/);
-    assert.match(text, /Spring owners/);
     assert.match(text, /Open items/);
-    assert.match(text, /Source campaign/);
+    assert.equal(text.includes('Source campaign'), false);
+    assert.equal(text.includes('Spring owners'), false);
     for (const step of steps) assert.equal(seen.includes(step), true, step);
     seen.length = 0;
     const held = await runClientDayofBriefs({
