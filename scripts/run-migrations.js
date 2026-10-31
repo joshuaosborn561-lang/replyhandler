@@ -59,6 +59,7 @@ const MIGRATION_FILES = [
   '051_client_reply_digest.sql',
   '052_client_notify_emails.sql',
   '053_card_supersede_payload.sql',
+  '054_followup_card_events.sql',
 ];
 
 async function clientsTableExists(client) {

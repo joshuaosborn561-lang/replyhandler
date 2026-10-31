@@ -147,7 +147,8 @@ describe('FOLLOW_UP card conversation layout', () => {
       .filter((b) => b.type === 'section' && b.text)
       .map((b) => b.text.text)
       .join('\n');
-    assert.match(texts, /\*WILL SEND\*/);
+    assert.match(texts, /\*Draft\*/);
+    assert.doesNotMatch(texts, /WILL SEND/);
     assert.ok(texts.includes(longDraft.split('\n')[0]));
     assert.doesNotMatch(texts, /_\(truncated\)_/);
     assert.match(texts, /LOOP IN CLIENT/);
@@ -156,11 +157,11 @@ describe('FOLLOW_UP card conversation layout', () => {
     assert.doesNotMatch(texts, /margin-top/);
     assert.doesNotMatch(texts, /\*Suggested follow-up\*/);
     const types = blocks.map((b) => b.type);
-    const willIdx = blocks.findIndex((b) => b.type === 'section' && /\*WILL SEND\*/.test(b.text?.text || ''));
+    const draftIdx = blocks.findIndex((b) => b.type === 'section' && /\*Draft\*/.test(b.text?.text || ''));
     const actionIdx = types.indexOf('actions');
-    assert.ok(willIdx >= 0 && actionIdx >= 0 && actionIdx > willIdx, 'buttons stay below WILL SEND, at the bottom (Josh, Oct 29 2026)');
-    assert.equal(types[0], 'header');
-    assert.equal(types[types.length - 1], 'actions');
+    assert.ok(draftIdx >= 0 && actionIdx >= 0 && actionIdx > draftIdx, 'buttons stay below the draft');
+    assert.equal(types[0], 'section');
+    assert.ok(types.indexOf('context') > actionIdx, 'context line sits under the buttons');
     const actionIds = blocks
       .filter((b) => b.type === 'actions')
       .flatMap((b) => b.elements.map((e) => e.action_id));

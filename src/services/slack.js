@@ -1314,12 +1314,7 @@ function buildDraftApprovalCard({
   }
   const company = String(leadCompany || ctxLead.company || '').trim();
   const name = bestFullName(leadName, leadFullName) || ctxLead.name || '';
-  const client = String(clientName || followupContext?.clientName || '').trim();
 
-  const topBlocks = [
-    ...(mention ? [{ type: 'section', text: { type: 'mrkdwn', text: String(mention) } }] : []),
-    cardHeaderBlock({ name, title, company, clientName: client }),
-  ];
   const contactBlock = compactContactLine({
     leadEmail: leadEmail || ctxLead.email,
     leadPhone: leadPhone || ctxLead.phone,
@@ -1330,55 +1325,78 @@ function buildDraftApprovalCard({
     leadWebsite: leadWebsite || ctxLead.website,
   });
 
-  const extra = [];
-  if (followupContext) {
-    if (followupContext.offer) extra.push(`🎁 ${escMrkdwn(oneLineText(followupContext.offer, 120))}`);
-    if (followupContext.meeting) extra.push(`🗓️ ${escMrkdwn(followupContext.meeting.label)}: ${escMrkdwn(followupContext.meeting.text)}`);
-    const l = followupContext.links || {};
-    if (l.replyCard) extra.push(`<${l.replyCard}|Original reply card>`);
-    if (l.smartlead) extra.push(`<${l.smartlead}|Smartlead thread>`);
-  }
-  const contextBlock = secondaryContextBlock({
-    platform, classification, review, reasoning,
-    campaignDisplay: campaignDisplay || followupContext?.campaign,
-    leadIcpVerdict: followupContext ? (followupContext.icp || leadIcpVerdict) : leadIcpVerdict,
-    leadLocation, leadTimezone, enrichmentReceipt, threadPermalink, isFollowUp,
-    lastOutboundMessage, extra,
-  });
-
   let overflowThread = [];
   let overflowBlocks = [];
   let blocks;
   if (isFollowUp) {
-    const latestReply = (followupContext && followupContext.reply) || inboundMessage;
-    const sentText = lastOutboundMessage || followupContext?.lastSent || '';
-    const theirBlocks = [
-      ...youSaidBlocks(sentText),
-      ...(String(latestReply || '').trim() && !isPlaceholderInbound(latestReply)
-        ? theyRepliedBlocks(latestReply)
-        : []),
-    ];
-    const assembled = assembleFollowUpApprovalBlocks({
-      replyId,
-      topBlocks,
-      contactBlock,
-      theirBlocks,
+    // Josh, Oct 31 2026: follow-up cards use the sequence layout. The full
+    // thread is the history modal. WILL SEND stays on sent confirmations.
+    const layout = require('../utils/followup-card-layout');
+    const fu = followupContext || {};
+    const seq = fu.sequence || {};
+    const limited = approvalActionsForCard({
+      replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
+      heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+    });
+    const extra = [];
+    if (limited) {
+      extra.push(limited);
+      extra.push({
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'View full thread & history' },
+          action_id: 'view_thread',
+          value: String(replyId),
+        }],
+      });
+    }
+    if (String(platform || '').toLowerCase() === 'smartlead') {
+      const referralBtn = referralCcActionsBlock(replyId, referredContacts);
+      if (referralBtn) extra.push(referralBtn);
+    }
+    if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
+      extra.push(sendCcClientActionsBlock(replyId));
+    }
+    const theirRaw = (fu.reply != null && String(fu.reply).trim() !== '') ? fu.reply : inboundMessage;
+    blocks = layout.buildSequenceCard({
+      variant: seq.variant,
+      kind: seq.kind,
+      mention,
+      campaign: campaignDisplay || fu.campaign,
+      leadName: name,
+      title,
+      company,
+      email: leadEmail || (fu.lead && fu.lead.email),
+      phone: leadPhone || (fu.lead && fu.lead.phone),
+      linkedinUrl: leadLinkedinUrl,
+      localTime: seq.localTime || fu.localTime || null,
+      enrichmentReceipt,
+      icp: fu.icp || leadIcpVerdict,
+      ourText: lastOutboundMessage || fu.lastSent || '',
+      theirText: theirRaw,
+      ourAt: seq.ourAt || fu.ourAt || null,
+      theirAt: seq.theirAt || fu.theirAt || null,
+      tz: leadTimezone || seq.tz || null,
       draft,
-      threadMessages: [],
       needsClient,
       whatToSend,
-      canCcClient: shouldShowCcClientButton({
-        platform, ccEmails, ccEmail, showCcClientButton,
-      }),
-      contextBlock,
       review,
-      actionsBlock: approvalActionsForCard({
-        replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
-        heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
-      }) || draftApprovalActionsBlock(replyId),
-    });
-    blocks = assembled.blocks;
-    overflowThread = assembled.overflowThread || [];
+      stepId: seq.stepId || null,
+      replyId,
+      sourceReplyId: seq.sourceReplyId || replyId,
+      hideSend: Boolean(limited),
+      smartleadUrl: (fu.links && fu.links.smartlead) || null,
+      permalink: threadPermalink || (fu.links && fu.links.replyCard) || null,
+      platform,
+      replaces: seq.replaces || null,
+      nextHint: seq.nextHint || null,
+      why: seq.why || null,
+      priorCallDow: seq.priorCallDow || null,
+      meeting: fu.meeting || null,
+      context: fu,
+    }, {}, { extraActionBlocks: extra });
+    overflowThread = [];
   } else {
     // Josh, Oct 31 2026: first card is campaign, contact, ICP and DM,
     // what we said, what they said, the draft, then the buttons.
@@ -1891,6 +1909,7 @@ function buildThreadModalView({
   threadMessages,
   lastOutboundMessage,
   inboundMessage,
+  historyLines,
 } = {}) {
   const blocks = [];
   const who = [clientName, campaignDisplay]
@@ -1951,12 +1970,16 @@ function buildThreadModalView({
       text: { type: 'mrkdwn', text: '_No earlier messages are stored on this reply._' },
     });
   }
+  if (Array.isArray(historyLines)) {
+    const { historySectionBlocks } = require('../utils/followup-card-layout');
+    blocks.push(...historySectionBlocks(historyLines));
+  }
 
   return {
     type: 'modal',
     callback_id: 'card_thread_modal',
     private_metadata: JSON.stringify({ replyId: replyId || null }),
-    title: { type: 'plain_text', text: 'Full thread' },
+    title: { type: 'plain_text', text: Array.isArray(historyLines) ? 'Thread & history' : 'Full thread' },
     close: { type: 'plain_text', text: 'Close' },
     blocks: blocks.slice(0, 100),
   };
@@ -2076,6 +2099,8 @@ module.exports = {
   locationLine,
   websiteFromLeadEmail,
   icpVerdictLine,
+  isConfirmedMobile,
+  trimForCard,
   linkedinUrlLine,
   websiteUrlLine,
   normalizeLinkedinUrl,
