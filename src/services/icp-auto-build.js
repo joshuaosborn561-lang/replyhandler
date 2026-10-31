@@ -15,6 +15,7 @@ const ICP_BUILD_TZ = 'America/Chicago';
 const ICP_BUILD_START_HOUR = 6;
 const ICP_BUILD_END_HOUR = 20;
 const RETRY_NEEDS_REVIEW_MS = 24 * 60 * 60 * 1000;
+const ICP_CALL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
 
 function icpAutoBuildEnabled(env = process.env) {
   return !/^(1|true|yes|on)$/i.test(String(env.DISABLE_ICP_AUTO_BUILD || '').trim());
@@ -82,6 +83,8 @@ async function runAutomaticIcpBuilds({
     counts.considered += 1;
     const result = await ensureFn(client, {
       db, firefliesApi, extractFn, fetchImpl, env,
+      callLookbackMs: ICP_CALL_LOOKBACK_MS,
+      now,
     });
     if (result.status === 'skipped_existing') counts.skipped_existing += 1;
     else if (result.status === 'ready') {
@@ -110,6 +113,7 @@ module.exports = {
   ICP_BUILD_TZ,
   ICP_BUILD_START_HOUR,
   ICP_BUILD_END_HOUR,
+  ICP_CALL_LOOKBACK_MS,
   icpAutoBuildEnabled,
   inIcpBuildWindow,
   runAutomaticIcpBuilds,

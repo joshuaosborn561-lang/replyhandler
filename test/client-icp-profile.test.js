@@ -6,6 +6,7 @@ const path = require('node:path');
 const {
   emptyProfile,
   clientSearchHints,
+  callMatchesClient,
   hasDefaultVariant,
   clientHasIcp,
   profileHasFacts,
@@ -329,4 +330,175 @@ test('admin create and backfill are wired to ensureClientIcp', () => {
   assert.match(admin, /backfillMissingClientIcp/);
   const migrate = read('scripts/run-migrations.js');
   assert.match(migrate, /033_client_icp_profile\.sql/);
+});
+
+test('client search hints take first names from person emails and skip role mailboxes', () => {
+  const hints = clientSearchHints({
+    name: 'New Co LLC',
+    contact_email: 'jane.smith@newcoexample.com',
+    cc_email: 'info@newcoexample.com',
+    cc_emails: 'ops@newcoexample.com, josh@salesglidergrowth.com',
+    booking_link: 'https://www.newcoexample.com/book?host=pat.lee@newcoexample.com',
+  });
+  assert.deepEqual(hints.domains, ['newcoexample.com']);
+  assert.ok(hints.emails.includes('jane.smith@newcoexample.com'));
+  assert.ok(hints.emails.includes('pat.lee@newcoexample.com'));
+  assert.ok(!hints.emails.some((e) => e.endsWith('@salesglidergrowth.com')));
+  assert.deepEqual(hints.firstNames, ['Jane', 'Pat']);
+});
+
+test('a call matches on attendee domain or Onboarding/Discovery plus a first name', () => {
+  const hints = {
+    name: 'New Co LLC',
+    domains: ['newcoexample.com'],
+    emails: ['jane@newcoexample.com'],
+    firstNames: ['Jane'],
+  };
+  const noName = { transcriptMatches: () => false };
+  assert.equal(callMatchesClient({
+    id: 'a',
+    title: 'Weekly sync',
+    meeting_attendees: [{ email: 'jane@newcoexample.com' }],
+  }, hints, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'b',
+    title: 'Onboarding with Jane',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'c',
+    title: 'Discovery Call - Jane Smith',
+    participants: [],
+  }, { ...hints, domains: [] }, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'd',
+    title: 'Onboarding with Bob',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), false);
+  assert.equal(callMatchesClient({
+    id: 'e',
+    title: 'Weekly sync with Jane',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), false);
+  assert.equal(callMatchesClient({
+    id: 'f',
+    title: 'Weekly sync',
+    meeting_attendees: [{ email: 'josh@salesglidergrowth.com' }],
+  }, { ...hints, domains: [] }, noName), false);
+});
+
+test('ensureClientIcp accepts a call by attendee domain and still drops invented facts', async () => {
+  const transcript = [
+    'Target is independent HVAC contractors in the Midwest.',
+    'Talk to the owner. Skip national chains.',
+  ].join(' ');
+  const queries = [];
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async (q) => {
+      queries.push(q);
+      if (q === 'New Co LLC') {
+        return [{
+          id: 't-domain',
+          title: 'Weekly sync',
+          meeting_attendees: [{ email: 'jane@newcoexample.com' }],
+        }];
+      }
+      return [];
+    },
+    transcriptMatches: () => false,
+    getTranscript: async () => ({ id: 't-domain' }),
+    sentencesToText: () => transcript,
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000011',
+      name: 'New Co LLC',
+      contact_email: 'jane.smith@newcoexample.com',
+    },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: api,
+      extractFn: async () => ({
+        industries: ['independent HVAC contractors'],
+        titles: ['owner'],
+        geos: ['Midwest', 'Denver'],
+        exclusions: ['national chains'],
+      }),
+      env: { FIREFLIES_API_KEY: 'x' },
+    },
+  );
+  assert.equal(result.status, 'ready');
+  assert.ok(result.profile.industries.includes('independent HVAC contractors'));
+  assert.ok(!result.profile.geos.includes('Denver'));
+  assert.ok(queries.includes('onboarding Jane'));
+  assert.ok(queries.includes('discovery Jane'));
+});
+
+test('ensureClientIcp stays needs_review when domain and title matches miss', async () => {
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [{
+      id: 't-miss',
+      title: 'Onboarding with Bob',
+      meeting_attendees: [{ email: 'bob@other.example' }],
+    }],
+    transcriptMatches: () => false,
+    getTranscript: async () => null,
+    sentencesToText: () => '',
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000012',
+      name: 'New Co LLC',
+      contact_email: 'jane.smith@newcoexample.com',
+    },
+    { db: { query: async () => ({ rows: [] }) }, firefliesApi: api, env: { FIREFLIES_API_KEY: 'x' } },
+  );
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'no_calls');
+});
+
+test('a lookback window includes matching calls the keyword search missed', async () => {
+  const transcript = 'We sell to independent HVAC contractors. Buyer is the owner.';
+  let windowed = false;
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [],
+    listTranscriptsBetween: async () => {
+      windowed = true;
+      return [{
+        id: 't-window',
+        title: 'Discovery with Jane',
+        meeting_attendees: [],
+      }];
+    },
+    transcriptMatches: () => false,
+    getTranscript: async () => ({ id: 't-window' }),
+    sentencesToText: () => transcript,
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000013',
+      name: 'Quiet Co',
+      contact_email: 'jane@quietco.example',
+    },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: api,
+      extractFn: async () => ({
+        industries: ['independent HVAC contractors'],
+        titles: ['owner'],
+      }),
+      env: { FIREFLIES_API_KEY: 'x' },
+      callLookbackMs: 90 * 24 * 60 * 60 * 1000,
+      now: Date.parse('2026-10-15T18:00:00Z'),
+    },
+  );
+  assert.equal(windowed, true);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.transcript_count, 1);
 });

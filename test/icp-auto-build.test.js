@@ -6,6 +6,7 @@ const {
   inIcpBuildWindow,
   runAutomaticIcpBuilds,
   icpAutoBuildEnabled,
+  ICP_CALL_LOOKBACK_MS,
 } = require('../src/services/icp-auto-build');
 const { isNoIcpVerdict, regradeNoIcpCards } = require('../src/services/regrade-no-icp-cards');
 
@@ -119,6 +120,26 @@ test('isNoIcpVerdict matches the stored reason only', () => {
   assert.equal(isNoIcpVerdict({ status: 'unknown', reason: 'no ICP' }), true);
   assert.equal(isNoIcpVerdict({ status: 'unknown', reason: 'no website' }), false);
   assert.equal(isNoIcpVerdict({ status: 'qualified', reason: 'fits' }), false);
+});
+
+test('automatic build searches Fireflies across a 90 day window', async () => {
+  const seen = [];
+  const db = {
+    query: async () => ({
+      rows: [{ id: '1', name: 'New Co LLC', active: true, icp_status: null }],
+    }),
+  };
+  await runAutomaticIcpBuilds({
+    db,
+    now: Date.parse('2026-10-15T18:00:00Z'),
+    ensureFn: async (_client, opts) => {
+      seen.push(opts.callLookbackMs);
+      return { status: 'needs_review', reason: 'no_calls', transcript_count: 0 };
+    },
+    regradeFn: async () => ({ updated: 0 }),
+  });
+  assert.equal(ICP_CALL_LOOKBACK_MS, 90 * 24 * 60 * 60 * 1000);
+  assert.deepEqual(seen, [ICP_CALL_LOOKBACK_MS]);
 });
 
 test('cron and admin wire automatic ICP + rebuild', () => {

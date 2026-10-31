@@ -1686,3 +1686,14 @@ Guard: `Reject closes the card and does not change the lead category`. Runtime p
 Replaces the 2026-10-28 line that limited SalesGlider to a B2B service business with roughly $36K customer lifetime value. The pass is still `b2b_service_business` on the `b2b_service` variant. The instructions, that pass criterion, `low_value_or_solo`, and `DEFAULT_CLIENT_VARIANTS.salesglider.note` now say any high-ticket B2B business. There is no dollar LTV cutoff in those texts.
 
 Guard: `SalesGlider grades against any high-ticket B2B business, not only trade contractors`.
+
+## Fireflies ICP calls also match attendee domain and onboarding titles (2026-10-31)
+
+A client's ICP is still built only from facts in their Fireflies transcripts, and a miss is still `needs_review`. Search now also keeps a call when:
+
+- a participant, attendee, host, or organizer email uses the domain of the client's contact, CC, or booking address (own mailboxes such as salesglidergrowth.com stay skipped), or
+- the title contains Onboarding or Discovery together with a contact's first name (from a person email, not a role mailbox).
+
+The weekday auto-build also scans the last 90 days of transcripts for those same matches. Invented cities and other unsupported phrases are still dropped.
+
+Guard: `a call matches on attendee domain or Onboarding/Discovery plus a first name` in `test/client-icp-profile.test.js`. The 90-day window is `automatic build searches Fireflies across a 90 day window` in `test/icp-auto-build.test.js`.
