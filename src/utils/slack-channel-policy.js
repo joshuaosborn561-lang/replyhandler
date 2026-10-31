@@ -7,6 +7,12 @@
  * real interest or question is recorded with a suppression reason and never
  * posted. See DECISIONS.md.
  *
+ * Oct 30 2026 (Josh): the exception is LinkedIn. Every inbound HeyReach reply
+ * for every client posts a card, whatever it was classified as: neutral
+ * "thanks for connecting", job seekers, not interested, wrong person, cold
+ * pitches. Pass `platform: 'heyreach'` and nothing is suppressed here. Email
+ * is unchanged. `HEYREACH_POST_ALL_REPLIES=off` restores the old gate.
+ *
  * Cold inbound pitches (no campaign, they wrote first) are hidden when Jev's
  * pitch_to_us_prob is at or above the threshold. Campaign threads where we
  * sent first are never hidden by the pitch filter.
@@ -31,6 +37,15 @@ function envFlag(name, defaultValue = true) {
   const v = process.env[name];
   if (v === undefined || v === '') return defaultValue;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** True when every HeyReach (LinkedIn) reply posts a card. Default on. */
+function heyreachPostsAllReplies() {
+  return envFlag('HEYREACH_POST_ALL_REPLIES', true);
+}
+
+function isHeyreachPlatform(platform) {
+  return String(platform || '').toLowerCase() === 'heyreach';
 }
 
 function suppressPitchesEnabled() {
@@ -68,8 +83,10 @@ function pitchInboundSuppressionReason({ isColdInbound, pitchToUsProb } = {}) {
  * @returns {string|null}
  */
 function slackChannelSuppressionReason({
-  classification, inboundMessage, isColdInbound, pitchToUsProb,
+  classification, inboundMessage, isColdInbound, pitchToUsProb, platform,
 } = {}) {
+  // LinkedIn replies are never hidden. Josh wants to see every one.
+  if (isHeyreachPlatform(platform) && heyreachPostsAllReplies()) return null;
   const byPitch = pitchInboundSuppressionReason({ isColdInbound, pitchToUsProb });
   if (byPitch) return byPitch;
   // A bounce / NDR / "Message blocked" is never a person, whatever label it got.
@@ -94,4 +111,5 @@ module.exports = {
   slackChannelSuppressionReason,
   shouldPostToSlackChannel,
   suppressPitchesEnabled,
+  heyreachPostsAllReplies,
 };

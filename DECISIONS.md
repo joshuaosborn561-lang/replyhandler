@@ -1644,3 +1644,14 @@ Josh: "when we cc a client we need an email from my inbox saying hey we just ccd
 - Sent only after the SmartLead send succeeded with the client addresses on it. Never the prospect, Josh, the sending inbox or the round-robin rep. A failed notice never fails the reply.
 - The sending address is the mailbox of the SENT message we replied to (the stats_id), else the latest SENT message, else the address the prospect wrote to. If it cannot be found the sentence is left out.
 Guard: `test/cc-notice-email.test.js`
+
+## Every LinkedIn (HeyReach) reply gets a card, for every client (Josh, Oct 30 2026)
+Josh: "I'd like to see any heyreach reply from now on. For all clients." Trigger: three LinkedIn replies on one client's account (a "why I accepted your invite" reply, a "what made you send the request" reply and a "I do not connect with people I do not know" reply) were classified OTHER and recorded as suppressed rows (`not_interested_channel`), so no card posted. The Oct 27 interested-only gate was written for email and also covered LinkedIn.
+- **LinkedIn only.** `slackChannelSuppressionReason({ platform: 'heyreach' })` returns null, so no label (OTHER, NOT_INTERESTED, WRONG_PERSON, OOO, ...), no cold-inbound pitch filter and no text heuristic hides a HeyReach reply. Email keeps the interested-only gate unchanged. `HEYREACH_POST_ALL_REPLIES=off` restores the old LinkedIn gate.
+- **Alert cards, no draft** for any label that is not INTERESTED / MEETING_PROPOSED / QUESTION. Those three still draft as before.
+- **The HeyReach webhook no longer drops a reply** for a missing client API key, a payload with no lead or conversation id (a derived thread key is used), a HeyReach API blip while verifying the campaign, or a classifier error (card posts as OTHER with no draft). The only skips left: an empty body (nothing to show), an inactive client, an exact duplicate, and a campaign that belongs to another client's workspace (that one leaves a suppressed audit row, because posting it would land in the wrong client's channel).
+- **Recovery** (`recoverUnpostedSlackCards`, `repostReplyRowToSlack`) retries any unposted LinkedIn row, not only the three positive labels.
+- **No new paid enrichment.** Visibility-only LinkedIn cards (OTHER, NOT_INTERESTED, WRONG_PERSON, OBJECTION, COMPETITOR) skip the paid email/phone waterfall, as they did before when they were suppressed.
+- **Duplicate guard is unchanged:** same person plus the same text is still one card.
+- `POST /admin/heyreach/approval-card` accepts any label. A positive label still needs a draft. A neutral label (or no label and no draft) posts an alert card from the stored row, which is how an older suppressed reply is shown. It never inserts a second row and never double-posts.
+Guard: `test/heyreach-all-replies.test.js`.

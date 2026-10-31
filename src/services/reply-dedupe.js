@@ -960,6 +960,7 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
   if (!shouldPostToSlackChannel({
     classification: reply.classification,
     inboundMessage: reply.inbound_message,
+    platform: reply.platform,
   })) {
     console.log('[Dedupe] Skip Slack recovery — not an interested-channel classification', {
       replyId: reply.id,
@@ -1043,7 +1044,12 @@ async function recoverUnpostedSlackCards({ limit = 25 } = {}) {
           )
         )
         AND pr.status IN ('pending', 'alert_only')
-        AND pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
+        AND (
+          pr.classification IN ('INTERESTED', 'MEETING_PROPOSED', 'QUESTION')
+          -- Every LinkedIn reply gets a card, whatever it was classified as.
+          -- FOLLOW_UP cadence rows are owned by the follow-up runner.
+          OR (pr.platform = 'heyreach' AND COALESCE(pr.classification, '') <> 'FOLLOW_UP')
+        )
         AND c.active IS DISTINCT FROM false
         AND pr.created_at > now() - interval '7 days'
         AND pr.created_at < now() - interval '2 minutes'

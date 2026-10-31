@@ -41,6 +41,21 @@ function shouldSkipEnrichment(classification) {
   return SKIP_ENRICH_CLASSIFICATIONS.has(String(classification || '').toUpperCase());
 }
 
+/**
+ * Every LinkedIn reply gets a card now (Josh, Oct 30 2026), including neutral,
+ * not-interested and wrong-person ones. Those cards are for visibility, so they
+ * must not start paid waterfall lookups that used to run only for real
+ * positives. Email replies are unchanged.
+ */
+const VISIBILITY_ONLY_CLASSIFICATIONS = new Set([
+  'OTHER', 'OBJECTION', 'NOT_INTERESTED', 'WRONG_PERSON', 'COMPETITOR', 'AUTOMATED_NOTICE',
+]);
+
+function isVisibilityOnlyHeyreach(reply) {
+  return String(reply?.platform || '').toLowerCase() === 'heyreach'
+    && VISIBILITY_ONLY_CLASSIFICATIONS.has(String(reply?.classification || '').toUpperCase());
+}
+
 const { phoneLookupFromHit, phoneLookupFromError } = require('../utils/phone-lookup-reason');
 const { allowsTier } = require('./reply-enrich-policy');
 const { callNowDraft, CALL_NOW_VARIANT } = require('../utils/call-now-variant');
@@ -80,7 +95,7 @@ async function getReply(replyId) {
     `SELECT pr.id, pr.client_id, pr.campaign_id, pr.lead_name, pr.lead_email, pr.linkedin_url,
             pr.lead_phone, pr.lead_phone_provider, pr.lead_phone_alt, pr.lead_website,
             pr.phone_enrichment_status, pr.phone_enrichment_error, pr.phone_enriched_at,
-            pr.classification, pr.status, pr.draft_reply, pr.enrichment_receipt,
+            pr.classification, pr.platform, pr.status, pr.draft_reply, pr.enrichment_receipt,
             pr.created_at, pr.draft_variant, pr.lead_timezone,
             c.name AS client_name,
             c.reply_enrich_ceiling_usd, c.reply_enrich_ceiling_hot_usd
@@ -169,6 +184,7 @@ async function enrichPendingReplyPhone(replyId, {
   );
   if (
     shouldSkipEnrichment(existing.classification) ||
+    isVisibilityOnlyHeyreach(existing) ||
     existing.status === 'suppressed' ||
     clientDqReason
   ) {
@@ -188,7 +204,7 @@ async function enrichPendingReplyPhone(replyId, {
             replyId,
             clientDqReason
               ? 'skipped_client_dq_domain'
-              : shouldSkipEnrichment(existing.classification)
+              : (shouldSkipEnrichment(existing.classification) || isVisibilityOnlyHeyreach(existing))
                 ? `skipped_${String(existing.classification || '').toLowerCase()}`
                 : 'skipped_suppressed',
           ]
@@ -453,6 +469,7 @@ module.exports = {
   enrichPendingReply,
   storedResult,
   shouldSkipEnrichment,
+  isVisibilityOnlyHeyreach,
   SKIP_ENRICH_CLASSIFICATIONS,
   FORBIDDEN_WRITE_COLUMNS,
 };
