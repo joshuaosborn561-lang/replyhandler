@@ -276,6 +276,7 @@ function startCron() {
          FROM meetings m
          JOIN clients c ON m.client_id = c.id
          WHERE m.status = 'booked'
+           AND c.active IS DISTINCT FROM false
            AND m.reminder_sent = false
            AND m.confirmed_time IS NOT NULL
            AND m.confirmed_time > now() + interval '50 minutes'

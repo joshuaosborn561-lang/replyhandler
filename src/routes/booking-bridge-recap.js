@@ -14,7 +14,10 @@ const router = Router();
  * GET /webhook/booking-bridge/recap?start=<iso>&end=<iso>
  * Authorization: Bearer <BOOKING_BRIDGE_WEBHOOK_SECRET>
  * Returns every active client plus INTERESTED / MEETING_PROPOSED / QUESTION
- * rows in the window. New clients appear as soon as they exist in `clients`.
+ * people in the window, one row per lead email per canonical client. Name
+ * variants that share a slug are one client. Client-owned addresses are
+ * omitted. New clients appear as soon as they exist in `clients`.
+ * Meetings are not counted here.
  */
 router.get('/webhook/booking-bridge/recap', async (req, res) => {
   const auth = assertBookingBridgeSecret(req);

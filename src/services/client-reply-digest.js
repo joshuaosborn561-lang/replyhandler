@@ -213,11 +213,17 @@ async function runClientReplyDigest({
     summary.clients += 1;
     try {
       const { rows: [client] } = await query(
-        'SELECT id, name, notify_emails FROM clients WHERE id = $1',
+        'SELECT id, name, notify_emails, active FROM clients WHERE id = $1',
         [clientId],
       );
-      const { to, cc } = client ? digestRecipients(client, env) : { to: [], cc: [] };
-      if (!client || !to.length) {
+      if (!client || client.active === false) {
+        await release(ids, 'sent');
+        summary.skipped += 1;
+        console.warn('[ClientDigest] inactive or missing client, roll-up skipped', { clientId, replies: ids.length });
+        continue;
+      }
+      const { to, cc } = digestRecipients(client, env);
+      if (!to.length) {
         // No client list (or the client is gone): nothing to send, and nothing to retry.
         await release(ids, 'sent');
         summary.skipped += 1;
