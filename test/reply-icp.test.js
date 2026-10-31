@@ -314,15 +314,19 @@ test('icp helpers never write forbidden suppression columns', () => {
   assert.equal(parseStoredIcp({ status: 'qualified', confidence: 1 }).status, 'qualified');
 });
 
-test('SalesGlider grades against any B2B service business, not only trade contractors', async () => {
+test('SalesGlider grades against any high-ticket B2B business, not only trade contractors', async () => {
   clearIcpMemoryCache();
   const { DEFAULT_CLIENT_VARIANTS: V, PASS: P } = require('../src/services/reply-icp-variants');
   assert.equal(V.salesglider.jev_variant, 'b2b_service');
   assert.equal(P.b2b_service, 'b2b_service_business');
   const spec = variantSpec('b2b_service');
   assert.ok(spec.criteria.b2b_service_business, 'pass label has a criterion');
+  assert.match(spec.instructions, /any high-ticket B2B business/i);
+  assert.match(spec.criteria.b2b_service_business, /any high-ticket B2B business/i);
   assert.match(spec.criteria.b2b_service_business, /staffing/i);
-  assert.match(spec.criteria.b2b_service_business, /\$36,000/);
+  assert.match(spec.criteria.low_value_or_solo, /not a high-ticket B2B business/i);
+  assert.match(V.salesglider.note, /any high-ticket B2B business/i);
+  assert.doesNotMatch(`${spec.instructions}\n${spec.criteria.b2b_service_business}\n${spec.criteria.low_value_or_solo}\n${V.salesglider.note}`, /\$36|36K/i);
 
   const orig = process.env.SUPABASE_URL;
   const origKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

@@ -1680,3 +1680,9 @@ Reverses "Reject also marks Not Interested in SmartLead" (2026-10-01) for every 
 - A FOLLOW_UP card is unchanged from 2026-10-21: Reject sets that step to `skipped`, does not cancel later steps, and does not touch the lead category.
 
 Guard: `Reject closes the card and does not change the lead category`. Runtime proof: `test/card-safety.test.js` (`Reject makes no Smartlead or HeyReach category or status call`).
+
+## SalesGlider ICP is any high-ticket B2B business (2026-10-31)
+
+Replaces the 2026-10-28 line that limited SalesGlider to a B2B service business with roughly $36K customer lifetime value. The pass is still `b2b_service_business` on the `b2b_service` variant. The instructions, that pass criterion, `low_value_or_solo`, and `DEFAULT_CLIENT_VARIANTS.salesglider.note` now say any high-ticket B2B business. There is no dollar LTV cutoff in those texts.
+
+Guard: `SalesGlider grades against any high-ticket B2B business, not only trade contractors`.

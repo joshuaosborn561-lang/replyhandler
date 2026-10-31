@@ -106,25 +106,25 @@ const VARIANTS = Object.freeze({
         'Anything else, or the website is too thin to tell what the firm invests in.',
     },
   },
-  // SalesGlider's own ICP (Josh, 2026-10-28): any B2B service business with
-  // roughly $36K+ customer lifetime value. No longer limited to trade
-  // contractors. `strictCache` = only accept a cached Jev result graded for
-  // THIS variant (the generic "any jev:* row" fallback would reuse another
-  // client's or the old trade-contractor verdict).
+  // SalesGlider's own ICP: any high-ticket B2B business. No longer limited
+  // to trade contractors or to a dollar LTV cutoff. `strictCache` = only
+  // accept a cached Jev result graded for THIS variant (the generic
+  // "any jev:* row" fallback would reuse another client's or the old
+  // trade-contractor verdict).
   b2b_service: {
     pass: PASS.b2b_service,
     strictCache: true,
     instructions:
-      'We sell outbound lead generation and appointment setting to B2B service businesses whose customers are worth roughly $36,000 or more in lifetime value. Which best describes this company, based on its website? Any B2B service business qualifies; it does not have to be a trade contractor.',
+      'We sell outbound lead generation and appointment setting to any high-ticket B2B business. Which best describes this company, based on its website? Any high-ticket B2B business qualifies; it does not have to be a trade contractor or a service firm.',
     criteria: {
       b2b_service_business:
-        'Independent business that sells services to other businesses, where a typical customer is worth about $36,000 or more over its lifetime (retainers, recurring contracts, or large projects). Includes staffing and recruiting, marketing and advertising agencies, consulting, IT services and managed service providers, accounting and bookkeeping, legal, engineering, logistics and freight, commercial insurance and financial advisory, commercial trade contractors and facility services (roofing, HVAC, mechanical, plumbing, electrical, cleaning, security), and similar professional or field services.',
+        'Any high-ticket B2B business: it sells to other businesses, and a typical customer is a meaningful contract, retainer, or large project. Includes staffing and recruiting, marketing and advertising agencies, consulting, IT services and managed service providers, software and SaaS sold to businesses, manufacturers and distributors selling to businesses, accounting and bookkeeping, legal, engineering, logistics and freight, commercial insurance and financial advisory, commercial trade contractors and facility services (roofing, HVAC, mechanical, plumbing, electrical, cleaning, security), and similar professional, product, or field businesses.',
       consumer_or_local_retail:
         'Sells mainly to consumers or homeowners: retail, restaurants, salons, fitness, residential contractors, real estate agents, healthcare practices that bill patients.',
       product_or_software_vendor:
-        'Sells software, a SaaS product, or physical products: manufacturers, distributors, wholesalers, dealers, equipment rental.',
+        'Consumer product brand, or software sold to individuals, rather than a high-ticket B2B business.',
       low_value_or_solo:
-        'Solo freelancer, hobby or side business, or a service where a typical customer is worth far less than $36,000 over its lifetime.',
+        'Solo freelancer, hobby or side business, or any business that is not a high-ticket B2B business.',
       enterprise_chain_or_nonprofit:
         'Large public corporation, national chain, franchise location, government body or nonprofit.',
       other_or_too_thin:
@@ -144,7 +144,7 @@ const DEFAULT_CLIENT_VARIANTS = Object.freeze({
   salesglider: {
     jev_variant: 'b2b_service',
     disco_icp: 'salesglider',
-    note: 'b2b_service_business passes (Josh 2026-10-28: any B2B service business, ~$36K+ LTV)',
+    note: 'b2b_service_business passes (any high-ticket B2B business)',
     localOverride: true,
   },
 });
@@ -153,7 +153,7 @@ const DEFAULT_CLIENT_VARIANTS = Object.freeze({
  * Buyer titles per client when the code, not clients.icp_profile, is the
  * source of record. Wins over stored titles for these clients.
  * SalesGlider: owners, founders, CEOs, presidents, partners, heads of
- * sales/growth at the target B2B service businesses.
+ * sales/growth at the target high-ticket B2B businesses.
  */
 const DEFAULT_CLIENT_PERSONAS = Object.freeze({
   salesglider: Object.freeze([
