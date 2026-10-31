@@ -207,8 +207,8 @@ describe('click on a closed reply shows a private notice', () => {
 describe('wiring', () => {
   it('the actions route runs the guard after Action received, and approve still reaches its handler', () => {
     const src = read('src/routes/slack.js');
-    assert.match(src, /noticeIfClosed\(action, interaction\)/);
-    assert.match(src, /startsWith\('approve_reply'\)/);
+    assert.match(src, /if \(await noticeIfClosed\(action, interaction\)\) return;/);
+    assert.doesNotMatch(src, /startsWith\('approve_reply'\)/);
     assert.ok(src.indexOf("'[Slack] Action received'") < src.indexOf('noticeIfClosed(action'));
   });
 

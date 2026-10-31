@@ -225,13 +225,14 @@ function mergeCardPayload(base = {}, patch = {}) {
   return out;
 }
 
-function rememberCard(replyId, payload) {
+function rememberCard(replyId, payload, dbClient = db) {
   if (!replyId || !payload) return payload;
   latestCards.delete(replyId);
   latestCards.set(replyId, payload);
   while (latestCards.size > LATEST_CARDS_MAX) {
     latestCards.delete(latestCards.keys().next().value);
   }
+  persistCardPayload(dbClient, replyId, payload);
   return payload;
 }
 
@@ -239,12 +240,40 @@ function latestCard(replyId) {
   return replyId ? latestCards.get(replyId) || null : null;
 }
 
+function forgetCardMemory(replyId) {
+  if (replyId) latestCards.delete(replyId);
+}
+
+/** Memory first, then the row. Survives a restart and the in-memory cap. */
+async function loadLatestCard(replyId, dbClient = db) {
+  if (!replyId) return null;
+  const cached = latestCards.get(replyId);
+  if (cached) return cached;
+  try {
+    const { rows } = await dbClient.query(
+      'SELECT card_payload FROM pending_replies WHERE id = $1',
+      [replyId]
+    );
+    const payload = rows[0]?.card_payload || null;
+    if (payload && typeof payload === 'object') {
+      latestCards.set(replyId, payload);
+      return payload;
+    }
+  } catch (err) {
+    if (!/card_payload/.test(err.message || '')) {
+      console.warn('[Slack] load card payload failed', { replyId, err: err.message });
+    }
+  }
+  return null;
+}
+
 /** chat.update a posted card with a partial patch merged over its latest state. */
 async function patchPostedCard({
-  slackApi = slack, token, channelId, ts, isDraft, replyId, base = {}, patch = {},
+  slackApi = slack, token, channelId, ts, isDraft, replyId, base = {}, patch = {}, dbClient = db,
 }) {
-  const merged = mergeCardPayload(mergeCardPayload(base, latestCard(replyId) || {}), patch);
-  rememberCard(replyId, merged);
+  const stored = await loadLatestCard(replyId, dbClient);
+  const merged = mergeCardPayload(mergeCardPayload(base, stored || {}), patch);
+  rememberCard(replyId, merged, dbClient);
   return updatePostedCard(slackApi, { token, channelId, ts, isDraft, payload: merged });
 }
 
@@ -269,6 +298,21 @@ async function persistCardIdentity(dbClient, replyId, {
       WHERE id = $4`,
     [li, site, em, replyId]
   );
+}
+
+function persistCardPayload(dbClient, replyId, payload) {
+  if (!dbClient || !replyId || !payload) return;
+  let json;
+  try { json = JSON.stringify(payload); } catch { return; }
+  // Do not touch updated_at. A card refresh must not look like a fresh send.
+  Promise.resolve(dbClient.query(
+    'UPDATE pending_replies SET card_payload = $1::jsonb WHERE id = $2',
+    [json, replyId]
+  )).catch((err) => {
+    if (!/card_payload/.test(err.message || '')) {
+      console.warn('[Slack] persist card payload failed', { replyId, err: err.message });
+    }
+  });
 }
 
 /** Person location + time zone. Tolerates a DB without migration 038. */
@@ -560,12 +604,13 @@ async function completeCardLinks({
     fullName: fullName || undefined,
   };
   const updatedCard = applyCardLinks(card, identity, extra);
+  const storedLatest = await loadLatestCard(replyId, dbClient);
   const updatedPayload = mergeCardPayload(
-    mergeCardPayload(payload, latestCard(replyId) || {}),
+    mergeCardPayload(payload, storedLatest || {}),
     updatedCard,
   );
   // Keep the newest draft text if the draft update landed first.
-  const newest = latestCard(replyId);
+  const newest = latestCard(replyId) || storedLatest;
   if (newest && newest.draft) {
     updatedPayload.draft = newest.draft;
     if (newest.reasoning) updatedPayload.reasoning = newest.reasoning;
@@ -731,6 +776,19 @@ async function postProspectSlackCard({
       inboundMessage: enrichedCard.inboundMessage,
     });
 
+    let heyreachPrep = null;
+    if (platform === 'heyreach' && replyId) {
+      try {
+        const { prepareHeyreachDraftCard } = require('./heyreach-card-gate');
+        heyreachPrep = await prepareHeyreachDraftCard({
+          replyId, card: enrichedCard, dbClient, isDraft,
+        });
+      } catch (err) {
+        console.warn('[Slack] HeyReach id resolve failed', { replyId, err: err.message });
+        heyreachPrep = { canSend: false, linkedinUrl: enrichedCard.leadLinkedinUrl || enrichedCard.linkedinUrl || null };
+      }
+    }
+
     let payload = {
       ...enrichedCard,
       lastOutboundMessage: contextMessage.body || undefined,
@@ -738,6 +796,12 @@ async function postProspectSlackCard({
       threadTs: threadTs || undefined,
       inThread: !!threadTs,
       threadPermalink: earlierPermalink || undefined,
+      leadId,
+      heyreachCanSend: heyreachPrep ? heyreachPrep.canSend : undefined,
+      linkedinReplyUrl: heyreachPrep?.linkedinUrl || enrichedCard.leadLinkedinUrl || enrichedCard.linkedinUrl || undefined,
+      conversationId: heyreachPrep?.conversationId || undefined,
+      linkedInAccountId: heyreachPrep?.linkedInAccountId || undefined,
+      hasHeyreachApiKey: heyreachPrep ? heyreachPrep.hasApiKey : undefined,
     };
     payload = await attachDraftCc(dbClient, { replyId, platform, isDraft, payload });
 
@@ -746,12 +810,49 @@ async function postProspectSlackCard({
       : await slackApi.postAlert(token, channelId, payload);
 
     postedTs = result.ts;
-    rememberCard(replyId, { ...payload, replyId });
+    rememberCard(replyId, { ...payload, replyId }, dbClient);
     if (replyId) {
-      await dbClient.query(
-        'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
-        [result.ts, replyId]
-      );
+      try {
+        await dbClient.query(
+          `UPDATE pending_replies
+              SET slack_message_ts = $1,
+                  slack_channel_id = COALESCE($2, slack_channel_id),
+                  updated_at = now()
+            WHERE id = $3`,
+          [result.ts, channelId || null, replyId]
+        );
+      } catch (err) {
+        if (!/slack_channel_id/.test(err.message || '')) throw err;
+        await dbClient.query(
+          'UPDATE pending_replies SET slack_message_ts = $1, updated_at = now() WHERE id = $2',
+          [result.ts, replyId]
+        );
+      }
+    }
+
+    if (
+      platform === 'heyreach'
+      && replyId
+      && postedTs
+      && String(card?.classification || payload.classification || '').toUpperCase() !== 'FOLLOW_UP'
+    ) {
+      try {
+        const { supersedeEarlierOpenCards } = require('./supersede-cards');
+        await supersedeEarlierOpenCards({
+          clientId,
+          platform,
+          campaignId,
+          leadId,
+          leadEmail: payload.leadEmail || card?.leadEmail,
+          keepId: replyId,
+          newTs: postedTs,
+          channelId,
+          token,
+          query: (sql, params) => dbClient.query(sql, params),
+        });
+      } catch (err) {
+        console.warn('[Slack] Could not supersede older HeyReach cards', { replyId, err: err.message });
+      }
     }
 
     const late = completeCardLinks({
@@ -807,6 +908,8 @@ module.exports = {
   mergeCardPayload,
   rememberCard,
   latestCard,
+  loadLatestCard,
+  forgetCardMemory,
   persistLeadLocation,
   triggerClientIcpBuild,
 };

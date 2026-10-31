@@ -8,12 +8,13 @@ const db = require('../db');
  */
 
 // Which reply statuses each button can still act on.
-const OPEN_FOR_EDIT_OR_SEND = ['pending', 'flagged'];
+const OPEN_FOR_EDIT_OR_SEND = ['pending', 'flagged', 'failed'];
 const OPEN_FOR_ACTION = {
   approve_reply: OPEN_FOR_EDIT_OR_SEND,
   approve_reply_cc_client: OPEN_FOR_EDIT_OR_SEND,
   approve_reply_cc_referral: OPEN_FOR_EDIT_OR_SEND,
-  open_edit_modal: OPEN_FOR_EDIT_OR_SEND,
+  open_edit_modal: ['pending', 'flagged'],
+  retry_send: ['failed'],
   reject_reply: ['pending', 'flagged'],
   dq_prospect: ['pending', 'alert_only', 'flagged'],
   meeting_booked: ['pending', 'alert_only', 'flagged'],
@@ -29,6 +30,8 @@ const STATUS_WORDS = {
   skipped: 'skipped',
   suppressed: 'suppressed',
   alert_only: 'alert only',
+  superseded: 'superseded by a newer card',
+  failed: 'send failed',
 };
 
 function statusWord(status) {

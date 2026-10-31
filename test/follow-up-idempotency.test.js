@@ -322,7 +322,7 @@ test('one card and one send per follow-up step', () => {
   assert.match(send, /claimOutboundSend/);
   const reject = route.slice(
     route.indexOf('async function handleReject'),
-    route.indexOf("classification = 'NOT_INTERESTED'")
+    route.indexOf("status = 'rejected'")
   );
   assert.match(reject, /FOLLOW_UP/);
   assert.match(reject, /Skipped — next follow-up still scheduled/);

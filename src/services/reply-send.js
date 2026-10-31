@@ -27,6 +27,7 @@ const {
 } = require('../utils/reply-all');
 const { filterOwnAddresses } = require('../utils/own-addresses');
 const { sendCcNotice } = require('./cc-notice-email');
+const { trackSend } = require('./send-inflight');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -449,7 +450,16 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
   });
 }
 
-async function sendReplyToPlatform(client, reply, replyText, { ccClientOnProspect = false, referralCc = null } = {}) {
+async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
+  if (reply?.id && !reply._sendTracked) {
+    return trackSend(reply.id, sendReplyToPlatform(
+      client,
+      { ...reply, _sendTracked: true },
+      replyText,
+      opts,
+    ));
+  }
+  const { ccClientOnProspect = false, referralCc = null } = opts;
   if (isSlackTestFixtureReply(reply)) {
     console.log('[ReplySend] Skipping outbound API — Slack test fixture', { replyId: reply.id, platform: reply.platform });
     return;

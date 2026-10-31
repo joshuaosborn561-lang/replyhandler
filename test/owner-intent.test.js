@@ -1254,56 +1254,46 @@ test('phone enrichment walks the email-waterfall to FullEnrich', () => {
     reversal('Josh dropped LeadMagic — reply enrichment uses the email-waterfall', 'prospect-enrich still calls LeadMagic'));
 });
 
-// ── Decision: Reject also marks Not Interested in SmartLead ───────────
-// "change the reject button to be reject and mark as not interested
-// where it changes the classification in smartlead"
-test('Reject marks the lead Not Interested in SmartLead', () => {
+// ── Decision: Reject closes the card and does not change lead category ─
+// Reverses "Reject also marks Not Interested in SmartLead" (2026-10-01).
+// The button still closes the card. It must not call Smartlead or HeyReach.
+test('Reject closes the card and does not change the lead category', () => {
   const slackService = read('src/services/slack.js');
   const slackRoute = read('src/routes/slack.js');
-  const sl = read('src/services/smartlead.js');
-  const { categoryIdForClassification } = require('../src/services/smartlead-category');
+  const start = slackRoute.indexOf('async function handleReject');
+  const end = slackRoute.indexOf('async function handleDisqualify');
+  const fn = slackRoute.slice(start, end);
 
   assert.match(slackService, /text: '❌ Reject'/,
-    reversal('Reject marks Not Interested in SmartLead', 'the Slack Reject button was removed'));
+    reversal('Reject closes the card without a category change', 'the Slack Reject button was removed'));
   assert.doesNotMatch(slackService, /Reject & not interested/,
     reversal('Reject button is labeled Reject', 'the Slack button was renamed back to Reject & not interested'));
-  assert.match(slackRoute, /markLeadNotInterested/,
-    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer updates the SmartLead category'));
-  assert.match(slackRoute, /classification = 'NOT_INTERESTED'/,
-    reversal('Reject marks Not Interested in SmartLead', 'Reject no longer writes NOT_INTERESTED locally'));
-  assert.match(sl, /\/campaigns\/\$\{cid\}\/leads\/\$\{lid\}\/category/,
-    reversal('Reject marks Not Interested in SmartLead', 'updateLeadCategory lost the SmartLead category path'));
-  assert.match(sl, /fetch-categories/,
-    reversal('Reject marks Not Interested in SmartLead', 'category list lookup was removed'));
-  assert.strictEqual(
-    categoryIdForClassification(
-      [{ id: 1, name: 'Interested' }, { id: 3, name: 'Not Interested' }],
-      'NOT_INTERESTED'
-    ),
-    3,
-    reversal('Reject marks Not Interested in SmartLead', 'we no longer resolve the Not Interested category by name')
-  );
-  assert.strictEqual(
-    categoryIdForClassification([{ id: 4, name: 'Do Not Contact' }], 'NOT_INTERESTED'),
-    null,
-    reversal('Reject marks Not Interested in SmartLead', 'Do Not Contact is being treated as Not Interested')
-  );
+  assert.doesNotMatch(fn, /markLeadNotInterested/,
+    reversal('Reject closes the card without a category change', 'Reject still calls markLeadNotInterested'));
+  assert.doesNotMatch(fn, /updateLeadCategory|fetch-categories|\/category/,
+    reversal('Reject closes the card without a category change', 'Reject still calls a Smartlead category endpoint'));
+  assert.doesNotMatch(fn, /heyreach\.\w*(?:[Ss]tatus|[Cc]ategory)|updateCampaignStatus|pauseLead|resumeLead/,
+    reversal('Reject closes the card without a category change', 'Reject still changes a HeyReach or campaign status'));
+  assert.match(fn, /status = 'rejected'/,
+    reversal('Reject closes the card without a category change', 'Reject no longer sets the row to rejected'));
+  assert.doesNotMatch(fn, /classification = 'NOT_INTERESTED'/,
+    reversal('Reject closes the card without a category change', 'Reject still rewrites the classification to NOT_INTERESTED'));
 });
 
 // ── Decision: FOLLOW_UP Reject skips only that step ───────────────────
 // "the Reject button on a follow-up card should only cancel that one
 // pending send. It must NOT stop the sequence or mark the lead as
 // rejected/not interested."
-// Exception to "Reject marks the lead Not Interested" — that still
-// applies to inbox cards. Travis Shindelbower 2026-10-21: Reject on the
-// follow-ups card set SmartLead to Not Interested and cancelled 3 nudges.
+// Inbox Reject also only closes the card (2026-10-31): no category change.
+// It still cancels pending follow-ups. A follow-up Reject skips only that
+// step and leaves the rest of the cadence pending.
 test('Reject on a follow-up card skips only that step', () => {
   const slackRoute = read('src/routes/slack.js');
   const slackService = read('src/services/slack.js');
   const start = slackRoute.indexOf('async function handleReject');
   const end = slackRoute.indexOf('async function handleDisqualify');
   const fn = slackRoute.slice(start, end);
-  const followUpBranch = fn.slice(0, fn.indexOf("classification = 'NOT_INTERESTED'"));
+  const followUpBranch = fn.slice(0, fn.indexOf("status = 'rejected'"));
 
   assert.match(followUpBranch, /FOLLOW_UP/,
     reversal('follow-up Reject skips only that step',
@@ -1320,9 +1310,9 @@ test('Reject on a follow-up card skips only that step', () => {
   assert.doesNotMatch(followUpBranch, /cancelPendingForThread/,
     reversal('follow-up Reject skips only that step',
       'follow-up Reject cancels the rest of the cadence'));
-  assert.match(fn, /markLeadNotInterested/,
-    reversal('Reject marks Not Interested in SmartLead',
-      'inbox Reject no longer updates the SmartLead category'));
+  assert.doesNotMatch(fn, /markLeadNotInterested/,
+    reversal('Reject closes the card without a category change',
+      'inbox Reject still updates the SmartLead category'));
   assert.match(fn, /cancelPendingForThread/,
     reversal('Reject marks Not Interested in SmartLead',
       'inbox Reject no longer cancels pending follow-ups'));

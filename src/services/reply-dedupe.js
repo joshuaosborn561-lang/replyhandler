@@ -673,7 +673,7 @@ async function claimOutboundSend({ replyId, replyText }, dbOverride) {
     const staleSending = current.status === 'sending'
       && current.updated_at
       && (Date.now() - new Date(current.updated_at).getTime()) > STALE_SENDING_MS;
-    const claimable = ['pending', 'flagged', 'approved'].includes(current.status) || staleSending;
+    const claimable = ['pending', 'flagged', 'approved', 'failed'].includes(current.status) || staleSending;
     if (!claimable) {
       await conn.query('COMMIT');
       return { ok: false, reason: 'already_actioned', status: current.status };

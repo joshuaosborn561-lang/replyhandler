@@ -1,4 +1,5 @@
 const { WebClient } = require('@slack/web-api');
+const { heyreachCanApprove } = require('./heyreach-card-gate');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 const { referralCcButtonText } = require('../utils/referred-contact');
 const { decodeHtmlEntities: decodeAllHtmlEntities } = require('../utils/html-entities');
@@ -764,7 +765,72 @@ function draftApprovalActionsBlock(replyId) {
   };
 }
 
+function linkedinReplyButton(url) {
+  const href = normalizeLinkedinUrl(url);
+  if (!href) return null;
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: 'Reply on LinkedIn' },
+    url: href,
+    action_id: 'reply_on_linkedin',
+  };
+}
+
+/** DQ, Meeting booked, and a LinkedIn link. No Approve, Edit, or Reject. */
+function heyreachLimitedActionsBlock(replyId, linkedinUrl) {
+  const elements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '🚫 DQ' },
+      action_id: 'dq_prospect',
+      value: String(replyId),
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '📅 Meeting booked' },
+      action_id: 'meeting_booked',
+      value: String(replyId),
+    },
+  ];
+  const link = linkedinReplyButton(linkedinUrl);
+  if (link) elements.push(link);
+  return { type: 'actions', elements };
+}
+
+/**
+ * HeyReach hides Approve unless the row can actually send. Every other
+ * platform keeps the full Approve / Edit / Reject row.
+ */
+function approvalActionsForCard(opts = {}) {
+  if (String(opts.platform || '').toLowerCase() !== 'heyreach') return null;
+  const explicit = opts.heyreachCanSend;
+  const canSend = explicit === true || explicit === false
+    ? explicit
+    : heyreachCanApprove({
+      replyId: opts.replyId,
+      leadId: opts.leadId,
+      conversationId: opts.conversationId,
+      linkedInAccountId: opts.linkedInAccountId ?? opts.linkedinAccountId,
+      hasApiKey: Boolean(opts.hasHeyreachApiKey || opts.heyreachApiKey),
+    });
+  if (canSend) return null;
+  return heyreachLimitedActionsBlock(opts.replyId, opts.linkedinReplyUrl || opts.leadLinkedinUrl);
+}
+
+function replaceActionsWithStatus(blocks, statusText) {
+  const kept = (Array.isArray(blocks) ? blocks : []).filter((block) => block && block.type !== 'actions');
+  const line = String(statusText || '').trim();
+  if (line) {
+    kept.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: line.slice(0, 2900) }],
+    });
+  }
+  return kept;
+}
+
 function buildSentConfirmationBlocks({
+  replyId,
   leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   leadName,
   leadEmail,
@@ -810,6 +876,7 @@ function buildSentConfirmationBlocks({
     // Closed by the booking bridge (or as a sibling of another card), not by a button click.
     meeting_booked_auto: '📅 Meeting booked — no action needed',
     failed: '⚠️ Send failed',
+    superseded: 'Superseded by newer card',
   };
   const footers = {
     approved: 'Approved & sent',
@@ -819,7 +886,8 @@ function buildSentConfirmationBlocks({
     disqualified: 'Disqualified · excluded from follow-up nudges',
     meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     meeting_booked_auto: 'Meeting booked · no action needed',
-    failed: 'Send failed',
+    failed: 'Send failed — use Retry',
+    superseded: 'Superseded by newer card',
   };
   // Reject on a follow-up card skips that one send. It does not mean the
   // lead is not interested, and the next cadence step still posts.
@@ -898,10 +966,24 @@ function buildSentConfirmationBlocks({
     elements: [{ type: 'mrkdwn', text: footerText }],
   });
 
+  if (kind === 'failed' && replyId) {
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'Retry' },
+        style: 'primary',
+        action_id: 'retry_send',
+        value: String(replyId),
+      }],
+    });
+  }
+
   if (blocks.length > SLACK_BLOCK_LIMIT) {
-    const tail = blocks.slice(-1);
+    const tailCount = (kind === 'failed' && replyId) ? 2 : 1;
+    const tail = blocks.slice(-tailCount);
     const headRoom = SLACK_BLOCK_LIMIT - tail.length;
-    const overflowBlocks = blocks.slice(headRoom, blocks.length - 1);
+    const overflowBlocks = blocks.slice(headRoom, blocks.length - tail.length);
     const fitted = [...blocks.slice(0, headRoom), ...tail];
     fitted.overflowBlocks = overflowBlocks;
     return fitted;
@@ -922,9 +1004,13 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
     ? 'Rejected — not interested'
     : opts.actionKind === 'disqualified'
       ? 'DQ'
-      : (opts.actionKind === 'meeting_booked' || opts.actionKind === 'meeting_booked_auto')
-        ? (opts.actionKind === 'meeting_booked_auto' ? 'Meeting booked, no action needed' : 'Meeting booked')
-        : 'Sent';
+      : opts.actionKind === 'superseded'
+        ? 'Superseded by newer card'
+        : opts.actionKind === 'failed'
+          ? 'Send failed'
+          : (opts.actionKind === 'meeting_booked' || opts.actionKind === 'meeting_booked_auto')
+            ? (opts.actionKind === 'meeting_booked_auto' ? 'Meeting booked, no action needed' : 'Meeting booked')
+            : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
   const result = await slack.chat.update({
@@ -1098,12 +1184,13 @@ function assembleFollowUpApprovalBlocks({
   canCcClient,
   contextBlock,
   review,
+  actionsBlock = null,
 }) {
   const willSend = buildWillSendBlocks({ draft, outgoingLabel: 'WILL SEND' });
   const loop = loopInClientBlock(needsClient, whatToSend);
   // Josh, Oct 29 2026: the buttons stay at the bottom, after the draft and the context line.
   const head = [...topBlocks];
-  const buttons = [draftApprovalActionsBlock(replyId)];
+  const buttons = [actionsBlock || draftApprovalActionsBlock(replyId)];
   if (canCcClient) {
     buttons.push(sendCcClientActionsBlock(replyId));
   }
@@ -1143,6 +1230,8 @@ function buildDraftApprovalCard({
   mention = null,
   followupContext = null,
   leadTitle = null, leadCompany = null, leadData = null, payload = null,
+  leadId = null, conversationId = null, linkedInAccountId = null, linkedinAccountId = null,
+  heyreachCanSend = null, linkedinReplyUrl = null, hasHeyreachApiKey = false, heyreachApiKey = null,
 }) {
   void phoneProvider; void inThread; void contextLabel;
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
@@ -1216,6 +1305,10 @@ function buildDraftApprovalCard({
       }),
       contextBlock,
       review,
+      actionsBlock: approvalActionsForCard({
+        replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
+        heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+      }) || draftApprovalActionsBlock(replyId),
     });
     blocks = assembled.blocks;
     overflowThread = assembled.overflowThread || [];
@@ -1247,7 +1340,10 @@ function buildDraftApprovalCard({
       if (referred) tail.push(referred);
     }
     // Buttons last, after the draft and the context line.
-    tail.push(draftApprovalActionsBlock(replyId));
+    tail.push(approvalActionsForCard({
+      replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
+      heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+    }) || draftApprovalActionsBlock(replyId));
     if (String(platform || '').toLowerCase() === 'smartlead') {
       const referralBtn = referralCcActionsBlock(replyId, referredContacts);
       if (referralBtn) tail.push(referralBtn);
@@ -1382,6 +1478,7 @@ function buildAlertCard({
   leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread,
+  linkedinReplyUrl,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const headerText = inThread
@@ -1442,6 +1539,10 @@ function buildAlertCard({
         },
       ],
     });
+    if (String(platform || '').toLowerCase() === 'heyreach') {
+      const link = linkedinReplyButton(linkedinReplyUrl || leadLinkedinUrl);
+      if (link) tail[tail.length - 1].elements.push(link);
+    }
   }
   const fitted = fitCardBlocks(head, conversation, tail);
 
@@ -1548,6 +1649,19 @@ async function updateMessage(token, channelId, messageTs, text) {
     ts: messageTs,
     text,
     blocks: [],
+  });
+}
+
+/** chat.update that keeps the blocks it is given. Never sends an empty block list. */
+async function updateMessageKeepingBlocks(token, channelId, messageTs, text, blocks) {
+  const list = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+  if (!token || !channelId || !messageTs || !list.length) return null;
+  const slack = getClient(token);
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text: String(text || '').slice(0, 3000),
+    blocks: list.slice(0, SLACK_BLOCK_LIMIT),
   });
 }
 
@@ -1786,6 +1900,11 @@ module.exports = {
   buildFollowUpConversationBlocks,
   lastThreadTurn,
   draftApprovalActionsBlock,
+  approvalActionsForCard,
+  heyreachLimitedActionsBlock,
+  linkedinReplyButton,
+  replaceActionsWithStatus,
+  updateMessageKeepingBlocks,
   openEditReplyModal,
   buildEditReplyBlocks,
   ccClientModalBlock,

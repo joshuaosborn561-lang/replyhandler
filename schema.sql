@@ -91,11 +91,15 @@ CREATE TABLE pending_replies (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
     'pending', 'approved', 'rejected', 'sent', 'flagged',
     'alert_only', 'suppressed', 'disqualified', 'meeting_booked',
-    'sending', 'skipped'
+    'sending', 'skipped', 'superseded', 'failed'
   )),
   suppression_reason TEXT,
   client_note TEXT,
   slack_message_ts TEXT,
+  slack_channel_id TEXT,
+  card_payload JSONB,
+  send_error TEXT,
+  superseded_by UUID,
   smartlead_email_stats_id TEXT,
   follow_up_id UUID,
   follow_up_step INTEGER,

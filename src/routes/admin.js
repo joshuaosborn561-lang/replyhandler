@@ -16,6 +16,7 @@ const {
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
+const { supersedeEarlierOpenCards, retireDuplicateOpenCards } = require('../services/supersede-cards');
 const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
 const { validateExtraction } = require('../services/followup-sequence-copy');
 
@@ -384,15 +385,56 @@ router.post('/admin/post-approval-card', async (req, res) => {
       },
     });
 
+    let superseded = { retired: [] };
+    if (slackResult?.ts && !slackResult.skipped) {
+      superseded = await supersedeEarlierOpenCards({
+        clientId,
+        platform: 'smartlead',
+        campaignId: String(campaignId),
+        leadId: String(leadId),
+        leadEmail: leadEmail || null,
+        keepId: reply.id,
+        newTs: slackResult.ts,
+        channelId: client.slack_channel_id,
+        token: client.slack_bot_token,
+      });
+    }
+
     return res.status(201).json({
       ok: true,
       replyId: reply.id,
       slackMessageTs: slackResult.ts,
       threadTs,
       ccClientButton: ccClient,
+      superseded: superseded.retired || [],
     });
   } catch (err) {
     console.error('[Admin] post-approval-card error', { err: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Retire older open Slack cards when the same client + lead + campaign has
+ * more than one. dry=1 (the default) lists reply ids and changes nothing.
+ * dry=0 marks the older rows superseded and rewrites those Slack messages.
+ *
+ *   POST /admin/cards/retire-duplicates?dry=1
+ *   POST /admin/cards/retire-duplicates?dry=0
+ */
+router.post('/admin/cards/retire-duplicates', async (req, res) => {
+  try {
+    const dryRun = parseDryRun(req.query.dry ?? req.body?.dry);
+    const result = await retireDuplicateOpenCards({ dryRun });
+    console.log('[Admin] retire-duplicates', {
+      dryRun,
+      groups: result.groups,
+      retire: result.retire.length,
+      failed: result.failed,
+    });
+    return res.json(result);
+  } catch (err) {
+    console.error('[Admin] retire-duplicates error', { err: err.message });
     return res.status(500).json({ error: err.message });
   }
 });

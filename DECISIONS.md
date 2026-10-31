@@ -1668,3 +1668,15 @@ Josh: clients get exactly three automatic updates — (1) the weekday EOD roll-u
 - **Portal updates never re-invite.** First-time provisioning may invite when Always-notify has an address and `PORTAL_SKIP_INVITE` is not true. Admin PATCH and sync-all call `provisionClientToPortal` with `invite: false`, so `skip_invite` is true. Adding an email later updates the portal record and does not email another invite.
 
 Guards: `test/client-notify-emails.test.js`, `test/portal-provision.test.js` (`an update never re-sends a portal invite`).
+
+## Reject only closes the card (2026-10-31)
+
+Reverses "Reject also marks Not Interested in SmartLead" (2026-10-01) for every card, on both Smartlead and HeyReach.
+
+- **❌ Reject** sets that `pending_replies` row to `rejected` and rewrites the Slack card. It does not send a reply.
+- It must not call `markLeadNotInterested`, `updateLeadCategory`, or any Smartlead category endpoint, and it must not change a HeyReach lead category or status. Campaign status is untouched.
+- The local classification stays whatever it was. Reject does not write `NOT_INTERESTED`.
+- Inbox reject still cancels pending follow-up nudges for that thread.
+- A FOLLOW_UP card is unchanged from 2026-10-21: Reject sets that step to `skipped`, does not cancel later steps, and does not touch the lead category.
+
+Guard: `Reject closes the card and does not change the lead category`. Runtime proof: `test/card-safety.test.js` (`Reject makes no Smartlead or HeyReach category or status call`).
