@@ -243,6 +243,9 @@ function profileToVariantSpec(profile) {
     : 'does not match the ICP facts above';
   return {
     pass: 'icp_fit',
+    // A stored profile is this client's ICP. Do not reuse a Jev row graded
+    // for a different variant (those model ids will not end in |client_profile).
+    strictCache: true,
     instructions: (
       `We sell ${offer}. Which best describes this company, based on its website? ` +
       `Use only the ICP facts given. Do not invent industries, titles, size, or geos.`

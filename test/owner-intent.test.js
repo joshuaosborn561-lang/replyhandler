@@ -1126,27 +1126,27 @@ test('every Slack reply card shows the topup ICP verdict', () => {
       'the decision was removed from DECISIONS.md'));
 
   const unknown = icpVerdictLine({ status: 'unknown', reason: 'no website' });
-  assert.match(unknown, /ICP: unknown \(no website\)/,
+  assert.match(unknown, /ICP: no website/,
     reversal('every Slack reply card shows the topup ICP verdict',
-      'missing website/ICP no longer prints ICP: unknown (reason)'));
+      'a missing website no longer says so on the card'));
 
   const dq = icpVerdictLine({
     status: 'disqualified',
     confidence: 80,
     reason: 'website says venture capital firm; client only works with private equity firm',
   });
-  assert.match(dq, /80% disqualified/,
-    reversal('every Slack reply card shows the topup ICP verdict',
-      'disqualified line lost the confidence percentage'));
-  assert.match(dq, /venture capital firm/,
-    reversal('every Slack reply card shows the topup ICP verdict',
-      'disqualified line lost the one-sentence reason'));
+  assert.match(dq, /Not a fit — website says venture capital firm/,
+    reversal('the ICP line is the Jev website-check fit plus one reason',
+      'disqualified line lost the fit verdict or the one-line reason'));
+  assert.doesNotMatch(dq, /80%/,
+    reversal('the ICP line is the Jev website-check fit plus one reason',
+      'the card is showing a confidence percentage again'));
 
   const lead = leadFieldText({
     leadName: 'Pat',
     leadIcpVerdict: { status: 'qualified', confidence: 99, reason: 'website says independent manufacturer; client ICP is independent manufacturer' },
   });
-  assert.match(lead, /99% qualified/,
+  assert.match(lead, /Fit — website says independent manufacturer/,
     reversal('every Slack reply card shows the topup ICP verdict',
       'leadFieldText no longer renders the ICP line'));
 
@@ -1155,7 +1155,7 @@ test('every Slack reply card shows the topup ICP verdict', () => {
     draft: 'Hey', inboundMessage: 'Sure',
     leadIcpVerdict: { status: 'disqualified', confidence: 80, reason: 'website says VC firm; client only works with PE' },
   }).blocks);
-  assert.match(draft, /80% disqualified/,
+  assert.match(draft, /Not a fit — website says VC firm/,
     reversal('every Slack reply card shows the topup ICP verdict',
       'approval card dropped the ICP line'));
 
@@ -1173,7 +1173,7 @@ test('every Slack reply card shows the topup ICP verdict', () => {
     inboundMessage: 'Sure', sentReply: 'Hey', actionKind: 'approved',
     leadIcpVerdict: { status: 'qualified', confidence: 72, reason: 'buyer with own facility' },
   }));
-  assert.match(sent, /72% qualified/,
+  assert.match(sent, /Fit — buyer with own facility/,
     reversal('every Slack reply card shows the topup ICP verdict',
       'confirmation card dropped the ICP line'));
 
@@ -1214,6 +1214,63 @@ test('every Slack reply card shows the topup ICP verdict', () => {
   assert.match(variants, /joshuaosborn561-lang\/topup/,
     reversal('every Slack reply card shows the topup ICP verdict',
       'the topup source citation was removed'));
+});
+
+// Josh, Oct 31 2026, after reviewing the card mockups.
+test('the interested card has no client header, a Jev fit line, and a mobile label only when confirmed', () => {
+  const { buildDraftApprovalCard, icpVerdictLine } = require('../src/services/slack');
+  const decisions = read('DECISIONS.md');
+  assert.match(decisions, /Jev website check/,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'the decision was removed from DECISIONS.md'));
+
+  const card = buildDraftApprovalCard({
+    replyId: '1',
+    clientName: 'Northwind',
+    campaignDisplay: 'Intro owners (4242)',
+    leadName: 'Pat Prospect',
+    leadPhone: '+15555550123',
+    platform: 'smartlead',
+    classification: 'INTERESTED',
+    draft: 'Hey',
+    inboundMessage: 'Sure',
+    lastOutboundMessage: 'Opening note',
+    leadIcpVerdict: { status: 'qualified', confidence: 91, reason: 'independent shop' },
+    threadMessages: [
+      { role: 'us', body: 'Opening note' },
+      { role: 'them', body: 'Sure' },
+    ],
+  });
+  const text = JSON.stringify(card.blocks);
+  assert.doesNotMatch(text, /Northwind/,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'the client name is back on the card'));
+  assert.equal(card.blocks.find((b) => b.type === 'header'), undefined,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'a header block is back at the top of the first card'));
+  assert.match(text, /Fit — independent shop/,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'the fit line is gone'));
+  assert.doesNotMatch(text, /_\(mobile\)_/,
+    reversal('a phone shows (mobile) only when the line type is confirmed mobile',
+      'an unconfirmed number is labeled mobile'));
+
+  const confirmed = JSON.stringify(buildDraftApprovalCard({
+    replyId: '1', leadName: 'Pat', leadPhone: '+15555550123',
+    enrichmentReceipt: { phoneLabel: 'mobile' },
+    platform: 'smartlead', classification: 'INTERESTED', draft: 'Hey', inboundMessage: 'Sure',
+  }).blocks);
+  assert.match(confirmed, /_\(mobile\)_/,
+    reversal('a phone shows (mobile) only when the line type is confirmed mobile',
+      'a confirmed mobile lost its label'));
+
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no ICP' }), /ICP: not on file/);
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'unreachable' }), /ICP: site unreachable/,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'an unreachable site is no longer called out'));
+  assert.match(read('src/services/reply-icp.js'), /unreachable/,
+    reversal('the interested card drops the client header and shows the Jev fit line',
+      'the website check no longer records an unreachable fetch'));
 });
 
 // ── Decision: phone waterfall is email-waterfall (LeadMagic dropped 2026-10-08)

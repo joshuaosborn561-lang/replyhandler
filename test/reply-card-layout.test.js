@@ -47,6 +47,7 @@ const FIRST = {
   leadCompany: 'Example Co',
   leadEmail: 'pat@example.com',
   leadPhone: PHONE,
+  enrichmentReceipt: { phoneLabel: 'mobile' },
   leadLinkedinUrl: 'https://www.linkedin.com/in/pat-prospect',
   leadWebsite: 'https://example.com',
   platform: 'smartlead',
@@ -78,22 +79,22 @@ test('the cold email plus their first reply is still the first card', () => {
   ]), false);
 });
 
-test('the first interested reply card leads with client, campaign, contact, and scores', () => {
+test('the first interested reply card leads with campaign, contact, and scores', () => {
   const { blocks } = buildDraftApprovalCard(FIRST);
   const text = flat(blocks);
-  const clientAt = text.indexOf(CLIENT);
   const campAt = text.indexOf('Intro owners');
   const phoneAt = text.indexOf(PHONE);
   const emailAt = text.indexOf('pat@example.com');
   const liAt = text.indexOf('linkedin.com/in/pat-prospect');
   const siteAt = text.indexOf('<https://example.com|');
-  const icpAt = text.indexOf('91% qualified');
+  const icpAt = text.indexOf('Fit — independent shop');
   const dmAt = text.indexOf('Decision maker: Yes');
   const youAt = text.indexOf('You said');
   const theyAt = text.indexOf('They replied');
   const draftAt = text.indexOf('Suggested reply');
-  assert.ok(clientAt >= 0 && clientAt < campAt, 'client name is above the campaign');
-  assert.ok(campAt < phoneAt, 'campaign is above the phone');
+  assert.equal(blocks.find((b) => b.type === 'header'), undefined, 'no client-name header');
+  assert.doesNotMatch(text, /Northwind/);
+  assert.ok(campAt === 0 || campAt < phoneAt, 'campaign is above the phone');
   assert.ok(phoneAt < emailAt && emailAt < liAt && liAt < siteAt);
   assert.match(text, /_\(mobile\)_/);
   assert.ok(siteAt < icpAt && icpAt < dmAt, 'scores sit under the contact line');
@@ -144,7 +145,7 @@ test('a later reply in the thread shows only the last exchange, the draft, and t
   assert.doesNotMatch(text, /Intro owners/);
   assert.doesNotMatch(text, /15555550123/);
   assert.doesNotMatch(text, /pat@example.com/);
-  assert.doesNotMatch(text, /91% qualified/);
+  assert.doesNotMatch(text, /Fit — independent shop/);
   assert.doesNotMatch(text, /Worth a quick look/);
   assert.doesNotMatch(text, /Yes, send times/);
   const ids = actionIds(blocks);
@@ -165,6 +166,7 @@ test('a later reply in the thread shows only the last exchange, the draft, and t
     leadName: 'Pat Prospect',
     leadEmail: 'pat@example.com',
     leadPhone: PHONE,
+    enrichmentReceipt: { phoneLabel: 'mobile' },
     leadLinkedinUrl: 'https://www.linkedin.com/in/pat-prospect',
     leadWebsite: 'https://example.com',
     leadIcpVerdict: FIRST.leadIcpVerdict,
@@ -177,7 +179,7 @@ test('a later reply in the thread shows only the last exchange, the draft, and t
   assert.match(modalText, /Intro owners/);
   assert.match(modalText, new RegExp(PHONE.replace('+', '\\+')));
   assert.match(modalText, /_\(mobile\)_/);
-  assert.match(modalText, /91% qualified/);
+  assert.match(modalText, /Fit — independent shop/);
   assert.match(modalText, /Decision maker: Yes/);
   assert.match(modalText, /Worth a quick look/);
   assert.match(modalText, /Yes, send times/);
@@ -233,6 +235,39 @@ test('posted cards keep the old Approve, Reject, DQ, and Meeting booked action i
   assert.match(route, /openThreadModal/);
   assert.match(slack, /action_id: 'view_thread'/);
   assert.doesNotMatch(slack, /meeting_booked:\$\{/);
+});
+
+test('a phone is labeled mobile only when the line type is confirmed mobile', () => {
+  const confirmed = flat(buildDraftApprovalCard(FIRST).blocks);
+  assert.match(confirmed, /_\(mobile\)_/);
+
+  const sourcePhone = flat(buildDraftApprovalCard({
+    ...FIRST,
+    enrichmentReceipt: null,
+    ccEmails: null,
+  }).blocks);
+  assert.match(sourcePhone, new RegExp(PHONE.replace('+', '\\+')));
+  assert.doesNotMatch(sourcePhone, /_\(mobile\)_/);
+  assert.doesNotMatch(sourcePhone, /not a confirmed mobile/);
+
+  const landline = flat(buildDraftApprovalCard({
+    ...FIRST,
+    leadPhone: null,
+    leadPhoneAlt: '+15555550199',
+    enrichmentReceipt: { phoneLabel: 'landline' },
+    ccEmails: null,
+  }).blocks);
+  assert.match(landline, /15555550199/);
+  assert.doesNotMatch(landline, /_\(mobile\)_|_\(landline\)_|not a confirmed mobile/);
+
+  const { leadFieldText } = require('../src/services/slack');
+  const alt = leadFieldText({
+    leadName: 'Pat',
+    leadPhoneAlt: '+15555550199',
+    enrichmentReceipt: { phoneLabel: 'voip' },
+  });
+  assert.match(alt, /15555550199/);
+  assert.doesNotMatch(alt, /_\(|not a confirmed mobile|VoIP|voip/);
 });
 
 test('follow-up cards keep their own layout', () => {

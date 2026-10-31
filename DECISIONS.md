@@ -1713,3 +1713,14 @@ Josh: "I need to see the client name, his campaign, his contact info, the ICP an
 - Approve, Approve & Send + CC client, Edit, Reject (close only), DQ, and Meeting booked stay separate buttons. `action_id` and `value` stay the reply id, so a card already posted with the old layout still works. Follow-up cards are unchanged.
 
 Guard: `test/reply-card-layout.test.js`.
+
+## Interested card review: no client header, Jev fit line, mobile only when confirmed (2026-10-31)
+
+Josh reviewed the PR #189 mockups.
+
+- Drop the bold client-name header. Each client already has its own Slack channel, so the name at the top was noise. Campaign, lead, contact, ICP, what we said, what they said, the draft, and the buttons stay. Follow-up cards still use their own one-line header.
+- The ICP line is the Jev website check, not a percentage. ReplyHandler already ports topup `icp-llm` (`supabase/functions/icp-llm/index.ts`, `JEV_Q` / `PASS`, skill `skills/icp-website-gate`): read a cached `client_salesglider.icp_llm_results` row for this variant, otherwise fetch the company site (homepage, or cached `icp_site_text`) and grade it with the same category prompt against `clients.icp_profile` or the client's variant. Gemini stands in for Jev because this service has no OpenRouter key. The card shows `Fit — {reason}` or `Not a fit — {reason}`. No ICP on file stays `ICP: not on file`. A fetch that fails or times out says `ICP: site unreachable`. A page that loads but is too thin stays unreadable. The decision-maker line stays under that. Confidence is still stored and is not shown.
+- The check is cached on `client_tag` + domain (`reply_icp_verdicts`), including an unreachable or unreadable fetch, so the next card for that client and domain does not fetch again. A different client's ICP is a different cache row. A stored `icp_profile` does not reuse a Jev row graded for another variant.
+- Phone: `_(mobile)_` only when the line type is confirmed mobile (`phoneLabel` or `phoneType` is `mobile`). A source number, a landline, VoIP, or anything unverified is shown with no label. The number itself still shows.
+
+Guard: `the interested card has no client header, a Jev fit line, and a mobile label only when confirmed` in `test/owner-intent.test.js`. Website-check cases: `an unreachable website is said so, cached per client and domain, and not graded` and `a stored ICP is judged from the website, not another client's Jev row` in `test/reply-icp.test.js`. Phone: `a phone is labeled mobile only when the line type is confirmed mobile` in `test/reply-card-layout.test.js`.

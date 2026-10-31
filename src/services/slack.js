@@ -139,8 +139,9 @@ function websiteUrlLine(leadWebsite) {
 }
 
 /**
- * ICP line on every reply card. Topup icp-llm stores fit + P(PASS);
- * display is "{n}% qualified|disqualified: {reason}" or "ICP: unknown (reason)".
+ * ICP line on every reply card. The verdict is the Jev website check
+ * (topup icp-llm, ported in reply-icp.js): fit or not, plus one line of why.
+ * Confidence stays on the stored verdict and is not shown.
  */
 function icpVerdictLine(leadIcpVerdict) {
   const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
@@ -148,23 +149,16 @@ function icpVerdictLine(leadIcpVerdict) {
   const { decisionMakerText } = require('./decision-maker');
   const dmText = decisionMakerText(dm);
   const dmLine = dmText ? `\n👤 ${escMrkdwn(dmText)}` : '';
-  if (v && v.status === 'unknown' && /^no ICP$/i.test(String(v.reason || '').trim())) {
-    // Josh, Oct 29 2026: no ICP from the client's onboarding call means "not on file", never a score.
-    return `\n🎯 ICP: not on file${dmLine}`;
-  }
+  const reason = String(v?.reason || '').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
   if (!v || !v.status || v.status === 'unknown') {
-    const why = String(v?.reason || 'unknown').replace(/[()]/g, '').trim() || 'unknown';
-    const not = dm?.status === 'no' ? ' · not a fit: person is not a decision maker' : '';
-    return `\n🎯 ICP: unknown (${escMrkdwn(why)})${escMrkdwn(not)}${dmLine}`;
+    if (/^no ICP$/i.test(reason)) return `\n🎯 ICP: not on file${dmLine}`;
+    if (/^unreachable$/i.test(reason)) return `\n🎯 ICP: site unreachable${dmLine}`;
+    const why = reason || 'unknown';
+    return `\n🎯 ICP: ${escMrkdwn(why.slice(0, 180))}${dmLine}`;
   }
-  const pct = Number.isFinite(Number(v.confidence)) ? `${Math.round(Number(v.confidence))}% ` : '';
-  const reason = String(v.reason || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-  if (v.status === 'qualified' && dm?.status === 'no') {
-    return `\n🎯 ${escMrkdwn(`Not a fit: company fits (${pct}${reason || 'qualified'}) but the person replying is not a decision maker`)}${dmLine}`;
-  }
-  const word = v.status === 'qualified' ? 'qualified' : 'disqualified';
-  const tail = v.status === 'qualified' && dm?.status === 'unknown' ? ' · decision maker unconfirmed' : '';
-  return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason || word}${tail}`)}${dmLine}`;
+  const why = (reason || (v.status === 'qualified' ? 'fits the ICP' : 'does not fit the ICP')).slice(0, 180);
+  const word = v.status === 'qualified' ? 'Fit' : 'Not a fit';
+  return `\n🎯 ${escMrkdwn(`${word} — ${why}`)}${dmLine}`;
 }
 
 /** Prefer the enriched full name when the reply only carried a first name. */
@@ -185,11 +179,11 @@ function websiteFromLeadEmail(leadEmail) {
   return normalizeWebsiteUrl(e.slice(at + 1));
 }
 
-/** Non-mobile number (landline / VoIP / unverified) when no confirmed mobile was found. */
+/** A number we hold that is not a confirmed mobile. No line-type label. */
 function altPhoneLine(leadPhone, leadPhoneAlt) {
   if (String(leadPhone || '').trim()) return '';
   const alt = String(leadPhoneAlt || '').trim();
-  return alt ? `\n☎️ ${escMrkdwn(alt)} _(not a confirmed mobile)_` : '';
+  return alt ? `\n☎️ ${escMrkdwn(alt)}` : '';
 }
 
 /** The PERSON's location + local time zone (not company HQ). */
@@ -1056,22 +1050,17 @@ function shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientBut
  *   6. one context line for everything secondary (type, campaign, ICP, location, spend)
  */
 
-const PHONE_LABELS = {
-  mobile: 'mobile',
-  landline: 'landline',
-  'landline or mobile': 'landline or mobile',
-  voip: 'VoIP',
-  'toll-free': 'toll-free',
-  invalid: 'invalid number',
-};
-
-/** Label for a number we hold but cannot call a confirmed mobile. Veriphone result, else the fallback. */
-function altPhoneLabel(enrichmentReceipt) {
-  const raw = String(enrichmentReceipt?.phoneLabel || '').trim().toLowerCase();
-  return PHONE_LABELS[raw] || 'not a confirmed mobile';
+/** Veriphone (or an equivalent line-type check) said this number is mobile. */
+function isConfirmedMobile(enrichmentReceipt) {
+  const label = String(enrichmentReceipt?.phoneLabel || '').trim().toLowerCase();
+  if (label === 'mobile') return true;
+  const type = String(
+    enrichmentReceipt?.phoneType || enrichmentReceipt?.phone_type || enrichmentReceipt?.lineType || '',
+  ).trim().toLowerCase();
+  return type === 'mobile';
 }
 
-/** One line: phone (what kind), email, LinkedIn, website. Each shows once. */
+/** One line: phone, email, LinkedIn, website. Each shows once. */
 function compactContactLine({
   leadEmail, leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt,
   leadLinkedinUrl, leadWebsite,
@@ -1080,9 +1069,10 @@ function compactContactLine({
   const phone = String(leadPhone || '').trim();
   const alt = String(leadPhoneAlt || '').trim();
   if (phone) {
-    parts.push(`📱 ${escMrkdwn(phone)} _(mobile)_`);
+    const mobile = isConfirmedMobile(enrichmentReceipt) ? ' _(mobile)_' : '';
+    parts.push(`📱 ${escMrkdwn(phone)}${mobile}`);
   } else if (alt) {
-    parts.push(`☎️ ${escMrkdwn(alt)} _(${altPhoneLabel(enrichmentReceipt)})_`);
+    parts.push(`☎️ ${escMrkdwn(alt)}`);
   } else {
     const { phoneMissingText } = require('../utils/phone-lookup-reason');
     const why = phoneMissingText(enrichmentReceipt?.phoneLookup, phoneEnrichmentStatus);
@@ -1143,15 +1133,6 @@ function isBackAndForthThread(threadMessages) {
     }
   }
   return them > 1;
-}
-
-function clientNameBlock(clientName) {
-  const name = String(clientName || '').replace(/\s+/g, ' ').trim();
-  if (!name) return null;
-  return {
-    type: 'header',
-    text: { type: 'plain_text', text: name.length > 150 ? `${name.slice(0, 149)}…` : name },
-  };
 }
 
 function campaignBlock(campaignDisplay) {
@@ -1398,8 +1379,9 @@ function buildDraftApprovalCard({
     blocks = assembled.blocks;
     overflowThread = assembled.overflowThread || [];
   } else {
-    // Josh, Oct 31 2026: first card is client, campaign, contact, ICP and DM,
+    // Josh, Oct 31 2026: first card is campaign, contact, ICP and DM,
     // what we said, what they said, the draft, then the buttons.
+    // The client name is not a header — each client has its own channel.
     // A later reply in the same thread is only our last, their last, the draft,
     // the buttons, and View full thread.
     const backAndForth = isBackAndForthThread(threadMessages);
@@ -1414,8 +1396,6 @@ function buildDraftApprovalCard({
     const head = [];
     if (mention) head.push({ type: 'section', text: { type: 'mrkdwn', text: String(mention) } });
     if (!backAndForth) {
-      const clientHeader = clientNameBlock(client);
-      if (clientHeader) head.push(clientHeader);
       const camp = campaignBlock(campaignDisplay);
       if (camp) head.push(camp);
       const who = leadIdentityBlock({ name, title, company });

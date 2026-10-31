@@ -61,23 +61,24 @@ test('Jev P(PASS) becomes the displayed confidence', () => {
   assert.match(row.reason, /private equity firm/);
 });
 
-test('card line formats qualified, disqualified, and unknown', () => {
-  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no website' }), /ICP: unknown \(no website\)/);
+test('card line is a fit verdict and one reason, never a percentage', () => {
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no website' }), /ICP: no website/);
   assert.match(icpVerdictLine({ status: 'unknown', reason: 'no ICP' }), /ICP: not on file/);
-  assert.match(
-    icpVerdictLine({
-      status: 'disqualified',
-      confidence: 80,
-      reason: 'website says VC firm; client only works with PE',
-    }),
-    /🎯 80% disqualified: website says VC firm; client only works with PE/,
-  );
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'unreachable' }), /ICP: site unreachable/);
+  const dq = icpVerdictLine({
+    status: 'disqualified',
+    confidence: 80,
+    reason: 'website says VC firm; client only works with PE',
+  });
+  assert.match(dq, /🎯 Not a fit — website says VC firm; client only works with PE/);
+  assert.doesNotMatch(dq, /80%|disqualified/);
   const lead = leadFieldText({
     leadName: 'Pat',
     leadWebsite: 'https://acme.com',
     leadIcpVerdict: { status: 'qualified', confidence: 72, reason: 'buyer with own facility' },
   });
-  assert.match(lead, /72% qualified/);
+  assert.match(lead, /Fit — buyer with own facility/);
+  assert.doesNotMatch(lead, /72%/);
   assert.match(lead, /<https:\/\/acme\.com\|/);
 });
 
@@ -394,6 +395,237 @@ test('a cached verdict graded against an older pass label is ignored', async () 
     assert.notEqual(v.status, 'disqualified', 'old DQ is not served');
   } finally {
     if (prevUrl != null) process.env.SUPABASE_URL = prevUrl;
+    clearIcpMemoryCache();
+  }
+});
+
+function cacheDb(nameById = 'Bolder Cyber Partners') {
+  const rows = new Map();
+  return {
+    rows,
+    db: {
+      query: async (sql, params) => {
+        if (/FROM clients/.test(sql) && /icp_profile/.test(sql)) return { rows: [] };
+        if (/FROM reply_icp_verdicts/.test(sql)) {
+          const hit = rows.get(`${params[0]}::${params[1]}`);
+          return { rows: hit ? [hit] : [] };
+        }
+        if (/INSERT INTO reply_icp_verdicts/.test(sql)) {
+          rows.set(`${params[0]}::${params[1]}`, {
+            verdict: params[2],
+            confidence: params[3],
+            reason: params[4],
+            label: params[5],
+            pass_label: params[6],
+            source: params[7],
+            cost_usd: params[8],
+          });
+          return { rows: [] };
+        }
+        if (/UPDATE pending_replies/.test(sql)) return { rows: [] };
+        if (/SELECT name FROM clients/.test(sql)) return { rows: [{ name: nameById }] };
+        return { rows: [] };
+      },
+    },
+  };
+}
+
+test('an unreachable website is said so, cached per client and domain, and not graded', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const { db } = cacheDb();
+  let fetches = 0;
+  let grades = 0;
+  const fetchImpl = async () => {
+    fetches += 1;
+    return { ok: false, status: 503, text: async () => '' };
+  };
+  try {
+    const first = await resolveReplyIcp({
+      website: 'https://down.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl,
+      gradeFn: async () => { grades += 1; throw new Error('unreachable must not grade'); },
+    });
+    assert.equal(first.status, 'unknown');
+    assert.equal(first.reason, 'unreachable');
+    assert.equal(grades, 0);
+    assert.match(icpVerdictLine(first), /ICP: site unreachable/);
+
+    const second = await resolveReplyIcp({
+      website: 'https://down.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl,
+      gradeFn: async () => { grades += 1; throw new Error('cache must not grade'); },
+    });
+    assert.equal(second.reason, 'unreachable');
+    assert.equal(fetches, 1, 'the failed fetch is cached for this client and domain');
+    assert.equal(grades, 0);
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a thin page is unreadable, not unreachable', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_URL;
+  const { db } = cacheDb();
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://thin.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl: async () => ({ ok: true, text: async () => '<html><body>Hi</body></html>' }),
+      gradeFn: async () => { throw new Error('thin page must not grade'); },
+    });
+    assert.equal(v.reason, 'unreadable');
+    assert.match(icpVerdictLine(v), /ICP: unreadable/);
+    assert.doesNotMatch(icpVerdictLine(v), /unreachable/);
+  } finally {
+    if (prevUrl != null) process.env.SUPABASE_URL = prevUrl;
+    clearIcpMemoryCache();
+  }
+});
+
+test('the same domain is graded again for a different client', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const rows = new Map();
+  const db = {
+    query: async (sql, params) => {
+      if (/FROM clients/.test(sql) && /icp_profile/.test(sql)) return { rows: [] };
+      if (/FROM reply_icp_verdicts/.test(sql)) {
+        const hit = rows.get(`${params[0]}::${params[1]}`);
+        return { rows: hit ? [hit] : [] };
+      }
+      if (/INSERT INTO reply_icp_verdicts/.test(sql)) {
+        rows.set(`${params[0]}::${params[1]}`, {
+          verdict: params[2], confidence: params[3], reason: params[4],
+          label: params[5], pass_label: params[6], source: params[7], cost_usd: params[8],
+        });
+        return { rows: [] };
+      }
+      if (/SELECT name FROM clients/.test(sql)) {
+        return { rows: [{ name: params[0] === 'sg' ? 'SalesGlider' : 'Bolder Cyber Partners' }] };
+      }
+      return { rows: [] };
+    },
+  };
+  let grades = 0;
+  const gradeFn = async () => {
+    grades += 1;
+    return { fit: 'yes', prob: 0.9, reason: 'fits', answers: { category: { choice: grades === 1 ? 'private_equity_firm' : 'b2b_service_business' } } };
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    text: async () => `<html><body>${'Established company selling to other businesses with a real contract. '.repeat(8)}</body></html>`,
+  });
+  try {
+    const bcp = await resolveReplyIcp({
+      website: 'https://shared.example',
+      clientName: 'Bolder Cyber Partners',
+      db, grade: true, fetchImpl, gradeFn,
+    });
+    const sg = await resolveReplyIcp({
+      website: 'https://shared.example',
+      clientName: 'SalesGlider',
+      db, grade: true, fetchImpl, gradeFn,
+    });
+    assert.equal(bcp.clientTag, 'bcp');
+    assert.equal(sg.clientTag, 'salesglider');
+    assert.equal(grades, 2, 'a domain cached for one client is not reused as another client\'s fit');
+    assert.ok(rows.has('bcp::shared.example') && rows.has('salesglider::shared.example'));
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a stored ICP is judged from the website, not another client\'s Jev row', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-key';
+  const examples = require('../src/services/reply-examples');
+  const real = examples.supabaseRequest;
+  examples.supabaseRequest = async (path) => {
+    if (String(path).includes('icp_llm_results')) {
+      return [{
+        fit: 'yes', prob: 0.99, reason: 'private_equity_firm',
+        model: 'jev:typesafe/jev-1.13|bcp',
+        answers: { category: { choice: 'private_equity_firm' } },
+      }];
+    }
+    if (String(path).includes('icp_site_text')) return [];
+    return [];
+  };
+  const db = {
+    query: async (sql) => {
+      if (/icp_profile/.test(sql)) {
+        return {
+          rows: [{
+            icp_status: 'ready',
+            icp_profile: {
+              industries: ['HVAC'], titles: ['Owner'], company_size: [],
+              geos: [], offer: ['maintenance plans'], exclusions: ['chains'],
+            },
+          }],
+        };
+      }
+      if (/FROM reply_icp_verdicts/.test(sql)) return { rows: [] };
+      if (/INSERT INTO reply_icp_verdicts/.test(sql)) return { rows: [] };
+      if (/SELECT name FROM clients/.test(sql)) return { rows: [{ name: 'Example Client' }] };
+      return { rows: [] };
+    },
+  };
+  let graded = null;
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://hvac.example',
+      clientName: 'Example Client',
+      clientId: '00000000-0000-4000-8000-000000000099',
+      db,
+      grade: true,
+      fetchImpl: async () => ({
+        ok: true,
+        text: async () => `<html><body>${'Commercial HVAC contractor serving building owners. '.repeat(8)}</body></html>`,
+      }),
+      gradeFn: async (spec) => {
+        graded = spec;
+        return { fit: 'yes', prob: 0.8, reason: 'hvac contractor', answers: { category: { choice: 'icp_fit' } } };
+      },
+    });
+    assert.equal(graded.pass, 'icp_fit');
+    assert.equal(graded.strictCache, true);
+    assert.equal(v.source, 'gemini_icp_llm_port');
+    assert.match(v.reason, /hvac contractor|client ICP is icp fit/);
+    assert.notEqual(v.label, 'private_equity_firm');
+  } finally {
+    examples.supabaseRequest = real;
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
     clearIcpMemoryCache();
   }
 });

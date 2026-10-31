@@ -294,12 +294,12 @@ async function fetchWebsiteText(website, { fetchImpl = fetch } = {}) {
       signal: ac.signal,
       headers: { 'User-Agent': 'SalesGliderReplyHandler/1.0 (+icp-site-fetch port)' },
     });
-    if (!res.ok) return '';
+    if (!res.ok) return { text: '', unreachable: true };
     const html = await res.text();
-    return stripHtml(html).slice(0, SITE_TEXT_MAX);
+    return { text: stripHtml(html).slice(0, SITE_TEXT_MAX), unreachable: false };
   } catch (err) {
     console.warn('[Icp] website fetch failed', { err: err.message });
-    return '';
+    return { text: '', unreachable: true };
   } finally {
     clearTimeout(t);
   }
@@ -491,7 +491,11 @@ async function resolveReplyIcp({
   }
 
   const cached = await readLocalCache(db, clientTag, domain, variant.spec.pass);
-  if (cached && cached.status !== 'unknown') return cached;
+  // Qualified / disqualified hits are final. A failed or thin fetch is cached
+  // too (same client + domain) so the next card does not fetch again.
+  if (cached && (cached.status !== 'unknown' || cached.reason === 'unreachable' || cached.reason === 'unreadable')) {
+    return cached;
+  }
 
   const topup = await readTopupLlm(domain, variant.jev_variant, { strict: Boolean(variant.spec.strictCache) });
   if (topup) {
@@ -516,11 +520,14 @@ async function resolveReplyIcp({
   }
 
   let siteText = await readTopupSiteText(domain);
+  let fetched = null;
   if (!siteText) {
-    siteText = await fetchWebsiteText(website, { fetchImpl });
+    fetched = await fetchWebsiteText(website, { fetchImpl });
+    siteText = fetched.text || '';
   }
   if (!siteText || siteText.length < 80) {
-    const unread = unknownVerdict('unreadable', { domain, clientTag, source: 'fetch' });
+    const reason = fetched?.unreachable && !siteText ? 'unreachable' : 'unreadable';
+    const unread = unknownVerdict(reason, { domain, clientTag, source: 'fetch' });
     await writeLocalCache(db, unread);
     await persistPendingIcp(db, replyId, unread);
     return unread;
