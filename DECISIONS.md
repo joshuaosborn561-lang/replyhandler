@@ -1743,3 +1743,13 @@ Josh: every client brief needs a pre-send review hold. Build it about 2 hours be
 - **Shape.** The client email uses the HTML shell of the briefs `send-brief` already sends Josh (Client portal Supabase `scvrsmfzyvmmbnaolcrg`, function `send-brief`: Arial 14px, `h3` header, bold section title, bullets). Subject is `Brief: <name> @ <time>`. That function only posts prebuilt HTML to Josh through Resend. ReplyHandler renders here and sends with Gmail to `notify_emails`. It does not call `send-brief`. Sections, when there is something to say: Who (email, phone, LinkedIn, title, location), ICP fit, LinkedIn (DM history already on the reply), Email thread, Call history, Source campaign, About the company, Open items, Flags. Empty sections are left out. Facts come from the meeting and the stored reply. Nothing is researched or invented. The reviewer adds company detail the row does not have.
 
 Guard: `test/client-dayof-brief.test.js`.
+
+## Day-of briefs gather the same facts on hold and on preview (Josh, Oct 31 2026)
+
+Josh rejected a brief that only had a name, a campaign, and a bare website. The hold and the dry-run preview have to fill the same sections from the lookups reply cards already use, not from a one-off script.
+
+- **One gather.** `gatherBriefFacts` runs for the cron hold and for `GET /admin/client-briefs/preview`. A section that is empty after that gather is left out of the email.
+- **What it may read.** The stored reply and meeting. Smartlead message history and the lead record when the thread, phone, or LinkedIn is missing. Person-profile lookup for LinkedIn, title, and location. The email waterfall for phone and LinkedIn. HeyReach only when a LinkedIn URL is already known (no name-only search, so a different person is not attached). Allo calls for the phone on the brief. The company site, and only a sentence that is on the page. A phone labeled Tel/Phone in the prospect's own reply. The cached ICP verdict. If that verdict is missing, the line is "ICP fit: not on file" — this job does not call Jev or Claude.
+- **What it may not do.** Invent a title, a headcount, a profile, or a call. A lookup that fails or is not configured leaves that fact out.
+
+Guard: `test/client-dayof-brief.test.js` (`the live hold and the preview pull the same sections`).

@@ -17,6 +17,13 @@
  * here and sends it with Gmail to the client's notify list. It does not call
  * send-brief, and it does not invent company or personal facts.
  *
+ * The cron hold and the admin preview call the same gather. It reads the
+ * stored reply, then fills gaps from the lookups already used on reply cards:
+ * Smartlead thread and lead, person profile (LinkedIn, title, location), the
+ * email waterfall (phone and LinkedIn), HeyReach when a LinkedIn URL is known,
+ * Allo call history, and the company site. ICP is the cached verdict only.
+ * This job does not call Jev or Claude. A failed lookup leaves that fact out.
+ *
  * POST /admin/client-briefs/:id/release is the only way a brief becomes
  * `released`. The client email goes out only then, and only when
  * CLIENT_DAYOF_BRIEF_ENABLED is on (default off). A blocked brief never sends.
@@ -33,6 +40,7 @@ const { escapeHtml } = require('./client-notify-email');
 const { fyiReplyTo } = require('../utils/fyi-notify');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { stripQuoted } = require('./booked-brief-data');
+const { cleanPhone } = require('../utils/lead-phone');
 
 const JOSH_DEFAULT = 'joshua@salesglidergrowth.com';
 const FLAG = 'CLIENT_DAYOF_BRIEF_ENABLED';
@@ -218,7 +226,7 @@ function threadMessages(row, platform) {
     ? heyreachContext(row)
     : row.thread_context;
   return extractThreadMessages(which, context, { maxMessages: 8, extraMessages: extra, pinStart: true })
-    .map((m) => ({ ...m, body: stripQuoted(m.body).slice(0, 1500) }))
+    .map((m) => ({ ...m, body: cutQuotedTail(m.body).slice(0, 1500) }))
     .filter((m) => filled(m.body));
 }
 
@@ -229,7 +237,7 @@ function heyreachContext(row) {
 }
 
 function messageLine(m, tz, prospectName) {
-  const text = oneLine(m && m.body, 500);
+  const text = oneLine(m && m.body, 900);
   if (!text) return '';
   const who = m.role === 'us' ? 'Us' : (prospectName || 'Them');
   const when = formatWhen(m.time, tz);
@@ -237,21 +245,91 @@ function messageLine(m, tz, prospectName) {
   return `${head}: ${text}`;
 }
 
+function ownReplyText(body) {
+  return stripQuoted(String(body || ''))
+    .replace(/sent from my iphone/ig, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function asksFrom(messages) {
   const out = [];
+  const push = (s) => {
+    const line = oneLine(s, 400);
+    if (!line || out.includes(line)) return;
+    out.push(line);
+  };
   for (const m of messages) {
     if (m.role !== 'them') continue;
-    const sentences = m.body.split(/(?<=[.?!])\s+/);
+    const own = ownReplyText(m.body);
+    if (!own) continue;
+    if (own.length <= 90) {
+      if (/^(info|information)\b/i.test(own) || /\b\d{1,2}:\d{2}\s*[ap]m\b/i.test(own)) push(own);
+    }
+    const sentences = own.split(/(?<=[.?!])\s+/);
     for (const sentence of sentences) {
       const s = oneLine(sentence, 400);
       if (!s) continue;
       if (/\?/.test(s) || /\b(send|pricing|price|deck|one-pager|one pager|call me|schedule|times work|let me know)\b/i.test(s)) {
-        if (!out.includes(s)) out.push(s);
+        push(s);
       }
       if (out.length >= 4) return out;
     }
   }
   return out;
+}
+
+function phoneFromLabeledText(text) {
+  const m = String(text || '').match(/\b(?:tel|phone|mobile|cell|direct)\s*[:.]?\s*(\(?\+?\d[\d\s().-]{6,}\d)/i);
+  return m ? cleanPhone(m[1]) : '';
+}
+
+/** Quoted tails survive as one line after HTML is flattened. Cut them here. */
+function cutQuotedTail(text) {
+  let t = stripQuoted(text);
+  const wrote = t.match(/\bOn\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b[\s\S]{0,220}?wrote:/i);
+  if (wrote && wrote.index > 15) t = t.slice(0, wrote.index);
+  t = t.replace(/\s*sent from my iphone\s*/ig, ' ').replace(/\s+/g, ' ').trim();
+  return t;
+}
+
+function phoneFromBlob(text) {
+  const labeled = phoneFromLabeledText(text);
+  if (labeled) return labeled;
+  const m = String(text || '').match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/);
+  return m ? cleanPhone(m[0]) : '';
+}
+
+function officeCity(text) {
+  const m = String(text || '').match(/\bOffice\s*:?\s*\d[^.\n]{0,90}?,\s*([A-Za-z .'-]+,\s*[A-Z]{2})\b/);
+  return m ? oneLine(m[1], 80) : '';
+}
+
+function streetLine(text) {
+  const m = String(text || '').match(/\b(\d{2,6}\s+[A-Za-z0-9.' ]{2,40}?,\s*[A-Za-z .'-]+,\s*[A-Z]{2})(?:\s+\d{5})?\b/);
+  return m ? oneLine(m[1], 120) : '';
+}
+
+/** A sentence that is actually on the page. Lorem and nav chrome are dropped. */
+function companyBlurb(siteText) {
+  const text = String(siteText || '').replace(/\s+/g, ' ').trim();
+  const parts = text.split(/(?<=[.?!])\s+/);
+  const good = parts.map((s) => s.trim()).filter((s) => (
+    s.length >= 40 && s.length <= 400 && !/lorem ipsum|view more|keyboard_arrow|\|/i.test(s)
+  ));
+  const preferred = good.find((s) => /ports of|container|works with/i.test(s))
+    || good.find((s) => /drayage|warehous|logistics|we (are|handle|provide|offer)/i.test(s));
+  const cleaned = String(preferred || '').replace(/^(?:about us|company|services|home)\s+/i, '');
+  return oneLine(cleaned, 500);
+}
+
+function exampleHost(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'example.com' || host.endsWith('.example') || host.endsWith('.example.com') || host.endsWith('.invalid');
+  } catch {
+    return true;
+  }
 }
 
 function icpPlain(raw) {
@@ -336,6 +414,276 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
     openItems,
     flags: { icpFit, risks, noShowHistory },
   };
+}
+
+function smartleadKey(env) {
+  return String(env.SMARTLEAD_API_KEY || env.SMARTLEAD_MASTER_API_KEY || '').trim();
+}
+
+function heyreachKey(env) {
+  return String(env.HEYREACH_API_KEY || '').trim();
+}
+
+function waterfallConfigured(env) {
+  return Boolean(String(env.EMAIL_WATERFALL_URL || '').trim());
+}
+
+function profileLookupConfigured(env) {
+  if (String(env.SERPER_API_KEY || env.SERPER_KEY || '').trim()) return true;
+  try { return require('./aiark').isConfigured() === true; } catch { return false; }
+}
+
+function alloConfigured(env) {
+  if (String(env.ALLO_API_KEY || '').trim()) return true;
+  try { return require('./allo').isConfigured() === true; } catch { return false; }
+}
+
+async function safeLookup(step, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    console.warn('[DayofBrief] lookup skipped', { step, err: String(err && err.message || err).slice(0, 160) });
+    return null;
+  }
+}
+
+function liveDeps() {
+  return {
+    async getThreadHistory({ apiKey, campaignId, leadId }) {
+      return require('./smartlead').getThreadHistory(apiKey, campaignId, leadId);
+    },
+    async lookupLeadByEmail({ apiKey, email }) {
+      return require('./smartlead').lookupLeadByEmail(apiKey, email);
+    },
+    async lookupPersonProfile(input, opts) {
+      return require('./person-profile-lookup').lookupPersonProfile(input, opts);
+    },
+    async enrichProspect(input) {
+      return require('./prospect-enrich').enrichProspect(input);
+    },
+    async findConversation({ apiKey, linkedinUrl, leadName }) {
+      return require('./heyreach').findConversation(apiKey, { linkedinUrl, leadName, allowNameSearch: false });
+    },
+    async searchCalls(phone) {
+      return require('./allo').searchCalls(phone);
+    },
+    async fetchSiteText(url, opts) {
+      return require('./booked-brief-data').fetchSiteText(url, opts);
+    },
+  };
+}
+
+function attachHistory(src, historyResponse) {
+  const messages = historyResponse && (historyResponse.history || historyResponse.messages);
+  if (!Array.isArray(messages) || !messages.length) return false;
+  const prev = parseObj(src.thread_context);
+  const base = prev && !Array.isArray(prev) ? { ...prev } : {};
+  base.history = messages;
+  src.thread_context = base;
+  return true;
+}
+
+function heyreachTurns(conv) {
+  if (!conv || typeof conv !== 'object') return [];
+  const raw = Array.isArray(conv.messages) ? conv.messages : [];
+  const mapped = raw.map((m) => {
+    const sender = String(m.sender || m.role || m.direction || '').toLowerCase();
+    const role = /^(us|me|sender|user|outbound)$/.test(sender) || sender === 'us' ? 'us' : 'them';
+    return {
+      role,
+      body: m.body || m.text || m.message || '',
+      time: m.createdAt || m.created_at || m.time || m.sentAt || '',
+    };
+  }).filter((m) => filled(m.body));
+  if (mapped.length) return mapped;
+  const text = oneLine(conv.lastMessageText || conv.lastMessage || conv.last_message || '', 1500);
+  if (!text) return [];
+  return [{ role: 'them', body: text, time: conv.lastMessageAt || conv.last_message_at || '' }];
+}
+
+function attachHeyreach(src, turns) {
+  if (!turns.length) return;
+  const prev = parseObj(src.thread_context);
+  const base = prev && !Array.isArray(prev) ? { ...prev } : {};
+  if (Array.isArray(prev)) base.history = prev;
+  base.heyreach = { messages: turns };
+  src.thread_context = base;
+}
+
+function prospectTexts(src) {
+  return threadMessages(src, 'smartlead')
+    .filter((m) => m.role === 'them')
+    .map((m) => ownReplyText(m.body))
+    .filter(Boolean);
+}
+
+/**
+ * Same gather for the cron hold and the dry-run preview.
+ * Reads the stored reply, then fills gaps from the lookups this repo already
+ * uses. A failed lookup omits that fact. Cached ICP only — this does not
+ * call Jev or Claude. It does not invent a title, size, or profile.
+ */
+async function gatherBriefFacts(row, {
+  priorNoShows = null, env = process.env, fetchImpl = fetch, deps = null,
+} = {}) {
+  const src = { ...(row || {}) };
+  const d = { ...liveDeps(), ...(deps || {}) };
+  const injected = deps || {};
+  const slKey = smartleadKey(env);
+
+  if (!hasEmailBody(src) && filled(src.campaign_id) && filled(src.lead_id) && (injected.getThreadHistory || slKey)) {
+    const history = await safeLookup('email thread', () => d.getThreadHistory({
+      apiKey: slKey, campaignId: src.campaign_id, leadId: src.lead_id,
+    }));
+    if (history) attachHistory(src, history);
+  }
+
+  const missingContact = !filled(src.lead_phone) || !filled(src.linkedin_url) || !filled(src.reply_linkedin)
+    || !filled(src.lead_website) || !filled(src.lead_location);
+  if (missingContact && filled(src.lead_email) && (injected.lookupLeadByEmail || slKey)) {
+    const found = await safeLookup('smartlead lead', () => d.lookupLeadByEmail({
+      apiKey: slKey, email: src.lead_email,
+    }));
+    const lead = found && found.lead ? found.lead : null;
+    if (lead) {
+      if (!filled(src.lead_phone)) src.lead_phone = cleanPhone(lead.phone_number) || phoneFromLabeledText(JSON.stringify(lead.custom_fields || {}));
+      if (!filled(src.linkedin_url) && !filled(src.reply_linkedin)) src.linkedin_url = oneLine(lead.linkedin_profile, 300);
+      if (!filled(src.lead_website)) src.lead_website = oneLine(lead.website || lead.company_url, 300);
+      if (!filled(src.lead_location)) src.lead_location = oneLine(lead.location, 160);
+      if (!filled(src.lead_company)) src.lead_company = oneLine(lead.company_name, 200);
+      const custom = lead.custom_fields && typeof lead.custom_fields === 'object' ? lead.custom_fields : {};
+      if (!filled(src.lead_title)) src.lead_title = oneLine(custom.job_title || custom.title, 200);
+    }
+  }
+
+  const needProfile = !filled(src.linkedin_url) && !filled(src.reply_linkedin)
+    || !filled(src.lead_location) || !filled(src.lead_title);
+  if (needProfile && (injected.lookupPersonProfile || profileLookupConfigured(env))) {
+    const profile = await safeLookup('person profile', () => d.lookupPersonProfile({
+      email: src.lead_email,
+      leadName: src.lead_full_name || src.lead_name,
+      companyName: src.lead_company,
+      linkedinUrl: src.linkedin_url || src.reply_linkedin,
+      location: src.lead_location,
+      title: src.lead_title,
+    }, { fetchImpl, env }));
+    if (profile) {
+      if (!filled(src.linkedin_url) && !filled(src.reply_linkedin) && profile.linkedinUrl) src.linkedin_url = profile.linkedinUrl;
+      if (!filled(src.lead_location) && profile.location) src.lead_location = oneLine(profile.location, 160);
+      if (!filled(src.lead_title) && profile.title) src.lead_title = oneLine(profile.title, 200);
+      if (!filled(src.lead_full_name) && profile.fullName) src.lead_full_name = oneLine(profile.fullName, 200);
+    }
+  }
+
+  const needPhone = !filled(src.lead_phone);
+  const needLinkedin = !filled(src.linkedin_url) && !filled(src.reply_linkedin);
+  if ((needPhone || needLinkedin) && filled(src.lead_email) && (injected.enrichProspect || waterfallConfigured(env))) {
+    const hit = await safeLookup('enrichment', () => d.enrichProspect({
+      email: src.lead_email,
+      leadName: src.lead_full_name || src.lead_name,
+      companyName: src.lead_company,
+      linkedinUrl: src.linkedin_url || src.reply_linkedin,
+      phone: src.lead_phone,
+      domain: String(src.lead_email || '').split('@')[1] || '',
+      clientTag: oneLine(src.client_name, 40).toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'client',
+      need: needPhone ? 'both' : 'email',
+      approveCostUsd: 0.25,
+    }));
+    if (hit) {
+      if (!filled(src.lead_phone) && hit.phone) src.lead_phone = cleanPhone(hit.phone) || oneLine(hit.phone, 60);
+      if (needLinkedin && hit.linkedinUrl) src.linkedin_url = hit.linkedinUrl;
+    }
+  }
+
+  const linkedinNow = src.linkedin_url || src.reply_linkedin;
+  let linkedinLooked = false;
+  if (!threadMessages(src, 'heyreach').length && filled(linkedinNow) && (injected.findConversation || heyreachKey(env))) {
+    const conv = await safeLookup('linkedin', async () => {
+      const found = await d.findConversation({
+        apiKey: heyreachKey(env),
+        linkedinUrl: linkedinNow,
+        leadName: src.lead_full_name || src.lead_name,
+      });
+      linkedinLooked = true;
+      return found;
+    });
+    const turns = heyreachTurns(conv);
+    if (turns.length) attachHeyreach(src, turns);
+    const profileUrl = conv && conv.correspondentProfile && conv.correspondentProfile.profileUrl;
+    if (!filled(src.linkedin_url) && !filled(src.reply_linkedin) && profileUrl) src.linkedin_url = oneLine(profileUrl, 300);
+  }
+
+  const texts = prospectTexts(src);
+  if (!filled(src.lead_phone)) {
+    for (const text of texts) {
+      const phone = phoneFromLabeledText(text);
+      if (phone) { src.lead_phone = phone; break; }
+    }
+  }
+  if (!filled(src.lead_location)) {
+    for (const text of texts) {
+      const city = officeCity(text);
+      if (city) { src.lead_location = city; break; }
+    }
+  }
+
+  let callsLooked = false;
+  let callLines = [];
+  if (filled(src.lead_phone) && !filled(callNotesFrom(src)) && (injected.searchCalls || alloConfigured(env))) {
+    const calls = await safeLookup('calls', async () => {
+      const found = await d.searchCalls(src.lead_phone);
+      callsLooked = true;
+      return found;
+    });
+    if (Array.isArray(calls)) {
+      callLines = calls.slice(0, 4).map((call) => {
+        const when = formatWhen(call.start_date || call.started_at || call.created_at, src.digest_timezone || 'America/Chicago');
+        const summary = oneLine(call.summary || '', 500);
+        return [when, summary].filter(Boolean).join(': ');
+      }).filter(Boolean);
+    }
+  }
+
+  const facts = assembleBriefFacts(src, { priorNoShows });
+  if (!filled(facts.flags.icpFit)) facts.flags.icpFit = 'ICP fit: not on file';
+  if (callLines.length) {
+    facts.history.callLines = callLines;
+    facts.history.callNotes = facts.history.callNotes || callLines.join(' ');
+  } else if (callsLooked && !filled(facts.history.callNotes)) {
+    facts.history.callNotes = 'No calls on file.';
+  }
+  if (linkedinLooked && !(facts.history.dmLines || []).length) {
+    facts.history.dmLines = ['No LinkedIn messages on file.'];
+  }
+
+  const site = facts.company && facts.company.website;
+  let siteText = '';
+  if (site && !filled(facts.company.whatTheyDo) && (injected.fetchSiteText || !exampleHost(site))) {
+    siteText = await safeLookup('company site', () => d.fetchSiteText(site, { fetchImpl })) || '';
+    const blurb = companyBlurb(siteText);
+    if (blurb) facts.company.whatTheyDo = blurb;
+    if (!filled(facts.prospect.phone)) {
+      const sitePhone = phoneFromBlob(siteText);
+      if (sitePhone) facts.prospect.phone = sitePhone;
+    }
+  }
+
+  const fromEmail = streetLine(texts.join('\n'));
+  const fromSite = streetLine(siteText);
+  if (fromEmail && fromSite && fromEmail.toLowerCase() !== fromSite.toLowerCase()) {
+    facts.flags.risks = facts.flags.risks || [];
+    facts.flags.risks.push(`Email signature lists ${fromEmail}. The company site lists ${fromSite}.`);
+  }
+  return facts;
+}
+
+function hasEmailBody(row) {
+  if (filled(row.inbound_message) || filled(row.sent_reply)) return true;
+  const tc = parseObj(row.thread_context);
+  if (!tc) return false;
+  if (Array.isArray(tc) && tc.length) return true;
+  return (Array.isArray(tc.history) && tc.history.length > 0)
+    || (Array.isArray(tc.messages) && tc.messages.length > 0);
 }
 
 function contextPresence(facts) {
@@ -705,7 +1053,7 @@ function sqlStore(db) {
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
                 c.name AS client_name, c.notify_emails, c.digest_timezone,
                 pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
-                pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
+                pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
                 pr.thread_context, pr.classification, pr.icp_verdict, pr.updated_at
            FROM meetings m
@@ -901,7 +1249,7 @@ function sqlStore(db) {
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
                 c.name AS client_name, c.notify_emails, c.digest_timezone,
                 pr.platform, pr.campaign_name, pr.lead_title, pr.lead_company,
-                pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
+                pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
                 pr.thread_context, pr.icp_verdict, pr.updated_at
            FROM meetings m
@@ -967,7 +1315,7 @@ async function sendReleased(brief, { store, env, send }) {
   }
 }
 
-async function holdOne(row, { store, env, now, fetchImpl, send }) {
+async function holdOne(row, { store, env, now, fetchImpl, send, deps }) {
   const start = usableMeetingStart(row);
   if (!start || !briefIsDue(start, now, leadMinutes(env))) return { held: false, reason: 'not_due' };
   let prior = null;
@@ -977,7 +1325,7 @@ async function holdOne(row, { store, env, now, fetchImpl, send }) {
       console.warn('[DayofBrief] no-show lookup skipped', { err: String(err && err.message || err).slice(0, 160) });
     }
   }
-  const facts = assembleBriefFacts(row, { priorNoShows: prior });
+  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps });
   const rendered = buildClientDayofBrief(facts);
   const recipients = clientBriefRecipients(row, env);
   const inserted = await store.insertHeld({
@@ -1022,7 +1370,7 @@ async function runClientDayofBriefs(opts = {}) {
   const due = await store.dueMeetings(now, leadMinutes(env));
   for (const row of due) {
     try {
-      const out = await holdOne(row, { store, env, now, fetchImpl, send });
+      const out = await holdOne(row, { store, env, now, fetchImpl, send, deps: opts.deps });
       if (out.held) result.held += 1;
       else result.skipped += 1;
       if (out.notified) result.notified += 1;
@@ -1060,7 +1408,7 @@ async function runClientDayofBriefs(opts = {}) {
   return result;
 }
 
-async function previewBrief({ meetingId, store, env = process.env } = {}) {
+async function previewBrief({ meetingId, store, env = process.env, fetchImpl = fetch, deps = null } = {}) {
   if (!meetingId) return { status: 400, body: { ok: false, error: 'meeting_id_required' } };
   const dbStore = store || sqlStore(require('../db'));
   const row = await dbStore.loadMeeting(meetingId);
@@ -1070,7 +1418,7 @@ async function previewBrief({ meetingId, store, env = process.env } = {}) {
     try { prior = await dbStore.priorNoShows(row.client_id, row.lead_email, row.confirmed_time || new Date()); }
     catch { prior = null; }
   }
-  const facts = assembleBriefFacts(row, { priorNoShows: prior });
+  const facts = await gatherBriefFacts(row, { priorNoShows: prior, env, fetchImpl, deps });
   const rendered = buildClientDayofBrief(facts);
   const recipients = clientBriefRecipients(row, env);
   return {
@@ -1154,6 +1502,7 @@ module.exports = {
   briefLinks,
   clientBriefRecipients,
   assembleBriefFacts,
+  gatherBriefFacts,
   contextPresence,
   hasZeroContext,
   mergeFacts,

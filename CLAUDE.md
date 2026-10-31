@@ -239,7 +239,11 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
    `CLIENT_DAYOF_BRIEF_ENABLED` is on (default off). A held or blocked brief
    never auto-sends. A brief with no source, no company info, no past emails
    or calls, and no stated ask cannot be released or sent. Missing LinkedIn
-   alone does not trip that guard. To = `notify_emails`, CC = Josh.
+   alone does not trip that guard. The hold and the preview use the same
+   gather: stored reply, cached ICP only, then Smartlead history, person
+   profile, the email waterfall, HeyReach, Allo, and the company site when
+   those facts are missing. A failed lookup leaves the fact out. To =
+   `notify_emails`, CC = Josh.
    `reminder-email.js` is still the one-hour reminder to the prospect
    (`meeting.lead_email`), not this brief.
 

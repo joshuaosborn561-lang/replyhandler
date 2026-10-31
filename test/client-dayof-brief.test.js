@@ -505,6 +505,95 @@ describe('day-of brief hold, release, block', () => {
     assert.equal(pending.body.count, 0);
   });
 
+  it('the live hold and the preview pull the same sections', async () => {
+    const seen = [];
+    const deps = {
+      async getThreadHistory() {
+        seen.push('thread');
+        return {
+          history: [
+            { type: 'SENT', time: '2026-10-26T15:00:00.000Z', email_body: 'Open to a short call?' },
+            { type: 'REPLY', time: '2026-10-26T16:00:00.000Z', email_body: 'Info' },
+          ],
+        };
+      },
+      async lookupLeadByEmail() {
+        seen.push('lead');
+        return { lead: { website: 'https://northwind-roofing.example', company_name: 'Northwind Roofing Co.' } };
+      },
+      async lookupPersonProfile() {
+        seen.push('profile');
+        return {
+          linkedinUrl: 'https://www.linkedin.com/in/jordan-hale-example',
+          location: 'Rockwall, TX',
+          title: 'VP of Operations',
+          fullName: 'Jordan Hale',
+        };
+      },
+      async enrichProspect() {
+        seen.push('phone');
+        return { phone: '(214) 555-0199', linkedinUrl: null, sources: { phone: 'test' } };
+      },
+      async findConversation() {
+        seen.push('heyreach');
+        return { messages: [{ role: 'them', body: 'Thursday still works on LinkedIn.', createdAt: '2026-10-25T12:00:00.000Z' }] };
+      },
+      async searchCalls() {
+        seen.push('allo');
+        return [{ summary: 'They asked for a Thursday walkthrough.', start_date: '2026-10-28T15:00:00.000Z' }];
+      },
+      async fetchSiteText() {
+        seen.push('site');
+        return 'Northwind Roofing Co. We handle commercial roofing for property managers across north Texas.';
+      },
+    };
+    const row = meeting({
+      lead_phone: '',
+      linkedin_url: '',
+      reply_linkedin: '',
+      lead_title: '',
+      lead_location: '',
+      lead_website: '',
+      inbound_message: '',
+      sent_reply: '',
+      thread_context: null,
+      icp_verdict: null,
+      campaign_id: '99',
+      lead_id: '88',
+    });
+    const steps = ['thread', 'lead', 'profile', 'phone', 'heyreach', 'allo', 'site'];
+    const preview = await previewBrief({ meetingId: 'meet-1', store: memoryStore({ meetings: [row] }), env: env(), deps });
+    assert.equal(preview.body.dry_run, true);
+    assert.equal(preview.body.sent, false);
+    assert.equal(preview.body.queued, false);
+    assert.equal(preview.body.zero_context, false);
+    const text = preview.body.text_body;
+    assert.match(text, /Email thread/);
+    assert.match(text, /\bInfo\b/);
+    assert.match(text, /ICP fit: not on file/);
+    assert.match(text, /Thursday still works on LinkedIn/);
+    assert.match(text, /Thursday walkthrough/);
+    assert.match(text, /commercial roofing/);
+    assert.match(text, /555-0199/);
+    assert.match(text, /jordan-hale-example/);
+    assert.match(text, /Spring owners/);
+    assert.match(text, /Open items/);
+    assert.match(text, /Source campaign/);
+    for (const step of steps) assert.equal(seen.includes(step), true, step);
+    seen.length = 0;
+    const held = await runClientDayofBriefs({
+      env: env(),
+      store: memoryStore({ meetings: [row] }),
+      now: NOW,
+      deps,
+      send: async () => { throw new Error('client mail'); },
+      fetchImpl: async () => ({ ok: true, status: 200 }),
+    });
+    assert.equal(held.held, 1);
+    assert.equal(held.sent, 0);
+    for (const step of steps) assert.equal(seen.includes(step), true, `hold ${step}`);
+  });
+
   it('preview renders a meeting and does not queue or send it', async () => {
     const store = memoryStore({ meetings: [meeting()] });
     const out = await previewBrief({ meetingId: 'meet-1', store, env: env() });
