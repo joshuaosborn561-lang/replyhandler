@@ -166,6 +166,20 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
     return res.status(400).json({ error: 'Invalid payload' });
   }
 
+  // Follow-up snooze: date picker. Validate before acknowledging.
+  if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'fseq_snooze_modal') {
+    const layout = require('../utils/followup-card-layout');
+    const errors = layout.validateSnoozeSubmission(interaction);
+    if (errors) return res.status(200).json({ response_action: 'errors', errors });
+    res.status(200).json({ response_action: 'clear' });
+    try {
+      await require('../services/followup-sequence').handleSnoozeSubmit(interaction);
+    } catch (err) {
+      console.error('[Slack] Snooze modal submit error', { err: err.message, stack: err.stack });
+    }
+    return;
+  }
+
   // Follow-up sequence: "call back later" time picker. Validate before acknowledging.
   if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'fseq_callback_modal') {
     const seqSvc = require('../services/followup-sequence');
@@ -242,6 +256,9 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
       await handleOpenEditModal(action.value, interaction);
     } else if (action.action_id === 'toggle_cc_client') {
       await handleToggleCcClient(action);
+    } else if (action.action_id === 'fu_snooze') {
+      const opened = await require('../services/followup-sequence').openCadenceSnooze(action.value, interaction);
+      if (!opened) await sendEphemeralNotice(interaction, 'This card is already handled, so it was not snoozed.');
     } else if (String(action.action_id || '').startsWith('fseq_')) {
       await require('../services/followup-sequence').handleCallButton(action, interaction);
     } else if (String(action.action_id || '').startsWith('nurture_d30_')) {
@@ -288,6 +305,14 @@ async function handleViewThread(replyId, interaction) {
   const lastOutbound = reply.platform === 'smartlead'
     ? lastOutboundBodyFromSmartleadHistory(reply.thread_context)
     : '';
+  let historyLines;
+  try {
+    const loaded = await require('../services/followup-card-events').historyLinesForReply(reply);
+    const followUp = String(reply.classification || '').toUpperCase() === 'FOLLOW_UP' || reply.follow_up_source_id;
+    if (followUp || (loaded && loaded.length)) historyLines = loaded;
+  } catch (err) {
+    console.warn('[Slack] history load failed', { err: err.message });
+  }
   try {
     await slackService.openThreadModal(reply.slack_bot_token, interaction.trigger_id, {
       replyId: reply.id,
@@ -306,6 +331,7 @@ async function handleViewThread(replyId, interaction) {
       threadMessages,
       lastOutboundMessage: lastOutbound,
       inboundMessage: reply.inbound_message,
+      historyLines,
     });
   } catch (err) {
     console.warn('[Slack] view_thread failed', { err: err.message });

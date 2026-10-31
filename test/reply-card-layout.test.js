@@ -288,8 +288,12 @@ test('follow-up cards keep their own layout', () => {
     ],
   });
   const text = flat(blocks);
-  assert.match(text, /WILL SEND/);
+  assert.match(text, /\*Draft\*/);
+  assert.match(text, /Send follow-up/);
   assert.match(text, /Pat Prospect/);
-  assert.ok(!actionIds(blocks).includes('view_thread'));
-  assert.equal(blocks[0].type, 'header');
+  assert.doesNotMatch(text, new RegExp(CLIENT));
+  assert.ok(actionIds(blocks).includes('view_thread'));
+  assert.ok(actionIds(blocks).includes('approve_reply'));
+  assert.equal(blocks[0].type, 'section');
+  assert.doesNotMatch(text, /WILL SEND/);
 });

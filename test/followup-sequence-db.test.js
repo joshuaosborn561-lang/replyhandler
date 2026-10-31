@@ -396,13 +396,14 @@ async function day6Voicemail(proofPoint) {
 
 test('Day 6 call card voicemail is the breakup script with offer and real proof', { skip }, async () => {
   const blocks = await day6Voicemail('Last quarter we booked 212 meetings for 14 clients.');
-  assert.ok(blocks.includes('Last call from me. Quick recap: cutting your IT costs. Last quarter we booked 212 meetings for 14 clients. If it'));
+  assert.ok(blocks.includes('Last call from me. Last quarter we booked 212 meetings for 14 clients. If it'));
   assert.ok(blocks.includes('reply to my email and we'));
 });
 
 test('Day 6 call card voicemail omits the proof sentence when there is none', { skip }, async () => {
   const blocks = await day6Voicemail(null);
-  assert.ok(blocks.includes('Quick recap: cutting your IT costs. If it'));
+  assert.ok(blocks.includes('Last call from me. If it'));
+  assert.ok(blocks.includes('cutting your IT costs'));
   assert.ok(!blocks.includes('212'));
 });
 
@@ -463,7 +464,8 @@ test('submitting a time schedules a callback card, confirms on the card, and pos
   assert.ok(cbPost, 'callback card posted');
   const blocks = JSON.stringify(cbPost.blocks);
   assert.ok(blocks.includes('Hey Pat, this is (name) with Acme Co. We emailed you about cutting your IT costs.'));
-  for (const id of ['fseq_booked', 'fseq_no_answer', 'fseq_not_interested', 'fseq_call_back', 'fseq_wrong_number']) assert.ok(blocks.includes(id), id);
+  for (const id of ['fseq_booked', 'fseq_no_answer', 'fseq_not_interested', 'fseq_call_back', 'fseq_snooze']) assert.ok(blocks.includes(id), id);
+  assert.ok(blocks.includes('wrong_number:'), 'wrong number stays in the overflow');
   const states = await stepStates(pg, seq.id);
   assert.equal(states.call_callback_1, 'posted');
 });

@@ -18,6 +18,7 @@ const OPEN_FOR_ACTION = {
   reject_reply: ['pending', 'flagged'],
   dq_prospect: ['pending', 'alert_only', 'flagged'],
   meeting_booked: ['pending', 'alert_only', 'flagged'],
+  fu_snooze: ['pending', 'flagged'],
 };
 
 const STATUS_WORDS = {
