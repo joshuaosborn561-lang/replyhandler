@@ -1742,3 +1742,11 @@ Josh approved the follow-up card mockups. This replaces the Oct 29 "WILL SEND on
 - One open follow-up card per lead. When the next step posts, the previous open card is closed. Email rows use the same supersede path as interested cards. Call cards, which are not reply rows, are repainted and marked superseded. Interested-card supersede still skips FOLLOW_UP rows so a new reply does not retire a follow-up by accident.
 
 Guard: `test/followup-card-layout.test.js`. Call-button order: `call card has one button per outcome and nothing that sends` in `test/followup-sequence-guards.test.js`.
+
+## The "Hot lead: we CC'd you" email is removed (Josh, Oct 31 2026)
+Josh, relayed by Chief of Staff (9:05am CT): delete the separate "Hot lead: we CC'd you" notice. Hot leads reach the client only in the 4:00pm CT roll-up.
+- Supersedes the Oct 29 entry "We just CC'd you notice to the client". `src/services/cc-notice-email.js`, its caller in `reply-send.js`, and the `CC_NOTICE_EMAIL_ENABLED` flag are gone. Nothing emails a client when a reply is sent with them CC'd.
+- **Unchanged:** the card's **Approve & Send + CC client** button and the Edit modal's **CC client** checkbox still put `notify_emails` on the Smartlead `cc`. No decision has been made on that option.
+- The CC'd or approved positive reply (INTERESTED / MEETING_PROPOSED, Smartlead, not a follow-up) is queued at send time and goes out in that day's roll-up To `notify_emails`, whether or not the client was CC'd.
+- `firstNameFromEmail` moved to `src/utils/first-name.js` (the ICP profile still uses it).
+Guard: `test/cc-notice-retired.test.js`
