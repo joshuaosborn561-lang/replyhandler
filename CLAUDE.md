@@ -242,11 +242,11 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
    alone does not trip that guard. The hold and the preview use the same
    gather: stored reply, then Smartlead history, person profile, the email
    waterfall, HeyReach, Allo, and the company site when those facts are
-   missing. ICP is `resolveReplyIcp` (the Jev website check on a reply card):
-   `Fit — reason`, `Not a fit — reason`, `ICP: not on file`, or
-   `ICP: check failed`. The decision-maker line is the card's title check
-   against the client's target titles. The email has no source-campaign
-   section. A failed lookup leaves the fact out. To =
+   missing, plus Fireflies when a company or email is known. The email mirrors
+   the briefs Josh gets: Who, Why you're meeting, Rapport hooks, Easy openers,
+   Allo, Fireflies / Cube, Logistics. `send-brief` only mails prebuilt HTML.
+   Internal notes (LTV, an unsubscribe, Smartlead, another client's proof)
+   are left out. A failed lookup leaves the fact out. To =
    `notify_emails`, CC = Josh.
    `reminder-email.js` is still the one-hour reminder to the prospect
    (`meeting.lead_email`), not this brief.

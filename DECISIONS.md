@@ -1764,3 +1764,14 @@ Josh, on the held client brief: explain ICP fit from the Jev website check the s
 - **Shape.** The HTML shell stays the one `send-brief` already uses (Arial 14px, `h3`, bold section title, bullets). A search of Josh's Gmail for a brief he answered "yes this is awesome" did not find that reply. The briefs from `briefs@reports.salesglidergrowth.com` already use this shell.
 
 Guard: `test/client-dayof-brief.test.js` (`prints the reply-card ICP line and a decision-maker line, and leaves the campaign out`, and `the live hold and the preview pull the same sections`).
+
+## Client briefs mirror the briefs Josh gets (Josh, Oct 31 2026)
+
+Josh: "literally just mirror the briefs i get." The client day-of email uses the same sections, in the same order, as the briefs sent through `send-brief` (Client portal `scvrsmfzyvmmbnaolcrg`). That function only posts prebuilt HTML to Josh through Resend. It does not generate the brief. The reference is the Oct 30 email "Brief: Nathan Schnefke and Joshua Osborn @ 11:00am CT" from `briefs@reports.salesglidergrowth.com`.
+
+- **Sections.** Who, Why you're meeting, Rapport hooks, Easy openers, Allo, Fireflies / Cube, Logistics. Subject is `Brief: <prospect> and <client> @ <time>`. HTML is the Arial 14px shell with an `h3` per section and a bullet list.
+- **Facts.** Who, the thread, the company site, Allo, and Fireflies. Rapport is "Nothing personal on file" unless a later edit adds a real hook. Easy openers quote what the prospect asked. No invented biography, and no Claude on this cron.
+- **Dropped, because a client should not see it.** LTV and "$36K" bars, "our pricing" / internal rate notes, Smartlead unsubscribe lines, "proof to lean on" another client, and a Calendly-wipe ops note. A prospect asking to walk through pricing stays. The campaign name stays inside Why you're meeting, not as its own section. ICP fit and the decision-maker line are not sections of this email.
+- **Unchanged.** The hold, the reviewer, the zero-context guard, and `CLIENT_DAYOF_BRIEF_ENABLED` default off.
+
+Guard: `test/client-dayof-brief.test.js` (`drops internal pricing, LTV, and unsubscribe notes`, and `the live hold and the preview pull the same sections`).

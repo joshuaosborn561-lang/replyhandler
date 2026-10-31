@@ -209,24 +209,23 @@ describe('day-of brief schedule and flag', () => {
 describe('day-of brief rendering', () => {
   it('uses the short bullet layout and leaves empty sections out', () => {
     const sample = exampleClientBrief();
-    for (const section of ['Who', 'ICP fit', 'Decision maker', 'LinkedIn', 'Email thread', 'Call history', 'About Northwind Roofing Co.', 'Open items', 'Flags']) {
+    for (const section of ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Fireflies / Cube', 'Logistics']) {
       assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-      assert.match(sample.htmlBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(sample.htmlBody, new RegExp(`<h3>${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</h3>`));
     }
-    assert.match(sample.subject, /^Brief: Jordan Hale @ 9:30am CT$/);
-    assert.match(sample.htmlBody, /<h3>Jordan Hale, Northwind Roofing Co\. \|/);
+    assert.match(sample.subject, /^Brief: Jordan Hale and Example Industrial @ 9:30am CT$/);
+    assert.match(sample.textBody, /^Brief: Jordan Hale and Example Industrial @ 9:30am CT/);
     assert.match(sample.htmlBody, /font-family:Arial,sans-serif;font-size:14px/);
     assert.match(sample.textBody, /jordan\.hale@northwind-roofing\.example/);
     assert.match(sample.textBody, /\(214\) 555-0148/);
     assert.match(sample.textBody, /Rockwall, TX/);
     assert.match(sample.textBody, /jordan-hale-example/);
     assert.match(sample.textBody, /northwind-roofing\.example/);
-    assert.match(sample.textBody, /Fit — commercial roofer, operations lead/);
-    assert.match(sample.textBody, /Decision maker: Yes, matches ICP buyer/);
+    assert.match(sample.textBody, /Spring owners, north Texas/);
     assert.equal(sample.textBody.includes('Source campaign'), false);
-    assert.equal(sample.textBody.includes('Spring owners'), false);
+    assert.equal(sample.textBody.includes('LTV'), false);
     assert.match(sample.textBody, /walk us through pricing/);
-    assert.match(sample.htmlBody, /<b>Who<\/b>/);
+    assert.match(sample.htmlBody, /<h3>Who<\/h3>/);
     assert.equal(sample.htmlBody.includes('<script>'), false);
 
     const thin = buildClientDayofBrief({
@@ -285,31 +284,35 @@ describe('day-of brief rendering', () => {
     assert.equal(facts.history.emailLines.length, 0);
     assert.match(facts.history.dmLines.join(' '), /pricing/);
     const brief = buildClientDayofBrief(facts);
-    assert.match(brief.textBody, /LinkedIn/);
+    assert.match(brief.textBody, /Why you're meeting/);
+    assert.match(brief.textBody, /LinkedIn: /);
     assert.equal(brief.textBody.includes('Email thread'), false);
     assert.match(facts.how.campaign, /Owners, LinkedIn/);
-    assert.equal(brief.textBody.includes('Owners, LinkedIn'), false);
+    assert.match(brief.textBody, /Owners, LinkedIn/);
     assert.equal(brief.textBody.includes('Source campaign'), false);
   });
 
-  it('prints the reply-card ICP line and a decision-maker line, and leaves the campaign out', () => {
-    const fit = buildClientDayofBrief({
-      prospect: { name: 'Jordan Hale', title: 'Coordinator' },
+  it('drops internal pricing, LTV, and unsubscribe notes', () => {
+    const brief = buildClientDayofBrief({
+      clientName: 'Example Industrial',
+      whenLabel: 'Thu, Oct 31, 9:30am CT',
+      prospect: { name: 'Jordan Hale', email: 'jordan@northwind-roofing.example' },
+      how: { channel: 'Email', campaign: 'Spring owners' },
+      openItems: ['Wants a pricing walkthrough on the call'],
       flags: {
-        icpFit: 'Not a fit — website says distributor; client only works with commercial trade contractor',
-        decisionMaker: 'Decision maker: No, not an ICP buyer title (Coordinator)',
+        risks: [
+          'Should clear the $36K LTV bar',
+          'Smartlead shows him unsubscribed from the sequence',
+          'Proof to lean on: another client closed four bids',
+        ],
       },
-      how: { campaign: 'Spring owners', channel: 'Email', source: 'Cold email' },
     });
-    assert.match(fit.textBody, /Not a fit — website says distributor/);
-    assert.match(fit.textBody, /Decision maker: No, not an ICP buyer title \(Coordinator\)/);
-    assert.equal(fit.textBody.includes('Source campaign'), false);
-    assert.equal(fit.textBody.includes('Spring owners'), false);
-    assert.match(buildClientDayofBrief({ flags: { icpFit: 'ICP: check failed' } }).textBody, /ICP: check failed/);
-    assert.match(buildClientDayofBrief({ flags: { icpFit: 'ICP: not on file' } }).textBody, /ICP: not on file/);
-    assert.match(buildClientDayofBrief({
-      flags: { icpFit: 'Fit — commercial roofer' },
-    }).textBody, /Fit — commercial roofer/);
+    assert.match(brief.textBody, /pricing walkthrough/);
+    assert.match(brief.textBody, /Spring owners/);
+    assert.equal(brief.textBody.includes('LTV'), false);
+    assert.equal(brief.textBody.includes('unsubscribed'), false);
+    assert.equal(brief.textBody.includes('Proof to lean on'), false);
+    assert.equal(brief.textBody.includes('Smartlead'), false);
   });
 });
 
@@ -572,16 +575,10 @@ describe('day-of brief hold, release, block', () => {
         seen.push('site');
         return 'Northwind Roofing Co. We handle commercial roofing for property managers across north Texas.';
       },
-      async resolveReplyIcp(input) {
-        seen.push('icp');
-        assert.equal(input.grade, true);
-        assert.match(String(input.website), /northwind-roofing\.example/);
-        assert.equal(input.clientName, 'Vector');
-        return { status: 'qualified', reason: 'commercial roofer' };
-      },
-      async loadClientPersonas() {
-        seen.push('personas');
-        return ['Owner', 'VP of Operations'];
+      async searchTranscripts(keyword) {
+        seen.push('fireflies');
+        assert.match(String(keyword), /Northwind/);
+        return [];
       },
     };
     const row = meeting({
@@ -598,25 +595,24 @@ describe('day-of brief hold, release, block', () => {
       campaign_id: '99',
       lead_id: '88',
     });
-    const steps = ['thread', 'lead', 'profile', 'phone', 'heyreach', 'allo', 'site', 'icp', 'personas'];
+    const steps = ['thread', 'lead', 'profile', 'phone', 'heyreach', 'allo', 'site', 'fireflies'];
     const preview = await previewBrief({ meetingId: 'meet-1', store: memoryStore({ meetings: [row] }), env: env(), deps });
     assert.equal(preview.body.dry_run, true);
     assert.equal(preview.body.sent, false);
     assert.equal(preview.body.queued, false);
     assert.equal(preview.body.zero_context, false);
     const text = preview.body.text_body;
-    assert.match(text, /Email thread/);
+    assert.match(text, /Why you're meeting/);
     assert.match(text, /\bInfo\b/);
-    assert.match(text, /Fit — commercial roofer/);
-    assert.match(text, /Decision maker: Yes, matches ICP buyer \(VP of Operations\)/);
     assert.match(text, /Thursday still works on LinkedIn/);
     assert.match(text, /Thursday walkthrough/);
     assert.match(text, /commercial roofing/);
     assert.match(text, /555-0199/);
     assert.match(text, /jordan-hale-example/);
-    assert.match(text, /Open items/);
+    assert.match(text, /Easy openers/);
+    assert.match(text, /No prior Fireflies transcripts mention/);
     assert.equal(text.includes('Source campaign'), false);
-    assert.equal(text.includes('Spring owners'), false);
+    assert.equal(text.includes('LTV'), false);
     for (const step of steps) assert.equal(seen.includes(step), true, step);
     seen.length = 0;
     const held = await runClientDayofBriefs({

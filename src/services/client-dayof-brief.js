@@ -10,21 +10,23 @@
  * `[Client brief review]`, then the lead, company, and meeting time.
  * It does not email the client.
  *
- * The client email uses the same HTML shell as the briefs Josh gets from the
- * `send-brief` edge function (Client portal project scvrsmfzyvmmbnaolcrg):
- * Arial 14px, an h3 header, then bold section titles and bullets. That function
- * only mails prebuilt HTML to Josh through Resend. This path renders the brief
- * here and sends it with Gmail to the client's notify list. It does not call
- * send-brief, and it does not invent company or personal facts.
+ * The client email mirrors the briefs Josh gets. `send-brief` on the Client
+ * portal project (scvrsmfzyvmmbnaolcrg) only mails prebuilt HTML to Josh through
+ * Resend. The sections and wording are the ones in those emails (for example
+ * "Brief: Nathan Schnefke and Joshua Osborn @ 11:00am CT"): Who, Why you're
+ * meeting, Rapport hooks, Easy openers, Allo, Fireflies / Cube, Logistics.
+ * HTML is the Arial 14px shell with an h3 per section. This path renders here
+ * and sends with Gmail to the client's notify list. It does not call send-brief.
+ * It does not invent personal facts, and it drops internal notes (LTV, pricing
+ * bars, unsubscribe, Smartlead).
  *
  * The cron hold and the admin preview call the same gather. It reads the
  * stored reply, then fills gaps from the lookups already used on reply cards:
  * Smartlead thread and lead, person profile (LinkedIn, title, location), the
  * email waterfall (phone and LinkedIn), HeyReach when a LinkedIn URL is known,
- * Allo call history, and the company site. ICP is `resolveReplyIcp` (the same
- * Jev website check as a reply card) and the decision-maker line is the same
- * title check as the card. The email does not include a source-campaign
- * section. This job does not call Claude. A failed lookup leaves that fact out.
+ * Allo call history, Fireflies transcripts, and the company site. The email
+ * uses the seven sections above. It does not call Claude, and it does not
+ * invent a biography. A failed lookup leaves that fact out.
  *
  * POST /admin/client-briefs/:id/release is the only way a brief becomes
  * `released`. The client email goes out only then, and only when
@@ -442,6 +444,10 @@ function alloConfigured(env) {
   try { return require('./allo').isConfigured() === true; } catch { return false; }
 }
 
+function firefliesConfigured(env) {
+  try { return require('./fireflies').isConfigured(env) === true; } catch { return false; }
+}
+
 async function safeLookup(step, fn) {
   try {
     return await fn();
@@ -471,17 +477,11 @@ function liveDeps() {
     async searchCalls(phone) {
       return require('./allo').searchCalls(phone);
     },
+    async searchTranscripts(keyword, opts) {
+      return require('./fireflies').searchTranscripts(keyword, opts);
+    },
     async fetchSiteText(url, opts) {
       return require('./booked-brief-data').fetchSiteText(url, opts);
-    },
-    async resolveReplyIcp(input) {
-      return require('./reply-icp').resolveReplyIcp(input);
-    },
-    async loadClientPersonas(database, clientId) {
-      return require('./decision-maker').loadClientPersonas(database, clientId);
-    },
-    judgeDecisionMaker(title, personas) {
-      return require('./decision-maker').judgeDecisionMaker(title, personas);
     },
   };
 }
@@ -533,8 +533,7 @@ function prospectTexts(src) {
 /**
  * Same gather for the cron hold and the dry-run preview.
  * Reads the stored reply, then fills gaps from the lookups this repo already
- * uses. ICP is resolveReplyIcp (Jev, same as a reply card). The decision-maker
- * line uses the client's target titles. A failed lookup omits that fact.
+ * uses, plus Allo and Fireflies. A failed lookup omits that fact.
  * It does not call Claude. It does not invent a title, size, or profile.
  */
 async function gatherBriefFacts(row, {
@@ -659,7 +658,6 @@ async function gatherBriefFacts(row, {
   }
 
   const facts = assembleBriefFacts(src, { priorNoShows });
-  await attachCardIcp(src, facts, { db, fetchImpl, deps: d, injected });
   if (callLines.length) {
     facts.history.callLines = callLines;
     facts.history.callNotes = facts.history.callNotes || callLines.join(' ');
@@ -668,6 +666,27 @@ async function gatherBriefFacts(row, {
   }
   if (linkedinLooked && !(facts.history.dmLines || []).length) {
     facts.history.dmLines = ['No LinkedIn messages on file.'];
+  }
+
+  const mention = oneLine(src.lead_company, 80) || oneLine(src.lead_email, 120);
+  if (mention && (injected.searchTranscripts || firefliesConfigured(env))) {
+    const hits = await safeLookup('fireflies', async () => {
+      const found = await d.searchTranscripts(mention, { limit: 5, fetchImpl, env });
+      facts.history.firefliesChecked = true;
+      return found;
+    });
+    const company = oneLine(src.lead_company, 80).toLowerCase();
+    const email = oneLine(src.lead_email, 200).toLowerCase();
+    const rows = Array.isArray(hits) ? hits : [];
+    facts.history.firefliesLines = rows.filter((hit) => {
+      const blob = JSON.stringify(hit || {}).toLowerCase();
+      if (email && blob.includes(email)) return true;
+      return company.length > 3 && blob.includes(company);
+    }).slice(0, 4).map((hit) => {
+      const title = oneLine(hit.title || hit.name, 180);
+      const when = formatWhen(hit.date, src.digest_timezone || 'America/Chicago');
+      return [title, when].filter(Boolean).join(', ');
+    }).filter(Boolean);
   }
 
   const site = facts.company && facts.company.website;
@@ -689,44 +708,6 @@ async function gatherBriefFacts(row, {
     facts.flags.risks.push(`Email signature lists ${fromEmail}. The company site lists ${fromSite}.`);
   }
   return facts;
-}
-
-/**
- * ICP and decision maker, same as a reply card. Example hosts stay offline
- * unless the caller injects resolveReplyIcp (tests). A real site always
- * goes through resolveReplyIcp, which calls Jev on a cache miss.
- */
-async function attachCardIcp(src, facts, { db, fetchImpl, deps, injected }) {
-  const website = (facts.company && facts.company.website) || '';
-  const callLive = Boolean(injected.resolveReplyIcp) || (website && !exampleHost(website));
-  let verdict = parseObj(src.icp_verdict);
-  if (callLive) {
-    const resolved = await safeLookup('icp', () => (injected.resolveReplyIcp || deps.resolveReplyIcp)({
-      website,
-      clientName: src.client_name || src.name || facts.clientName,
-      clientId: src.client_id,
-      replyId: src.pending_reply_id,
-      db: db || null,
-      grade: true,
-      fetchImpl,
-    }));
-    if (resolved && resolved.status) verdict = resolved;
-    else if (!verdict || !verdict.status) verdict = { status: 'unknown', reason: 'check failed' };
-  }
-  facts.flags.icpFit = icpPlain(verdict) || require('./slack').icpFitPlain(verdict);
-  const loaded = await safeLookup('decision maker', () => (
-    (injected.loadClientPersonas || deps.loadClientPersonas)(db, src.client_id)
-  ));
-  const personas = Array.isArray(loaded) ? loaded : [];
-  const title = (facts.prospect && facts.prospect.title) || '';
-  const judge = injected.judgeDecisionMaker || deps.judgeDecisionMaker;
-  const dm = judge(title, personas);
-  const line = require('./decision-maker').decisionMakerText(dm);
-  if (line) facts.flags.decisionMaker = line;
-  facts.flags.risks = (facts.flags.risks || []).filter((r) => !/^(Fit —|Not a fit —|ICP:|ICP fit:)/.test(String(r)));
-  if (verdict && verdict.status === 'disqualified' && facts.flags.icpFit) {
-    facts.flags.risks.push(facts.flags.icpFit);
-  }
 }
 
 function hasEmailBody(row) {
@@ -821,94 +802,146 @@ function bulletList(items) {
   return (items || []).map((item) => oneLine(item, 800)).filter(Boolean);
 }
 
-function quoteLines(hist) {
-  const lines = [];
-  for (const q of hist.quotes || []) {
-    const text = oneLine(q && (q.text || q), 600);
-    if (!text) continue;
-    const whoSaid = [oneLine(q.who, 120), oneLine(q.when, 80)].filter(Boolean).join(', ');
-    lines.push(whoSaid ? `${whoSaid}: ${text}` : text);
-  }
-  return lines;
+/** Their own reply, without a signature block. */
+function shortReply(text) {
+  const cut = String(text || '').split(/\b(?:Office|Tel|Phone|Mobile|Cell|Warehouse)\s*:|\bPlease note\b/i)[0];
+  return oneLine(cut, 220);
 }
 
-function sectionBullets(facts) {
-  const p = facts.prospect || {};
-  const c = facts.company || {};
-  const hist = facts.history || {};
-  const flags = facts.flags || {};
-  const who = [];
-  const person = [p.name, p.title, c.name || p.company].filter(filled).join(', ');
-  if (person) who.push(person);
-  const reach = [p.email, p.phone].filter(filled).join(' | ');
-  if (reach) who.push(reach);
-  const place = [p.location, filled(p.linkedinUrl) ? `LinkedIn: ${p.linkedinUrl}` : ''].filter(filled).join('. ');
-  if (place) who.push(place);
+/** Lines a client should not see. Prospect asks about pricing stay. */
+const INTERNAL_BULLET = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b/i;
 
-  const icp = [];
-  if (filled(flags.icpFit)) icp.push(flags.icpFit);
-  if (filled(flags.decisionMaker)) icp.push(flags.decisionMaker);
-  const linkedin = Array.isArray(hist.dmLines) ? bulletList(hist.dmLines) : [];
-  const email = Array.isArray(hist.emailLines) ? bulletList(hist.emailLines) : quoteLines(hist);
-  const calls = [];
-  if (filled(hist.callNotes)) calls.push(oneLine(hist.callNotes, 2000));
-  for (const line of bulletList(hist.callLines)) calls.push(line);
-
-  const company = [];
-  if (filled(c.website)) company.push(c.website);
-  if (filled(c.whatTheyDo)) company.push(c.whatTheyDo);
-  if (filled(c.size)) company.push(c.size);
-  const companyTitle = filled(c.name || p.company) ? `About ${oneLine(c.name || p.company, 200)}` : 'Company';
-
-  const open = bulletList(facts.openItems);
-  if (filled(hist.ask) && !open.includes(oneLine(hist.ask, 600))) open.push(oneLine(hist.ask, 600));
-
-  const flagLines = [];
-  for (const risk of flags.risks || []) if (filled(risk)) flagLines.push(risk);
-  if (filled(flags.noShowHistory)) flagLines.push(flags.noShowHistory);
-
-  return { who, icp, linkedin, email, calls, company, companyTitle, open, flagLines };
+function visibleLine(line) {
+  const s = oneLine(line, 800);
+  if (!s || INTERNAL_BULLET.test(s)) return '';
+  return s;
 }
 
-function headerLine(facts) {
-  const p = facts.prospect || {};
-  const name = oneLine(p.name, 200) || 'Prospect';
-  const company = oneLine((facts.company || {}).name || p.company, 200);
-  const who = company ? `${name}, ${company}` : name;
-  const when = oneLine(facts.whenLabel, 200);
-  const where = oneLine(facts.where, 80);
-  const tail = [when, where ? `(${where})` : ''].filter(Boolean).join(' ');
-  return tail ? `${who} | ${tail}` : who;
+function kept(lines, fallback) {
+  const out = (lines || []).map(visibleLine).filter(Boolean);
+  return out.length ? out : [fallback];
 }
 
 /**
- * Josh's pre-meeting brief shape: a header line, then short titled bullet lists.
- * A section with nothing to say is left out.
+ * Same sections, same order, as the briefs Josh gets from send-brief.
+ * Empty sections still get one honest line, the way those briefs say
+ * "Allo had no history" or "Fireflies was not checked".
+ */
+function mirrorSections(facts) {
+  const p = facts.prospect || {};
+  const c = facts.company || {};
+  const h = facts.how || {};
+  const hist = facts.history || {};
+  const flags = facts.flags || {};
+  const companyName = oneLine(c.name || p.company, 200);
+
+  const who = [];
+  const person = [p.name, p.title, companyName].filter(filled).join(', ');
+  if (person) who.push(person);
+  const about = [p.location, c.whatTheyDo].filter(filled).join('. ');
+  if (about) who.push(about);
+  const reach = [p.email, p.phone].filter(filled).join(' | ');
+  if (reach) who.push(reach);
+  if (filled(p.linkedinUrl)) who.push(`LinkedIn: ${p.linkedinUrl}`);
+  if (filled(c.website)) who.push(c.website);
+  if (filled(c.size)) who.push(c.size);
+
+  const why = [];
+  const came = [h.channel, h.campaign].filter(filled).join(', ');
+  if (came) why.push(came);
+  const said = [];
+  for (const q of hist.quotes || []) {
+    const text = shortReply(q && (q.text || q));
+    if (!text) continue;
+    const whoSaid = [oneLine(q.who, 80), oneLine(q.when, 60)].filter(Boolean).join(', ');
+    said.push(whoSaid ? `${whoSaid}: ${text}` : text);
+  }
+  for (const line of said.slice(-4)) why.push(line);
+  for (const line of bulletList(hist.dmLines).slice(0, 3)) {
+    const body = shortReply(line.replace(/^LinkedIn:\s*/i, ''));
+    if (body) why.push(`LinkedIn: ${body}`);
+  }
+  const asks = bulletList(facts.openItems);
+  if (filled(hist.ask) && !asks.includes(oneLine(hist.ask, 600))) asks.push(oneLine(hist.ask, 600));
+  for (const item of asks.slice(0, 3)) why.push(`They asked: ${item}`);
+
+  const rapport = ['Nothing personal on file.'];
+
+  const openers = [];
+  if (asks.length) {
+    for (const item of asks.slice(0, 3)) openers.push(`"${item}"`);
+  } else openers.push('No specific ask on file. Open with what they replied.');
+
+  const allo = [];
+  const callLines = bulletList(hist.callLines);
+  if (callLines.length) {
+    for (const line of callLines) allo.push(line);
+  } else if (filled(hist.callNotes) && !/^No calls on file\.?$/i.test(hist.callNotes)) {
+    allo.push(hist.callNotes);
+  } else if (filled(p.phone) && (callLines.length || /^No calls on file\.?$/i.test(hist.callNotes || ''))) {
+    allo.push(`Allo had no history: no calls, texts or voicemails with ${p.phone}.`);
+  } else if (filled(hist.callNotes)) {
+    allo.push(hist.callNotes);
+  } else {
+    allo.push('Allo was not checked.');
+  }
+
+  const fireflies = [];
+  const ff = bulletList(hist.firefliesLines);
+  if (ff.length) {
+    for (const line of ff) fireflies.push(line);
+  } else if (hist.firefliesChecked) {
+    fireflies.push(`No prior Fireflies transcripts mention ${companyName || 'them'}. First call.`);
+  } else {
+    fireflies.push('Fireflies was not checked.');
+  }
+
+  const logistics = [];
+  const when = [oneLine(facts.whenLabel, 200), filled(facts.where) ? `(${oneLine(facts.where, 80)})` : ''].filter(Boolean).join(' ');
+  if (when) logistics.push(when);
+  const join = safeUrl(facts.joinUrl);
+  logistics.push(join ? `Join: ${join}` : 'No join link on the booking.');
+  if (filled(flags.noShowHistory)) logistics.push(flags.noShowHistory);
+  for (const risk of flags.risks || []) if (filled(risk)) logistics.push(risk);
+
+  return {
+    who: kept(who, 'Name not on file.'),
+    why: kept(why, 'No thread on file.'),
+    rapport: kept(rapport, 'Nothing personal on file.'),
+    openers: kept(openers, 'No specific ask on file.'),
+    allo: kept(allo, 'Allo was not checked.'),
+    fireflies: kept(fireflies, 'Fireflies was not checked.'),
+    logistics: kept(logistics, 'Time not on file.'),
+  };
+}
+
+const BRIEF_SECTIONS = [
+  ['Who', 'who'],
+  ["Why you're meeting", 'why'],
+  ['Rapport hooks', 'rapport'],
+  ['Easy openers', 'openers'],
+  ['Allo', 'allo'],
+  ['Fireflies / Cube', 'fireflies'],
+  ['Logistics', 'logistics'],
+];
+
+/**
+ * Same shape as the briefs mailed through send-brief. Subject is
+ * `Brief: <prospect> and <client> @ <time>`.
  */
 function buildClientDayofBrief(facts = {}) {
   const p = facts.prospect || {};
   const name = oneLine(p.name, 200) || 'Prospect';
+  const client = oneLine(facts.clientName, 160);
   const whenShort = oneLine(facts.whenLabel, 80);
   const timeOnly = whenShort.match(/\d{1,2}:\d{2}\s*[AP]M(?:\s+[A-Z]{2,5})?/i);
   const subjectWhen = timeOnly ? timeOnly[0] : whenShort;
-  const subject = subjectWhen ? `Brief: ${name} @ ${subjectWhen}` : `Brief: ${name}`;
-  const header = headerLine(facts);
-  const sections = sectionBullets(facts);
-  const blocks = [
-    ['Who', sections.who],
-    ['ICP fit', sections.icp],
-    ['LinkedIn', sections.linkedin],
-    ['Email thread', sections.email],
-    ['Call history', sections.calls],
-    [sections.companyTitle, sections.company],
-    ['Open items', sections.open],
-    ['Flags', sections.flagLines],
-  ].filter(([, items]) => items.length);
+  const whoWith = client ? `${name} and ${client}` : name;
+  const subject = subjectWhen ? `Brief: ${whoWith} @ ${subjectWhen}` : `Brief: ${whoWith}`;
+  const sections = mirrorSections(facts);
+  const blocks = BRIEF_SECTIONS.map(([title, key]) => [title, sections[key]]);
 
-  const join = safeUrl(facts.joinUrl);
-  const text = [header];
-  if (join) text.push(`Join: ${join}`);
-  text.push('');
+  const text = [subject, ''];
   for (const [title, items] of blocks) {
     text.push(title);
     for (const item of items) text.push(`- ${item}`);
@@ -926,11 +959,9 @@ function buildClientDayofBrief(facts = {}) {
 
   const html = [
     `<div style='font-family:Arial,sans-serif;font-size:14px'>`,
-    `<h3>${escapeHtml(header)}</h3>`,
-    join ? `<p>Join: <a href="${escapeHtml(join)}">${escapeHtml(join)}</a></p>` : '',
-    ...blocks.map(([title, items]) => `<p><b>${escapeHtml(title)}</b></p>${ul(items)}`),
+    ...blocks.map(([title, items]) => `<h3>${escapeHtml(title)}</h3>${ul(items)}`),
     `</div>`,
-  ].filter(Boolean).join('');
+  ].join('');
 
   return { subject, htmlBody: html, textBody };
 }
