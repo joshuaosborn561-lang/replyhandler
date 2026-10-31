@@ -247,6 +247,22 @@ function startCron() {
         }
       });
       console.log('[Cron] Meetstream attendance ENABLED', { scope: meetstream.scopeSetting() });
+
+      // Daily read-only Calendly sync of Josh's own Google Meet bookings (needs CALENDLY_API_TOKEN).
+      const calendlySync = require('./services/calendly-attendance-sync');
+      if (calendlySync.enabled()) {
+        const runCalendlySync = async () => {
+          try {
+            const r = await calendlySync.runSync();
+            console.log('[Cron] Calendly attendance sync', r);
+          } catch (err) {
+            console.error('[Cron] Calendly attendance sync failed', { err: err.message });
+          }
+        };
+        cron.schedule('15 6 * * *', runCalendlySync, { timezone: 'America/Chicago' });
+        setTimeout(runCalendlySync, 60 * 1000);
+        console.log('[Cron] Calendly attendance sync ENABLED (daily 06:15 CT, read-only)');
+      }
     }
   }
 

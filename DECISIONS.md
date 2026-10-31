@@ -1849,3 +1849,6 @@ Josh approved (via Research, 11:34am CT: "Yes and do a test on my meetings"). A 
 - Never guess a no-show: `no_show` only when our bot was admitted and stayed through start + 10 minutes with nobody else. A bot that never got in is `unverified`.
 - Zoom and Teams stay manual (`skipped`). Spend guard: lifetime cap `MEETSTREAM_MAX_BOTS` (20), hard stop 45 minutes after start, about $0.07 per bot at $0.35/hour. Nothing client-facing, no Slack.
 - Guard: `test/meetstream-attendance.test.js`.
+
+## 2026-10-31 — Read-only daily Calendly sync for attendance tracking
+Josh's own Calendly bookings are registered with the MeetStream attendance tracker once a day (06:15 CT, plus once a minute after boot) by `src/services/calendly-attendance-sync.js`. It only issues GET requests to Calendly, registers Google Meet bookings (source `calendly_josh`, scope `josh`), skips Zoom and other locations, and marks Calendly-canceled events cancelled. It needs `CALENDLY_API_TOKEN` and `MEETSTREAM_ATTENDANCE_ENABLED`; with no token it does nothing. Client scope is unchanged.
