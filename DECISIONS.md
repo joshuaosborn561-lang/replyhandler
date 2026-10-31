@@ -1775,3 +1775,14 @@ Josh: "literally just mirror the briefs i get." The client day-of email uses the
 - **Unchanged.** The hold, the reviewer, the zero-context guard, and `CLIENT_DAYOF_BRIEF_ENABLED` default off.
 
 Guard: `test/client-dayof-brief.test.js` (`drops internal pricing, LTV, and unsubscribe notes`, and `the live hold and the preview pull the same sections`).
+
+## Client brief is written like EA's brief, not templated (Josh, Oct 31 2026)
+
+Josh: "this brief still looks nothing like the one i get". The briefs he gets are not a code template. EA's routine "Meeting brief 30m before" (cron `*/15 7-19 * * 1-5` America/Chicago) has an LLM write the subject and HTML from Smartlead, Allo, Fireflies, LinkedIn and web research, then posts it to the `send-brief` edge function, which only forwards it through Resend.
+
+- **Writer.** `src/services/client-brief-writer.js` adapts that prompt for the client. It returns the seven sections as bullets, built only from the gathered facts, two web searches and the company site text. Anthropic first, then OpenRouter. No key or any failure falls back to the mechanical sections.
+- **Guards in code.** Internal lines (LTV, pricing, unsubscribe, campaign names, tool names) are dropped. A bullet with a URL, email or phone not in the input is dropped. Dashes are removed. Allo and Fireflies sections only keep lines backed by real call or transcript hits. The model never sees the campaign name or any key.
+- **Format.** Links print as plain text, as in Josh's emails.
+- **Unchanged.** Hold, reviewer, zero-context guard, `CLIENT_DAYOF_BRIEF_ENABLED` default off.
+
+Guard: `test/client-brief-writer.test.js`.

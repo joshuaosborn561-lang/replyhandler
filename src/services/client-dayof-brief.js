@@ -25,8 +25,10 @@
  * Smartlead thread and lead, person profile (LinkedIn, title, location), the
  * email waterfall (phone and LinkedIn), HeyReach when a LinkedIn URL is known,
  * Allo call history, Fireflies transcripts, and the company site. The email
- * uses the seven sections above. It does not call Claude, and it does not
- * invent a biography. A failed lookup leaves that fact out.
+ * uses the seven sections above. The words are written by the same kind of LLM
+ * pass as EA's "Meeting brief 30m before" routine (client-brief-writer.js), from
+ * these facts only, with code guards. With no LLM key, or on any failure, the
+ * mechanical sections print instead. A failed lookup leaves that fact out.
  *
  * POST /admin/client-briefs/:id/release is the only way a brief becomes
  * `released`. The client email goes out only then, and only when
@@ -314,6 +316,15 @@ function streetLine(text) {
   return m ? oneLine(m[1], 120) : '';
 }
 
+/** Allo summaries are markdown ("# Voicemail for X ## Last dialed ... ## Summary ..."). Keep the summary prose. */
+function plainCallSummary(raw) {
+  const text = String(raw || '');
+  if (!text.trim()) return '';
+  const m = text.match(/(?:^|\n)#{1,3}\s*Summary\s*\n([\s\S]*)$/i);
+  const body = m ? m[1] : text;
+  return oneLine(body.replace(/^#{1,6}\s.*$/gm, ' ').replace(/[*_`]+/g, ''), 500);
+}
+
 /** A sentence that is actually on the page. Lorem and nav chrome are dropped. */
 function companyBlurb(siteText) {
   const text = String(siteText || '').replace(/\s+/g, ' ').trim();
@@ -483,6 +494,12 @@ function liveDeps() {
     async fetchSiteText(url, opts) {
       return require('./booked-brief-data').fetchSiteText(url, opts);
     },
+    async getTranscript(id, opts) {
+      return require('./fireflies').getTranscript(id, opts);
+    },
+    async searchWeb(query, opts) {
+      return require('./booked-brief-data').serperSearch(query, opts);
+    },
   };
 }
 
@@ -534,7 +551,8 @@ function prospectTexts(src) {
  * Same gather for the cron hold and the dry-run preview.
  * Reads the stored reply, then fills gaps from the lookups this repo already
  * uses, plus Allo and Fireflies. A failed lookup omits that fact.
- * It does not call Claude. It does not invent a title, size, or profile.
+ * With a key set it also runs the brief writer over these facts and web results.
+ * Nothing invents a title, size, or profile outside what the lookups returned.
  */
 async function gatherBriefFacts(row, {
   priorNoShows = null, env = process.env, fetchImpl = fetch, deps = null, db = null,
@@ -650,10 +668,13 @@ async function gatherBriefFacts(row, {
     });
     if (Array.isArray(calls)) {
       callLines = calls.slice(0, 4).map((call) => {
-        const when = formatWhen(call.start_date || call.started_at || call.created_at, src.digest_timezone || 'America/Chicago');
-        const summary = oneLine(call.summary || '', 500);
-        return [when, summary].filter(Boolean).join(': ');
-      }).filter(Boolean);
+        const when = formatWhen(call.start_date || call.started_at || call.created_at || call.date, src.digest_timezone || 'America/Chicago');
+        const dir = /^out/i.test(String(call.direction || call.type || '')) ? 'outbound' : (/^in/i.test(String(call.direction || '')) ? 'inbound' : '');
+        const who = oneLine(call.user && call.user.name, 80);
+        const how = [who, dir].filter(Boolean).join(' ');
+        const summary = plainCallSummary(call.summary);
+        return [when, how].filter(Boolean).join(', ') + (summary ? `: ${summary}` : '');
+      }).filter((line) => line && line.replace(/[:,\s]/g, '').length > 3);
     }
   }
 
@@ -678,15 +699,27 @@ async function gatherBriefFacts(row, {
     const company = oneLine(src.lead_company, 80).toLowerCase();
     const email = oneLine(src.lead_email, 200).toLowerCase();
     const rows = Array.isArray(hits) ? hits : [];
-    facts.history.firefliesLines = rows.filter((hit) => {
+    const meetingStart = usableMeetingStart(src) || asDate(src.confirmed_time);
+    const matched = rows.filter((hit) => {
       const blob = JSON.stringify(hit || {}).toLowerCase();
+      // Only earlier calls count as history for this meeting.
+      const when = asDate(hit && hit.date);
+      if (when && meetingStart && when.getTime() >= meetingStart.getTime()) return false;
       if (email && blob.includes(email)) return true;
       return company.length > 3 && blob.includes(company);
-    }).slice(0, 4).map((hit) => {
+    }).slice(0, 4);
+    const lines = [];
+    for (const hit of matched) {
       const title = oneLine(hit.title || hit.name, 180);
       const when = formatWhen(hit.date, src.digest_timezone || 'America/Chicago');
-      return [title, when].filter(Boolean).join(', ');
-    }).filter(Boolean);
+      let gist = oneLine(hit.short_summary || (hit.summary && hit.summary.short_summary), 600);
+      if (!gist && hit.id && (injected.getTranscript || firefliesConfigured(env)) && lines.length < 2) {
+        const full = await safeLookup('fireflies summary', () => d.getTranscript(hit.id, { fetchImpl, env }));
+        gist = oneLine(full && full.summary && (full.summary.short_summary || full.summary.overview), 600);
+      }
+      lines.push(`${[title, when].filter(Boolean).join(', ')}${gist ? `: ${gist}` : ''}`);
+    }
+    facts.history.firefliesLines = lines.filter(Boolean);
   }
 
   const site = facts.company && facts.company.website;
@@ -707,7 +740,43 @@ async function gatherBriefFacts(row, {
     facts.flags.risks = facts.flags.risks || [];
     facts.flags.risks.push(`Email signature lists ${fromEmail}. The company site lists ${fromSite}.`);
   }
+
+  // The words come from the same kind of LLM pass EA runs for Josh's own briefs.
+  const writerOn = Boolean(injected.writeSections || injected.llm)
+    || (!injected.skipWriter && require('./client-brief-writer').writerConfigured(env));
+  if (writerOn) {
+    const company = oneLine(facts.company.name || facts.prospect.company, 160);
+    const person = oneLine(facts.prospect.name, 160);
+    const webQueries = [
+      person ? `${person} ${company} ${oneLine(facts.prospect.location, 60)}`.replace(/\s+/g, ' ').trim() : '',
+      company ? `${company} ${oneLine(facts.prospect.location, 60)} about`.replace(/\s+/g, ' ').trim() : '',
+    ].filter(Boolean);
+    const found = [];
+    if (injected.searchWeb || serperConfigured(env)) {
+      for (const q of webQueries) {
+        const rows = await safeLookup('web search', () => d.searchWeb(q, { fetchImpl, env }));
+        if (Array.isArray(rows)) found.push(...rows);
+      }
+    }
+    const seen = new Set();
+    const results = found.filter((r) => {
+      const key = String((r && r.link) || (r && r.title) || '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const written = await safeLookup('client brief writer', () => (injected.writeSections
+      ? injected.writeSections(facts, { results, siteText })
+      : require('./client-brief-writer').writeClientBriefSections(
+        facts, { results, siteText }, { llm: injected.llm, env, fetchImpl },
+      )));
+    if (written && typeof written === 'object') facts.written = written;
+  }
   return facts;
+}
+
+function serperConfigured(env) {
+  return Boolean(String(env.SERPER_API_KEY || env.SERPER_KEY || '').trim());
 }
 
 function hasEmailBody(row) {
@@ -786,6 +855,14 @@ function mergeFacts(base, edits) {
     out.flags = out.flags && typeof out.flags === 'object' ? out.flags : {};
     out.flags.risks = patch.flags.risks.map((item) => oneLine(item, 400)).filter(Boolean).slice(0, 8);
   }
+  if (patch.written && typeof patch.written === 'object' && !Array.isArray(patch.written)) {
+    out.written = out.written && typeof out.written === 'object' ? out.written : {};
+    for (const key of ['who', 'why', 'rapport', 'openers', 'allo', 'fireflies', 'logistics']) {
+      if (Array.isArray(patch.written[key])) {
+        out.written[key] = patch.written[key].map((item) => oneLine(item, 600)).filter(Boolean).slice(0, 8);
+      }
+    }
+  }
   if (filled(patch.clientName)) out.clientName = oneLine(patch.clientName, 200);
   if (filled(patch.whenLabel)) out.whenLabel = oneLine(patch.whenLabel, 200);
   if (patch.where !== undefined && filled(patch.where)) out.where = oneLine(patch.where, 200);
@@ -809,7 +886,7 @@ function shortReply(text) {
 }
 
 /** Lines a client should not see. Prospect asks about pricing stay. */
-const INTERNAL_BULLET = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b/i;
+const INTERNAL_BULLET = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b|\$\s?\d[\d,.]*\s*(?:\/|per\s+)(?:month|mo|meeting|account|inbox)/i;
 
 function visibleLine(line) {
   const s = oneLine(line, 800);
@@ -891,7 +968,7 @@ function mirrorSections(facts) {
   if (ff.length) {
     for (const line of ff) fireflies.push(line);
   } else if (hist.firefliesChecked) {
-    fireflies.push(`No prior Fireflies transcripts mention ${companyName || 'them'}. First call.`);
+    fireflies.push(`No prior Fireflies transcripts mention ${(companyName || 'them').replace(/\.+$/, '')}. First call.`);
   } else {
     fireflies.push('Fireflies was not checked.');
   }
@@ -913,6 +990,20 @@ function mirrorSections(facts) {
     fireflies: kept(fireflies, 'Fireflies was not checked.'),
     logistics: kept(logistics, 'Time not on file.'),
   };
+}
+
+/**
+ * The written bullets replace the mechanical ones section by section. A section the writer
+ * left out (or that failed the guards) keeps the plain lookup lines, so no section is empty.
+ */
+function overlayWritten(base, written) {
+  const out = { ...base };
+  if (!written || typeof written !== 'object') return out;
+  for (const key of Object.keys(base)) {
+    const lines = Array.isArray(written[key]) ? written[key].map(visibleLine).filter(Boolean) : [];
+    if (lines.length) out[key] = lines;
+  }
+  return out;
 }
 
 const BRIEF_SECTIONS = [
@@ -938,7 +1029,7 @@ function buildClientDayofBrief(facts = {}) {
   const subjectWhen = timeOnly ? timeOnly[0] : whenShort;
   const whoWith = client ? `${name} and ${client}` : name;
   const subject = subjectWhen ? `Brief: ${whoWith} @ ${subjectWhen}` : `Brief: ${whoWith}`;
-  const sections = mirrorSections(facts);
+  const sections = overlayWritten(mirrorSections(facts), facts.written);
   const blocks = BRIEF_SECTIONS.map(([title, key]) => [title, sections[key]]);
 
   const text = [subject, ''];
@@ -949,13 +1040,8 @@ function buildClientDayofBrief(facts = {}) {
   }
   const textBody = text.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
-  const ul = (items) => `<ul>${items.map((item) => {
-    const raw = String(item);
-    const url = raw.match(/https?:\/\/[^\s<>"]+/);
-    let html = escapeHtml(raw);
-    if (url) html = html.replace(escapeHtml(url[0]), `<a href="${escapeHtml(url[0])}">${escapeHtml(url[0])}</a>`);
-    return `<li>${html}</li>`;
-  }).join('')}</ul>`;
+  // Josh's emails print links as plain text (Gmail links them), so do the same.
+  const ul = (items) => `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`;
 
   const html = [
     `<div style='font-family:Arial,sans-serif;font-size:14px'>`,

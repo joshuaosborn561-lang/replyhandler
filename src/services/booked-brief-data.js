@@ -397,5 +397,5 @@ async function gatherBrief(m, ctx, deps = {}) {
 
 module.exports = {
   gatherBrief, loadSmartleadContext, threadFrom, stripQuoted, fetchSiteText, timelineText, meetingLabel, ctLabel,
-  normalizeSynthesis, synthesize, researchCompany, findMeetingOnCalendar, domainOf, SYSTEM,
+  normalizeSynthesis, synthesize, researchCompany, findMeetingOnCalendar, domainOf, serperSearch, SYSTEM,
 };
