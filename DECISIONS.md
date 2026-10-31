@@ -1756,3 +1756,21 @@ Guard: `test/cc-notice-retired.test.js`
 Josh: clients must not see which campaign a lead came from. When any client notify_email is on To, the meeting-booked email leaves out the HOW THEY BOOKED section (Client, Channel, Campaign, Hook, Sender, Timeline, Reply category) in both text and HTML, and the "Email thread" link (campaign id, lead id) in LINKS. Talking points and watch-outs that name the campaign, the sending mailbox or its domain, or a tool (Smartlead, Allo and the like) are dropped, and the campaign name is not given to the model on client sends. The full section stays when the email goes only to Josh and Cayden (no notify_emails on the client, or SalesGlider's own bookings). Client-facing means a To address that is not Josh, not Cayden and not an @salesglidergrowth.com address (`isClientFacing`, `clientFacing` in `buildBookedBrief`). The ops dry_run response shows `client_facing`.
 
 Guard: `campaign details are hidden from clients` in `test/booked-brief.test.js`.
+
+## Weekly recap counts people, and Deep Roots is inactive (Josh, Oct 31 2026)
+
+Josh approved this through EA on Oct 31. The Slack post in #meetings-booked is not produced in this repo. `buildRecap` (`GET /webhook/booking-bridge/recap`) is the payload that post reads for positive replies.
+
+- Positives are one person per client: `lower(lead_email)` inside the canonical client. Two `pending_replies` rows for the same address count once. The earliest row in the window is kept.
+- Vector Energy Group and Vector, and Nutter Group and Nutter, are one block. They are slug aliases (`vector`, `nutter` in `CLIENT_SLUG_ALIASES`). If they are also two `clients` rows, those rows share that slug and fold into the one block. The block name is the first alias that matches a row (`Vector Energy Group`, `Nutter Group` when that row exists).
+- A positive whose address is on that client's `contact_email`, `cc_email`, `cc_emails`, `cc_round_robin_emails`, or `notify_emails` is left out. So is any other address on one of those company domains. Free-mail domains (gmail and the rest of the list in `booking-bridge.js`) are not company domains; only the exact client address is left out.
+- Inactive clients are left out (`active IS DISTINCT FROM false` on both the client list and the positives query).
+- This repo does not compute the meetings total. `assembleRecap` will, when a caller passes meetings: cancelled, rescheduled, client-less, and not-printed rows stay off the lines, and `totals.meetings` is the sum of the lines. `buildRecap` does not pass meetings.
+
+Deep Roots is not deleted. Migration `055_deactivate_deep_roots.sql` sets `clients.active = false` where `name ILIKE 'deep roots%'`. Child foreign keys are not all `ON DELETE CASCADE`, and `clients` cannot be deleted. Smartlead, inboxes, and HubSpot are not changed.
+
+Pollers already skipped inactive clients. These crons now do too: the one-hour meeting reminder, the weekday client roll-up, nurture enrolment / due cards / exit sync / HubSpot flush, and the stuck-send retry (it does not call the provider). Follow-up enrolment, the follow-up runner, the follow-up sequence tick, ghosted-meeting scan, voice learning, ICP auto-build, pitch-hidden summaries, slot-cache refresh, and both inbox pollers already skipped them.
+
+Still not gated on `clients.active`: the interested-sweep account-wide Smartlead master-key pass (read-only log, not a client row), the HeyReach poller's env fallback (only when no active client has a HeyReach key; it is SalesGlider / Nieto, not Deep Roots), and a click on a nurture card that was already posted.
+
+Guards: `test/weekly-recap.test.js`, `test/inactive-client-jobs.test.js`.

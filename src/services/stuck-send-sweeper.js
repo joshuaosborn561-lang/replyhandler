@@ -171,6 +171,16 @@ async function sweepStuckSends(deps = {}) {
       continue;
     }
 
+    const { rows: [activeRow] } = await query(
+      'SELECT active FROM clients WHERE id = $1',
+      [row.client_id]
+    );
+    if (activeRow && activeRow.active === false) {
+      console.warn('[StuckSend] skip inactive client', { replyId: row.id, clientId: row.client_id });
+      out.skipped += 1;
+      continue;
+    }
+
     try {
       const result = await retrySend(row);
       if (result && result.skippedDuplicate) {

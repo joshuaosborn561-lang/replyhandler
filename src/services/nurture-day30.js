@@ -238,6 +238,11 @@ async function flushAllHubSpot({ env = process.env, dbClient = db, deps, limit =
   );
   const totals = { synced: 0, no_contact: 0, error: 0, in_sync: 0, skipped: 0 };
   for (const lead of rows) {
+    const client = await loadClient(lead.client_id, dbClient);
+    if (!client || client.active === false) {
+      totals.skipped++;
+      continue;
+    }
     const r = await flushHubSpot(lead, { env, dbClient, deps });
     if (totals[r] !== undefined) totals[r]++;
   }
@@ -322,6 +327,10 @@ async function scanEntries({ now = new Date(), env = process.env, dbClient = db,
       WHERE s.status = 'completed' AND s.origin = 'reply'
         AND s.client_id = ANY($1::uuid[])
         AND s.updated_at >= $2
+        AND EXISTS (
+          SELECT 1 FROM clients c
+           WHERE c.id = s.client_id AND c.active IS DISTINCT FROM false
+        )
         AND NOT EXISTS (SELECT 1 FROM nurture_leads n WHERE n.source_sequence_id = s.id)
       ORDER BY s.updated_at
       LIMIT $3`,
@@ -405,6 +414,8 @@ async function syncExits({ env = process.env, dbClient = db, deps, limit = 200 }
   );
   for (const lead of rows) {
     totals.checked++;
+    const client = await loadClient(lead.client_id, dbClient);
+    if (!client || client.active === false) continue;
     let verdict;
     try {
       verdict = await evaluateLead(lead, { dbClient, deps });
@@ -505,7 +516,9 @@ async function countPostedToday(now, dbClient = db) {
 async function dueLeads(now, limit, dbClient = db) {
   const { rows } = await dbClient.query(
     `SELECT l.* FROM nurture_leads l
+       JOIN clients c ON c.id = l.client_id
       WHERE l.stage = ANY($1::text[]) AND l.next_touch_at IS NOT NULL AND l.next_touch_at <= $2
+        AND c.active IS DISTINCT FROM false
       ORDER BY l.next_touch_at LIMIT $3`,
     [LIVE_STAGES, now, limit],
   );

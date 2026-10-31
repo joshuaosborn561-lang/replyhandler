@@ -1,4 +1,5 @@
 const db = require('../db');
+const { canonicalKey } = require('../utils/own-addresses');
 
 /**
  * Campaignintelligence booking page → ReplyHandler bridge.
@@ -20,6 +21,7 @@ const CLIENT_SLUG_ALIASES = {
   peterson: ['Roofs By Peterson', 'Roofs by Peterson'],
   vasco: ['Vasco Warranty', 'Vasco Warranty Management'],
   vector: ['Vector Energy Group', 'Vector'],
+  nutter: ['Nutter Group', 'Nutter'],
   emcor: ['Emcor'],
   insight: ['Insight'],
   cornerstone: ['CornerStone Earthworks', 'Cornerstone Earthworks'],
@@ -35,18 +37,284 @@ const BRIDGE_MEETING_MARKER = 'booking_bridge';
 
 const POSITIVE_CLASSIFICATIONS = ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'];
 
-function slugFromClientName(name) {
-  const n = String(name || '').trim().toLowerCase();
-  if (!n) return '';
-  const compact = n.replace(/[^a-z0-9]/g, '');
+/** Address columns that belong to the client, not a prospect. */
+const CLIENT_OWNED_ADDRESS_FIELDS = [
+  'contact_email',
+  'cc_email',
+  'cc_emails',
+  'cc_round_robin_emails',
+  'notify_emails',
+];
+
+/**
+ * Free-mail hosts are never a client company. An exact client address on one
+ * of these domains is still excluded; the rest of the domain is not.
+ */
+const FREE_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'rocketmail.com',
+  'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com',
+  'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'mail.com',
+  'zoho.com', 'yandex.com', 'comcast.net', 'att.net', 'sbcglobal.net',
+  'verizon.net', 'bellsouth.net', 'cox.net', 'charter.net', 'earthlink.net',
+]);
+
+/** Extra letters that still mean the same client ("Nutter" / "Nutter Group"). */
+const CLIENT_NAME_SUFFIXES = new Set([
+  'group', 'inc', 'llc', 'co', 'company', 'energygroup',
+]);
+
+function compactName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function nameExtendsKey(compact, key) {
+  if (!compact || !key) return false;
+  if (compact === key) return true;
+  if (!compact.startsWith(key)) return false;
+  return CLIENT_NAME_SUFFIXES.has(compact.slice(key.length));
+}
+
+/**
+ * Slug from CLIENT_SLUG_ALIASES, including a longer name that only adds a
+ * company suffix. Empty when the name is not a known client.
+ */
+function aliasSlug(name) {
+  const compact = compactName(name);
+  if (!compact) return '';
+  let bestSlug = '';
+  let bestLen = 0;
   for (const [slug, aliases] of Object.entries(CLIENT_SLUG_ALIASES)) {
-    if (n === slug || compact === slug) return slug;
-    for (const alias of aliases) {
-      const a = String(alias).toLowerCase();
-      if (n === a || compact === a.replace(/[^a-z0-9]/g, '')) return slug;
+    const keys = [slug, ...aliases.map((alias) => compactName(alias))];
+    for (const key of keys) {
+      if (!nameExtendsKey(compact, key) || key.length <= bestLen) continue;
+      bestLen = key.length;
+      bestSlug = slug;
     }
   }
-  return compact;
+  return bestSlug;
+}
+
+function slugFromClientName(name) {
+  return aliasSlug(name) || compactName(name);
+}
+
+function extractEmails(raw) {
+  const found = String(raw || '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+  const out = [];
+  const seen = new Set();
+  for (const rawEmail of found) {
+    const email = canonicalKey(rawEmail);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+function emailDomain(email) {
+  const at = String(email || '').lastIndexOf('@');
+  return at >= 0 ? email.slice(at + 1) : '';
+}
+
+function isFreeMailDomain(domain) {
+  const d = String(domain || '').trim().toLowerCase();
+  return d === 'googlemail.com' || FREE_MAIL_DOMAINS.has(d);
+}
+
+/** Exact addresses, plus company domains. Free-mail domains are not indexed. */
+function ownedAddressIndex(clients) {
+  const emails = new Set();
+  const domains = new Set();
+  for (const client of clients || []) {
+    for (const field of CLIENT_OWNED_ADDRESS_FIELDS) {
+      for (const email of extractEmails(client[field])) {
+        emails.add(email);
+        const domain = emailDomain(email);
+        if (domain && !isFreeMailDomain(domain)) domains.add(domain);
+      }
+    }
+  }
+  return { emails, domains };
+}
+
+function leadIsClientOwned(leadEmail, index) {
+  const email = canonicalKey(leadEmail);
+  if (!email || !index) return false;
+  if (index.emails.has(email)) return true;
+  const domain = emailDomain(email);
+  return Boolean(domain && !isFreeMailDomain(domain) && index.domains.has(domain));
+}
+
+function aliasesForBlock(block) {
+  const names = new Set((block.clients || []).map((row) => row.name).filter(Boolean));
+  for (const alias of CLIENT_SLUG_ALIASES[block.slug] || []) names.add(alias);
+  if (block.name) names.add(block.name);
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+function displayNameForSlug(slug, rows) {
+  const aliases = CLIENT_SLUG_ALIASES[slug] || [];
+  for (const alias of aliases) {
+    const hit = rows.find((row) => compactName(row.name) === compactName(alias));
+    if (hit) return hit.name;
+  }
+  return [...rows].sort((a, b) => (
+    String(b.name || '').length - String(a.name || '').length
+    || String(a.name || '').localeCompare(String(b.name || ''))
+  ))[0].name;
+}
+
+function pickCanonicalRow(slug, rows) {
+  const aliases = CLIENT_SLUG_ALIASES[slug] || [];
+  for (const alias of aliases) {
+    const hit = rows.find((row) => compactName(row.name) === compactName(alias));
+    if (hit) return hit;
+  }
+  return [...rows].sort((a, b) => (
+    String(b.name || '').length - String(a.name || '').length
+    || String(a.id).localeCompare(String(b.id))
+  ))[0];
+}
+
+/**
+ * One block per slug. Two client rows that share a slug (Vector and
+ * Vector Energy Group) and two names that are aliases of one slug both land
+ * in the same block.
+ */
+function groupClients(clients) {
+  const groups = new Map();
+  for (const client of clients || []) {
+    const slug = slugFromClientName(client.name) || `id:${client.id}`;
+    if (!groups.has(slug)) groups.set(slug, []);
+    groups.get(slug).push(client);
+  }
+  const blocks = [];
+  for (const [slug, rows] of groups) {
+    const canonical = pickCanonicalRow(slug, rows);
+    blocks.push({
+      slug,
+      id: canonical.id,
+      name: displayNameForSlug(slug, rows),
+      client_ids: rows.map((row) => row.id),
+      clients: rows,
+      owned: ownedAddressIndex(rows),
+      positiveRows: [],
+      meetingRows: [],
+    });
+  }
+  blocks.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return blocks;
+}
+
+function blockForPositive(row, byId, bySlug) {
+  if (row?.client_id != null && byId.has(String(row.client_id))) {
+    return byId.get(String(row.client_id));
+  }
+  const slug = aliasSlug(row?.client_name) || slugFromClientName(row?.client_name);
+  return bySlug.get(slug) || null;
+}
+
+/**
+ * A meeting counts on a client line only while it is live and that client
+ * is printed. Cancelled, rescheduled, and client-less rows stay out, so a
+ * total taken from the lines cannot run ahead of them.
+ */
+function meetingIsLive(meeting) {
+  if (!meeting || typeof meeting !== 'object') return false;
+  if (meeting.cancelled === true || meeting.cancelled_at) return false;
+  const status = String(meeting.status || 'booked').trim().toLowerCase();
+  return status !== 'cancelled' && status !== 'canceled' && status !== 'rescheduled';
+}
+
+/**
+ * Fold client rows, positive replies, and (when supplied) meetings into one
+ * block per canonical client.
+ *
+ * Positives are one person per lower(lead_email) inside that block. The
+ * earliest row in the window is the one kept. Client-owned addresses, and
+ * any other address on a client-owned company domain, are dropped. Free-mail
+ * domains are not treated as company domains.
+ *
+ * `meetings` is optional. This service's recap route does not query them.
+ * When a caller does pass them, `totals.meetings` is the sum of the
+ * per-client lines and nothing else.
+ */
+function assembleRecap({ clients = [], positives = [], meetings = null } = {}) {
+  const blocks = groupClients(clients);
+  const bySlug = new Map(blocks.map((block) => [block.slug, block]));
+  const byId = new Map();
+  for (const block of blocks) {
+    for (const id of block.client_ids) byId.set(String(id), block);
+  }
+
+  const seenPeople = new Set();
+  const ordered = [...positives].sort((a, b) => (
+    new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  ));
+  for (const row of ordered) {
+    const block = blockForPositive(row, byId, bySlug);
+    if (!block) continue;
+    if (leadIsClientOwned(row.lead_email, block.owned)) continue;
+    const email = canonicalKey(row.lead_email);
+    if (email) {
+      const key = `${block.slug}|${email}`;
+      if (seenPeople.has(key)) continue;
+      seenPeople.add(key);
+    }
+    block.positiveRows.push(row);
+  }
+
+  let meetingsFolded = false;
+  if (Array.isArray(meetings)) {
+    meetingsFolded = true;
+    for (const meeting of meetings) {
+      if (!meetingIsLive(meeting)) continue;
+      const block = blockForPositive({
+        client_id: meeting.client_id,
+        client_name: meeting.client_name || meeting.client || meeting.name,
+      }, byId, bySlug);
+      if (!block) continue;
+      block.meetingRows.push(meeting);
+    }
+  }
+
+  const outClients = blocks.map((block) => ({
+    id: block.id,
+    name: block.name,
+    slug: block.slug,
+    client_ids: block.client_ids,
+    aliases: aliasesForBlock(block),
+  }));
+  const outPositives = [];
+  for (const block of blocks) {
+    for (const row of block.positiveRows) {
+      outPositives.push({
+        client_name: block.name,
+        slug: block.slug,
+        lead_name: row.lead_name || null,
+        lead_email: row.lead_email || null,
+        classification: row.classification,
+        platform: row.platform,
+        created_at: row.created_at,
+      });
+    }
+  }
+
+  const result = { clients: outClients, positives: outPositives };
+  if (meetingsFolded) {
+    const lineMeetings = blocks.map((block) => block.meetingRows.length);
+    result.blocks = blocks.map((block) => ({
+      slug: block.slug,
+      name: block.name,
+      meetings: block.meetingRows.length,
+      positives: block.positiveRows.length,
+    }));
+    result.totals = {
+      meetings: lineMeetings.reduce((sum, n) => sum + n, 0),
+      positives: outPositives.length,
+    };
+  }
+  return result;
 }
 
 function parseRecapWindow(query) {
@@ -62,17 +330,27 @@ function parseRecapWindow(query) {
 }
 
 /**
- * Active clients + same-window positive replies for booking-bridge Slack recap.
+ * Active clients + same-window positive replies for the booking-bridge Slack recap.
  * New ReplyHandler clients show up here automatically — no hardcoded list.
+ *
+ * One block per canonical client (slug aliases and duplicate rows share a block).
+ * Positives are one row per person (lower lead email) inside that block.
+ * Client-owned addresses and their company domains are left out. Inactive
+ * clients are left out. This payload does not count meetings; the Slack
+ * "Total: N meetings" line is not produced here.
  */
 async function buildRecap({ startIso, endIso }) {
   const { rows: clients } = await db.query(
-    `SELECT id, name FROM clients
+    `SELECT id, name, contact_email, cc_email, cc_emails,
+            cc_round_robin_emails, notify_emails
+       FROM clients
       WHERE active IS DISTINCT FROM false
       ORDER BY name ASC`
   );
   const { rows: positives } = await db.query(
-    `SELECT c.name AS client_name,
+    `SELECT pr.id,
+            c.id AS client_id,
+            c.name AS client_name,
             pr.lead_name,
             pr.lead_email,
             pr.classification,
@@ -80,30 +358,15 @@ async function buildRecap({ startIso, endIso }) {
             pr.created_at
        FROM pending_replies pr
        JOIN clients c ON c.id = pr.client_id
-      WHERE pr.classification = ANY($3::text[])
+      WHERE c.active IS DISTINCT FROM false
+        AND pr.classification = ANY($3::text[])
         AND pr.status NOT IN ('suppressed', 'disqualified')
         AND pr.created_at >= $1::timestamptz
         AND pr.created_at < $2::timestamptz
       ORDER BY c.name ASC, pr.created_at ASC`,
     [startIso, endIso, POSITIVE_CLASSIFICATIONS]
   );
-  return {
-    ok: true,
-    clients: clients.map((c) => ({
-      id: c.id,
-      name: c.name,
-      slug: slugFromClientName(c.name),
-    })),
-    positives: positives.map((p) => ({
-      client_name: p.client_name,
-      slug: slugFromClientName(p.client_name),
-      lead_name: p.lead_name || null,
-      lead_email: p.lead_email || null,
-      classification: p.classification,
-      platform: p.platform,
-      created_at: p.created_at,
-    })),
-  };
+  return { ok: true, ...assembleRecap({ clients, positives }) };
 }
 
 function normalizeEmail(email) {
@@ -509,6 +772,12 @@ module.exports = {
   CLIENT_SLUG_ALIASES,
   POSITIVE_CLASSIFICATIONS,
   slugFromClientName,
+  aliasSlug,
+  assembleRecap,
+  meetingIsLive,
+  leadIsClientOwned,
+  ownedAddressIndex,
+  isFreeMailDomain,
   parseRecapWindow,
   buildRecap,
   assertBookingBridgeSecret,

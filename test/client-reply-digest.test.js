@@ -152,6 +152,19 @@ describe('client roll-up: run', () => {
     assert.equal(s.failed, 1);
   });
 
+  it('an inactive client is not emailed', async () => {
+    const db = fakeDb(
+      { c4: [reply({ id: 'd1', client_id: 'c4', lead_name: 'Pat', lead_email: 'pat@prospect.example' })] },
+      { c4: { id: 'c4', name: 'Closed Co', notify_emails: 'a@closed.test', active: false } },
+    );
+    const sent = [];
+    const s = await runClientReplyDigest({ query: db.query, send: async (m) => sent.push(m), env: {} });
+    assert.equal(sent.length, 0);
+    assert.equal(db.state.get('d1').ds, 'sent');
+    assert.equal(s.skipped, 1);
+    assert.equal(s.sent, 0);
+  });
+
   it('a client with no notify list gets nothing and is not retried forever', async () => {
     const db = fakeDb({ c3: [reply({ id: 'g1', client_id: 'c3' })] }, clients);
     const sent = [];
