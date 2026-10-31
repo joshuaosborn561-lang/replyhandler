@@ -3,10 +3,19 @@
 /**
  * Day-of meeting brief for the client who is taking the meeting.
  *
- * About CLIENT_DAYOF_BRIEF_LEAD_MINUTES (default 45) before meetings.confirmed_time
- * the cron builds one brief and stores it as `held`. It notifies REVIEW_NOTIFY
- * (a webhook URL or an email) with the rendered brief and release / enrich / block
- * links. It does not email the client.
+ * About CLIENT_DAYOF_BRIEF_LEAD_MINUTES (default 120, two hours) before
+ * meetings.confirmed_time the cron builds one brief and stores it as `held`.
+ * It notifies REVIEW_NOTIFY (a webhook URL or an email) with the rendered brief
+ * and release / enrich / block links. An email subject starts with
+ * `[Client brief review]`, then the lead, company, and meeting time.
+ * It does not email the client.
+ *
+ * The client email uses the same HTML shell as the briefs Josh gets from the
+ * `send-brief` edge function (Client portal project scvrsmfzyvmmbnaolcrg):
+ * Arial 14px, an h3 header, then bold section titles and bullets. That function
+ * only mails prebuilt HTML to Josh through Resend. This path renders the brief
+ * here and sends it with Gmail to the client's notify list. It does not call
+ * send-brief, and it does not invent company or personal facts.
  *
  * POST /admin/client-briefs/:id/release is the only way a brief becomes
  * `released`. The client email goes out only then, and only when
@@ -28,7 +37,7 @@ const { stripQuoted } = require('./booked-brief-data');
 const JOSH_DEFAULT = 'joshua@salesglidergrowth.com';
 const FLAG = 'CLIENT_DAYOF_BRIEF_ENABLED';
 const LEAD_FLAG = 'CLIENT_DAYOF_BRIEF_LEAD_MINUTES';
-const DEFAULT_LEAD_MINUTES = 45;
+const DEFAULT_LEAD_MINUTES = 120;
 const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail)\./i;
 
 function dayofBriefEnabled(env = process.env) {
@@ -118,20 +127,30 @@ function clientBriefRecipients(client, env = process.env) {
   return { to, cc };
 }
 
+const TZ_SHORT = { CDT: 'CT', CST: 'CT', EDT: 'ET', EST: 'ET', PDT: 'PT', PST: 'PT', MDT: 'MT', MST: 'MT' };
+
 function formatWhen(value, tz) {
   const d = asDate(value);
   if (!d) return '';
   const zone = tz || 'America/Chicago';
   try {
-    return new Intl.DateTimeFormat('en-US', {
+    const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: zone,
       weekday: 'short',
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
+      hourCycle: 'h12',
       timeZoneName: 'short',
-    }).format(d);
+    }).formatToParts(d);
+    const pick = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+    const hour = String(pick('hour')).replace(/^0/, '');
+    const minute = pick('minute') || '00';
+    const ap = pick('dayPeriod').replace(/\./g, '').toLowerCase();
+    const zoneName = TZ_SHORT[pick('timeZoneName')] || (zone === 'America/Chicago' ? 'CT' : pick('timeZoneName'));
+    const clock = `${hour}:${minute}${ap}${zoneName ? ` ${zoneName}` : ''}`;
+    return `${pick('weekday')}, ${pick('month')} ${pick('day')}, ${clock}`.replace(/\s+/g, ' ').trim();
   } catch {
     return d.toISOString();
   }
@@ -188,14 +207,34 @@ function callNotesFrom(row) {
   return str(raw, 2000);
 }
 
-function threadMessages(row) {
-  const platform = String(row.platform || 'smartlead').toLowerCase() === 'heyreach' ? 'heyreach' : 'smartlead';
+function threadMessages(row, platform) {
+  const which = platform || (String(row.platform || 'smartlead').toLowerCase() === 'heyreach' ? 'heyreach' : 'smartlead');
   const extra = [];
-  if (filled(row.sent_reply)) extra.push({ role: 'us', body: row.sent_reply, time: row.updated_at || '' });
-  if (filled(row.inbound_message)) extra.push({ role: 'them', body: row.inbound_message, time: row.created_at || '' });
-  return extractThreadMessages(platform, row.thread_context, { maxMessages: 8, extraMessages: extra, pinStart: true })
+  if (which !== 'heyreach' || String(row.platform || '').toLowerCase() === 'heyreach') {
+    if (filled(row.sent_reply)) extra.push({ role: 'us', body: row.sent_reply, time: row.updated_at || '' });
+    if (filled(row.inbound_message)) extra.push({ role: 'them', body: row.inbound_message, time: row.created_at || '' });
+  }
+  const context = which === 'heyreach' && String(row.platform || '').toLowerCase() !== 'heyreach'
+    ? heyreachContext(row)
+    : row.thread_context;
+  return extractThreadMessages(which, context, { maxMessages: 8, extraMessages: extra, pinStart: true })
     .map((m) => ({ ...m, body: stripQuoted(m.body).slice(0, 1500) }))
     .filter((m) => filled(m.body));
+}
+
+function heyreachContext(row) {
+  const tc = parseObj(row.thread_context);
+  if (!tc || Array.isArray(tc)) return null;
+  return tc.heyreach || null;
+}
+
+function messageLine(m, tz, prospectName) {
+  const text = oneLine(m && m.body, 500);
+  if (!text) return '';
+  const who = m.role === 'us' ? 'Us' : (prospectName || 'Them');
+  const when = formatWhen(m.time, tz);
+  const head = [who, when].filter(Boolean).join(', ');
+  return `${head}: ${text}`;
 }
 
 function asksFrom(messages) {
@@ -243,19 +282,22 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
   const companyName = oneLine(src.lead_company, 200);
   const campaign = oneLine(src.campaign_name, 200);
   const channel = channelFor(src);
-  const messages = threadMessages(src);
-  const us = messages.filter((m) => m.role === 'us').length;
-  const them = messages.filter((m) => m.role === 'them').length;
-  const summary = (us || them)
-    ? `${us} email${us === 1 ? '' : 's'} from us, ${them} repl${them === 1 ? 'y' : 'ies'} from them.`
-    : '';
-  const quotes = messages.filter((m) => m.role === 'them').slice(-3).map((m) => ({
+  const linkedinOnly = String(src.platform || '').toLowerCase() === 'heyreach';
+  const emailMsgs = linkedinOnly ? [] : threadMessages(src, 'smartlead');
+  const dmMsgs = threadMessages(src, 'heyreach');
+  const emailLines = emailMsgs.map((m) => messageLine(m, tz, name)).filter(Boolean);
+  const dmLines = dmMsgs.map((m) => messageLine(m, tz, name)).filter(Boolean);
+  const summaryBits = [];
+  if (emailLines.length) summaryBits.push(`${emailLines.length} email message${emailLines.length === 1 ? '' : 's'}`);
+  if (dmLines.length) summaryBits.push(`${dmLines.length} LinkedIn message${dmLines.length === 1 ? '' : 's'}`);
+  const summary = summaryBits.join(', ');
+  const quotes = [...emailMsgs, ...dmMsgs].filter((m) => m.role === 'them').slice(-3).map((m) => ({
     when: formatWhen(m.time, tz),
     who: name || 'Prospect',
     text: oneLine(m.body, 500),
   })).filter((q) => q.text);
   const callNotes = callNotesFrom(src);
-  const openItems = asksFrom(messages);
+  const openItems = asksFrom([...emailMsgs, ...dmMsgs]);
   const icpFit = icpPlain(src.icp_verdict);
   const noShowHistory = noShowLine(priorNoShows, src.lead_email, tz);
   const risks = [];
@@ -290,7 +332,7 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
       channel,
       source: sourceFor(src, campaign, channel),
     },
-    history: { summary, quotes, callNotes, ask: '' },
+    history: { summary, quotes, callNotes, ask: '', emailLines, dmLines },
     openItems,
     flags: { icpFit, risks, noShowHistory },
   };
@@ -308,7 +350,9 @@ function contextPresence(facts) {
   return {
     source: filled(how.campaign) || filled(how.channel) || filled(how.source),
     company: filled(company.whatTheyDo) || filled(company.size) || filled(company.website) || filled(company.name) || filled(prospect.company),
-    history: filled(history.summary) || filled(history.callNotes) || quotes.length > 0,
+    history: filled(history.summary) || filled(history.callNotes) || quotes.length > 0
+      || (Array.isArray(history.emailLines) && history.emailLines.some((line) => filled(line)))
+      || (Array.isArray(history.dmLines) && history.dmLines.some((line) => filled(line))),
     ask: open.length > 0 || filled(history.ask),
   };
 }
@@ -377,6 +421,17 @@ function bulletList(items) {
   return (items || []).map((item) => oneLine(item, 800)).filter(Boolean);
 }
 
+function quoteLines(hist) {
+  const lines = [];
+  for (const q of hist.quotes || []) {
+    const text = oneLine(q && (q.text || q), 600);
+    if (!text) continue;
+    const whoSaid = [oneLine(q.who, 120), oneLine(q.when, 80)].filter(Boolean).join(', ');
+    lines.push(whoSaid ? `${whoSaid}: ${text}` : text);
+  }
+  return lines;
+}
+
 function sectionBullets(facts) {
   const p = facts.prospect || {};
   const c = facts.company || {};
@@ -384,43 +439,45 @@ function sectionBullets(facts) {
   const hist = facts.history || {};
   const flags = facts.flags || {};
   const who = [];
-  const person = [p.name, p.title].filter(filled).join(', ');
+  const person = [p.name, p.title, c.name || p.company].filter(filled).join(', ');
   if (person) who.push(person);
-  if (filled(p.linkedinUrl)) who.push(`LinkedIn: ${p.linkedinUrl}`);
   const reach = [p.email, p.phone].filter(filled).join(' | ');
   if (reach) who.push(reach);
-  if (filled(p.location)) who.push(p.location);
+  const place = [p.location, filled(p.linkedinUrl) ? `LinkedIn: ${p.linkedinUrl}` : ''].filter(filled).join('. ');
+  if (place) who.push(place);
+
+  const icp = filled(flags.icpFit) ? [flags.icpFit] : [];
+  const linkedin = Array.isArray(hist.dmLines) ? bulletList(hist.dmLines) : [];
+  const email = Array.isArray(hist.emailLines) ? bulletList(hist.emailLines) : quoteLines(hist);
+  const calls = [];
+  if (filled(hist.callNotes)) calls.push(oneLine(hist.callNotes, 2000));
+  for (const line of bulletList(hist.callLines)) calls.push(line);
+
+  const source = [];
+  if (filled(h.campaign)) source.push(h.campaign);
+  if (filled(h.channel)) source.push(h.channel);
+  if (filled(h.source)) {
+    const low = h.source.toLowerCase();
+    const restates = (!filled(h.campaign) || low.includes(String(h.campaign).toLowerCase()))
+      && (!filled(h.channel) || low.includes(String(h.channel).toLowerCase()))
+      && (filled(h.campaign) || filled(h.channel));
+    if (!restates) source.push(h.source);
+  }
 
   const company = [];
-  if (filled(c.name || p.company)) company.push(c.name || p.company);
   if (filled(c.website)) company.push(c.website);
   if (filled(c.whatTheyDo)) company.push(c.whatTheyDo);
-  if (filled(c.size)) company.push(`Size: ${c.size}`);
-
-  const how = [];
-  if (filled(h.channel)) how.push(`Channel: ${h.channel}`);
-  if (filled(h.campaign)) how.push(`Campaign: ${h.campaign}`);
-  if (filled(h.source)) how.push(`Source: ${h.source}`);
-
-  const past = [];
-  if (filled(hist.summary)) past.push(hist.summary);
-  for (const q of hist.quotes || []) {
-    const text = oneLine(q && (q.text || q), 600);
-    if (!text) continue;
-    const whoSaid = [oneLine(q.when, 80), oneLine(q.who, 120)].filter(Boolean).join(', ');
-    past.push(whoSaid ? `Quote (${whoSaid}): "${text}"` : `Quote: "${text}"`);
-  }
-  if (filled(hist.callNotes)) past.push(`Call notes: ${hist.callNotes}`);
+  if (filled(c.size)) company.push(c.size);
+  const companyTitle = filled(c.name || p.company) ? `About ${oneLine(c.name || p.company, 200)}` : 'Company';
 
   const open = bulletList(facts.openItems);
   if (filled(hist.ask) && !open.includes(oneLine(hist.ask, 600))) open.push(oneLine(hist.ask, 600));
 
   const flagLines = [];
-  if (filled(flags.icpFit)) flagLines.push(flags.icpFit);
   for (const risk of flags.risks || []) if (filled(risk)) flagLines.push(risk);
   if (filled(flags.noShowHistory)) flagLines.push(flags.noShowHistory);
 
-  return { who, company, how, past, open, flagLines };
+  return { who, icp, linkedin, email, calls, source, company, companyTitle, open, flagLines };
 }
 
 function headerLine(facts) {
@@ -449,9 +506,12 @@ function buildClientDayofBrief(facts = {}) {
   const sections = sectionBullets(facts);
   const blocks = [
     ['Who', sections.who],
-    ['Company', sections.company],
-    ['How they came in', sections.how],
-    ['Past emails and calls', sections.past],
+    ['ICP fit', sections.icp],
+    ['LinkedIn', sections.linkedin],
+    ['Email thread', sections.email],
+    ['Call history', sections.calls],
+    ['Source campaign', sections.source],
+    [sections.companyTitle, sections.company],
     ['Open items', sections.open],
     ['Flags', sections.flagLines],
   ].filter(([, items]) => items.length);
@@ -465,10 +525,9 @@ function buildClientDayofBrief(facts = {}) {
     for (const item of items) text.push(`- ${item}`);
     text.push('');
   }
-  text.push('Sent automatically by SalesGlider. Reply all with notes and operations sees it.');
   const textBody = text.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
-  const ul = (items) => `<ul style="margin:4px 0 0;padding-left:20px;">${items.map((item) => {
+  const ul = (items) => `<ul>${items.map((item) => {
     const raw = String(item);
     const url = raw.match(/https?:\/\/[^\s<>"]+/);
     let html = escapeHtml(raw);
@@ -477,11 +536,10 @@ function buildClientDayofBrief(facts = {}) {
   }).join('')}</ul>`;
 
   const html = [
-    `<div style="font-family:Arial,sans-serif;font-size:14px;color:#111;line-height:1.45">`,
-    `<p style="margin:0 0 8px"><b>${escapeHtml(header)}</b></p>`,
-    join ? `<p style="margin:0 0 12px">Join: <a href="${escapeHtml(join)}">${escapeHtml(join)}</a></p>` : '',
-    ...blocks.map(([title, items]) => `<p style="margin:16px 0 4px"><b>${escapeHtml(title)}</b></p>${ul(items)}`),
-    `<p style="margin:22px 0 0;color:#666;font-size:12px">Sent automatically by SalesGlider. Reply all with notes and operations sees it.</p>`,
+    `<div style='font-family:Arial,sans-serif;font-size:14px'>`,
+    `<h3>${escapeHtml(header)}</h3>`,
+    join ? `<p>Join: <a href="${escapeHtml(join)}">${escapeHtml(join)}</a></p>` : '',
+    ...blocks.map(([title, items]) => `<p><b>${escapeHtml(title)}</b></p>${ul(items)}`),
     `</div>`,
   ].filter(Boolean).join('');
 
@@ -491,7 +549,7 @@ function buildClientDayofBrief(facts = {}) {
 const EXAMPLE_BRIEF_FACTS = {
   clientName: 'Example Industrial',
   timezone: 'America/Chicago',
-  whenLabel: 'Thu, Oct 31, 9:30 AM CDT',
+  whenLabel: 'Thu, Oct 31, 9:30am CT',
   where: 'Zoom',
   joinUrl: 'https://us06web.zoom.us/j/00000000000',
   prospect: {
@@ -523,6 +581,13 @@ const EXAMPLE_BRIEF_FACTS = {
     }],
     callNotes: 'No call yet. This is the first conversation.',
     ask: '',
+    emailLines: [
+      'Us, Oct 26, 1:26pm CT: Two times are open on our side this week.',
+      'Jordan Hale, Oct 28, 2:14pm CT: Thursday works. Can you walk us through pricing and what you need from us before the call?',
+    ],
+    dmLines: [
+      'Jordan Hale, Oct 25: Saw the note and asked if Thursday still works.',
+    ],
   },
   openItems: [
     'Wants pricing walked through on the call',
@@ -539,8 +604,24 @@ function exampleClientBrief() {
   return { facts: EXAMPLE_BRIEF_FACTS, ...buildClientDayofBrief(EXAMPLE_BRIEF_FACTS) };
 }
 
+const REVIEW_SUBJECT_TAG = '[Client brief review]';
+
 function reviewTarget(env = process.env) {
   return String(env.REVIEW_NOTIFY || '').trim();
+}
+
+/** Email subjects start with the fixed tag, then lead, company, and meeting time. */
+function reviewEmailSubject(brief = {}) {
+  const facts = asFacts(brief.facts);
+  const p = facts.prospect || {};
+  const lead = oneLine(p.name, 200);
+  const company = oneLine((facts.company || {}).name || p.company, 200);
+  const whenShort = oneLine(facts.whenLabel, 120);
+  const timeOnly = whenShort.match(/\d{1,2}:\d{2}\s*[AP]M(?:\s+[A-Z]{2,5})?/i);
+  const when = timeOnly ? timeOnly[0].replace(/\s+/g, ' ') : whenShort;
+  const who = [lead, company].filter(Boolean).join(', ');
+  const detail = who && when ? `${who} @ ${when}` : (who || when);
+  return detail ? `${REVIEW_SUBJECT_TAG} ${detail}` : REVIEW_SUBJECT_TAG;
 }
 
 function reviewNotice(brief, links) {
@@ -606,7 +687,7 @@ async function notifyReviewer(brief, { env = process.env, fetchImpl = fetch, sen
       to: parseEmailList(target),
       cc: [],
       replyTo: fyiReplyTo(env),
-      subject: `Review hold: ${brief.subject || 'meeting brief'}`,
+      subject: reviewEmailSubject(brief),
       htmlBody: notice.htmlBody,
       textBody: notice.textBody,
     });
@@ -1078,8 +1159,10 @@ module.exports = {
   mergeFacts,
   buildClientDayofBrief,
   exampleClientBrief,
+  REVIEW_SUBJECT_TAG,
   notifyReviewer,
   reviewNotice,
+  reviewEmailSubject,
   runClientDayofBriefs,
   previewBrief,
   listPendingBriefs,

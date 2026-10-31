@@ -27,6 +27,8 @@ const {
   blockBrief,
   listPendingBriefs,
   JOSH_DEFAULT,
+  REVIEW_SUBJECT_TAG,
+  reviewEmailSubject,
 } = require('../src/services/client-dayof-brief');
 
 const START = new Date('2026-10-31T14:30:00.000Z'); // 9:30 AM CDT
@@ -184,20 +186,20 @@ function env(over = {}) {
 }
 
 describe('day-of brief schedule and flag', () => {
-  it('the flag defaults off and the lead time defaults to 45 minutes', () => {
+  it('the flag defaults off and the lead time defaults to 2 hours', () => {
     assert.equal(dayofBriefEnabled({}), false);
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: '' }), false);
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: 'false' }), false);
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: 'true' }), true);
-    assert.equal(leadMinutes({}), 45);
+    assert.equal(leadMinutes({}), 120);
     assert.equal(leadMinutes({ CLIENT_DAYOF_BRIEF_LEAD_MINUTES: '30' }), 30);
   });
 
-  it('builds inside the 45 minute window and skips a timestamp that is just the insert', () => {
-    assert.equal(briefIsDue(START, NOW, 45), true);
-    assert.equal(briefIsDue(START, new Date(START.getTime() - 46 * 60 * 1000), 45), false);
-    assert.equal(briefIsDue(START, new Date(START.getTime() - 10 * 60 * 1000), 45), true);
-    assert.equal(briefIsDue(START, new Date(START.getTime() + 60 * 1000), 45), false);
+  it('builds inside the 2 hour window and skips a timestamp that is just the insert', () => {
+    assert.equal(briefIsDue(START, new Date(START.getTime() - 120 * 60 * 1000), 120), true);
+    assert.equal(briefIsDue(START, new Date(START.getTime() - 121 * 60 * 1000), 120), false);
+    assert.equal(briefIsDue(START, NOW, 120), true);
+    assert.equal(briefIsDue(START, new Date(START.getTime() + 60 * 1000), 120), false);
     const stamped = meeting({ created_at: START.toISOString(), confirmed_time: new Date(START.getTime() + 30 * 1000).toISOString() });
     assert.equal(usableMeetingStart(stamped), null);
     assert.ok(usableMeetingStart(meeting()) instanceof Date);
@@ -207,11 +209,16 @@ describe('day-of brief schedule and flag', () => {
 describe('day-of brief rendering', () => {
   it('uses the short bullet layout and leaves empty sections out', () => {
     const sample = exampleClientBrief();
-    for (const section of ['Who', 'Company', 'How they came in', 'Past emails and calls', 'Open items', 'Flags']) {
-      assert.match(sample.textBody, new RegExp(section));
-      assert.match(sample.htmlBody, new RegExp(section));
+    for (const section of ['Who', 'ICP fit', 'LinkedIn', 'Email thread', 'Call history', 'Source campaign', 'About Northwind Roofing Co.', 'Open items', 'Flags']) {
+      assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(sample.htmlBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
-    assert.match(sample.subject, /^Brief: Jordan Hale @ 9:30 AM CDT$/);
+    assert.match(sample.subject, /^Brief: Jordan Hale @ 9:30am CT$/);
+    assert.match(sample.htmlBody, /<h3>Jordan Hale, Northwind Roofing Co\. \|/);
+    assert.match(sample.htmlBody, /font-family:Arial,sans-serif;font-size:14px/);
+    assert.match(sample.textBody, /jordan\.hale@northwind-roofing\.example/);
+    assert.match(sample.textBody, /\(214\) 555-0148/);
+    assert.match(sample.textBody, /Rockwall, TX/);
     assert.match(sample.textBody, /jordan-hale-example/);
     assert.match(sample.textBody, /northwind-roofing\.example/);
     assert.match(sample.textBody, /Spring owners, north Texas/);
@@ -222,8 +229,9 @@ describe('day-of brief rendering', () => {
     const thin = buildClientDayofBrief({
       prospect: { name: 'Alex Example', linkedinUrl: 'https://www.linkedin.com/in/alex-example' },
     });
-    assert.equal(thin.textBody.includes('Company'), false);
-    assert.equal(thin.textBody.includes('How they came in'), false);
+    assert.equal(thin.textBody.includes('About'), false);
+    assert.equal(thin.textBody.includes('Source campaign'), false);
+    assert.equal(thin.textBody.includes('Email thread'), false);
     assert.match(thin.textBody, /LinkedIn: https:\/\/www\.linkedin\.com\/in\/alex-example/);
     assert.equal(hasZeroContext({ prospect: { name: 'Alex Example', linkedinUrl: 'https://www.linkedin.com/in/alex-example' } }), true);
     assert.equal(hasZeroContext({ prospect: { name: 'Alex Example' }, how: { campaign: 'Spring owners' } }), false);
@@ -246,7 +254,9 @@ describe('day-of brief rendering', () => {
     assert.equal(facts.company.website, 'https://northwind-roofing.example');
     assert.match(facts.how.campaign, /Spring owners/);
     assert.equal(facts.how.channel, 'Email');
-    assert.match(facts.history.summary, /1 reply/);
+    assert.match(facts.history.summary, /email message/);
+    assert.match(facts.history.emailLines.join(' '), /pricing/);
+    assert.equal(facts.history.dmLines.length, 0);
     assert.match(facts.history.quotes[0].text, /pricing/);
     assert.match(facts.openItems.join(' '), /pricing/);
     assert.match(facts.flags.icpFit, /qualified/);
@@ -258,6 +268,22 @@ describe('day-of brief rendering', () => {
     assert.match(noshow.flags.noShowHistory, /No-show on/);
     assert.equal(assembleBriefFacts(thinMeeting(), { priorNoShows: [] }).company.website, '');
     assert.equal(hasZeroContext(assembleBriefFacts(thinMeeting(), { priorNoShows: [] })), true);
+  });
+
+  it('puts a LinkedIn thread under LinkedIn and leaves the email section out', () => {
+    const facts = assembleBriefFacts(meeting({
+      platform: 'heyreach',
+      campaign_name: 'Owners, LinkedIn',
+      inbound_message: 'Thursday works. Can you walk us through pricing?',
+      sent_reply: 'Two times are open.',
+      thread_context: null,
+    }), { priorNoShows: [] });
+    assert.equal(facts.history.emailLines.length, 0);
+    assert.match(facts.history.dmLines.join(' '), /pricing/);
+    const brief = buildClientDayofBrief(facts);
+    assert.match(brief.textBody, /LinkedIn/);
+    assert.equal(brief.textBody.includes('Email thread'), false);
+    assert.match(brief.textBody, /Owners, LinkedIn/);
   });
 });
 
@@ -493,12 +519,12 @@ describe('day-of brief hold, release, block', () => {
     assert.equal(missing.status, 404);
   });
 
-  it('a meeting 46 minutes out is not held', async () => {
+  it('a meeting 121 minutes out is not held', async () => {
     const store = memoryStore({ meetings: [meeting()] });
     const result = await runClientDayofBriefs({
       env: env(),
       store,
-      now: new Date(START.getTime() - 46 * 60 * 1000),
+      now: new Date(START.getTime() - 121 * 60 * 1000),
       send: async () => { throw new Error('should not send'); },
       fetchImpl: async () => { throw new Error('should not notify'); },
     });
@@ -517,10 +543,31 @@ describe('day-of brief hold, release, block', () => {
     });
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0].to, ['ea-bot@example.com']);
-    assert.match(sent[0].subject, /^Review hold:/);
+    assert.match(sent[0].subject, /^\[Client brief review\]/);
     assert.match(sent[0].textBody, /HELD FOR REVIEW/);
     assert.match(sent[0].textBody, /\/admin\/client-briefs\/brief-1\/release/);
+    assert.match(sent[0].textBody, /\/admin\/client-briefs\/brief-1\/block/);
+    assert.match(sent[0].htmlBody, /Enrich/);
     assert.equal(store.briefs[0].status, 'held');
+  });
+
+  it('the review email subject starts with the fixed client brief review tag', async () => {
+    const store = memoryStore({ meetings: [meeting()] });
+    const sent = [];
+    await runClientDayofBriefs({
+      env: env({ REVIEW_NOTIFY: 'ea-bot@example.com' }),
+      store,
+      now: NOW,
+      send: async (m) => sent.push(m),
+    });
+    const subject = sent[0].subject;
+    assert.equal(subject.startsWith(REVIEW_SUBJECT_TAG), true);
+    assert.match(subject, /^\[Client brief review\] Jordan Hale, Northwind Roofing Co\. @ 9:30am CT$/);
+    assert.match(sent[0].textBody, /Jordan Hale/);
+    assert.match(sent[0].textBody, /Release:/);
+    assert.match(sent[0].textBody, /Enrich:/);
+    assert.match(sent[0].textBody, /Block:/);
+    assert.equal(reviewEmailSubject(store.briefs[0]), subject);
   });
 });
 
@@ -537,5 +584,7 @@ describe('day-of brief stays off the prospect send path', () => {
     assert.match(admin, /\/admin\/client-briefs\/preview/);
     assert.doesNotMatch(admin, /requireAdminApiKey/);
     assert.match(cron, /dayofBriefEnabled/);
+    const envExample = fs.readFileSync(path.join(__dirname, '../docs/.env.example'), 'utf8');
+    assert.match(envExample, /^REVIEW_NOTIFY=salesglider-briefs@mail\.grokbot\.com$/m);
   });
 });

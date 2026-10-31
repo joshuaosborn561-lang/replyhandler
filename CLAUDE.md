@@ -228,10 +228,13 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
 1. The weekday 4:00pm CT roll-up of positive replies we answered
    (`client-reply-digest.js`).
 2. The instant meeting-booked brief (`booked-meeting-email.js`).
-3. The day-of meeting brief (`client-dayof-brief.js`). Built about 45 minutes
-   before `meetings.confirmed_time` (`CLIENT_DAYOF_BRIEF_LEAD_MINUTES`) and
-   stored `held`. `REVIEW_NOTIFY` (webhook URL or email) gets the brief plus
-   release / enrich / block links. The client is emailed only after
+3. The day-of meeting brief (`client-dayof-brief.js`). Built about 2 hours
+   before `meetings.confirmed_time` (`CLIENT_DAYOF_BRIEF_LEAD_MINUTES`, default
+   120) and
+   stored `held`. `REVIEW_NOTIFY` (webhook URL or email; default in
+   `docs/.env.example` is `salesglider-briefs@mail.grokbot.com`) gets the brief
+   plus release / enrich / block links. An email subject starts with
+   `[Client brief review]`, then the lead, company, and meeting time. The client is emailed only after
    `POST /admin/client-briefs/:id/release`, and only when
    `CLIENT_DAYOF_BRIEF_ENABLED` is on (default off). A held or blocked brief
    never auto-sends. A brief with no source, no company info, no past emails

@@ -251,7 +251,7 @@ function startCron() {
     }
   }
 
-  // ─── Client day-of briefs — hold ~45 min before, send only on release ─
+  // ─── Client day-of briefs — hold ~2 hours before, send only on release ─
   // CLIENT_DAYOF_BRIEF_ENABLED defaults off. A held brief is never emailed.
   cron.schedule('*/5 * * * *', async () => {
     try {
