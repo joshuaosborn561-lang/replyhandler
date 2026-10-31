@@ -194,7 +194,7 @@ Rules:
 - hook: what got them to engage, from the first outbound email and their reply (one short sentence), or null.
 - talking_points: 5 to 7 numbered-style points for the meeting host, each one sentence or two. Ground each in the thread, their role, or the company. Start with what made them take the meeting. Include questions to ask. Do not claim anything about the host's own offer, results or pricing unless it is written in the email thread or call notes; refer to it as "our offer" or quote the thread.
 - watch_outs: up to 4 short bullets for things to check: data conflicts (title, company name), an unsubscribe or stop status in the record, a missed call, anything uncertain or estimated. Empty array if none.
-- Never include API keys, internal tooling names, or the words "Smartlead" or "Allo". Write the host's company by the CLIENT name when it appears.
+- Never include API keys, internal tooling names, or the words "Smartlead" or "Allo". Never name the outbound campaign, the sending mailbox or its domain. Write the host's company by the CLIENT name when it appears.
 - Plain, professional sentences. No emoji.`;
 
 async function defaultLlm({ system, user }) {
@@ -250,7 +250,8 @@ async function synthesize(input, { llm = defaultLlm } = {}) {
     `MEETING: ${input.meetingText || '(time not available)'}`,
     `PROSPECT: ${JSON.stringify(input.prospect)}`,
     `CRM RECORD: ${JSON.stringify(input.crm)}`,
-    `CAMPAIGN: ${input.campaign || '(unknown)'}`,
+    // The campaign name stays out of the model's input on client sends, so it cannot leak into the brief.
+    ...(input.withholdCampaign ? [] : [`CAMPAIGN: ${input.campaign || '(unknown)'}`]),
     '',
     'EMAIL THREAD (oldest first):',
     input.threadText || '(none)',
@@ -335,6 +336,7 @@ async function gatherBrief(m, ctx, deps = {}) {
     prospect: { name: m.prospect.name, title: crmTitle, company, email: m.prospect.email, location },
     crm: { company_name: lead.company_name, job_title: custom.job_title, location: lead.location, unsubscribed: lead.is_unsubscribed === true, other_fields: Object.keys(custom).filter((k) => k !== 'job_title') },
     campaign: sl.campaignName || m.list,
+    withholdCampaign: ctx.clientFacing === true,
     threadText,
     callText,
     web,
@@ -386,7 +388,7 @@ async function gatherBrief(m, ctx, deps = {}) {
     talkingPoints: ((synth && synth.talkingPoints) || []).map(out),
     watchOuts: watch.map(out),
     links: [
-      ...(sl.campaignId && sl.leadId ? [{ label: 'Email thread', url: `campaign ${sl.campaignId}, lead ${sl.leadId}` }] : []),
+      ...(!ctx.clientFacing && sl.campaignId && sl.leadId ? [{ label: 'Email thread', url: `campaign ${sl.campaignId}, lead ${sl.leadId}` }] : []),
       ...(web.site ? [{ label: 'Company', url: /^https?:/i.test(web.site) ? web.site : `https://${web.site}` }] : []),
       ...(ctx.linkedinUrl ? [{ label: 'LinkedIn', url: ctx.linkedinUrl }] : []),
     ],

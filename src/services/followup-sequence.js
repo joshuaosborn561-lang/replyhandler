@@ -305,6 +305,32 @@ function leadLocalTime(now, tz) {
   } catch { return ''; }
 }
 
+/** Clock on the card: "8:08 AM local". */
+function leadClock(now, tz) {
+  try {
+    const t = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz || 'America/Chicago', hour: 'numeric', minute: '2-digit',
+    }).format(now);
+    return `${t} local`;
+  } catch { return ''; }
+}
+
+const NEXT_HINT = {
+  call_day0: 'Next: follow-up email if no answer',
+  call_day0_late: 'Next: follow-up email if no answer',
+  email_vm: 'Next: call if no reply',
+  call_day1: 'Next: follow-up email',
+  email_day1: 'Next: call',
+  call_day3: 'Next: proof email',
+  email_proof: 'Next: thoughts email',
+  email_thoughts: 'Next: breakup email',
+  email_breakup: 'Next: last call',
+  call_day6: 'Last step',
+  ghost_email: 'Next: call if no reply',
+  ghost_call: 'Next: follow-up email',
+  ghost_email_2: 'Next: breakup email',
+};
+
 /**
  * One button per thing that can happen on a call. There is no bare "Connected":
  * if you spoke to them, you pick what they said.
@@ -325,82 +351,56 @@ const OUTCOME_LABELS = {
   wrong_number: '❌ Wrong number (no more call cards for this lead)',
 };
 
-/** Pure: the Slack blocks for a call card. `outcome` replaces the buttons. */
-function buildCallCardBlocks(card, stepId, { outcome = null, outcomeBy = null, stopped = null, note = null } = {}) {
-  const blocks = [];
-  if (card.mention) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: card.mention } });
-  blocks.push({
-    type: 'header',
-    text: { type: 'plain_text', text: `📞 ${card.label}: ${card.leadName || 'Lead'}`.slice(0, 150) },
+/** Pure: the Slack blocks for a call card. An outcome closes the outcome buttons. */
+function buildCallCardBlocks(card, stepId, state = {}) {
+  const layout = require('../utils/followup-card-layout');
+  const view = card || {};
+  const ctx = view.context || {};
+  const stopped = state.stopped || null;
+  const outcome = state.outcome || null;
+  const statusLine = state.statusLine
+    || (stopped ? `Sequence stopped (${String(stopped).replace(/_/g, ' ')})` : '')
+    || (outcome ? (OUTCOME_LABELS[outcome] || String(outcome).replace(/_/g, ' ')) : '');
+  return layout.buildSequenceCard({
+    variant: 'call',
+    kind: view.kind,
+    stepId,
+    sourceReplyId: view.sourceReplyId || null,
+    replyId: view.sourceReplyId || null,
+    mention: view.mention || null,
+    campaign: view.campaignDisplay || view.campaign || ctx.campaign || null,
+    leadName: view.leadName,
+    title: view.title || (ctx.lead && ctx.lead.title) || null,
+    company: view.company || (ctx.lead && ctx.lead.company) || null,
+    phone: view.phone,
+    email: view.email || (ctx.lead && ctx.lead.email) || null,
+    linkedinUrl: view.linkedinUrl || null,
+    localTime: view.localTime || null,
+    enrichmentReceipt: view.enrichmentReceipt || null,
+    icp: view.icp || ctx.icp || null,
+    script: view.script,
+    voicemail: view.voicemail,
+    scriptParts: view.scriptParts || null,
+    theirText: view.theirText || ctx.reply || null,
+    theirAt: view.theirAt || null,
+    tz: view.tz || null,
+    why: view.why || null,
+    permalink: view.permalink || (ctx.links && ctx.links.replyCard) || null,
+    smartleadUrl: view.smartleadUrl || (ctx.links && ctx.links.smartlead) || null,
+    platform: view.platform || null,
+    claimedBy: view.claimedBy || null,
+    nextHint: view.nextHint || (view.kind && NEXT_HINT[view.kind]) || null,
+    replaces: view.replaces || null,
+    context: ctx,
+  }, {
+    outcome,
+    outcomeBy: state.outcomeBy || null,
+    stopped,
+    superseded: Boolean(state.superseded),
+    supersededPermalink: state.supersededPermalink || null,
+    statusLine: statusLine || null,
+    note: state.note || null,
   });
-  if (card.context) {
-    // Client, lead, their reply, our last send, offer, links, ICP + decision maker.
-    blocks.push(...cardCtx.followupContextBlocks(card.context));
-  }
-  const facts = [
-    card.context ? null : `*Phone:* ${card.phone}`,
-    card.context ? null : `*Client:* ${card.clientName}`,
-    card.claimedBy ? `*Caller:* ${card.claimedBy}` : null,
-    card.localTime ? `*Their time now:* ${card.localTime}` : null,
-    card.context ? null : (card.campaignDisplay ? `*Campaign:* ${card.campaignDisplay}` : null),
-    card.linkedinUrl ? `*LinkedIn:* ${card.linkedinUrl}` : null,
-    card.context ? null : (card.permalink ? `<${card.permalink}|Original reply card>` : null),
-  ].filter(Boolean).join('\n');
-  if (facts) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: facts } });
-  const quote = (t) => `>${String(t).replace(/\n/g, '\n>')}`;
-  if (card.scriptParts) {
-    // One block: the call and the voicemail share the same opening line, so it is said once.
-    const p = card.scriptParts;
-    const lines = [`*Say this:*\n${quote(p.opening)}`, `*If they answer, then say:*\n${quote(p.ifAnswer)}`];
-    lines.push(p.ifVoicemail
-      ? `*If it goes to voicemail, then say:*\n${quote(p.ifVoicemail)}`
-      : '_No voicemail on this call. Just hang up if no one answers._');
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } });
-  } else {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*Say this:*\n>${String(card.script).replace(/\n/g, '\n>')}` },
-    });
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: card.voicemail
-          ? `*If it goes to voicemail, say:*\n>${String(card.voicemail).replace(/\n/g, '\n>')}`
-          : '_No voicemail on this call. Just hang up if no one answers._',
-      },
-    });
-  }
-  if (card.context) {
-    // Directly under the script: the full email we sent and their full reply.
-    blocks.push(...cardCtx.followupFullTextBlocks(card.context));
-  }
-  if (outcome || stopped) {
-    const label = stopped
-      ? `🛑 Sequence stopped (${String(stopped).replace(/_/g, ' ')})`
-      : (OUTCOME_LABELS[outcome] || outcome);
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `${label}${outcomeBy ? ` · <@${outcomeBy}>` : ''}` }],
-    });
-    if (note) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: note } });
-  } else {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: 'When the call is over, click the one that happened. If you spoke to them, pick what they said. Emails to send show up as their own cards with Approve & Send / Edit.' }],
-    });
-    blocks.push({
-      type: 'actions',
-      elements: OUTCOME_BUTTONS.map((b) => ({
-        type: 'button',
-        text: { type: 'plain_text', text: b.text },
-        action_id: b.actionId,
-        value: stepId,
-        ...(b.style ? { style: b.style } : {}),
-      })),
-    });
-  }
-  return blocks;
 }
 
 async function loadClient(clientId, dbClient = db) {
@@ -499,10 +499,15 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   }
   const card = {
     label: text.stepLabel(step.kind),
+    kind: step.kind,
     leadName: source.lead_full_name || source.lead_name,
     phone: found.phone,
+    email: source.lead_email || null,
+    title: context && context.lead ? context.lead.title : null,
+    company: context && context.lead ? context.lead.company : null,
     clientName: client.name,
-    localTime: leadLocalTime(now, tz),
+    localTime: leadClock(now, tz),
+    tz,
     campaignDisplay: formatCampaignDisplay(campaignNameFromReply(source), source.campaign_id) || null,
     linkedinUrl: source.linkedin_url || null,
     permalink,
@@ -510,6 +515,14 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
     voicemail,
     scriptParts,
     context,
+    icp: context && context.icp,
+    enrichmentReceipt: parseJson(source.enrichment_receipt) || (source.enrichment_receipt && typeof source.enrichment_receipt === 'object' ? source.enrichment_receipt : null),
+    theirText: context && context.reply,
+    theirAt: source.created_at || null,
+    sourceReplyId: source.id,
+    platform: source.platform,
+    smartleadUrl: context && context.links ? context.links.smartlead : null,
+    nextHint: NEXT_HINT[step.kind] || null,
     mention: mentionIds.length ? mentionIds.map((id) => `<@${id}>`).join(' ') : null,
     claimedBy: claimed ? claimed.name : null,
   };
@@ -522,8 +535,16 @@ async function postCallStep({ step, seq, client, source, now, tz, dbClient = db,
   });
   await setStep(step.id, {
     status: 'posted', slack_channel: channel, slack_ts: res.ts, posted_at: now,
-    payload: { ...(parseJson(step.payload) || {}), card },
+    outcome: null, outcome_by: null, outcome_at: null,
+    payload: { ...(parseJson(step.payload) || {}), card, repost: false },
   }, dbClient);
+  await rememberCardPosted({
+    step, seq, client, source, dbClient, slackUserId: null, actionId: null, outcome: null,
+  });
+  await supersedeEarlierLeadCards({
+    keepStepId: step.id, keepReplyId: null, seq, client, source,
+    channel, ts: res.ts, dbClient, slackApi,
+  });
   return 'posted';
 }
 
@@ -625,7 +646,9 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
   if (step.pending_reply_id) {
     const { rows: [r] } = await dbClient.query('SELECT * FROM pending_replies WHERE id = $1', [step.pending_reply_id]);
     reply = r || null;
-    if (reply && isPostedSlackTs(reply.slack_message_ts)) {
+    // A snooze clears the Slack ts and sets payload.repost so this same row
+    // can post again. A ts that is still posted is the original card.
+    if (reply && isPostedSlackTs(reply.slack_message_ts) && !payload.repost) {
       await setStep(step.id, { status: 'posted', skip_reason: null, slack_ts: reply.slack_message_ts, posted_at: now }, dbClient);
       return 'posted';
     }
@@ -679,6 +702,20 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
   } catch (err) {
     console.warn('[FollowupSeq] card context failed, posting without it', { err: err.message });
   }
+  const emailTz = time.resolveTimeZone(source.lead_timezone, seq.lead_timezone, client.digest_timezone);
+  if (followupContext) {
+    followupContext.sequence = {
+      kind: step.kind,
+      stepId: step.id,
+      sourceReplyId: source.id,
+      tz: emailTz,
+      localTime: leadClock(now, emailTz),
+      theirAt: source.created_at || null,
+      nextHint: NEXT_HINT[step.kind] || null,
+      replaces: payload.repost ? 'Replaces the previous card' : null,
+    };
+    followupContext.localTime = followupContext.sequence.localTime;
+  }
 
   const channel = followUpSlackChannelId();
   const posted = await (deps.postCard || postProspectSlackCard)({
@@ -701,6 +738,8 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       platform: source.platform,
       classification: 'FOLLOW_UP',
       draft: body,
+      enrichmentReceipt: parseJson(source.enrichment_receipt) || undefined,
+      leadTimezone: emailTz,
       leadPhone: found.phone || undefined,
       phoneProvider: found.provider || undefined,
       reasoning: notes.join(' · '),
@@ -729,7 +768,18 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       [seq.id, JSON.stringify(merged)],
     );
   }
-  await setStep(step.id, { status: 'posted', skip_reason: null, slack_channel: channel, slack_ts: posted.ts, posted_at: now }, dbClient);
+  await setStep(step.id, {
+    status: 'posted', skip_reason: null, slack_channel: channel, slack_ts: posted.ts, posted_at: now,
+    outcome: null, outcome_by: null, outcome_at: null,
+    payload: { ...payload, repost: false },
+  }, dbClient);
+  await rememberCardPosted({
+    step, seq, client, source, pendingReplyId: reply.id, dbClient,
+  });
+  await supersedeEarlierLeadCards({
+    keepStepId: step.id, keepReplyId: reply.id, seq, client, source,
+    channel, ts: posted.ts, dbClient, slackApi,
+  });
   return 'posted';
 }
 
@@ -903,7 +953,10 @@ async function runSequenceTick({ now = new Date(), dbClient = db, slackApi = sla
 
 // ─── Call card buttons ────────────────────────────────────────────────────────
 
-const OUTCOME_BY_ACTION = Object.fromEntries(OUTCOME_BUTTONS.map((b) => [b.actionId, b.outcome]));
+const OUTCOME_BY_ACTION = {
+  ...Object.fromEntries(OUTCOME_BUTTONS.map((b) => [b.actionId, b.outcome])),
+  fseq_dq: 'dq',
+};
 
 /**
  * Record what happened on a call.
@@ -979,6 +1032,18 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
     await stopSequence(seq.id, 'booked', { dbClient, slackApi, now });
   } else if (outcome === 'not_interested') {
     await stopSequence(seq.id, 'not_interested', { dbClient, slackApi, now });
+  } else if (outcome === 'dq') {
+    try {
+      const { rows: [source] } = await dbClient.query('SELECT * FROM pending_replies WHERE id = $1', [seq.source_reply_id]);
+      if (source) {
+        await require('./disqualified-prospects').markDisqualified({
+          clientId: seq.client_id, reply: source, reason: 'slack_dq', slackUserId,
+        });
+      }
+    } catch (err) {
+      console.warn('[FollowupSeq] DQ record failed', { stepId, err: err.message });
+    }
+    await stopSequence(seq.id, 'disqualified', { dbClient, slackApi, now });
   } else if (outcome === 'wrong_number') {
     const callKinds = Object.keys(text.CALL_KINDS);
     await dbClient.query(
@@ -997,27 +1062,71 @@ async function applyCallOutcome({ stepId, outcome, slackUserId = null, now = new
       [seq.id, new Date(now.getTime() + delay * MIN)],
     );
   }
+  try {
+    await recordOutcomeEvent({
+      step, seq, outcome, actionId: null, slackUserId, dbClient,
+    });
+  } catch (err) {
+    console.warn('[FollowupSeq] outcome event failed', { err: err.message });
+  }
   return { applied: true, step, seq, claim };
+}
+
+function alreadyHandledNotice() {
+  return 'Already handled. Nothing was done, no action needed.';
 }
 
 /** Slack route entry: handle one button click and redraw the card. */
 async function handleCallButton(action, interaction, { dbClient = db, slackApi = slack, env = process.env } = {}) {
-  const outcome = OUTCOME_BY_ACTION[action.action_id];
-  if (!outcome) return;
+  const { sendEphemeralNotice } = require('./card-click-guard');
+  let act = action || {};
+  if (act.action_id === 'fseq_overflow') {
+    const raw = (act.selected_option && act.selected_option.value) || '';
+    const cut = raw.indexOf(':');
+    const picked = cut >= 0 ? raw.slice(0, cut) : raw;
+    const id = cut >= 0 ? raw.slice(cut + 1) : act.value;
+    if (picked === 'wrong_number') act = { ...act, action_id: 'fseq_wrong_number', value: id };
+    else if (picked === 'dq') act = { ...act, action_id: 'fseq_dq', value: id };
+    else {
+      await sendEphemeralNotice(interaction, 'That menu item is not active, so nothing was done.');
+      return;
+    }
+  }
   const userId = interaction.user && interaction.user.id;
-  if (outcome === 'call_back') {
-    // Not recorded yet: Gabe picks the callback time first, and the outcome is
-    // recorded when the modal is submitted.
-    await openCallbackModal({ stepId: action.value, interaction, dbClient, slackApi });
+  if (act.action_id === 'fseq_snooze') {
+    const opened = await openSnoozeModal({
+      stepId: act.value, interaction, dbClient, slackApi,
+    });
+    if (!opened) await sendEphemeralNotice(interaction, alreadyHandledNotice());
     return;
   }
-  const res = await applyCallOutcome({ stepId: action.value, outcome, slackUserId: userId, dbClient, slackApi, env });
+  if (act.action_id === 'fseq_call_instead') {
+    await applyCallInstead({
+      stepId: act.value, slackUserId: userId, interaction, dbClient, slackApi,
+    });
+    return;
+  }
+  if (act.action_id === 'fseq_call_back') {
+    // Not recorded yet: the caller picks the time first.
+    const opened = await openCallbackModal({ stepId: act.value, interaction, dbClient, slackApi });
+    if (!opened) await sendEphemeralNotice(interaction, alreadyHandledNotice());
+    return;
+  }
+  const outcome = OUTCOME_BY_ACTION[act.action_id];
+  if (!outcome) {
+    await sendEphemeralNotice(interaction, 'That button is not active anymore, so nothing was done.');
+    return;
+  }
+  const res = await applyCallOutcome({
+    stepId: act.value, outcome, slackUserId: userId, dbClient, slackApi, env,
+  });
   if (!res.applied) {
-    console.log('[FollowupSeq] call outcome ignored (already recorded or not posted)', { stepId: action.value });
+    console.log('[FollowupSeq] call outcome ignored (already recorded or not posted)', { stepId: act.value });
+    await sendEphemeralNotice(interaction, alreadyHandledNotice());
     return;
   }
   const payload = parseJson(res.step.payload) || {};
-  if (!payload.card) return;
+  if (!payload.card || !res.seq) return;
   const { rows: [client] } = await dbClient.query('SELECT slack_bot_token FROM clients WHERE id = $1', [res.seq.client_id]);
   if (!client || !client.slack_bot_token) return;
   try {
@@ -1028,7 +1137,7 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
       blocks: buildCallCardBlocks(payload.card, res.step.id, { outcome, outcomeBy: userId, note: claimNote(res.claim) }),
     });
   } catch (err) {
-    console.warn('[FollowupSeq] could not redraw call card', { stepId: action.value, err: err.message });
+    console.warn('[FollowupSeq] could not redraw call card', { stepId: act.value, err: err.message });
   }
 }
 
@@ -1185,7 +1294,18 @@ async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = sla
   const res = await scheduleCallback({ stepId: meta.stepId, when, slackUserId: userId, now, dbClient, env });
   if (!res.applied) {
     console.log('[FollowupSeq] callback ignored (outcome already recorded)', { stepId: meta.stepId });
+    try {
+      await require('./card-click-guard').sendEphemeralNotice(interaction, alreadyHandledNotice());
+    } catch { /* private notice is best-effort */ }
     return res;
+  }
+  try {
+    await recordOutcomeEvent({
+      step: res.step, seq: res.seq, outcome: 'call_back', actionId: 'fseq_call_back',
+      slackUserId: userId, dbClient,
+    });
+  } catch (err) {
+    console.warn('[FollowupSeq] callback event failed', { err: err.message });
   }
   const payload = parseJson(res.step.payload) || {};
   const { rows: [client] } = res.seq
@@ -1210,6 +1330,404 @@ async function handleCallbackSubmit(interaction, { dbClient = db, slackApi = sla
   return res;
 }
 
+async function rememberCardPosted({ step, seq, client, source, pendingReplyId = null, dbClient = db }) {
+  try {
+    const events = require('./followup-card-events');
+    await events.recordCardEvent({
+      clientId: client && client.id,
+      sequenceId: seq && seq.id,
+      stepId: step && step.id,
+      pendingReplyId: pendingReplyId || (step && step.pending_reply_id) || (source && source.id),
+      leadKey: seq && seq.lead_key,
+      eventType: 'posted',
+      detail: { kind: step && step.kind },
+    }, dbClient);
+  } catch (err) {
+    console.warn('[FollowupSeq] posted event failed', { err: err.message });
+  }
+}
+
+async function recordOutcomeEvent({ step, seq, outcome, actionId, slackUserId, dbClient = db, detail = {} }) {
+  const events = require('./followup-card-events');
+  await events.recordCardEvent({
+    clientId: seq && seq.client_id,
+    sequenceId: seq && seq.id,
+    stepId: step && step.id,
+    pendingReplyId: (step && step.pending_reply_id) || (seq && seq.source_reply_id) || null,
+    leadKey: seq && seq.lead_key,
+    eventType: 'outcome',
+    actionId: actionId || null,
+    outcome,
+    slackUserId,
+    detail,
+  }, dbClient);
+}
+
+/**
+ * One open follow-up card per lead. The new step stays. Earlier posted call
+ * cards are repainted. Earlier open FOLLOW_UP rows use the #189 supersede path.
+ * A Slack failure leaves the old row open and does not fail the new post.
+ */
+async function supersedeEarlierLeadCards({
+  keepStepId, keepReplyId = null, seq, client, source, channel, ts, dbClient = db, slackApi = slack,
+} = {}) {
+  if (!seq || !client) return;
+  try {
+    const { rows: calls } = await dbClient.query(
+      `SELECT st.*
+         FROM followup_sequence_steps st
+         JOIN followup_sequences s ON s.id = st.sequence_id
+        WHERE s.client_id = $1
+          AND s.lead_key = $2
+          AND st.id <> $3
+          AND st.status = 'posted'
+          AND st.slack_ts IS NOT NULL
+          AND st.outcome IS NULL
+          AND st.pending_reply_id IS NULL`,
+      [seq.client_id, seq.lead_key || '', keepStepId],
+    );
+    let link = null;
+    try {
+      link = await slackApi.getPermalink(client.slack_bot_token, channel, ts);
+    } catch { link = null; }
+    for (const old of calls) {
+      const payload = parseJson(old.payload) || {};
+      if (!payload.card || !client.slack_bot_token) continue;
+      try {
+        await slackApi.getClient(client.slack_bot_token).chat.update({
+          channel: old.slack_channel,
+          ts: old.slack_ts,
+          text: 'Superseded by newer card',
+          blocks: buildCallCardBlocks(payload.card, old.id, {
+            superseded: true, supersededPermalink: link,
+          }),
+        });
+        await setStep(old.id, { outcome: 'superseded', outcome_at: new Date() }, dbClient);
+        await recordOutcomeEvent({
+          step: old, seq, outcome: 'superseded', actionId: null, slackUserId: null, dbClient,
+        });
+      } catch (err) {
+        console.warn('[FollowupSeq] could not supersede call card', { stepId: old.id, err: err.message });
+      }
+    }
+
+    const email = String((source && source.lead_email) || seq.lead_email || '').trim().toLowerCase();
+    const leadId = source && source.lead_id != null ? String(source.lead_id) : '';
+    if (email || leadId) {
+      const { rows } = await dbClient.query(
+        `SELECT *
+           FROM pending_replies
+          WHERE client_id = $1
+            AND upper(COALESCE(classification, '')) = 'FOLLOW_UP'
+            AND status = ANY($2::text[])
+            AND slack_message_ts ~ '^[0-9]+[.][0-9]+$'
+            AND ($3::uuid IS NULL OR id <> $3)
+            AND (
+              ($4::text <> '' AND lower(COALESCE(lead_email, '')) = $4)
+              OR ($5::text <> '' AND COALESCE(lead_id, '') = $5)
+            )`,
+        [seq.client_id, ['pending', 'flagged', 'alert_only', 'failed'], keepReplyId, email, leadId],
+      );
+      if (rows.length) {
+        const { supersedeRows } = require('./supersede-cards');
+        const painted = await supersedeRows(rows, {
+          keepId: keepReplyId, permalink: link, query: dbClient.query.bind(dbClient),
+        });
+        const retired = (painted && painted.retired) || [];
+        if (retired.length) {
+          await dbClient.query(
+            `UPDATE followup_sequence_steps
+                SET outcome = 'superseded', outcome_at = now(), updated_at = now()
+              WHERE pending_reply_id = ANY($1::uuid[])
+                AND outcome IS NULL
+                AND id <> $2`,
+            [retired, keepStepId],
+          );
+          await require('./followup-card-events').recordCardEvent({
+            clientId: seq.client_id,
+            sequenceId: seq.id,
+            pendingReplyId: retired[0],
+            leadKey: seq.lead_key,
+            eventType: 'supersede',
+            outcome: 'superseded',
+            detail: { count: retired.length },
+          }, dbClient);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[FollowupSeq] supersede failed', { err: err.message });
+  }
+}
+
+function snoozeDueAt(ymd, tz, now = new Date(), env = process.env) {
+  const [y, m, d] = String(ymd || '').split('-').map((n) => parseInt(n, 10));
+  if (!y || !m || !d) return time.nextCallWindowStart(now, tz, env);
+  let due = time.zonedToUtc(y, m, d, 9, 0, tz || time.DEFAULT_TZ);
+  due = time.nextCallWindowStart(due, tz || time.DEFAULT_TZ, env);
+  if (due.getTime() < now.getTime()) due = time.nextCallWindowStart(now, tz || time.DEFAULT_TZ, env);
+  return due;
+}
+
+async function openSnoozeModal({
+  stepId = null, replyId = null, interaction, dbClient = db, slackApi = slack, now = new Date(),
+} = {}) {
+  const layout = require('../utils/followup-card-layout');
+  if (stepId) {
+    const { rows: [step] } = await dbClient.query(
+      `SELECT * FROM followup_sequence_steps WHERE id = $1 AND status = 'posted' AND outcome IS NULL`,
+      [stepId],
+    );
+    if (!step) return false;
+    const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
+    if (!seq || seq.status === 'stopped') return false;
+    const { rows: [source] } = await dbClient.query('SELECT * FROM pending_replies WHERE id = $1', [seq.source_reply_id]);
+    const { rows: [client] } = await dbClient.query(
+      'SELECT slack_bot_token, digest_timezone FROM clients WHERE id = $1', [seq.client_id],
+    );
+    if (!source || !client || !client.slack_bot_token || !interaction?.trigger_id) return false;
+    const tz = time.resolveTimeZone(source.lead_timezone, seq.lead_timezone, client.digest_timezone);
+    await slackApi.getClient(client.slack_bot_token).views.open({
+      trigger_id: interaction.trigger_id,
+      view: layout.buildSnoozeModal({
+        stepId, replyId: step.pending_reply_id || source.id,
+        channel: interaction.channel?.id || step.slack_channel, ts: interaction.message?.ts || step.slack_ts,
+        tz, now,
+      }),
+    });
+    return true;
+  }
+  return openCadenceSnooze({ replyId, interaction, dbClient, slackApi, now });
+}
+
+async function openCadenceSnooze(replyIdOrOpts, interaction, deps = {}) {
+  const opts = replyIdOrOpts && typeof replyIdOrOpts === 'object'
+    ? replyIdOrOpts
+    : { replyId: replyIdOrOpts, interaction, ...deps };
+  return openCadenceSnoozeModal(opts);
+}
+
+async function openCadenceSnoozeModal({ replyId, interaction, dbClient = db, slackApi = slack, now = new Date() } = {}) {
+  const layout = require('../utils/followup-card-layout');
+  if (!replyId || !interaction?.trigger_id) return false;
+  const { rows: [reply] } = await dbClient.query(
+    `SELECT pr.*, c.slack_bot_token, c.digest_timezone
+       FROM pending_replies pr
+       JOIN clients c ON c.id = pr.client_id
+      WHERE pr.id = $1 AND pr.status IN ('pending', 'flagged')`,
+    [replyId],
+  );
+  if (!reply || !reply.slack_bot_token) return false;
+  const tz = time.resolveTimeZone(reply.lead_timezone, null, reply.digest_timezone);
+  await slackApi.getClient(reply.slack_bot_token).views.open({
+    trigger_id: interaction.trigger_id,
+    view: layout.buildSnoozeModal({
+      replyId,
+      channel: interaction.channel?.id || reply.slack_channel_id,
+      ts: interaction.message?.ts || reply.slack_message_ts,
+      tz, now,
+    }),
+  });
+  return true;
+}
+
+async function handleSnoozeSubmit(interaction, { dbClient = db, slackApi = slack, now = new Date(), env = process.env } = {}) {
+  const layout = require('../utils/followup-card-layout');
+  const { sendEphemeralNotice } = require('./card-click-guard');
+  let meta = {};
+  try { meta = JSON.parse(interaction.view?.private_metadata || '{}'); } catch { meta = {}; }
+  const ymd = interaction.view?.state?.values?.snooze_block?.snooze_date?.selected_date;
+  const zone = meta.tz || time.DEFAULT_TZ;
+  if (layout.snoozeDateError(ymd, zone, now)) return { applied: false };
+  const userId = interaction.user && interaction.user.id;
+  const due = snoozeDueAt(ymd, zone, now, env);
+
+  if (meta.stepId) {
+    const { rows: [existing] } = await dbClient.query(
+      'SELECT slack_channel, slack_ts, payload FROM followup_sequence_steps WHERE id = $1',
+      [meta.stepId],
+    );
+    const { rows: [step] } = await dbClient.query(
+      `UPDATE followup_sequence_steps
+          SET outcome = 'snoozed', outcome_by = $2, outcome_at = $3, status = 'pending',
+              due_at = $4, slack_ts = NULL, updated_at = now()
+        WHERE id = $1 AND outcome IS NULL AND status = 'posted'
+        RETURNING *`,
+      [meta.stepId, userId, now, due],
+    );
+    if (!step) {
+      await sendEphemeralNotice(interaction, alreadyHandledNotice());
+      return { applied: false };
+    }
+    const prev = parseJson((existing && existing.payload) || step.payload) || {};
+    await setStep(step.id, { payload: { ...prev, repost: true, snoozeUntil: due.toISOString() } }, dbClient);
+    if (step.pending_reply_id) {
+      await dbClient.query(
+        `UPDATE pending_replies SET slack_message_ts = NULL, updated_at = now()
+          WHERE id = $1 AND status IN ('pending', 'flagged')`,
+        [step.pending_reply_id],
+      );
+    }
+    const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
+    await recordOutcomeEvent({
+      step, seq, outcome: 'snoozed', actionId: 'fseq_snooze', slackUserId: userId, dbClient,
+      detail: { until: due.toISOString() },
+    });
+    const { rows: [client] } = seq
+      ? await dbClient.query('SELECT slack_bot_token FROM clients WHERE id = $1', [seq.client_id])
+      : { rows: [] };
+    const oldChannel = (existing && existing.slack_channel) || meta.channel;
+    const oldTs = (existing && existing.slack_ts) || meta.ts;
+    if (prev.card && client && client.slack_bot_token && oldChannel && oldTs) {
+      try {
+        await slackApi.getClient(client.slack_bot_token).chat.update({
+          channel: oldChannel,
+          ts: oldTs,
+          text: 'Snoozed',
+          blocks: buildCallCardBlocks(prev.card, step.id, {
+            outcome: 'snoozed', outcomeBy: userId,
+            note: `Snoozed until ${ymd}. The card comes back then. Nothing was sent.`,
+          }),
+        });
+      } catch (err) {
+        console.warn('[FollowupSeq] could not close snoozed card', { err: err.message });
+      }
+    } else if (client && client.slack_bot_token && oldChannel && oldTs) {
+      try {
+        await slackApi.updateMessage(
+          client.slack_bot_token, oldChannel, oldTs,
+          `Snoozed until ${ymd}. Nothing was sent.`,
+        );
+      } catch (err) {
+        console.warn('[FollowupSeq] could not close snoozed email card', { err: err.message });
+      }
+    }
+    return { applied: true, due };
+  }
+
+  if (!meta.replyId) return { applied: false };
+  const { rows: [reply] } = await dbClient.query(
+    `SELECT pr.*, c.slack_bot_token FROM pending_replies pr
+       JOIN clients c ON c.id = pr.client_id WHERE pr.id = $1`,
+    [meta.replyId],
+  );
+  if (!reply) return { applied: false };
+  await require('./followup-card-events').recordCardEvent({
+    clientId: reply.client_id,
+    pendingReplyId: reply.id,
+    leadKey: reply.lead_email || null,
+    eventType: 'snooze',
+    actionId: 'fu_snooze',
+    outcome: 'snoozed',
+    slackUserId: userId,
+    detail: { until: due.toISOString() },
+  }, dbClient);
+  if (reply.slack_bot_token && (meta.channel || reply.slack_channel_id)) {
+    try {
+      await slackApi.updateMessage(
+        reply.slack_bot_token,
+        meta.channel || reply.slack_channel_id,
+        meta.ts || reply.slack_message_ts,
+        `Snoozed until ${ymd}. Nothing was sent.`,
+      );
+    } catch (err) {
+      console.warn('[FollowupSeq] could not close snoozed cadence card', { err: err.message });
+    }
+  }
+  return { applied: true, due };
+}
+
+/**
+ * No-show "Call instead": do not send the email. Queue a call card.
+ * Idempotent on the step outcome.
+ */
+async function applyCallInstead({
+  stepId, slackUserId = null, interaction = null, now = new Date(), dbClient = db, slackApi = slack,
+} = {}) {
+  const { sendEphemeralNotice } = require('./card-click-guard');
+  let step = null;
+  try {
+    const { rows } = await dbClient.query(
+      `UPDATE followup_sequence_steps
+          SET outcome = 'call_instead', outcome_by = $2, outcome_at = $3, updated_at = now()
+        WHERE id = $1 AND outcome IS NULL AND status = 'posted'
+        RETURNING *`,
+      [stepId, slackUserId, now],
+    );
+    step = rows[0] || null;
+  } catch (err) {
+    if (!(err && err.code === '22P02')) throw err;
+  }
+  if (!step) {
+    if (stepId) {
+      const skipped = await dbClient.query(
+        `UPDATE pending_replies SET status = 'skipped', updated_at = now()
+          WHERE id = $1 AND status IN ('pending', 'flagged')
+          RETURNING id`,
+        [stepId],
+      ).catch((err) => (err && err.code === '22P02' ? { rows: [] } : Promise.reject(err)));
+      if (skipped.rows && skipped.rows.length) {
+        await sendEphemeralNotice(interaction, 'Call instead. This email will not send.');
+        return { applied: true, queued: false };
+      }
+    }
+    await sendEphemeralNotice(interaction, alreadyHandledNotice());
+    return { applied: false };
+  }
+  if (step.pending_reply_id) {
+    await dbClient.query(
+      `UPDATE pending_replies SET status = 'skipped', updated_at = now()
+        WHERE id = $1 AND status IN ('pending', 'flagged')`,
+      [step.pending_reply_id],
+    );
+  }
+  const { rows: [seq] } = await dbClient.query('SELECT * FROM followup_sequences WHERE id = $1', [step.sequence_id]);
+  let queued = false;
+  if (seq && seq.status === 'active') {
+    const { rows: [ghostCall] } = await dbClient.query(
+      `SELECT id, status FROM followup_sequence_steps WHERE sequence_id = $1 AND kind = 'ghost_call'`,
+      [seq.id],
+    );
+    if (ghostCall && ['pending', 'held'].includes(ghostCall.status)) {
+      await setStep(ghostCall.id, { due_at: now, status: 'pending' }, dbClient);
+      queued = true;
+    } else {
+      const { rows: [{ n }] } = await dbClient.query(
+        `SELECT count(*)::int AS n FROM followup_sequence_steps WHERE sequence_id = $1 AND kind LIKE 'call\\_callback\\_%'`,
+        [seq.id],
+      );
+      const kind = `${text.CALLBACK_PREFIX}${n + 1}`;
+      const ins = await dbClient.query(
+        `INSERT INTO followup_sequence_steps (sequence_id, kind, seq_order, due_at, status, payload)
+         VALUES ($1, $2, 25, $3, 'pending', $4::jsonb)
+         ON CONFLICT (sequence_id, kind) DO NOTHING
+         RETURNING id`,
+        [seq.id, kind, now, JSON.stringify({ callInsteadOf: step.id })],
+      );
+      queued = ins.rows.length > 0;
+    }
+  }
+  await recordOutcomeEvent({
+    step, seq, outcome: 'call_instead', actionId: 'fseq_call_instead', slackUserId, dbClient,
+  });
+  const { rows: [client] } = seq
+    ? await dbClient.query('SELECT slack_bot_token FROM clients WHERE id = $1', [seq.client_id])
+    : { rows: [] };
+  const channel = (interaction && interaction.channel && interaction.channel.id) || step.slack_channel;
+  const ts = (interaction && interaction.message && interaction.message.ts) || step.slack_ts;
+  if (client && client.slack_bot_token && channel && ts) {
+    try {
+      await slackApi.updateMessage(
+        client.slack_bot_token, channel, ts,
+        'Call instead. This email will not send. A call card is queued.',
+      );
+    } catch (err) {
+      console.warn('[FollowupSeq] could not close call-instead card', { err: err.message });
+    }
+  }
+  return { applied: true, queued };
+}
+
 module.exports = {
   enabled,
   enrollNewReplies,
@@ -1232,5 +1750,11 @@ module.exports = {
   openCallbackModal,
   scheduleCallback,
   handleCallbackSubmit,
+  handleSnoozeSubmit,
+  openSnoozeModal,
+  openCadenceSnooze,
+  applyCallInstead,
+  snoozeDueAt,
+  supersedeEarlierLeadCards,
   OUTCOME_BY_ACTION,
 };

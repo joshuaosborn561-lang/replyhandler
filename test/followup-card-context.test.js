@@ -130,14 +130,15 @@ function callCard(over = {}) {
 
 test('call and voicemail are one block: the shared opening line appears once', () => {
   const blocks = seq.buildCallCardBlocks(callCard(), 'step-1');
-  const script = blocks.filter((b) => b.type === 'section' && /Say this/.test(b.text.text));
+  const script = blocks.filter((b) => b.type === 'section' && /\*Script:\*/.test(b.text.text));
   assert.equal(script.length, 1);
   const t = script[0].text.text;
-  assert.match(t, /\*Say this:\*\n>Hey Pat, this is \(name\) with Acme Co\. We emailed you about lowering IT spend for small firms\./);
-  assert.match(t, /\*If they answer, then say:\*\n>Did you still want to take a peek/);
-  assert.match(t, /\*If it goes to voicemail, then say:\*\n>I'll follow up by email with a couple of times/);
+  assert.match(t, /\*Script:\* Hey Pat, this is \(name\) with Acme Co\. We emailed you about lowering IT spend for small firms\./);
+  assert.match(t, /• Ask: Did you still want to take a peek/);
+  assert.match(t, /VM: same line, then "I'll follow up by email with a couple of times/);
   assert.equal(t.split('We emailed you about').length - 1, 1, 'opening is not repeated for the voicemail');
-  assert.ok(!blocks.some((b) => b.type === 'section' && /If it goes to voicemail, say:/.test(b.text?.text || '')));
+  assert.equal(blocks[0].type, 'section', 'no client-name header');
+  assert.doesNotMatch(blocks[0].text.text, /^\*Acme Co\*/);
 });
 
 test('a call with no voicemail says so, and the ghost call merges too', () => {
@@ -152,67 +153,78 @@ test('a call with no voicemail says so, and the ghost call merges too', () => {
   assert.match(day6.ifVoicemail, /^Last call from me\. We cut costs 40%\./);
 });
 
-test('the full email we sent and their full reply sit directly under the script, before the buttons', () => {
-  const blocks = seq.buildCallCardBlocks(callCard(), 'step-1');
+test('the call card keeps the script and the buttons, and leaves the full thread for the modal', () => {
+  const blocks = seq.buildCallCardBlocks(callCard({ sourceReplyId: '11111111-1111-1111-1111-111111111111', kind: 'call_day0' }), 'step-1');
   const idx = (re) => blocks.findIndex((b) => re.test(b.text?.text || ''));
-  const say = idx(/Say this/);
-  const sent = idx(/Full email we sent/);
-  const reply = idx(/Their full reply/);
-  assert.ok(say >= 0 && sent === say + 1, 'sent email is right under the script');
-  assert.ok(reply > sent);
-  assert.ok(blocks.findIndex((b) => b.type === 'actions') > reply, 'buttons come after');
-  assert.ok(flat(blocks).includes('We are looking at this for next quarter'), 'reply is in full');
-  assert.equal((flat(blocks).match(/Worth a look\?/g) || []).length, 1, 'the top is only an excerpt, the full email appears once');
+  const say = idx(/\*Script:\*/);
+  assert.ok(say >= 0);
+  assert.ok(!flat(blocks).includes('Full email we sent'), 'the full email is not dumped on the call card');
+  const actionIdx = blocks.findIndex((b) => b.type === 'actions');
+  assert.ok(actionIdx > say, 'buttons come after the script');
+  const ids = blocks.filter((b) => b.type === 'actions').flatMap((b) => b.elements.map((e) => e.action_id || e.type));
+  assert.ok(ids.includes('view_thread'));
+  assert.ok(ids.includes('overflow') || flat(blocks).includes('fseq_overflow'));
+  assert.match(flat(blocks), /Day 1 of 5/);
+  assert.match(flat(blocks), /Fit — IT services firm/);
 });
 
-test('short texts are still shown in full under the script', () => {
+test('short texts are not dumped under the script', () => {
   const short = ctx({ replyText: 'Yes, call me tomorrow.', lastSentText: 'Hi Pat, worth a quick look?' });
   const t = flat(seq.buildCallCardBlocks(callCard({ context: short }), 's'));
-  assert.match(t, /Full email we sent/);
-  assert.match(t, /Their full reply/);
+  assert.doesNotMatch(t, /Full email we sent/);
+  assert.doesNotMatch(t, /Their full reply/);
+  assert.match(t, /\*Script:\*/);
 });
 
-test('call card: context is at the top, under the header, and the buttons still work', () => {
-  const blocks = seq.buildCallCardBlocks(callCard(), 'step-1');
-  assert.equal(blocks[0].type, 'header');
-  assert.ok(blocks[1].text.text.startsWith('*Acme Co*'));
-  assert.match(blocks[2].text.text, /🎯 Fit —/);
+test('call card: headline first, no client header, and the buttons still work', () => {
+  const blocks = seq.buildCallCardBlocks(callCard({ kind: 'call_day0' }), 'step-1');
+  assert.equal(blocks[0].type, 'section');
+  assert.match(blocks[0].text.text, /Call today/);
+  assert.doesNotMatch(blocks[0].text.text, /Acme Co/);
+  assert.match(flat(blocks), /🎯 Fit —/);
   const actions = blocks.find((b) => b.type === 'actions').elements;
   assert.equal(actions.length, 5);
   const done = seq.buildCallCardBlocks(callCard(), 'step-1', { outcome: 'booked', outcomeBy: 'U1' });
-  assert.ok(!done.some((b) => b.type === 'actions'));
-  assert.ok(flat(done).includes('*Acme Co*'), 'context survives the outcome re-render');
+  assert.ok(!done.some((b) => b.type === 'actions' && (b.elements || []).some((e) => e.action_id === 'fseq_booked')));
+  assert.match(flat(done), /Acme Co/, 'the script still names the client after the outcome');
 });
 
 test('a call card stored before this change still renders', () => {
   const old = { label: 'Day 0 call', leadName: 'Pat', phone: '+1555', clientName: 'Acme', script: 's', voicemail: 'v', campaignDisplay: 'C (1)', permalink: 'https://x.example/p' };
   const t = flat(seq.buildCallCardBlocks(old, 'step-1'));
-  assert.match(t, /Say this/);
-  assert.match(t, /If it goes to voicemail, say:/);
-  assert.match(t, /Original reply card/);
+  assert.match(t, /\*Script:\*/);
+  assert.match(t, /\(VM: v\)/);
+  assert.match(t, /Original reply/);
 });
 
 // ─── email / follow-up / rebook cards ────────────────────────────────────────
 
-test('follow-up email card: context under the header, ICP shown once, WILL SEND and buttons intact', () => {
+test('follow-up email card: headline, ICP once, draft, buttons, then the context line', () => {
   const card = buildDraftApprovalCard({
     replyId: 'r1', leadName: 'Pat Prospect', leadEmail: 'pat@prospect.example', platform: 'smartlead',
     classification: 'FOLLOW_UP', draft: 'Hey Pat, any thoughts?', reasoning: 'Sequence · Day 3 email: any thoughts',
     inboundMessage: LONG_REPLY, campaignDisplay: 'Q4 IT Owners (4242)', leadIcpVerdict: { status: 'unknown', reason: 'checking' },
+    lastOutboundMessage: 'Hi Pat, quick question.',
     followupContext: ctx(),
   });
   const b = card.blocks;
-  assert.equal(b[0].type, 'header');
-  // Josh, Oct 29 2026: one-line header, then contact, message, draft, context, and the buttons stay at the bottom.
-  assert.match(b[0].text.text, /Pat Prospect/);
-  assert.match(b[0].text.text, /Acme Co/);
-  assert.equal(b[b.length - 1].type, 'actions', 'buttons stay at the bottom');
-  assert.equal(b[b.length - 2].type, 'context', 'context line sits right above the buttons');
+  assert.equal(b[0].type, 'section');
+  assert.match(b[0].text.text, /Send follow-up/);
+  assert.doesNotMatch(b[0].text.text, /Acme Co/);
+  const actionIdx = b.findIndex((x) => x.type === 'actions');
+  assert.ok(actionIdx > 0);
+  assert.equal(b[b.length - 1].type, 'context', 'context line sits under the buttons');
   const all = flat(b);
-  assert.match(all, /Decision maker: Yes/);
+  assert.match(all, /Pat Prospect/);
+  assert.match(all, /Decision maker/);
   assert.equal((all.match(/🎯/g) || []).length, 1, 'ICP appears once');
-  assert.match(all, /WILL SEND/);
+  assert.match(all, /\*Draft\*/);
+  assert.doesNotMatch(all, /WILL SEND/);
   assert.match(all, /approve_reply/);
+  assert.match(all, /view_thread/);
+  assert.match(all, /We said/);
+  assert.match(all, /They said/);
+  assert.doesNotMatch(all, /Full thread/);
 });
 
 test('rebook / no-show card carries the no-show time', () => {
@@ -222,7 +234,10 @@ test('rebook / no-show card carries the no-show time', () => {
     draft: 'Hey Pat, looks like we missed each other.', inboundMessage: 'x',
     followupContext: ctx({ meeting: { label: 'No-show', text: noShow } }),
   });
-  assert.match(flat(card.blocks), /🗓️ No-show: Tue, Oct 27, 2:00 PM CDT/);
+  const all = flat(card.blocks);
+  assert.match(all, /Rebook no-show/);
+  assert.match(all, /missed Tue, Oct 27, 2:00 PM CDT/);
+  assert.match(all, /fseq_call_instead/);
 });
 
 test('a FOLLOW_UP card without context is unchanged', () => {
@@ -283,7 +298,8 @@ test('stored lead_title and lead_company win; a failed Smartlead lookup falls ba
 
 test('wiring: sequence call + email cards and the follow-up runner pass the context; title/company are stored', () => {
   const s = read('src/services/followup-sequence.js');
-  assert.match(s, /context,\n\s+mention: mentionIds/);
+  assert.match(s, /mention: mentionIds\.length/);
+  assert.match(s, /\bcontext,/);
   assert.match(s, /followupContext: followupContext \|\| undefined/);
   assert.match(read('src/services/follow-up-runner.js'), /followupContext: followupContext \|\| undefined/);
   assert.match(read('src/services/slack-reply-post.js'), /persistLeadTitleCompany\(dbClient, replyId/);

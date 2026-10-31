@@ -99,7 +99,7 @@ function clientSearchHints(client) {
     const d = emailDomain(email);
     if (d && !SKIP_DOMAINS.test(d)) domains.add(d);
   }
-  const { firstNameFromEmail } = require('./cc-notice-email');
+  const { firstNameFromEmail } = require('../utils/first-name');
   const firstNames = [];
   const seenNames = new Set();
   for (const email of emails) {
