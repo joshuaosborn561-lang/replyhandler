@@ -66,7 +66,7 @@ function clientSearchHints(client) {
     const d = domainFromWebsite(client?.[field]);
     if (d && !SKIP_DOMAINS.test(d)) domains.add(d);
   }
-  for (const field of ['contact_email', 'cc_email', 'cc_emails']) {
+  for (const field of ['contact_email', 'cc_email', 'cc_emails', 'notify_emails']) {
     for (const part of String(client?.[field] || '').split(/[\n,;]+/)) {
       const d = emailDomain(part);
       if (d && !SKIP_DOMAINS.test(d)) domains.add(d);

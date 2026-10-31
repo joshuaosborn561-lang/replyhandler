@@ -352,17 +352,22 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
     assert.equal(draftLoopsInContact('Hey Riley, happy to walk through pricing on a quick call.'), false);
   });
 
-  it('Send + CC uses Always-forward example.com addresses only', () => {
+  it('Send + CC uses notify_emails only', () => {
     const cc = alwaysForwardEmailsForProspectCc({
-      cc_emails: 'contact@example.com, ae@example.com',
+      notify_emails: 'contact@example.com, ae@example.com',
+      cc_emails: 'portal@example.com',
       cc_email: 'legacy@example.com',
+      contact_email: 'contact-only@example.com',
       cc_round_robin_emails: 'rep@example.com',
     });
     assert.equal(cc, 'contact@example.com, ae@example.com');
-    assert.doesNotMatch(cc, /rep@example.com/);
+    assert.doesNotMatch(cc, /rep@example.com|portal@example.com|legacy@example.com|contact-only@example.com/);
+    assert.equal(alwaysForwardEmailsForProspectCc({
+      notify_emails: 'legacy@example.com',
+    }), 'legacy@example.com');
     assert.equal(alwaysForwardEmailsForProspectCc({
       cc_email: 'legacy@example.com',
-    }), 'legacy@example.com');
+    }), '');
     assert.equal(alwaysForwardEmailsForProspectCc({}), '');
   });
 

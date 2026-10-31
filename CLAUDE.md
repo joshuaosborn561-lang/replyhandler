@@ -220,29 +220,55 @@ Deleted on purpose, at the owner's explicit request. `postPendingNudge`,
 Do not reintroduce them. The `pending_nudge_*` columns remain in the schema
 only because dropping them is riskier than leaving them unused.
 
-## Client notification is on send, and it is the enriched path
+## Client updates are three emails, never a CC on the prospect reply
 
-`smartlead.forwardThreadToClient()` (called from `reply-send.js`) is the client
-notify path. It anchors to a real thread message via
-`extractForwardAnchorFromHistory`, so the client sees the actual conversation,
+Clients get exactly three automatic updates, all to `clients.notify_emails`
+(migration 052 copies the old `cc_emails` list once):
+
+1. The weekday 4:00pm CT roll-up of positive replies we answered
+   (`client-reply-digest.js`).
+2. The instant meeting-booked brief (`booked-meeting-email.js`).
+3. The day-of meeting brief. That sender is not in this repo. `reminder-email.js`
+   is a one-hour reminder to the prospect (`meeting.lead_email`), not a client brief.
+
+`PROSPECT_REPLY_NOTIFY_MODE=instant` replaces the roll-up with the old per-send
+Gmail. `smartlead.forwardThreadToClient()` (called from `reply-send.js`) is that
+path only. It anchors to a real thread message via `extractForwardAnchorFromHistory`,
 and it adds lead name, email, and cell phone with the enrichment provider.
-Gmail is primary; SmartLead forward is the fallback.
+Gmail is primary; SmartLead forward is the fallback. Recipients are
+`notify_emails`. Default remains `rollup`. Do not CC the prospect send from
+that path. `off` sends none.
 
-**Deep Roots exception:** Tyler is not emailed on every send. Gate is
+SmartLead and HeyReach prospect sends never include client addresses from
+`cc_emails`, `cc_email`, `contact_email`, or `notify_emails`. A plain Approve
+does not CC the client. The only copies are Josh's manual choice: the
+**Approve & Send + CC client** button and the Edit modal's **CC client**
+checkbox. Keep both. Both pull from `notify_emails`.
+
+`cc_emails` (Always-notify) is the portal login. `contact_email` is the first
+address on that list. It is not the notification list and it is not copied
+onto prospect replies. Round-robin (`cc_round_robin_emails`) is stored and
+is not emailed.
+
+**Deep Roots exception:** the digest and the instant notify still use
 `deepRootsClientNotifySkipReason()` — only when the prospect confirmed
 $1M–$10M EBITDA, did not name an out-of-range headcount, and wants to
 schedule a call. Slack cards for Josh stay as they are.
 
-Do **not** add a second **client** forward that fires on *inbound* receipt
-and keys off `cc_emails`. That was tried (`3f97035`) and rejected: it emailed
-clients every OOO auto-reply and bounce, and `cc_emails` now drives CC-on-send.
+Do **not** add a client forward that fires on *inbound* receipt and keys off
+`cc_emails`. That was tried (`3f97035`) and rejected: it emailed clients every
+OOO auto-reply and bounce.
 
 **Exception (campaign map only):** `inbound_forward_rules` emails a configured
 address the moment a reply arrives on a mapped campaign (Gabe Calls ids +
 `Gabe Calls%` name pattern → `gabe@salesglidergrowth.com` (was gabriel.lopez@rocketbox.mx until migration 036)). Never
 `crecimiento@rocketbox.mx`. That path is not client notify. The Allo
-`Caller reply to Allo` hook on those campaigns stays. Client notify for
-everyone else is still on send.
+`Caller reply to Allo` hook on those campaigns stays.
+
+**Portal invites:** first-time provisioning may email a portal invite when
+Always-notify has an address and `PORTAL_SKIP_INVITE` is not true. An admin
+PATCH and sync-all re-provision with `invite: false` (`portal-provision.js`)
+and never re-send that invite. Do not point portal login at `notify_emails`.
 
 ## Webhooks are not the only path — the pollers are the backstop
 
@@ -281,11 +307,13 @@ configured client contact by first name from `voice_prompt`, copied
 character-for-character (e.g. "Myles" with a Y, never a lookalike) as
 "looping in {Name} from our side" — no title, never "founder". Default
 Approve still omits SmartLead `cc`. **Approve & Send + CC client** is an
-option on every SmartLead card that has Always-forward addresses
-(`cc_emails` / `cc_email`), not only loop-in FOLLOW_UP drafts. That
-button CCs those addresses via SmartLead payload field `cc`
-(comma-separated string). Regular Approve still Gmail-notifies only.
-FYI forward to the client and Cayden still runs on send. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
+option on every SmartLead card that has client notification addresses
+(`notify_emails`), and the Edit modal's **CC client** checkbox is the same
+manual choice. Both copy `notify_emails` via SmartLead payload field `cc`
+(comma-separated string). A plain Approve does not CC the client and does
+not email them on the send; they get the weekday roll-up (instant mode is
+the per-send Gmail override, still to `notify_emails`). `cc_emails` /
+`cc_email` stay the portal Always-notify list. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
 text) then buttons, a permalink to the original card, the full thread, and
 a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —

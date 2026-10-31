@@ -723,13 +723,19 @@
       <div class="form-group">
         <label>Always forward (optional)</label>
         <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com" oninput="syncPortalEmailFromAlwaysNotify()"></textarea>
-        <div class="hint">Comma or newline separated. The first address is the portal login and gets an invite email. On SmartLead Approve / Edit &amp; send, the prospect gets a normal reply (no CC). These addresses get a <strong>primary-domain Gmail notify</strong> with thread history + LinkedIn / website / email / cell (GetLeads → Smartlead → AI Ark → Prospeo → FullEnrich).</div>
+        <div class="hint">Comma or newline separated. The first address is the portal login. A new client with this address gets an invite email. Later edits do not send another invite. These addresses are not copied on Smartlead or HeyReach prospect replies.</div>
+      </div>
+
+      <div class="form-group">
+        <label>Client notifications (optional)</label>
+        <textarea id="f_notify_emails" rows="2" placeholder="owner@client.com, ae@client.com"></textarea>
+        <div class="hint">Comma or newline separated. Used only for the weekday positive-reply roll-up, the meeting-booked brief, and the manual Approve &amp; Send + CC client / Edit “CC client” choice. Not copied on a plain Approve.</div>
       </div>
 
       <div class="form-group">
         <label>Round-robin forward reps (optional)</label>
         <textarea id="f_cc_round_robin_emails" rows="2" placeholder="rep1@client.com, rep2@client.com, rep3@client.com"></textarea>
-        <div class="hint">Comma or newline separated. On each SmartLead send we forward to <strong>exactly one</strong> of these (plus Always forward), rotating evenly so volume is dispersed.</div>
+        <div class="hint">Stored on the client. Not copied on prospect replies and not included in the roll-up or meeting brief. Add an address to Client notifications if it should receive those.</div>
       </div>
 
       <div class="form-group">
@@ -1069,6 +1075,9 @@ function renderGrid() {
         <span class="${(c.cc_emails || c.cc_email) ? 'key-present' : 'key-missing'}">
           ${(c.cc_emails || c.cc_email) ? '&#10003;' : '&#10007;'} Always forward
         </span>
+        <span class="${c.notify_emails ? 'key-present' : 'key-missing'}">
+          ${c.notify_emails ? '&#10003;' : '&#10007;'} Notifications
+        </span>
         <span class="${c.cc_round_robin_emails ? 'key-present' : 'key-missing'}">
           ${c.cc_round_robin_emails ? '&#10003;' : '&#10007;'} RR CC
         </span>
@@ -1141,6 +1150,10 @@ function openDetail(id) {
       <div class="detail-row">
         <span class="label">Always forward</span>
         <span class="value">${(c.cc_emails || c.cc_email) ? esc(c.cc_emails || c.cc_email) : '—'}</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Client notifications</span>
+        <span class="value">${c.notify_emails ? esc(c.notify_emails) : '—'}</span>
       </div>
       <div class="detail-row">
         <span class="label">Round-robin forward</span>
@@ -1236,6 +1249,7 @@ async function openEditFromDetail() {
   document.getElementById('f_slack_channel_id').value = full.slack_channel_id || '';
   document.getElementById('f_booking_link').value = full.booking_destination_url || full.booking_link || '';
   document.getElementById('f_cc_emails').value = full.cc_emails || full.cc_email || '';
+  document.getElementById('f_notify_emails').value = full.notify_emails || '';
   syncPortalEmailFromAlwaysNotify();
   document.getElementById('f_cc_round_robin_emails').value = full.cc_round_robin_emails || '';
   document.getElementById('f_voice_prompt').value = full.voice_prompt || '';
@@ -1254,6 +1268,7 @@ async function submitForm() {
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
     cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
+    notify_emails: document.getElementById('f_notify_emails').value.trim() || null,
     cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
     voice_prompt: document.getElementById('f_voice_prompt').value.trim(),
   };
@@ -1309,7 +1324,7 @@ function syncPortalEmailFromAlwaysNotify() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_allo_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_notify_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }
@@ -1385,7 +1400,7 @@ function copyPortalLoginLink() {
 }
 
 async function syncAllToPortal() {
-  if (!confirm('Push every active client to the portal? Invite emails go out when a contact email is set. Set PORTAL_SKIP_INVITE=true to suppress them.')) {
+  if (!confirm('Push every active client to the portal? This updates their portal record and does not send another invite. Set PORTAL_SKIP_INVITE=true to suppress invites on new clients.')) {
     return;
   }
   try {

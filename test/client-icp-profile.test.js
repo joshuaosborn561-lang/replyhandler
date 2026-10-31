@@ -42,8 +42,9 @@ test('client search hints take domain from booking / email, not generic hosts', 
     booking_link: 'https://www.newcoexample.com/book',
     contact_email: 'ops@newcoexample.com',
     cc_emails: 'josh@salesglidergrowth.com',
+    notify_emails: 'team@notifyexample.com',
   });
-  assert.deepEqual(hints.domains, ['newcoexample.com']);
+  assert.deepEqual(hints.domains, ['newcoexample.com', 'notifyexample.com']);
 });
 
 test('grounding drops industries that are not in the transcript', () => {

@@ -96,6 +96,7 @@ function toPublicClient(row) {
     cc_emails: src.cc_emails || null,
     cc_round_robin_emails: src.cc_round_robin_emails || null,
     contact_email: src.contact_email || null,
+    notify_emails: src.notify_emails || null,
     created_at: src.created_at,
     updated_at: src.updated_at,
     has_smartlead_api_key: Boolean(src.has_smartlead_api_key || src.smartlead_api_key),

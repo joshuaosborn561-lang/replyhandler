@@ -14,7 +14,7 @@ router.get('/dashboard/api/clients', async (_req, res) => {
     const { rows } = await db.query(
       `SELECT id, name, active, slack_channel_id, booking_link, booking_destination_url,
               voice_prompt, digest_timezone, cc_email, cc_emails, cc_round_robin_emails,
-              contact_email, created_at, updated_at,
+              contact_email, notify_emails, created_at, updated_at,
               (smartlead_api_key IS NOT NULL AND smartlead_api_key <> '') AS has_smartlead_api_key,
               (heyreach_api_key IS NOT NULL AND heyreach_api_key <> '') AS has_heyreach_api_key,
               (allo_api_key IS NOT NULL AND allo_api_key <> '') AS has_allo_api_key,
@@ -34,7 +34,7 @@ router.get('/dashboard/api/clients/:clientId', async (req, res) => {
     const { rows: [row] } = await db.query(
       `SELECT id, name, active, slack_channel_id, booking_link, booking_destination_url,
               voice_prompt, digest_timezone, cc_email, cc_emails, cc_round_robin_emails,
-              contact_email, created_at, updated_at,
+              contact_email, notify_emails, created_at, updated_at,
               (smartlead_api_key IS NOT NULL AND smartlead_api_key <> '') AS has_smartlead_api_key,
               (heyreach_api_key IS NOT NULL AND heyreach_api_key <> '') AS has_heyreach_api_key,
               (allo_api_key IS NOT NULL AND allo_api_key <> '') AS has_allo_api_key,

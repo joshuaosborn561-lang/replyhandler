@@ -258,30 +258,36 @@ describe('booked meeting email: recipients', () => {
     assert.equal(recipient({ BOOKED_MEETING_EMAIL_TO: '' }), DEFAULT_TO);
   });
 
-  it('resolves active clients by slug alias and exact name and merges always-CC lists', async () => {
+  it('resolves active clients by slug alias and exact name and merges notify_emails', async () => {
     const seenArgs = [];
     const query = async (sql, args) => {
       seenArgs.push({ sql, args });
       return {
         rows: [
-          { name: 'Goliath', cc_emails: 'a@example.test, B@example.test', cc_email: 'a@example.test' },
-          { name: 'Goliath Cybersecurity', cc_emails: null, cc_email: 'b@example.test' },
+          { name: 'Goliath', notify_emails: 'a@example.test, B@example.test', cc_emails: 'nope@example.test', cc_email: 'nope@example.test' },
+          { name: 'Goliath Cybersecurity', notify_emails: 'b@example.test', cc_emails: null, cc_email: 'legacy@example.test' },
         ],
       };
     };
     const r = await resolveClientAlwaysCc({ clientSlug: 'goliath', clientName: 'Goliath Cybersecurity' }, { query });
     assert.deepEqual(r.always, ['a@example.test', 'b@example.test']);
+    assert.ok(/notify_emails/.test(seenArgs[0].sql), 'booked brief reads notify_emails');
+    assert.ok(!/cc_emails/.test(seenArgs[0].sql), 'booked brief does not read cc_emails');
     assert.ok(/active IS DISTINCT FROM false/.test(seenArgs[0].sql), 'inactive duplicates excluded');
     assert.ok(seenArgs[0].args[0].includes('goliath') && seenArgs[0].args[0].includes('goliath cybersecurity'));
   });
 
-  it('falls back to the legacy cc_email and returns nothing when the client has none', async () => {
+  it('ignores legacy cc_email and returns nothing when notify_emails is empty', async () => {
     const legacy = await resolveClientAlwaysCc({ clientSlug: '', clientName: 'Some Client' }, {
-      query: async () => ({ rows: [{ name: 'Some Client', cc_emails: '', cc_email: 'owner@example.test' }] }),
+      query: async () => ({ rows: [{ name: 'Some Client', notify_emails: '', cc_emails: '', cc_email: 'owner@example.test', contact_email: 'owner@example.test' }] }),
     });
-    assert.deepEqual(legacy.always, ['owner@example.test']);
+    assert.deepEqual(legacy.always, []);
+    const listed = await resolveClientAlwaysCc({ clientSlug: '', clientName: 'Some Client' }, {
+      query: async () => ({ rows: [{ name: 'Some Client', notify_emails: 'owner@example.test', cc_email: 'other@example.test' }] }),
+    });
+    assert.deepEqual(listed.always, ['owner@example.test']);
     const none = await resolveClientAlwaysCc({ clientSlug: '', clientName: 'Some Client' }, {
-      query: async () => ({ rows: [{ name: 'Some Client', cc_emails: null, cc_email: null }] }),
+      query: async () => ({ rows: [{ name: 'Some Client', notify_emails: null, cc_emails: null, cc_email: null }] }),
     });
     assert.deepEqual(none.always, []);
     let called = false;
@@ -385,7 +391,7 @@ describe('booked meeting email: route', () => {
     _resetSeenForTests();
     sent = [];
     gmail.sendMail = async (m) => { sent.push(m); return { ok: true }; };
-    db.query = async () => ({ rows: [{ name: 'Acme Client', cc_emails: 'client@example.test', cc_email: 'client@example.test' }] });
+    db.query = async () => ({ rows: [{ name: 'Acme Client', notify_emails: 'client@example.test', cc_emails: 'other@example.test', cc_email: 'other@example.test', contact_email: 'contact@example.test' }] });
     process.env.BOOKING_BRIDGE_WEBHOOK_SECRET = 'test-secret-value';
     delete process.env.ANTHROPIC_API_KEY; // never call the LLM from a test
     process.env.BOOKED_MEETING_LINKEDIN_LOOKUP = 'off'; // never spend on a lookup from a test

@@ -145,7 +145,7 @@ function ccUsedLabel(reply, client, sendResult) {
     return { email: to, mode: 'rollup', roundRobin: null, cellPhone: sendResult?.leadCellPhone || null };
   }
   const email = String(sendResult?.clientCcEmails || '').trim()
-    || String(client.cc_emails || client.cc_email || '').trim();
+    || String(client.notify_emails || '').trim();
   if (!email) return undefined;
   const rr = sendResult?.clientCcRoundRobin || null;
   return {
@@ -281,8 +281,8 @@ async function handleOpenEditModal(replyId, interaction) {
     initialDraft: reply.draft_reply || '',
     channelId: interaction.channel?.id,
     messageTs: interaction.message?.ts,
-    ccEmail: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
-    ccEmails: reply.platform === 'smartlead' ? (client.cc_emails || client.cc_email) : null,
+    ccEmail: reply.platform === 'smartlead' ? (client.notify_emails || null) : null,
+    ccEmails: reply.platform === 'smartlead' ? (client.notify_emails || null) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
     referralCc: detectedCc,
     // "CC client on this reply" checkbox: the Always-CC list, same as the card's Send + CC client button.

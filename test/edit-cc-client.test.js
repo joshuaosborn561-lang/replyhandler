@@ -11,7 +11,11 @@ const { sendReplyToPlatform } = require('../src/services/reply-send');
 
 const CLIENT = {
   id: 'c1', name: 'Acme', smartlead_api_key: 'k',
-  cc_emails: 'owner@acme.test, ops@acme.test', cc_round_robin_emails: 'rep@acme.test',
+  notify_emails: 'owner@acme.test, ops@acme.test',
+  cc_emails: 'portal@acme.test',
+  cc_email: 'legacy@acme.test',
+  contact_email: 'contact@acme.test',
+  cc_round_robin_emails: 'rep@acme.test',
 };
 const REPLY = {
   id: 'r1', platform: 'smartlead', classification: 'INTERESTED', client_id: 'c1',
@@ -122,7 +126,7 @@ describe('sendReplyToPlatform: CC client in roll-up mode', () => {
     const cc = String(sent[0].cc || '').toLowerCase();
     assert.match(cc, /owner@acme\.test/);
     assert.match(cc, /ops@acme\.test/);
-    assert.doesNotMatch(cc, /rep@acme\.test/);
+    assert.doesNotMatch(cc, /rep@acme\.test|portal@acme\.test|legacy@acme\.test|contact@acme\.test/);
     assert.match(res.prospectCcEmails, /owner@acme\.test/);
     assert.equal(res.clientNotifyMode, 'rollup');
     assert.equal(res.clientDigestQueued, true);

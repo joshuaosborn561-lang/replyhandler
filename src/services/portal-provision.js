@@ -35,21 +35,23 @@ function provisionUrl() {
 }
 
 /**
- * Invite emails go out when contact_email is present.
+ * Invite emails go out on first provisioning when contact_email is present.
  * Set PORTAL_SKIP_INVITE=true only to suppress them again.
+ * Updates of an existing client pass invite:false and never invite.
  */
 function invitesDisabled() {
   const raw = String(process.env.PORTAL_SKIP_INVITE ?? 'false').trim().toLowerCase();
   return raw === 'true' || raw === '1' || raw === 'yes';
 }
 
-function buildProvisionPayload(client) {
+function buildProvisionPayload(client, { invite = true } = {}) {
   const contactEmail = portalContactEmail(client);
+  const newClientSkip = { skip_invite: !contactEmail || invitesDisabled() };
   return {
     handler_client_id: client.id,
     name: client.name || null,
     contact_email: contactEmail,
-    skip_invite: !contactEmail || invitesDisabled(),
+    skip_invite: invite ? newClientSkip.skip_invite : true,
     smartlead_api_key: client.smartlead_api_key || null,
     heyreach_api_key: client.heyreach_api_key || null,
     allo_api_key: client.allo_api_key || null,
@@ -138,7 +140,7 @@ async function provisionClientToPortal(client, deps = {}) {
 
   const url = provisionUrl();
   const secret = String(process.env.PORTAL_WEBHOOK_SECRET).trim();
-  const payload = buildProvisionPayload(client);
+  const payload = buildProvisionPayload(client, { invite: deps.invite !== false });
 
   let lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -176,7 +178,8 @@ async function provisionClientToPortal(client, deps = {}) {
 async function provisionAllClients(clients, deps = {}) {
   const results = [];
   for (const client of clients || []) {
-    const r = await provisionClientToPortal(client, deps);
+    // Sync-all re-provisions people who already exist. Never send another invite.
+    const r = await provisionClientToPortal(client, { ...deps, invite: false });
     results.push({
       clientId: client.id,
       name: client.name,
