@@ -5,7 +5,8 @@
  * brief at notify_emails. A plain Approve does not CC the client. The Approve + CC
  * client button and the Edit modal checkbox still do, from notify_emails only.
  *
- * The day-of meeting brief is not sent from this repo.
+ * The prospect one-hour reminder is not the client day-of brief. That brief
+ * is held for review and stays off until CLIENT_DAYOF_BRIEF_ENABLED.
  */
 
 const { describe, it, beforeEach, afterEach } = require('node:test');
@@ -144,12 +145,15 @@ describe('the automatic client updates that live here use notify_emails', () => 
     assert.deepEqual(r.always, ['notify@client.test', 'second@client.test']);
   });
 
-  it('the day-of meeting brief is not sent from this repo', () => {
+  it('the prospect reminder is not the client brief, and prospect sends stay uncopied', () => {
     const reminder = read('src/services/reminder-email.js');
     assert.match(reminder, /meeting\.lead_email/);
     assert.doesNotMatch(reminder, /notify_emails|cc_emails|contact_email/);
     assert.doesNotMatch(read('package.json'), /resend/i);
     assert.equal(fs.existsSync(path.join(ROOT, 'src/services/day-of-meeting-brief.js')), false);
+    const { dayofBriefEnabled } = require('../src/services/client-dayof-brief');
+    assert.equal(dayofBriefEnabled({}), false);
+    assert.doesNotMatch(read('src/services/reply-send.js'), /client-dayof-brief|REVIEW_NOTIFY/);
     const heyreachSend = read('src/services/heyreach.js');
     const sendFn = heyreachSend.slice(heyreachSend.indexOf('async function sendMessage'));
     assert.doesNotMatch(sendFn, /notify_emails|cc_emails|contact_email|ccEmail/);

@@ -143,23 +143,29 @@ function websiteUrlLine(leadWebsite) {
  * (topup icp-llm, ported in reply-icp.js): fit or not, plus one line of why.
  * Confidence stays on the stored verdict and is not shown.
  */
+/** Same words the reply card prints, without the Slack emoji. */
+function icpFitPlain(leadIcpVerdict) {
+  const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
+  const reason = String(v?.reason || '').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
+  if (!v || !v.status || v.status === 'unknown') {
+    if (/^no ICP$/i.test(reason)) return 'ICP: not on file';
+    if (/^unreachable$/i.test(reason)) return 'ICP: site unreachable';
+    if (/^check failed$/i.test(reason)) return 'ICP: check failed';
+    const why = reason || 'unknown';
+    return `ICP: ${why.slice(0, 180)}`;
+  }
+  const why = (reason || (v.status === 'qualified' ? 'fits the ICP' : 'does not fit the ICP')).slice(0, 180);
+  const word = v.status === 'qualified' ? 'Fit' : 'Not a fit';
+  return `${word} — ${why}`;
+}
+
 function icpVerdictLine(leadIcpVerdict) {
   const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
   const dm = v && (v.decision_maker || v.decisionMaker);
   const { decisionMakerText } = require('./decision-maker');
   const dmText = decisionMakerText(dm);
   const dmLine = dmText ? `\n👤 ${escMrkdwn(dmText)}` : '';
-  const reason = String(v?.reason || '').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
-  if (!v || !v.status || v.status === 'unknown') {
-    if (/^no ICP$/i.test(reason)) return `\n🎯 ICP: not on file${dmLine}`;
-    if (/^unreachable$/i.test(reason)) return `\n🎯 ICP: site unreachable${dmLine}`;
-    if (/^check failed$/i.test(reason)) return `\n🎯 ICP: check failed${dmLine}`;
-    const why = reason || 'unknown';
-    return `\n🎯 ICP: ${escMrkdwn(why.slice(0, 180))}${dmLine}`;
-  }
-  const why = (reason || (v.status === 'qualified' ? 'fits the ICP' : 'does not fit the ICP')).slice(0, 180);
-  const word = v.status === 'qualified' ? 'Fit' : 'Not a fit';
-  return `\n🎯 ${escMrkdwn(`${word} — ${why}`)}${dmLine}`;
+  return `\n🎯 ${escMrkdwn(icpFitPlain(v))}${dmLine}`;
 }
 
 /** Prefer the enriched full name when the reply only carried a first name. */
@@ -2099,6 +2105,7 @@ module.exports = {
   locationLine,
   websiteFromLeadEmail,
   icpVerdictLine,
+  icpFitPlain,
   isConfirmedMobile,
   trimForCard,
   linkedinUrlLine,

@@ -251,6 +251,22 @@ function startCron() {
     }
   }
 
+  // ─── Client day-of briefs ────────────────────────────────────────────
+  // The send flag gates client email. The writer flag gates the internal
+  // hold/LLM path. Both default off, so EA is the writer and nothing sends.
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      const briefs = require('./services/client-dayof-brief');
+      if (!briefs.dayofBriefEnabled() && !briefs.dayofBriefWriterEnabled()) return;
+      const result = await briefs.runClientDayofBriefs();
+      if (result.held || result.notified || result.sent || result.blocked_by_context) {
+        console.log('[Cron] Client day-of briefs', result);
+      }
+    } catch (err) {
+      console.error('[Cron] Client day-of briefs failed', { err: err.message });
+    }
+  });
+
   // ─── Meeting reminders — 1 hour before (every 10 minutes) ─────────
   cron.schedule('*/10 * * * *', async () => {
     try {
@@ -443,7 +459,14 @@ function startCron() {
   const icpNote = icpAutoBuildEnabled()
     ? `ICP auto-build (hourly weekdays 6am-8pm ${ICP_BUILD_TZ})`
     : 'ICP auto-build disabled (DISABLE_ICP_AUTO_BUILD)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}`);
+  const dayofBriefs = require('./services/client-dayof-brief');
+  const dayofNote = dayofBriefs.dayofBriefEnabled()
+    ? 'client day-of brief send ON'
+    : 'client day-of brief send off (CLIENT_DAYOF_BRIEF_ENABLED)';
+  const dayofWriterNote = dayofBriefs.dayofBriefWriterEnabled()
+    ? 'internal day-of writer ON'
+    : 'internal day-of writer off (CLIENT_DAYOF_BRIEF_WRITER_ENABLED)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}, ${dayofNote}, ${dayofWriterNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

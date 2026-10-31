@@ -1664,7 +1664,7 @@ Josh: clients get exactly three automatic updates — (1) the weekday EOD roll-u
 - **Plain Approve does not CC the client.** Smartlead and HeyReach sends strip `cc_emails`, `cc_email`, `contact_email`, and `notify_emails` even when reply-all already has them on the thread. Josh's, Cayden's, the lead's, and SalesGlider's own inboxes stay stripped too. HeyReach `sendMessage` has no email CC field.
 - **Keep both manual copies.** The card's **Approve & Send + CC client** button and the Edit modal's **CC client** checkbox still put `notify_emails` on the Smartlead `cc` string. They do not pull `cc_emails`, `cc_email`, `contact_email`, or round-robin.
 - **The two updates that live here** (roll-up and meeting-booked brief) send To `notify_emails`. `PROSPECT_REPLY_NOTIFY_MODE=instant` is the old per-send Gmail and uses the same list; it does not also queue the roll-up and it does not CC the prospect send. Round-robin is stored and is not emailed. The Deep Roots gate still applies to the digest and the instant email. Gabe Calls inbound forward stays a campaign map and does not read `cc_emails`.
-- **The day-of meeting brief is not in this repo.** `reminder-email.js` emails the prospect (`meeting.lead_email`) one hour before. There is no Resend client here. Point that brief at `notify_emails` in the service that sends it.
+- **The day-of meeting brief now lives here, behind a review hold.** See "Day-of client briefs are held for review" below. `reminder-email.js` still emails the prospect (`meeting.lead_email`) one hour before. There is no Resend client here. The client copy goes to `notify_emails` only after a reviewer releases it.
 - **Portal updates never re-invite.** First-time provisioning may invite when Always-notify has an address and `PORTAL_SKIP_INVITE` is not true. Admin PATCH and sync-all call `provisionClientToPortal` with `invite: false`, so `skip_invite` is true. Adding an email later updates the portal record and does not email another invite.
 
 Guards: `test/client-notify-emails.test.js`, `test/portal-provision.test.js` (`an update never re-sends a portal invite`).
@@ -1731,6 +1731,72 @@ Josh: no Gemini. The reply ICP check does not grade with Gemini and has no Gemin
 
 Guard: `a missing Jev key or a failed call shows ICP: check failed and is not cached` and `a miss calls Jev on OpenRouter and does not call another grader` in `test/reply-icp.test.js`. The owner-intent guard `the interested card has no client header, a Jev fit line, and a mobile label only when confirmed` also rejects a Gemini grader in `reply-icp.js`.
 
+## Day-of client briefs are held for review (Josh, Oct 31 2026)
+
+Josh: every client brief needs a pre-send review hold. Build it about 2 hours before the meeting and put it in a queue instead of sending. Notify the reviewer. Only a released brief may be emailed, and a brief with zero context can never be released or sent. Unreviewed briefs never auto-send. `CLIENT_DAYOF_BRIEF_ENABLED` stays default off so nothing reaches a client until he turns it on.
+
+- **When.** `CLIENT_DAYOF_BRIEF_LEAD_MINUTES` (default 120) before `meetings.confirmed_time`, while the meeting is still in the future. A `confirmed_time` stamped at insert (within 2 minutes of `created_at`) is not a meeting time and is skipped. One row per meeting (`client_dayof_briefs.meeting_id` unique). A restart does not insert or notify a second time once `reviewer_notified_at` is set. A failed reviewer notify is retried. A failed client send is retried only for `released` rows and stops two hours after the start.
+- **Hold.** Status is `held`, `released`, or `blocked`. The cron inserts `held` and does not email the client. `GET /admin/client-briefs/pending` lists held rows. `POST /admin/client-briefs/:id/release` merges optional enriched fields and re-renders. `POST /admin/client-briefs/:id/block` drops it. `GET /admin/client-briefs/preview?meetingId=` renders one meeting and does not queue or send.
+- **Reviewer.** `REVIEW_NOTIFY` is one target: an `http(s)` URL gets a JSON POST, an email address gets the brief from the primary Gmail. The documented default is `salesglider-briefs@mail.grokbot.com` (`docs/.env.example`). An email subject starts with the fixed tag `[Client brief review]`, then the lead, company, and meeting time. The body includes the rendered brief and the release, enrich, and block links. Enrich is a POST of JSON fields to the release link. No target still holds the brief.
+- **Send.** Only `released`, only when the flag is on. To = `clients.notify_emails` (Vector's list is that client's notify list, copied once by migration 052). CC = Josh (`BOOKED_MEETING_EMAIL_TO`, default joshua@salesglidergrowth.com), not duplicated on To. An empty notify list does not send. This does not CC a client on a Smartlead or HeyReach prospect reply.
+- **Zero context.** Release and send refuse a brief that has none of: how they came in (campaign, channel, or source), company info (name, what they do, size, or site), past emails or calls (summary, quote, or call notes), or a stated ask. Missing LinkedIn alone does not refuse. A refused release stays `held`. Enrichment that adds one of those can then release.
+- **Shape.** The client email uses the HTML shell of the briefs `send-brief` already sends Josh (Client portal Supabase `scvrsmfzyvmmbnaolcrg`, function `send-brief`: Arial 14px, `h3` header, bold section title, bullets). Subject is `Brief: <name> @ <time>`. That function only posts prebuilt HTML to Josh through Resend. ReplyHandler renders here and sends with Gmail to `notify_emails`. It does not call `send-brief`. Sections, when there is something to say: Who (email, phone, LinkedIn, title, location), ICP fit, LinkedIn (DM history already on the reply), Email thread, Call history, Source campaign, About the company, Open items, Flags. Empty sections are left out. Facts come from the meeting and the stored reply. Nothing is researched or invented. The reviewer adds company detail the row does not have.
+
+Guard: `test/client-dayof-brief.test.js`.
+
+## Day-of briefs gather the same facts on hold and on preview (Josh, Oct 31 2026)
+
+Josh rejected a brief that only had a name, a campaign, and a bare website. The hold and the dry-run preview have to fill the same sections from the lookups reply cards already use, not from a one-off script.
+
+- **One gather.** `gatherBriefFacts` runs for the cron hold and for `GET /admin/client-briefs/preview`. A section that is empty after that gather is left out of the email.
+- **What it may read.** The stored reply and meeting. Smartlead message history and the lead record when the thread, phone, or LinkedIn is missing. Person-profile lookup for LinkedIn, title, and location. The email waterfall for phone and LinkedIn. HeyReach only when a LinkedIn URL is already known (no name-only search, so a different person is not attached). Allo calls for the phone on the brief. The company site, and only a sentence that is on the page. A phone labeled Tel/Phone in the prospect's own reply. The cached ICP verdict. If that verdict is missing, the line is "ICP fit: not on file" — this job does not call Jev or Claude.
+- **What it may not do.** Invent a title, a headcount, a profile, or a call. A lookup that fails or is not configured leaves that fact out.
+
+Guard: `test/client-dayof-brief.test.js` (`the live hold and the preview pull the same sections`).
+
+## Client briefs use the reply-card ICP line and drop the campaign (Josh, Oct 31 2026)
+
+Josh, on the held client brief: explain ICP fit from the Jev website check the same way a reply card does, add the decision-maker line, and take the source campaign off the email.
+
+- **ICP.** `gatherBriefFacts` calls `resolveReplyIcp` (`src/services/reply-icp.js`) with `grade: true`, on both the cron hold and the preview. The line is the card's words from `icpFitPlain`: `Fit — {reason}`, `Not a fit — {reason}`, `ICP: not on file`, `ICP: check failed` (and the card's other unknown reasons, such as `ICP: site unreachable`). A failed check is not replaced with a softer line.
+- **Decision maker.** Same function as the card: `loadClientPersonas` then `judgeDecisionMaker`, printed with `decisionMakerText`. The line says whether this person's title matches the client's target titles. It does not invent another person's name.
+- **No source campaign.** The campaign can still sit on the stored facts (the zero-context guard still counts how they came in). It is not a section in the email.
+- **Shape.** The HTML shell stays the one `send-brief` already uses (Arial 14px, `h3`, bold section title, bullets). A search of Josh's Gmail for a brief he answered "yes this is awesome" did not find that reply. The briefs from `briefs@reports.salesglidergrowth.com` already use this shell.
+
+Guard: `test/client-dayof-brief.test.js` (`prints the reply-card ICP line and a decision-maker line, and leaves the campaign out`, and `the live hold and the preview pull the same sections`).
+
+## Client briefs mirror the briefs Josh gets (Josh, Oct 31 2026)
+
+Josh: "literally just mirror the briefs i get." The client day-of email uses the same sections, in the same order, as the briefs sent through `send-brief` (Client portal `scvrsmfzyvmmbnaolcrg`). That function only posts prebuilt HTML to Josh through Resend. It does not generate the brief. The reference is the Oct 30 email "Brief: Nathan Schnefke and Joshua Osborn @ 11:00am CT" from `briefs@reports.salesglidergrowth.com`.
+
+- **Sections.** Who, Why you're meeting, Rapport hooks, Easy openers, Allo, Fireflies / Cube, Logistics. Subject is `Brief: <prospect> and <client> @ <time>`. HTML is the Arial 14px shell with an `h3` per section and a bullet list.
+- **Facts.** Who, the thread, the company site, Allo, and Fireflies. Rapport is "Nothing personal on file" unless a later edit adds a real hook. Easy openers quote what the prospect asked. No invented biography, and no Claude on this cron.
+- **Dropped, because a client should not see it.** LTV and "$36K" bars, "our pricing" / internal rate notes, Smartlead unsubscribe lines, "proof to lean on" another client, and a Calendly-wipe ops note. A prospect asking to walk through pricing stays. The campaign name stays inside Why you're meeting, not as its own section. ICP fit and the decision-maker line are not sections of this email.
+- **Unchanged.** The hold, the reviewer, the zero-context guard, and `CLIENT_DAYOF_BRIEF_ENABLED` default off.
+
+Guard: `test/client-dayof-brief.test.js` (`drops internal pricing, LTV, and unsubscribe notes`, and `the live hold and the preview pull the same sections`).
+
+## Client brief is written like EA's brief, not templated (Josh, Oct 31 2026)
+
+Josh: "this brief still looks nothing like the one i get". The briefs he gets are not a code template. EA's routine "Meeting brief 30m before" (cron `*/15 7-19 * * 1-5` America/Chicago) has an LLM write the subject and HTML from Smartlead, Allo, Fireflies, LinkedIn and web research, then posts it to the `send-brief` edge function, which only forwards it through Resend.
+
+- **Writer.** `src/services/client-brief-writer.js` adapts that prompt for the client. It returns the seven sections as bullets, built only from the gathered facts, two web searches and the company site text. Anthropic first, then OpenRouter. No key or any failure falls back to the mechanical sections.
+- **Guards in code.** Internal lines (LTV, pricing, unsubscribe, campaign names, tool names) are dropped. A bullet with a URL, email or phone not in the input is dropped. Dashes are removed. Allo and Fireflies sections only keep lines backed by real call or transcript hits. The model never sees the campaign name or any key.
+- **Format.** Links print as plain text, as in Josh's emails.
+- **Unchanged.** Hold, reviewer, zero-context guard, `CLIENT_DAYOF_BRIEF_ENABLED` default off.
+
+Guard: `test/client-brief-writer.test.js`.
+
+## EA writes the client day-of brief (Josh, Oct 31 2026)
+
+Josh: the EA bot writes client day-of briefs. ReplyHandler lists the meetings and sends the HTML EA returns. It does not write those briefs itself unless a flag is turned on.
+
+- **List.** `GET /admin/client-meetings/upcoming?from=&to=` returns meetings whose `confirmed_time` is in that window (start inclusive, end exclusive, at most 31 days, status booked or confirmed). A `confirmed_time` stamped at insert is left out. Each row has client id and name, `notify_emails`, prospect name, email, and company, meeting time as an ISO timestamp with the client zone's offset, the meeting link, booking source `allo` / `calendly` / `tidycal` (null when the row is none of those), Smartlead `campaign_id` and `lead_id`, the stored Smartlead thread messages, and `brief_sent`. ICP and decision-maker titles are read from `clients.icp_profile` on that row only. They are null when the row has none. Code defaults are not filled in.
+- **Send.** `POST /admin/client-brief/send` body `{meeting_id, subject, html}` emails that HTML to the client's `notify_emails` and CCs Josh, through the same Gmail send as a released brief. It records the row. A second send for a meeting that already has `sent_at` is refused. Empty HTML, zero-context HTML (no source, no company or site, no past email or call, and no stated ask), and internal lines (LTV, our pricing, an unsubscribe, Smartlead) are refused and nothing is recorded. The send flag off refuses and does not record, so a later call can still send.
+- **Flags.** `CLIENT_DAYOF_BRIEF_ENABLED` still defaults off and is what gates `/send` and the cron's send of an already released row. `CLIENT_DAYOF_BRIEF_WRITER_ENABLED` defaults off. The internal LLM writer and the cron that builds a held brief run only when that flag is on. The writer code stays.
+- **Auth.** These routes use the same auth as the other admin routes: no `ADMIN_API_KEY`.
+
+Guard: `test/client-dayof-brief.test.js` (`lists upcoming meetings from the client record`, `sends EA html once and refuses an empty, zero-context, internal, or duplicate brief`, `does not write a brief on the cron unless the writer flag is on`).
 ## Follow-up cards: one open card, call outcomes, and a history modal (2026-10-31)
 
 Josh approved the follow-up card mockups. This replaces the Oct 29 "WILL SEND on the pending follow-up card" layout for cards that are still waiting on a click. Sent confirmations still say what went out. Reject on a follow-up still skips only that step and does not mark the lead Not Interested.
