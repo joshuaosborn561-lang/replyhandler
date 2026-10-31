@@ -221,6 +221,24 @@ function buildRecipients({ always, josh, cc = [] }) {
   return { to, cc: out };
 }
 
+const INTERNAL_DOMAIN = /@salesglidergrowth\.com$/i;
+
+/**
+ * True when any address on To is a client's (not Josh, not Cayden, not another @salesglidergrowth.com
+ * address). Those sends hide the campaign details (booked-brief.js, clientFacing). Josh and Cayden only
+ * (the no-notify_emails fallback, SalesGlider's own bookings) keep the full brief.
+ */
+function isClientFacing({ to, josh, cc = [] }) {
+  const internal = new Set([
+    ...parseEmailList(josh),
+    ...parseEmailList(Array.isArray(cc) ? cc.join(',') : cc),
+  ].map((e) => String(e).trim().toLowerCase()));
+  return (to || []).some((e) => {
+    const a = String(e || '').trim().toLowerCase();
+    return a && !internal.has(a) && !INTERNAL_DOMAIN.test(a);
+  });
+}
+
 function alreadySent(key, now = Date.now()) {
   for (const [k, t] of seen) if (now - t > SEEN_TTL_MS) seen.delete(k);
   return seen.has(key);
@@ -282,6 +300,7 @@ async function handleBookedMeetingEmail(body, {
     josh: recipient(env),
     cc: bookedCcEmails(env),
   });
+  const clientFacing = isClientFacing({ to, josh: recipient(env), cc: bookedCcEmails(env) });
   if (!always.length) {
     console.warn('[BookedMeetingEmail] client has no always-CC address, so this brief goes to Josh and Cayden only', { client: m.clientSlug || m.client });
   }
@@ -331,7 +350,7 @@ async function handleBookedMeetingEmail(body, {
   const briefOff = briefDataFn === gatherBrief && String(env.BOOKED_BRIEF_DATA || process.env.BOOKED_BRIEF_DATA || '').toLowerCase() === 'off';
   if (!briefOff) {
     try {
-      data = await briefDataFn(m, { clients: clientRows, linkedinUrl: m.prospect.linkedinUrl, highlights: h, swap }, { callBrands: brandsFor(m), env });
+      data = await briefDataFn(m, { clients: clientRows, linkedinUrl: m.prospect.linkedinUrl, highlights: h, swap, clientFacing }, { callBrands: brandsFor(m), env });
     } catch (err) {
       console.warn('[BookedMeetingEmail] brief data failed, sending the short brief', { err: String(err && err.message || err).slice(0, 200) });
     }
@@ -348,13 +367,14 @@ async function handleBookedMeetingEmail(body, {
     summary: swap(m.summary),
     highlights: h,
     isCall,
+    clientFacing,
     callNotesLabel: isCall ? [callerLabel(m) ? `Booked on a cold call by ${callerLabel(m)}` : 'Booked on a cold call', whenLabel(m.callAt)].filter(Boolean).join(' \u00b7 ') : '',
     noSummaryText: NO_SUMMARY,
   });
   // Ops checks (bearer-protected route): dry_run returns the brief unsent; josh_only sends one copy to
   // Josh and nobody else, so a test never reaches a client. Neither marks the booking as emailed.
   if (body && body.dry_run === true) {
-    return { status: 200, body: { ok: true, dry_run: true, to, cc, subject, textBody } };
+    return { status: 200, body: { ok: true, dry_run: true, to, cc, client_facing: clientFacing, subject, textBody } };
   }
   if (body && body.josh_only === true) {
     try {
@@ -389,6 +409,7 @@ module.exports = {
   buildBookedBrief,
   resolveClientAlwaysCc,
   buildRecipients,
+  isClientFacing,
   bookedCcEmails,
   callerLabel,
   useClientName,

@@ -7,7 +7,7 @@ const {
 } = require('../src/services/booked-brief-data');
 const { buildBookedBrief } = require('../src/services/booked-brief');
 const {
-  DEFAULT_TO, buildRecipients, parseBookedMeetingPayload, handleBookedMeetingEmail, _resetSeenForTests,
+  DEFAULT_TO, buildRecipients, isClientFacing, parseBookedMeetingPayload, handleBookedMeetingEmail, _resetSeenForTests,
 } = require('../src/services/booked-meeting-email');
 
 const OPS = 'cayden@salesglidergrowth.com';
@@ -170,10 +170,13 @@ describe('booked brief: non-call booking (Calendly)', () => {
     assert.deepEqual(sent[0].to, ['owner@client.test']);
     assert.ok(sent[0].cc.includes(DEFAULT_TO) && sent[0].cc.includes(OPS) && !sent[0].cc.includes(GABE), 'Cayden and Josh copied, not Gabe');
     assert.match(sent[0].subject, /^Meeting booked: Pat Example/);
-    for (const needle of ['Central TX Owners', 'HVAC installer', 'Ask about capacity', 'Yes, lets talk']) {
+    for (const needle of ['HVAC installer', 'Ask about capacity', 'Yes, lets talk']) {
       assert.ok(sent[0].htmlBody.includes(needle), `html should include ${needle}`);
       assert.ok(sent[0].textBody.includes(needle), `text should include ${needle}`);
     }
+    // A client is on To: the campaign never reaches them (Josh, Oct 31).
+    assert.ok(!sent[0].htmlBody.includes('Central TX Owners') && !sent[0].textBody.includes('Central TX Owners'));
+    assert.ok(!/how they booked/i.test(sent[0].htmlBody) && !/how they booked/i.test(sent[0].textBody));
   });
 
   it('still sends a minimal brief when the data step throws', async () => {
@@ -229,5 +232,130 @@ describe('booked brief: rendering', () => {
     assert.ok(!/LinkedIn/.test(textBody), 'no LinkedIn row when none was found');
     assert.ok(!/Suggested talking points/i.test(htmlBody), 'empty sections are dropped');
     assert.match(textBody, /See the calendar invite\./);
+  });
+});
+
+describe('booked brief: campaign details are hidden from clients (Josh, Oct 31)', () => {
+  const CAMPAIGN = 'Synthetic Campaign Alpha';
+  const MAILBOX = 'sender@mailbox-fixture.test';
+  const brief = (over = {}) => ({
+    clientName: 'Fixture Client',
+    prospect: { name: 'Sam Sample', company: 'Sample Co', title: 'Owner', email: 'sam@sample.test' },
+    when: { label: 'Fri, Nov 6 at 1:00 PM CT', where: '', bookedLabel: '' },
+    company: { website: 'https://sample.test', whatTheyDo: 'Makes samples', notes: [] },
+    how: { client: 'Fixture Client', channel: 'Cold email, then Calendly booking page', campaign: CAMPAIGN, hook: 'Fixture hook', sender: MAILBOX, timeline: 'first email Mon', category: 'Meeting request' },
+    thread: [], talkingPoints: ['Ask about their schedule', `Mention the ${CAMPAIGN} offer`, `Replied to ${MAILBOX}`, 'We pulled this from Smartlead', 'Confirm the decision maker'],
+    watchOuts: ['Check the title', 'Allo logged a missed call'],
+    links: [{ label: 'Email thread', url: 'campaign 111, lead 222' }, { label: 'Company', url: 'https://sample.test' }, { label: 'LinkedIn', url: 'https://www.linkedin.com/in/sample-fixture' }],
+    ...over,
+  });
+  const SECTION_LABELS = ['HOW THEY BOOKED', 'Reply category', 'Hook:', 'Timeline:', 'Sender:'];
+
+  it('client send: no How they booked section in text or html, and no campaign/lead id link', () => {
+    const { htmlBody, textBody } = buildBookedBrief(brief({ clientFacing: true }));
+    for (const out of [htmlBody, textBody]) {
+      assert.ok(!/how they booked/i.test(out));
+      assert.ok(!out.includes('Reply category') && !out.includes('Fixture hook') && !out.includes('first email Mon'));
+      assert.ok(!out.includes(CAMPAIGN) && !out.includes(MAILBOX));
+      assert.ok(!/Email thread|campaign 111|lead 222/.test(out), 'no campaign id / lead id link');
+      assert.ok(out.includes('https://sample.test') && out.includes('sample-fixture'), 'Company and LinkedIn links stay');
+      assert.ok(out.includes('Ask about their schedule') && out.includes('Confirm the decision maker') && out.includes('Check the title'));
+    }
+    for (const l of SECTION_LABELS) assert.ok(!textBody.includes(l), `${l} must not appear`);
+  });
+
+  it('client send: talking points and watch-outs naming the campaign, mailbox or a tool are dropped', () => {
+    const { htmlBody, textBody } = buildBookedBrief(brief({ clientFacing: true }));
+    for (const out of [htmlBody, textBody]) {
+      assert.ok(!/smartlead|allo logged|mailbox-fixture/i.test(out));
+    }
+    assert.match(textBody, /1\. Ask about their schedule\n2\. Confirm the decision maker/);
+  });
+
+  it('internal send (Josh and Cayden only): the full section and the thread link stay', () => {
+    for (const over of [{ clientFacing: false }, {}]) {
+      const { htmlBody, textBody } = buildBookedBrief(brief(over));
+      for (const out of [htmlBody, textBody]) {
+        assert.ok(/how they booked/i.test(out));
+        for (const needle of [CAMPAIGN, MAILBOX, 'Fixture hook', 'Meeting request', 'first email Mon', 'campaign 111, lead 222']) {
+          assert.ok(out.includes(needle), `internal brief should include ${needle}`);
+        }
+      }
+      for (const label of ['Client:', 'Channel:', 'Campaign:', 'Hook:', 'Sender:', 'Timeline:', 'Reply category:']) {
+        assert.ok(textBody.includes(label), `${label} stays on internal sends`);
+      }
+    }
+  });
+
+  it('gatherBrief keeps the campaign name away from the model and the thread link out on client sends', async () => {
+    const seenPrompts = [];
+    const stubs = {
+      sl: {
+        lookupLeadByEmail: async () => ({ leadId: '222', campaignIds: ['111'], lead: {} }),
+        pickLeadCampaign: () => '111',
+        getThreadHistory: async () => ({ history: [] }),
+        resolveCampaignName: async () => CAMPAIGN,
+      },
+      search: async () => [], siteText: async () => '',
+      llm: async ({ user }) => { seenPrompts.push(user); return JSON.stringify({ talking_points: ['Ask about timing'] }); },
+      db: { query: async () => ({ rows: [] }) }, google: {}, env: {},
+    };
+    const m = parseBookedMeetingPayload(calendlyPayload()).value;
+    const client = await gatherBrief(m, { clients: [{ id: 'c1', smartlead_api_key: 'k' }], clientFacing: true }, stubs);
+    assert.ok(!seenPrompts[0].includes(CAMPAIGN), 'campaign withheld from the model');
+    assert.ok(!client.links.some((l) => l.label === 'Email thread'));
+    const internal = await gatherBrief(m, { clients: [{ id: 'c1', smartlead_api_key: 'k' }] }, stubs);
+    assert.ok(seenPrompts[1].includes(CAMPAIGN));
+    assert.ok(internal.links.some((l) => l.label === 'Email thread'));
+  });
+
+  it('isClientFacing: a client address on To counts; Josh, Cayden and other team addresses do not', () => {
+    assert.equal(isClientFacing({ to: ['owner@client.test'], josh: DEFAULT_TO, cc: [OPS] }), true);
+    assert.equal(isClientFacing({ to: [DEFAULT_TO], josh: DEFAULT_TO, cc: [OPS] }), false);
+    assert.equal(isClientFacing({ to: [DEFAULT_TO, OPS], josh: DEFAULT_TO, cc: [OPS] }), false);
+    assert.equal(isClientFacing({ to: ['someone@salesglidergrowth.com'], josh: DEFAULT_TO, cc: [OPS] }), false);
+    assert.equal(isClientFacing({ to: [DEFAULT_TO, 'owner@client.test'], josh: DEFAULT_TO, cc: [OPS] }), true);
+  });
+
+  const handlerDeps = (sent, always) => ({
+    send: async (x) => { sent.push(x); }, env: {},
+    resolveCc: async () => ({ clients: ['Acme Client'], always, rows: [] }),
+    highlightsFn: async () => null, linkedinFn: async () => '',
+    briefDataFn: async (m, ctx) => ({
+      clientName: 'Acme Client', prospect: { name: 'Pat Example', company: 'Example Mechanical', email: 'pat@example.test' },
+      when: { label: 'Fri, Nov 6 at 1:00 PM CT' }, company: {},
+      how: { client: 'Acme Client', channel: 'Cold email', campaign: CAMPAIGN, hook: 'Fixture hook', sender: MAILBOX, timeline: 'first email Mon', category: 'Meeting request' },
+      thread: [], talkingPoints: [], watchOuts: [],
+      links: [{ label: 'Email thread', url: 'campaign 111, lead 222' }],
+    }),
+  });
+
+  it('handler: client on To hides the section; the no-notify_emails fallback to Josh and Cayden keeps it', async () => {
+    _resetSeenForTests();
+    const clientSent = [];
+    const a = await handleBookedMeetingEmail(calendlyPayload({ booking_id: 301 }), handlerDeps(clientSent, ['owner@client.test']));
+    assert.equal(a.status, 200);
+    assert.deepEqual(clientSent[0].to, ['owner@client.test']);
+    for (const out of [clientSent[0].htmlBody, clientSent[0].textBody]) {
+      assert.ok(!/how they booked/i.test(out) && !out.includes(CAMPAIGN) && !out.includes('lead 222'));
+    }
+    const internalSent = [];
+    const b = await handleBookedMeetingEmail(calendlyPayload({ booking_id: 302 }), handlerDeps(internalSent, []));
+    assert.equal(b.status, 200);
+    assert.deepEqual(internalSent[0].to, [DEFAULT_TO]);
+    for (const out of [internalSent[0].htmlBody, internalSent[0].textBody]) {
+      assert.ok(/how they booked/i.test(out) && out.includes(CAMPAIGN) && out.includes('lead 222'));
+    }
+  });
+
+  it('handler dry_run reports client_facing for both cases and sends nothing', async () => {
+    _resetSeenForTests();
+    const sent = [];
+    const c = await handleBookedMeetingEmail(calendlyPayload({ dry_run: true, booking_id: 303 }), handlerDeps(sent, ['owner@client.test']));
+    const i = await handleBookedMeetingEmail(calendlyPayload({ dry_run: true, booking_id: 304 }), handlerDeps(sent, []));
+    assert.equal(c.body.client_facing, true);
+    assert.equal(i.body.client_facing, false);
+    assert.ok(!/HOW THEY BOOKED/.test(c.body.textBody) && /HOW THEY BOOKED/.test(i.body.textBody));
+    assert.equal(sent.length, 0);
   });
 });

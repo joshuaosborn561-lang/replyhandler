@@ -16,6 +16,9 @@ const WRAP = 'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Ar
 const H = 'margin:22px 0 8px;font-size:15px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;';
 const CARD = 'border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;background:#fff;margin:0 0 10px 0;';
 
+// Tool names a client never needs to see in a brief (Josh, Oct 31: clients must not see the machinery).
+const INTERNAL_TOOLS = /\b(smartlead|allo|replyhandler|instantly|apollo|lemlist|heyreach|fireflies|serper|anthropic|openrouter|gemini|hubspot sequences?)\b/i;
+
 function s(v, max = 4000) {
   if (v === null || v === undefined) return '';
   return String(v).replace(/\r\n/g, '\n').trim().slice(0, max);
@@ -46,6 +49,34 @@ function numbered(items) {
   return list.length ? `<ol style="margin:4px 0 0;padding-left:20px;">${list.map((i) => `<li style="margin:0 0 4px;">${escapeHtml(i)}</li>`).join('')}</ol>` : '';
 }
 
+/**
+ * Terms that identify the outbound machinery for this booking: the campaign name, the sending mailbox
+ * and its domain. Used only on client sends, to drop talking points or watch-outs that name them.
+ */
+function internalTerms(b) {
+  const h = b.how || {};
+  const terms = [];
+  const campaign = s(h.campaign, 300);
+  if (campaign.length >= 4) terms.push(campaign.toLowerCase());
+  const sender = s(h.sender, 320).toLowerCase();
+  if (sender) {
+    terms.push(sender);
+    const dom = sender.includes('@') ? sender.slice(sender.lastIndexOf('@') + 1) : '';
+    if (dom) terms.push(dom);
+  }
+  return terms;
+}
+
+/** Keep only the items that name no campaign, sending mailbox or tool. Dropping beats half-editing a sentence. */
+function scrubForClient(items, terms) {
+  return (items || []).filter((i) => {
+    const text = s(i, 600).toLowerCase();
+    if (!text) return false;
+    if (INTERNAL_TOOLS.test(text)) return false;
+    return !terms.some((t) => text.includes(t));
+  });
+}
+
 function section(title, inner) {
   return inner ? `<h3 style="${H}">${escapeHtml(title)}</h3>${inner}` : '';
 }
@@ -64,9 +95,20 @@ function messageHtml(m) {
  *  when{label, where, bookedLabel}, company{website,whatTheyDo,size,notes[]},
  *  how{client,channel,campaign,hook,sender,timeline,category},
  *  thread[{when,from,direction:'in'|'out',body}], summary, highlights, callNotesLabel,
- *  talkingPoints[], watchOuts[], links[{label,url}], noSummaryText
+ *  talkingPoints[], watchOuts[], links[{label,url}], noSummaryText,
+ *  clientFacing (true when any client notify_email is on To)
+ *
+ * clientFacing: the "How they booked" section (client, channel, campaign, hook, sender, timeline,
+ * reply category) and the campaign/lead id "Email thread" link are left out of both the text and the
+ * HTML, and talking points / watch-outs that name the campaign, the sending mailbox or a tool are
+ * dropped (Josh, Oct 31: clients must not see which campaign a lead came from). The full section stays
+ * on internal sends (Josh and Cayden only).
  */
 function buildBookedBrief(b) {
+  const clientFacing = b.clientFacing === true;
+  const terms = clientFacing ? internalTerms(b) : [];
+  const talkingPoints = clientFacing ? scrubForClient(b.talkingPoints, terms) : b.talkingPoints;
+  const watchOuts = clientFacing ? scrubForClient(b.watchOuts, terms) : b.watchOuts;
   const p = b.prospect || {};
   const person = s(p.name, 200);
   const company = s(p.company, 200);
@@ -110,7 +152,7 @@ function buildBookedBrief(b) {
   const companyNotes = bullets(c.notes);
 
   const h = b.how || {};
-  const howRows = [
+  const howRows = clientFacing ? [] : [
     ['Client', h.client || clientName],
     ['Channel', h.channel],
     ['Campaign', h.campaign],
@@ -143,7 +185,7 @@ function buildBookedBrief(b) {
       '</div>'
     : '';
 
-  const links = (b.links || []).filter((l) => s(l.url));
+  const links = (b.links || []).filter((l) => s(l.url) && !(clientFacing && /^email thread$/i.test(s(l.label))));
   const linksHtml = links.length
     ? `<ul style="margin:4px 0 0;padding-left:20px;">${links.map((l) => `<li>${escapeHtml(l.label)}: ${link(l.url)}</li>`).join('')}</ul>`
     : '';
@@ -158,8 +200,8 @@ function buildBookedBrief(b) {
   ${section('How they booked', howRows.length ? `<table style="border-collapse:collapse;font-size:14px;">${rowsHtml(howRows)}</table>` : '')}
   ${section('Conversation so far', threadHtml)}
   ${section('Call notes', callHtml)}
-  ${section('Suggested talking points', numbered(b.talkingPoints))}
-  ${section('Watch-outs', bullets(b.watchOuts))}
+  ${section('Suggested talking points', numbered(talkingPoints))}
+  ${section('Watch-outs', bullets(watchOuts))}
   ${section('Links', linksHtml)}
   <p style="margin:24px 0 0;color:#666;font-size:12px;">Sent automatically by SalesGlider operations.</p>
 </div>`.replace(/\n\s*\n/g, '\n').trim();
@@ -183,9 +225,9 @@ function buildBookedBrief(b) {
     for (const [label, items] of hlSections) T.push(`${label}:`, ...items.map((i) => `- ${s(i)}`), '');
     if (!sum && !hlSections.length) T.push(s(b.noSummaryText) || NO_SUMMARY, '');
   }
-  const tp = (b.talkingPoints || []).map((x) => s(x, 600)).filter(Boolean);
+  const tp = (talkingPoints || []).map((x) => s(x, 600)).filter(Boolean);
   if (tp.length) T.push('SUGGESTED TALKING POINTS', ...tp.map((x, i) => `${i + 1}. ${x}`), '');
-  const wo = (b.watchOuts || []).map((x) => s(x, 600)).filter(Boolean);
+  const wo = (watchOuts || []).map((x) => s(x, 600)).filter(Boolean);
   if (wo.length) T.push('WATCH-OUTS', ...wo.map((x) => `- ${x}`), '');
   if (links.length) T.push('LINKS', ...links.map((l) => `${l.label}: ${s(l.url, 500)}`), '');
   T.push('Sent automatically by SalesGlider operations.');
@@ -194,4 +236,4 @@ function buildBookedBrief(b) {
   return { subject, htmlBody, textBody };
 }
 
-module.exports = { buildBookedBrief, BOOKED_NOTES_LINE, NO_SUMMARY };
+module.exports = { buildBookedBrief, scrubForClient, internalTerms, BOOKED_NOTES_LINE, NO_SUMMARY };

@@ -1750,3 +1750,9 @@ Josh, relayed by Chief of Staff (9:05am CT): delete the separate "Hot lead: we C
 - The CC'd or approved positive reply (INTERESTED / MEETING_PROPOSED, Smartlead, not a follow-up) is queued at send time and goes out in that day's roll-up To `notify_emails`, whether or not the client was CC'd.
 - `firstNameFromEmail` moved to `src/utils/first-name.js` (the ICP profile still uses it).
 Guard: `test/cc-notice-retired.test.js`
+
+## Meeting-booked email: clients do not see the campaign (2026-10-31)
+
+Josh: clients must not see which campaign a lead came from. When any client notify_email is on To, the meeting-booked email leaves out the HOW THEY BOOKED section (Client, Channel, Campaign, Hook, Sender, Timeline, Reply category) in both text and HTML, and the "Email thread" link (campaign id, lead id) in LINKS. Talking points and watch-outs that name the campaign, the sending mailbox or its domain, or a tool (Smartlead, Allo and the like) are dropped, and the campaign name is not given to the model on client sends. The full section stays when the email goes only to Josh and Cayden (no notify_emails on the client, or SalesGlider's own bookings). Client-facing means a To address that is not Josh, not Cayden and not an @salesglidergrowth.com address (`isClientFacing`, `clientFacing` in `buildBookedBrief`). The ops dry_run response shows `client_facing`.
+
+Guard: `campaign details are hidden from clients` in `test/booked-brief.test.js`.
