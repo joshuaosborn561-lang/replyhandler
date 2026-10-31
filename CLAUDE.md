@@ -228,8 +228,28 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
 1. The weekday 4:00pm CT roll-up of positive replies we answered
    (`client-reply-digest.js`).
 2. The instant meeting-booked brief (`booked-meeting-email.js`).
-3. The day-of meeting brief. That sender is not in this repo. `reminder-email.js`
-   is a one-hour reminder to the prospect (`meeting.lead_email`), not a client brief.
+3. The day-of meeting brief (`client-dayof-brief.js`). EA writes it.
+   `GET /admin/client-meetings/upcoming?from=&to=` lists meetings in that
+   window (start inclusive, end exclusive, 31 days max) with the client,
+   notify list, prospect, time (ISO with the client zone's offset), link,
+   booking source (`allo` / `calendly` / `tidycal`, otherwise null), Smartlead
+   campaign id, lead id, stored thread messages, and the client's ICP and
+   buyer titles from `clients.icp_profile` only (null when that row has none;
+   code defaults are not filled in), plus whether a brief was already sent.
+   `POST /admin/client-brief/send` with `{meeting_id, subject, html}` emails
+   that HTML to `notify_emails` and CCs Josh, through the same Gmail send.
+   It records the send, and it refuses a duplicate, empty HTML, zero-context
+   HTML, and internal lines (LTV, pricing, unsubscribe, Smartlead). Both
+   routes use the same auth as the other admin routes (no API key). The send
+   is gated by `CLIENT_DAYOF_BRIEF_ENABLED` (default off). The internal LLM
+   writer and the cron that builds a held brief stay in the code and run only
+   when `CLIENT_DAYOF_BRIEF_WRITER_ENABLED` is on (default off). A held brief
+   still waits for `POST /admin/client-briefs/:id/release` and still does not
+   auto-send. A brief with no source, no company info, no past emails or
+   calls, and no stated ask cannot be released or sent. Missing LinkedIn
+   alone does not trip that guard. To = `notify_emails`, CC = Josh.
+   `reminder-email.js` is still the one-hour reminder to the prospect
+   (`meeting.lead_email`), not this brief.
 
 `PROSPECT_REPLY_NOTIFY_MODE=instant` replaces the roll-up with the old per-send
 Gmail. `smartlead.forwardThreadToClient()` (called from `reply-send.js`) is that
