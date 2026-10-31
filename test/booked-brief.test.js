@@ -67,6 +67,11 @@ describe('booked brief: thread helpers', () => {
 });
 
 describe('booked brief: synthesis', () => {
+  it('normalizeSynthesis drops numbers the model put in front of talking points', () => {
+    const out = normalizeSynthesis({ talking_points: ['1. Ask why they booked.', '2) Confirm the role.', '3 sentences is not a number prefix'] });
+    assert.deepEqual(out.talkingPoints, ['Ask why they booked.', 'Confirm the role.', '3 sentences is not a number prefix']);
+  });
+
   it('normalizeSynthesis returns null for junk and trims lists', () => {
     assert.equal(normalizeSynthesis(null), null);
     assert.equal(normalizeSynthesis({}), null);

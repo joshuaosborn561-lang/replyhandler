@@ -70,7 +70,8 @@ function buildBookedBrief(b) {
   const p = b.prospect || {};
   const person = s(p.name, 200);
   const company = s(p.company, 200);
-  const name = person || company || 'Prospect';
+  // No name and no company: the booker's email is a better handle than the word "Prospect".
+  const name = person || company || s(p.email, 200) || 'Prospect';
   const clientName = s(b.clientName, 200);
   const subject = `Meeting booked: ${name}${clientName ? ` \u00b7 ${clientName}` : ''}`;
   const at = person && company ? ` at ${company}` : '';
