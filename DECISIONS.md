@@ -1840,3 +1840,12 @@ Pollers already skipped inactive clients. These crons now do too: the one-hour m
 Still not gated on `clients.active`: the interested-sweep account-wide Smartlead master-key pass (read-only log, not a client row), the HeyReach poller's env fallback (only when no active client has a HeyReach key; it is SalesGlider / Nieto, not Deep Roots), and a click on a nurture card that was already posted.
 
 Guards: `test/weekly-recap.test.js`, `test/inactive-client-jobs.test.js`.
+
+## MeetStream attendance tracking (Oct 31, 2026)
+
+Josh approved (via Research, 11:34am CT: "Yes and do a test on my meetings"). A silent bot named exactly `Attendance` joins a Google Meet around its start, reports who joined, and leaves. It records nothing (no audio, video, transcript, chat; media retention 1 hour). Result lands in `meeting_attendance` as `showed`, `no_show` or `unverified`.
+
+- Off by default: `MEETSTREAM_ATTENDANCE_ENABLED`. Scope `MEETSTREAM_ATTENDANCE_SCOPE` is `josh_only` first; client meetings are recorded as `skipped / scope_josh_only` and never get a bot until Josh widens it to `clients`.
+- Never guess a no-show: `no_show` only when our bot was admitted and stayed through start + 10 minutes with nobody else. A bot that never got in is `unverified`.
+- Zoom and Teams stay manual (`skipped`). Spend guard: lifetime cap `MEETSTREAM_MAX_BOTS` (20), hard stop 45 minutes after start, about $0.07 per bot at $0.35/hour. Nothing client-facing, no Slack.
+- Guard: `test/meetstream-attendance.test.js`.
