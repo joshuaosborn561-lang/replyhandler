@@ -579,13 +579,13 @@ async function completeCardLinks({
     console.warn('[Slack] ICP verdict failed after card post', {
       replyId, err: err.message,
     });
-    icp = icp || unknownVerdict('grade failed');
+    icp = icp || unknownVerdict('check failed');
   }
   // Is the PERSON replying a buyer per this client's ICP titles?
   try {
     const personas = await dmLib.loadClientPersonas(dbClient, clientId);
     const dm = dmLib.judgeDecisionMaker(title, personas);
-    icp = { ...(icp || unknownVerdict('grade failed')), decision_maker: dm };
+    icp = { ...(icp || unknownVerdict('check failed')), decision_maker: dm };
     await dmLib.persistDecisionMaker(dbClient, replyId, dm);
   } catch (err) {
     console.warn('[Slack] decision-maker check failed', { replyId, err: err.message });

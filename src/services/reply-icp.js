@@ -1,25 +1,28 @@
-const { geminiModel } = require('./gemini-model');
 /**
  * Slack-card ICP verdict — reuse topup's site_check / icp gate, do not
  * invent a new grader.
  *
  * Cheap → paid:
- *   1. in-process + reply_icp_verdicts (client_tag + domain)
- *   2. shared Supabase `client_salesglider.icp_llm_results` (same row
- *      site_check / icp(job_id) already paid for)
+ *   1. in-process + reply_icp_verdicts (client_tag + domain), hits only
+ *   2. shared Supabase `client_salesglider.icp_llm_results` (a Jev row
+ *      site_check / icp-llm already paid for)
  *   3. cached site text in `client_salesglider.icp_site_text`
  *   4. fetch the company homepage (free, like icp-site-fetch)
- *   5. Gemini with the icp-llm category prompt + PASS token
+ *   5. Jev via OpenRouter Decisions, same call as topup icp-llm `jev()`:
+ *      POST https://openrouter.ai/api/alpha/decisions
+ *      model `typesafe/jev-1.13` (topup spec `jev:typesafe/jev-1.13|<variant>`)
+ *      questions = that variant's category choice (JEV_Q[variant])
+ *      Authorization: Bearer OPENROUTER_API_KEY
  *
- * Estimate first. Default ceiling $0.02. Never writes dl_status /
- * sg_exclude / skip_*. Never writes topup ICP tables (read-only).
+ * A missing key or a failed Jev call is `ICP: check failed` and is not
+ * cached, so a later card retries. Estimate helpers remain; they do not
+ * skip the call. Never writes dl_status / sg_exclude / skip_*. Never
+ * writes topup ICP tables (read-only).
  *
  * Source: joshuaosborn561-lang/topup
- *   src/clients/icpGate.ts, src/canon/siteCheck.ts, src/stages/icp/,
- *   supabase function icp-llm (JEV_Q / PASS / fit+prob+reason).
+ *   supabase/functions/icp-llm/index.ts (JEV_Q / PASS / jev()).
  */
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { clientTagFor } = require('./prospect-enrich');
 const replyExamples = require('./reply-examples');
 const {
@@ -35,6 +38,12 @@ function supabaseRequest(path, opts) {
 
 const SITE_TEXT_MAX = 12_000;
 const FETCH_TIMEOUT_MS = 8_000;
+/** OpenRouter Decisions model id. Topup's spec string is `jev:typesafe/jev-1.13|<variant>`. */
+const JEV_MODEL_ID = 'typesafe/jev-1.13';
+const JEV_MODEL_SPEC_PREFIX = 'jev:typesafe/jev-1.13|';
+const JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
+/** Same backoff as topup icp-llm jev(): first try immediate, then 3s, then 10s. */
+const JEV_RETRY_MS = Object.freeze([0, 3000, 10000]);
 
 const memoryCache = new Map();
 
@@ -43,7 +52,7 @@ function icpCeilingUsd(env = process.env) {
   return Number.isFinite(n) && n > 0 ? n : 0.02;
 }
 
-/** Worst-case Gemini 2.5 Flash on ~12k chars of site text. */
+/** Recorded so a caller can see a quote. It does not skip the Jev call. */
 function icpEstimateUsd(env = process.env) {
   const n = Number(env.REPLY_ICP_ESTIMATE_USD || 0.002);
   return Number.isFinite(n) && n > 0 ? n : 0.002;
@@ -305,55 +314,92 @@ async function fetchWebsiteText(website, { fetchImpl = fetch } = {}) {
   }
 }
 
-function buildGradePrompt(spec, domain, siteText) {
-  const lines = Object.entries(spec.criteria)
-    .map(([label, def]) => `- ${label}: ${def}`)
-    .join('\n');
-  // Faithful port of icp-llm JEV_Q[variant] + PASS. Gemini stands in for
-  // Jev because ReplyHandler has GEMINI_API_KEY, not OpenRouter.
-  return (
-    `You classify a company from its website the same way topup icp-llm does ` +
-    `(joshuaosborn561-lang/topup supabase function icp-llm).\n\n` +
-    `${spec.instructions}\n\n` +
-    `Pick exactly one category token:\n${lines}\n\n` +
-    `Qualified (fit=yes) only when the category is ${spec.pass}. Otherwise fit=no. ` +
-    `If the website text is too thin to tell, pick the "other" / too-thin label and fit=no.\n\n` +
-    `Domain: ${domain}\nWebsite text:\n${siteText}\n\n` +
-    `Return JSON: {"category":"<token>","confidence":0 to 1,"reason":"under 20 words"}`
-  );
+/** Topup spec id. The Decisions body uses JEV_MODEL_ID; the variant selects the question. */
+function jevModelSpec(variant) {
+  return `${JEV_MODEL_SPEC_PREFIX}${variant}`;
 }
 
-async function gradeWithGemini(spec, domain, siteText) {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY not configured');
-  }
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: process.env.REPLY_ICP_MODEL || geminiModel(),
-    generationConfig: {
-      temperature: 0,
-      maxOutputTokens: 256,
-      responseMimeType: 'application/json',
-      thinkingConfig: { thinkingBudget: 0 },
-    },
-  });
-  const result = await model.generateContent(buildGradePrompt(spec, domain, siteText));
-  const text = result?.response?.text?.() || '{}';
-  let parsed;
-  try { parsed = JSON.parse(text); } catch { parsed = {}; }
-  const category = String(parsed.category || '').trim();
-  const allowed = spec.criteria[category] ? category : null;
-  const fit = allowed && allowed === spec.pass ? 'yes' : 'no';
-  const conf = Number(parsed.confidence);
-  const pPass = fit === 'yes'
-    ? (Number.isFinite(conf) ? conf : 0.8)
-    : (Number.isFinite(conf) ? Math.max(0, 1 - conf) : 0.2);
+/** JEV_Q[variant] for a category choice, built from the stored spec. */
+function jevQuestions(spec) {
   return {
-    fit,
-    prob: pPass,
-    reason: String(parsed.reason || allowed || '').slice(0, 300),
-    answers: { category: { choice: allowed || category || null } },
+    category: {
+      type: 'choice',
+      instructions: spec.instructions,
+      criteria: spec.criteria,
+    },
   };
+}
+
+function jevRetryWaits(env = process.env) {
+  const raw = String(env.REPLY_ICP_JEV_RETRY_MS || '').trim();
+  if (!raw) return JEV_RETRY_MS;
+  const waits = raw.split(',').map((n) => Number(n));
+  return waits.every((n) => Number.isFinite(n) && n >= 0) ? waits : JEV_RETRY_MS;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * topup icp-llm `jev()`. fit=yes only when answers.category.choice === PASS.
+ * Throws when the key is missing or the call fails after the retries.
+ */
+async function gradeWithJev(spec, domain, siteText, {
+  fetchImpl = fetch,
+  env = process.env,
+  variant = null,
+  sleepFn = sleep,
+} = {}) {
+  const key = String(env.OPENROUTER_API_KEY || '').trim();
+  if (!key) {
+    const err = new Error('OPENROUTER_API_KEY not configured');
+    err.code = 'jev_key_missing';
+    throw err;
+  }
+  const body = {
+    model: JEV_MODEL_ID,
+    state: { domain, website_text: siteText },
+    questions: jevQuestions(spec),
+  };
+  let lastErr = null;
+  const waits = jevRetryWaits(env);
+  for (let i = 0; i < waits.length; i += 1) {
+    if (waits[i]) await sleepFn(waits[i]);
+    let res;
+    try {
+      res = await fetchImpl(JEV_DECISIONS_URL, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${key}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      lastErr = err;
+      continue;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (res.status === 429 || res.status >= 500) {
+      lastErr = new Error(`jev ${res.status}`);
+      continue;
+    }
+    if (!res.ok) throw new Error(`jev ${res.status}`);
+    const answers = json.answers || {};
+    const pass = spec.pass;
+    const p = Number(answers.category?.probabilities?.[pass] ?? 0);
+    const fit = answers.category?.choice === pass ? 'yes' : 'no';
+    return {
+      fit,
+      prob: Number.isFinite(p) ? p : 0,
+      reason: answers.category?.choice ?? null,
+      answers,
+      cost: json.usage?.cost ?? null,
+      model: jevModelSpec(variant),
+    };
+  }
+  throw lastErr || new Error('jev retries exhausted');
 }
 
 /** A cached verdict graded against a different pass label is stale (ICP changed). */
@@ -469,7 +515,7 @@ async function resolveClientTagFromDb(db, { clientId, clientName }) {
 
 /**
  * Resolve an ICP verdict for a Slack card. Never throws.
- * `grade: false` is cache-only (no fetch / no Gemini) for the first post.
+ * `grade: false` is cache-only (no fetch, no Jev) for the first post.
  */
 async function resolveReplyIcp({
   website,
@@ -491,11 +537,9 @@ async function resolveReplyIcp({
   }
 
   const cached = await readLocalCache(db, clientTag, domain, variant.spec.pass);
-  // Qualified / disqualified hits are final. A failed or thin fetch is cached
-  // too (same client + domain) so the next card does not fetch again.
-  if (cached && (cached.status !== 'unknown' || cached.reason === 'unreachable' || cached.reason === 'unreadable')) {
-    return cached;
-  }
+  // Only a real fit / not-a-fit is final. Failures are not cached, so a
+  // later card retries the website and Jev.
+  if (cached && cached.status !== 'unknown') return cached;
 
   const topup = await readTopupLlm(domain, variant.jev_variant, { strict: Boolean(variant.spec.strictCache) });
   if (topup) {
@@ -510,13 +554,7 @@ async function resolveReplyIcp({
   }
 
   if (!grade) {
-    return cached || checkingVerdict();
-  }
-
-  const estimate = icpEstimateUsd();
-  const ceiling = icpCeilingUsd();
-  if (estimate > ceiling) {
-    return unknownVerdict('ceiling', { domain, clientTag, source: 'ceiling' });
+    return (cached && cached.status !== 'unknown') ? cached : checkingVerdict();
   }
 
   let siteText = await readTopupSiteText(domain);
@@ -528,24 +566,33 @@ async function resolveReplyIcp({
   if (!siteText || siteText.length < 80) {
     const reason = fetched?.unreachable && !siteText ? 'unreachable' : 'unreadable';
     const unread = unknownVerdict(reason, { domain, clientTag, source: 'fetch' });
-    await writeLocalCache(db, unread);
     await persistPendingIcp(db, replyId, unread);
     return unread;
   }
 
   try {
-    const grader = gradeFn || gradeWithGemini;
+    const grader = gradeFn || ((s, d, t) => gradeWithJev(s, d, t, {
+      fetchImpl,
+      variant: variant.jev_variant,
+    }));
     const graded = await grader(variant.spec, domain, siteText);
     const verdict = fromLlmRow(graded, variant.spec, {
-      domain, clientTag, source: 'gemini_icp_llm_port',
+      domain, clientTag, source: 'openrouter_jev',
     });
-    verdict.costUsd = estimate;
+    if (verdict.status === 'unknown') {
+      const failed = unknownVerdict('check failed', { domain, clientTag, source: 'openrouter_jev' });
+      await persistPendingIcp(db, replyId, failed);
+      return failed;
+    }
+    verdict.costUsd = Number(graded.cost) || 0;
     await writeLocalCache(db, verdict);
     await persistPendingIcp(db, replyId, verdict);
     return verdict;
   } catch (err) {
-    console.warn('[Icp] grade failed', { err: err.message });
-    return unknownVerdict('grade failed', { domain, clientTag, source: 'gemini' });
+    console.warn('[Icp] Jev check failed', { err: err.message });
+    const failed = unknownVerdict('check failed', { domain, clientTag, source: 'openrouter_jev' });
+    await persistPendingIcp(db, replyId, failed);
+    return failed;
   }
 }
 
@@ -592,7 +639,11 @@ module.exports = {
   parseStoredIcp,
   persistPendingIcp,
   clearIcpMemoryCache,
-  buildGradePrompt,
+  jevQuestions,
+  jevModelSpec,
+  gradeWithJev,
+  JEV_MODEL_ID,
+  JEV_DECISIONS_URL,
   loadVariant,
   FORBIDDEN_WRITE_COLUMNS: Object.freeze(['dl_status', 'sg_exclude', 'skip_*']),
 };

@@ -1268,9 +1268,22 @@ test('the interested card has no client header, a Jev fit line, and a mobile lab
   assert.match(icpVerdictLine({ status: 'unknown', reason: 'unreachable' }), /ICP: site unreachable/,
     reversal('the interested card drops the client header and shows the Jev fit line',
       'an unreachable site is no longer called out'));
-  assert.match(read('src/services/reply-icp.js'), /unreachable/,
-    reversal('the interested card drops the client header and shows the Jev fit line',
-      'the website check no longer records an unreachable fetch'));
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'check failed' }), /ICP: check failed/,
+    reversal('the reply ICP check calls Jev and shows check failed when Jev does not',
+      'a failed Jev check no longer says ICP: check failed'));
+  const icpSrc = read('src/services/reply-icp.js');
+  assert.match(icpSrc, /https:\/\/openrouter\.ai\/api\/alpha\/decisions/,
+    reversal('the reply ICP check calls Jev and shows check failed when Jev does not',
+      'the check no longer calls the OpenRouter Decisions API'));
+  assert.match(icpSrc, /jev:typesafe\/jev-1\.13\|/,
+    reversal('the reply ICP check calls Jev and shows check failed when Jev does not',
+      'the Jev model spec is no longer jev:typesafe/jev-1.13|<variant>'));
+  assert.match(icpSrc, /OPENROUTER_API_KEY/,
+    reversal('the reply ICP check calls Jev and shows check failed when Jev does not',
+      'the check no longer reads OPENROUTER_API_KEY'));
+  assert.doesNotMatch(icpSrc, /GoogleGenerativeAI|gradeWithGemini|GEMINI_API_KEY|generative-ai/,
+    reversal('the reply ICP check calls Jev and shows check failed when Jev does not',
+      'the reply ICP check still has a Gemini grader'));
 });
 
 // ── Decision: phone waterfall is email-waterfall (LeadMagic dropped 2026-10-08)

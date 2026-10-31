@@ -153,6 +153,7 @@ function icpVerdictLine(leadIcpVerdict) {
   if (!v || !v.status || v.status === 'unknown') {
     if (/^no ICP$/i.test(reason)) return `\n🎯 ICP: not on file${dmLine}`;
     if (/^unreachable$/i.test(reason)) return `\n🎯 ICP: site unreachable${dmLine}`;
+    if (/^check failed$/i.test(reason)) return `\n🎯 ICP: check failed${dmLine}`;
     const why = reason || 'unknown';
     return `\n🎯 ICP: ${escMrkdwn(why.slice(0, 180))}${dmLine}`;
   }
