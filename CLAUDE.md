@@ -313,7 +313,7 @@ manual choice. Both copy `notify_emails` via SmartLead payload field `cc`
 (comma-separated string). A plain Approve does not CC the client and does
 not email them on the send; they get the weekday roll-up (instant mode is
 the per-send Gmail override, still to `notify_emails`). `cc_emails` /
-`cc_email` stay the portal Always-notify list. Slack **❌ Reject** still marks the lead Not Interested. The card shows **WILL SEND** (full
+`cc_email` stay the portal Always-notify list. Slack **❌ Reject** only closes the card (`rejected`, or `skipped` on a FOLLOW_UP). It does not call `markLeadNotInterested` and does not change the lead's Smartlead or HeyReach category or status. Inbox reject still cancels pending follow-ups. The card shows **WILL SEND** (full
 text) then buttons, a permalink to the original card, the full thread, and
 a **Meeting booked** button that cancels the cadence.
 Before posting it asks `booking-check.js` whether the prospect already booked —

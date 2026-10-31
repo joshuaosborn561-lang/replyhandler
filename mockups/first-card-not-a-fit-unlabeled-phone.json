@@ -1,0 +1,142 @@
+{
+  "text": "New smartlead reply from Pat Prospect — INTERESTED: Hey Pat, Tuesday or Thursday works.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "📣 Intro owners (4242)"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Pat Prospect · Owner · Example Co"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "☎️ +15555550199  ·  ✉️ pat@example.com  ·  🔗 <https://www.linkedin.com/in/pat-prospect|LinkedIn>  ·  🌐 <https://example.com|example.com>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🎯 Not a fit — website says consumer retail; client only works with commercial contractors\n👤 Decision maker: Yes, owner/executive (Owner)"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🗣 *You said*\n>Worth a quick look at the offer?"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "📥 *They replied*\n>Yes, send times."
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "✍️ *Suggested reply*\n>Hey Pat, Tuesday or Thursday works."
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "*SMARTLEAD · INTERESTED*"
+        }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "📬 Prospect reply has no CC — the client gets the 4:00 PM CT roll-up (use \"Send + CC client\" to copy them on this reply)\n*Client notifications:* ops@northwind.example"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "✅ Approve & Send"
+          },
+          "style": "primary",
+          "action_id": "approve_reply",
+          "value": "11111111-0000-4000-8000-000000000010"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "✏️ Edit & send"
+          },
+          "action_id": "open_edit_modal",
+          "value": "11111111-0000-4000-8000-000000000010"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "❌ Reject"
+          },
+          "style": "danger",
+          "action_id": "reject_reply",
+          "value": "11111111-0000-4000-8000-000000000010"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "🚫 DQ"
+          },
+          "action_id": "dq_prospect",
+          "value": "11111111-0000-4000-8000-000000000010"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "📅 Meeting booked"
+          },
+          "action_id": "meeting_booked",
+          "value": "11111111-0000-4000-8000-000000000010"
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "📬 Approve & Send + CC client"
+          },
+          "style": "primary",
+          "action_id": "approve_reply_cc_client",
+          "value": "11111111-0000-4000-8000-000000000010"
+        }
+      ]
+    }
+  ]
+}

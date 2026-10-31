@@ -1668,3 +1668,65 @@ Josh: clients get exactly three automatic updates — (1) the weekday EOD roll-u
 - **Portal updates never re-invite.** First-time provisioning may invite when Always-notify has an address and `PORTAL_SKIP_INVITE` is not true. Admin PATCH and sync-all call `provisionClientToPortal` with `invite: false`, so `skip_invite` is true. Adding an email later updates the portal record and does not email another invite.
 
 Guards: `test/client-notify-emails.test.js`, `test/portal-provision.test.js` (`an update never re-sends a portal invite`).
+
+## Reject only closes the card (2026-10-31)
+
+Reverses "Reject also marks Not Interested in SmartLead" (2026-10-01) for every card, on both Smartlead and HeyReach.
+
+- **❌ Reject** sets that `pending_replies` row to `rejected` and rewrites the Slack card. It does not send a reply.
+- It must not call `markLeadNotInterested`, `updateLeadCategory`, or any Smartlead category endpoint, and it must not change a HeyReach lead category or status. Campaign status is untouched.
+- The local classification stays whatever it was. Reject does not write `NOT_INTERESTED`.
+- Inbox reject still cancels pending follow-up nudges for that thread.
+- A FOLLOW_UP card is unchanged from 2026-10-21: Reject sets that step to `skipped`, does not cancel later steps, and does not touch the lead category.
+
+Guard: `Reject closes the card and does not change the lead category`. Runtime proof: `test/card-safety.test.js` (`Reject makes no Smartlead or HeyReach category or status call`).
+
+## SalesGlider ICP is any high-ticket B2B business (2026-10-31)
+
+Replaces the 2026-10-28 line that limited SalesGlider to a B2B service business with roughly $36K customer lifetime value. The pass is still `b2b_service_business` on the `b2b_service` variant. The instructions, that pass criterion, `low_value_or_solo`, and `DEFAULT_CLIENT_VARIANTS.salesglider.note` now say any high-ticket B2B business. There is no dollar LTV cutoff in those texts.
+
+Guard: `SalesGlider grades against any high-ticket B2B business, not only trade contractors`.
+
+## Fireflies ICP calls also match attendee domain and onboarding titles (2026-10-31)
+
+A client's ICP is still built only from facts in their Fireflies transcripts, and a miss is still `needs_review`. Search now also keeps a call when:
+
+- a participant, attendee, host, or organizer email uses the domain of the client's contact, CC, or booking address (own mailboxes such as salesglidergrowth.com stay skipped), or
+- the title contains Onboarding or Discovery together with a contact's first name (from a person email, not a role mailbox).
+
+The weekday auto-build also scans the last 90 days of transcripts for those same matches. Invented cities and other unsupported phrases are still dropped.
+
+Guard: `a call matches on attendee domain or Onboarding/Discovery plus a first name` in `test/client-icp-profile.test.js`. The 90-day window is `automatic build searches Fireflies across a 90 day window` in `test/icp-auto-build.test.js`.
+
+## A hand-entered ICP can be saved on the client (2026-10-31)
+
+`POST /admin/clients/:clientId/icp-profile` sets `icp_profile`, `icp_status`, `icp_source`, and `icp_transcript_count`. Same open admin surface as the other client routes — no API key. The profile may only contain industries, titles, company_size, geos, offer, and exclusions, each a string or a list of strings. Status is `ready`, `needs_review`, or `skipped_existing` (default `ready` when the profile has facts). The response is those ICP columns only, never the client row (that row carries API keys). This write does not re-provision the portal.
+
+Guard: `a hand-entered ICP accepts the six fields and rejects a bad shape` and `saveManualIcpProfile writes the ICP columns and does not return the client row` in `test/client-icp-profile.test.js`.
+
+## Interested reply card: full context first, then just the latest exchange (2026-10-31)
+
+Josh: "I need to see the client name, his campaign, his contact info, the ICP and DM, and what we said and what he said and then the card to decide. Then if we get into back and forth, just our last, his last, drafted reply and button, and click in to see whole thread."
+
+- The **first** reply card, top to bottom: client name, campaign, the lead (name once), phone with its mobile label, email, LinkedIn, and the company website, then the ICP and decision-maker scores, what we said, what they said, the draft, then the buttons. Contact details are not repeated in a footer.
+- A **later reply in the same thread** (more than one real message from them, or a message from us after they already replied) shows only our last message, their last message, the draft, the same buttons, and **View full thread**. That button opens a modal with the whole thread plus the client, campaign, contact, and scores. The cold email plus their first reply is still the first card.
+- Approve, Approve & Send + CC client, Edit, Reject (close only), DQ, and Meeting booked stay separate buttons. `action_id` and `value` stay the reply id, so a card already posted with the old layout still works. Follow-up cards are unchanged.
+
+Guard: `test/reply-card-layout.test.js`.
+
+## Interested card review: no client header, Jev fit line, mobile only when confirmed (2026-10-31)
+
+Josh reviewed the PR #189 mockups.
+
+- Drop the bold client-name header. Each client already has its own Slack channel, so the name at the top was noise. Campaign, lead, contact, ICP, what we said, what they said, the draft, and the buttons stay. Follow-up cards still use their own one-line header.
+- The ICP line is the Jev website check, not a percentage. ReplyHandler already ports topup `icp-llm` (`supabase/functions/icp-llm/index.ts`, `JEV_Q` / `PASS`, skill `skills/icp-website-gate`): read a cached `client_salesglider.icp_llm_results` row for this variant, otherwise fetch the company site (homepage, or cached `icp_site_text`) and grade it with the same category prompt against `clients.icp_profile` or the client's variant. Gemini stands in for Jev because this service has no OpenRouter key. The card shows `Fit — {reason}` or `Not a fit — {reason}`. No ICP on file stays `ICP: not on file`. A fetch that fails or times out says `ICP: site unreachable`. A page that loads but is too thin stays unreadable. The decision-maker line stays under that. Confidence is still stored and is not shown.
+- The check is cached on `client_tag` + domain (`reply_icp_verdicts`), including an unreachable or unreadable fetch, so the next card for that client and domain does not fetch again. A different client's ICP is a different cache row. A stored `icp_profile` does not reuse a Jev row graded for another variant.
+- Phone: `_(mobile)_` only when the line type is confirmed mobile (`phoneLabel` or `phoneType` is `mobile`). A source number, a landline, VoIP, or anything unverified is shown with no label. The number itself still shows.
+
+Guard: `the interested card has no client header, a Jev fit line, and a mobile label only when confirmed` in `test/owner-intent.test.js`. Website-check cases: `an unreachable website is said so, not graded, and retried later` and `a stored ICP is judged from the website, not another client's Jev row` in `test/reply-icp.test.js`. Phone: `a phone is labeled mobile only when the line type is confirmed mobile` in `test/reply-card-layout.test.js`.
+
+## Reply ICP check calls Jev, not Gemini (2026-10-31)
+
+Josh: no Gemini. The reply ICP check does not grade with Gemini and has no Gemini fallback. When there is no cached topup Jev row, the card calls Jev the same way topup `icp-llm` `jev()` does: `POST https://openrouter.ai/api/alpha/decisions` with `OPENROUTER_API_KEY`, model `typesafe/jev-1.13`, and the variant's category question. That is the OpenRouter call behind the spec `jev:typesafe/jev-1.13|<variant>`. Reusing an existing `client_salesglider.icp_llm_results` Jev row is still the step before a new call. A missing key or a failed Jev call shows `ICP: check failed` and is not written to `reply_icp_verdicts`, so a later card retries. An unreachable site still says `ICP: site unreachable` and is also not cached.
+
+Guard: `a missing Jev key or a failed call shows ICP: check failed and is not cached` and `a miss calls Jev on OpenRouter and does not call another grader` in `test/reply-icp.test.js`. The owner-intent guard `the interested card has no client header, a Jev fit line, and a mobile label only when confirmed` also rejects a Gemini grader in `reply-icp.js`.

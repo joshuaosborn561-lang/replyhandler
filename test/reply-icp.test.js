@@ -16,7 +16,10 @@ const {
   icpVerdictEquals,
   parseStoredIcp,
   clearIcpMemoryCache,
-  buildGradePrompt,
+  jevQuestions,
+  jevModelSpec,
+  JEV_MODEL_ID,
+  JEV_DECISIONS_URL,
   FORBIDDEN_WRITE_COLUMNS,
 } = require('../src/services/reply-icp');
 const { variantSpec, PASS, DEFAULT_CLIENT_VARIANTS } = require('../src/services/reply-icp-variants');
@@ -61,23 +64,24 @@ test('Jev P(PASS) becomes the displayed confidence', () => {
   assert.match(row.reason, /private equity firm/);
 });
 
-test('card line formats qualified, disqualified, and unknown', () => {
-  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no website' }), /ICP: unknown \(no website\)/);
+test('card line is a fit verdict and one reason, never a percentage', () => {
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'no website' }), /ICP: no website/);
   assert.match(icpVerdictLine({ status: 'unknown', reason: 'no ICP' }), /ICP: not on file/);
-  assert.match(
-    icpVerdictLine({
-      status: 'disqualified',
-      confidence: 80,
-      reason: 'website says VC firm; client only works with PE',
-    }),
-    /🎯 80% disqualified: website says VC firm; client only works with PE/,
-  );
+  assert.match(icpVerdictLine({ status: 'unknown', reason: 'unreachable' }), /ICP: site unreachable/);
+  const dq = icpVerdictLine({
+    status: 'disqualified',
+    confidence: 80,
+    reason: 'website says VC firm; client only works with PE',
+  });
+  assert.match(dq, /🎯 Not a fit — website says VC firm; client only works with PE/);
+  assert.doesNotMatch(dq, /80%|disqualified/);
   const lead = leadFieldText({
     leadName: 'Pat',
     leadWebsite: 'https://acme.com',
     leadIcpVerdict: { status: 'qualified', confidence: 72, reason: 'buyer with own facility' },
   });
-  assert.match(lead, /72% qualified/);
+  assert.match(lead, /Fit — buyer with own facility/);
+  assert.doesNotMatch(lead, /72%/);
   assert.match(lead, /<https:\/\/acme\.com\|/);
 });
 
@@ -97,7 +101,7 @@ test('no website or no ICP is unknown without grading', async () => {
   assert.equal(noIcp.reason, 'no ICP');
 });
 
-test('shared topup llm row is used before Gemini', async () => {
+test('shared topup Jev row is used before a new OpenRouter call', async () => {
   clearIcpMemoryCache();
   const reads = [];
   const orig = process.env.SUPABASE_URL;
@@ -217,13 +221,14 @@ test('local domain+client cache skips a second grade', async () => {
   }
 });
 
-test('estimate-first ceiling refuses a grade over $0.02', async () => {
+test('a cost quote does not skip the Jev call', async () => {
   assert.equal(icpCeilingUsd({}), 0.02);
   assert.ok(icpEstimateUsd({}) <= icpCeilingUsd({}));
 
   const prev = process.env.REPLY_ICP_ESTIMATE_USD;
   process.env.REPLY_ICP_ESTIMATE_USD = '0.05';
   clearIcpMemoryCache();
+  let called = 0;
   try {
     assert.ok(icpEstimateUsd() > icpCeilingUsd());
     const v = await resolveReplyIcp({
@@ -231,23 +236,32 @@ test('estimate-first ceiling refuses a grade over $0.02', async () => {
       clientName: 'SalesGlider',
       grade: true,
       fetchImpl: async () => ({ ok: true, text: async () => 'x'.repeat(400) }),
-      gradeFn: async () => { throw new Error('over ceiling'); },
+      gradeFn: async () => {
+        called += 1;
+        return { fit: 'yes', prob: 0.9, answers: { category: { choice: 'b2b_service_business' } } };
+      },
     });
-    assert.equal(v.status, 'unknown');
-    assert.equal(v.reason, 'ceiling');
+    assert.equal(called, 1);
+    assert.equal(v.status, 'qualified');
+    assert.notEqual(v.reason, 'ceiling');
   } finally {
     if (prev == null) delete process.env.REPLY_ICP_ESTIMATE_USD;
     else process.env.REPLY_ICP_ESTIMATE_USD = prev;
   }
 });
 
-test('grade prompt is the ported icp-llm category question', () => {
+test('Jev question is the icp-llm category choice for the variant', () => {
   const spec = variantSpec('bcp');
-  const prompt = buildGradePrompt(spec, 'vc.example', 'We are a seed-stage venture fund.');
-  assert.match(prompt, /joshuaosborn561-lang\/topup/);
-  assert.match(prompt, /private_equity_firm/);
-  assert.match(prompt, /venture_capital_firm/);
-  assert.match(prompt, /Qualified \(fit=yes\) only when the category is private_equity_firm/);
+  const q = jevQuestions(spec);
+  assert.equal(q.category.type, 'choice');
+  assert.match(q.category.instructions, /private equity/i);
+  assert.match(q.category.criteria.private_equity_firm, /Buyout/);
+  assert.match(q.category.criteria.venture_capital_firm, /Venture/);
+  assert.equal(jevModelSpec('bcp'), 'jev:typesafe/jev-1.13|bcp');
+  assert.equal(JEV_MODEL_ID, 'typesafe/jev-1.13');
+  assert.equal(JEV_DECISIONS_URL, 'https://openrouter.ai/api/alpha/decisions');
+  const src = read('src/services/reply-icp.js');
+  assert.doesNotMatch(src, /GoogleGenerativeAI|gradeWithGemini|GEMINI_API_KEY|generative-ai|buildGradePrompt/);
 });
 
 test('completeCardLinks chat.updates when the ICP verdict arrives late', async () => {
@@ -314,15 +328,19 @@ test('icp helpers never write forbidden suppression columns', () => {
   assert.equal(parseStoredIcp({ status: 'qualified', confidence: 1 }).status, 'qualified');
 });
 
-test('SalesGlider grades against any B2B service business, not only trade contractors', async () => {
+test('SalesGlider grades against any high-ticket B2B business, not only trade contractors', async () => {
   clearIcpMemoryCache();
   const { DEFAULT_CLIENT_VARIANTS: V, PASS: P } = require('../src/services/reply-icp-variants');
   assert.equal(V.salesglider.jev_variant, 'b2b_service');
   assert.equal(P.b2b_service, 'b2b_service_business');
   const spec = variantSpec('b2b_service');
   assert.ok(spec.criteria.b2b_service_business, 'pass label has a criterion');
+  assert.match(spec.instructions, /any high-ticket B2B business/i);
+  assert.match(spec.criteria.b2b_service_business, /any high-ticket B2B business/i);
   assert.match(spec.criteria.b2b_service_business, /staffing/i);
-  assert.match(spec.criteria.b2b_service_business, /\$36,000/);
+  assert.match(spec.criteria.low_value_or_solo, /not a high-ticket B2B business/i);
+  assert.match(V.salesglider.note, /any high-ticket B2B business/i);
+  assert.doesNotMatch(`${spec.instructions}\n${spec.criteria.b2b_service_business}\n${spec.criteria.low_value_or_solo}\n${V.salesglider.note}`, /\$36|36K/i);
 
   const orig = process.env.SUPABASE_URL;
   const origKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -358,7 +376,7 @@ test('SalesGlider grades against any B2B service business, not only trade contra
     });
     assert.equal(graded.pass, 'b2b_service_business', 'local variant beats the topup `choice` row');
     assert.equal(v.status, 'qualified');
-    assert.equal(v.source, 'gemini_icp_llm_port', 'stale choice/other-client cache rows are ignored');
+    assert.equal(v.source, 'openrouter_jev', 'stale choice/other-client cache rows are ignored');
   } finally {
     examples.supabaseRequest = real;
     if (orig == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = orig;
@@ -390,6 +408,372 @@ test('a cached verdict graded against an older pass label is ignored', async () 
     assert.notEqual(v.status, 'disqualified', 'old DQ is not served');
   } finally {
     if (prevUrl != null) process.env.SUPABASE_URL = prevUrl;
+    clearIcpMemoryCache();
+  }
+});
+
+function cacheDb(nameById = 'Bolder Cyber Partners') {
+  const rows = new Map();
+  return {
+    rows,
+    db: {
+      query: async (sql, params) => {
+        if (/FROM clients/.test(sql) && /icp_profile/.test(sql)) return { rows: [] };
+        if (/FROM reply_icp_verdicts/.test(sql)) {
+          const hit = rows.get(`${params[0]}::${params[1]}`);
+          return { rows: hit ? [hit] : [] };
+        }
+        if (/INSERT INTO reply_icp_verdicts/.test(sql)) {
+          rows.set(`${params[0]}::${params[1]}`, {
+            verdict: params[2],
+            confidence: params[3],
+            reason: params[4],
+            label: params[5],
+            pass_label: params[6],
+            source: params[7],
+            cost_usd: params[8],
+          });
+          return { rows: [] };
+        }
+        if (/UPDATE pending_replies/.test(sql)) return { rows: [] };
+        if (/SELECT name FROM clients/.test(sql)) return { rows: [{ name: nameById }] };
+        return { rows: [] };
+      },
+    },
+  };
+}
+
+test('an unreachable website is said so, not graded, and retried later', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const { db, rows } = cacheDb();
+  let fetches = 0;
+  let grades = 0;
+  const fetchImpl = async () => {
+    fetches += 1;
+    return { ok: false, status: 503, text: async () => '' };
+  };
+  try {
+    const first = await resolveReplyIcp({
+      website: 'https://down.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl,
+      gradeFn: async () => { grades += 1; throw new Error('unreachable must not grade'); },
+    });
+    assert.equal(first.status, 'unknown');
+    assert.equal(first.reason, 'unreachable');
+    assert.equal(grades, 0);
+    assert.match(icpVerdictLine(first), /ICP: site unreachable/);
+
+    const second = await resolveReplyIcp({
+      website: 'https://down.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl,
+      gradeFn: async () => { grades += 1; throw new Error('cache must not grade'); },
+    });
+    assert.equal(second.reason, 'unreachable');
+    assert.equal(fetches, 2, 'a failed fetch is not cached, so the next card retries');
+    assert.equal(grades, 0);
+    assert.equal(rows.size, 0);
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a thin page is unreadable, not unreachable', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_URL;
+  const { db } = cacheDb();
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://thin.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl: async () => ({ ok: true, text: async () => '<html><body>Hi</body></html>' }),
+      gradeFn: async () => { throw new Error('thin page must not grade'); },
+    });
+    assert.equal(v.reason, 'unreadable');
+    assert.match(icpVerdictLine(v), /ICP: unreadable/);
+    assert.doesNotMatch(icpVerdictLine(v), /unreachable/);
+  } finally {
+    if (prevUrl != null) process.env.SUPABASE_URL = prevUrl;
+    clearIcpMemoryCache();
+  }
+});
+
+test('the same domain is graded again for a different client', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const rows = new Map();
+  const db = {
+    query: async (sql, params) => {
+      if (/FROM clients/.test(sql) && /icp_profile/.test(sql)) return { rows: [] };
+      if (/FROM reply_icp_verdicts/.test(sql)) {
+        const hit = rows.get(`${params[0]}::${params[1]}`);
+        return { rows: hit ? [hit] : [] };
+      }
+      if (/INSERT INTO reply_icp_verdicts/.test(sql)) {
+        rows.set(`${params[0]}::${params[1]}`, {
+          verdict: params[2], confidence: params[3], reason: params[4],
+          label: params[5], pass_label: params[6], source: params[7], cost_usd: params[8],
+        });
+        return { rows: [] };
+      }
+      if (/SELECT name FROM clients/.test(sql)) {
+        return { rows: [{ name: params[0] === 'sg' ? 'SalesGlider' : 'Bolder Cyber Partners' }] };
+      }
+      return { rows: [] };
+    },
+  };
+  let grades = 0;
+  const gradeFn = async () => {
+    grades += 1;
+    return { fit: 'yes', prob: 0.9, reason: 'fits', answers: { category: { choice: grades === 1 ? 'private_equity_firm' : 'b2b_service_business' } } };
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    text: async () => `<html><body>${'Established company selling to other businesses with a real contract. '.repeat(8)}</body></html>`,
+  });
+  try {
+    const bcp = await resolveReplyIcp({
+      website: 'https://shared.example',
+      clientName: 'Bolder Cyber Partners',
+      db, grade: true, fetchImpl, gradeFn,
+    });
+    const sg = await resolveReplyIcp({
+      website: 'https://shared.example',
+      clientName: 'SalesGlider',
+      db, grade: true, fetchImpl, gradeFn,
+    });
+    assert.equal(bcp.clientTag, 'bcp');
+    assert.equal(sg.clientTag, 'salesglider');
+    assert.equal(grades, 2, 'a domain cached for one client is not reused as another client\'s fit');
+    assert.ok(rows.has('bcp::shared.example') && rows.has('salesglider::shared.example'));
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a stored ICP is judged from the website, not another client\'s Jev row', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-key';
+  const examples = require('../src/services/reply-examples');
+  const real = examples.supabaseRequest;
+  examples.supabaseRequest = async (path) => {
+    if (String(path).includes('icp_llm_results')) {
+      return [{
+        fit: 'yes', prob: 0.99, reason: 'private_equity_firm',
+        model: 'jev:typesafe/jev-1.13|bcp',
+        answers: { category: { choice: 'private_equity_firm' } },
+      }];
+    }
+    if (String(path).includes('icp_site_text')) return [];
+    return [];
+  };
+  const db = {
+    query: async (sql) => {
+      if (/icp_profile/.test(sql)) {
+        return {
+          rows: [{
+            icp_status: 'ready',
+            icp_profile: {
+              industries: ['HVAC'], titles: ['Owner'], company_size: [],
+              geos: [], offer: ['maintenance plans'], exclusions: ['chains'],
+            },
+          }],
+        };
+      }
+      if (/FROM reply_icp_verdicts/.test(sql)) return { rows: [] };
+      if (/INSERT INTO reply_icp_verdicts/.test(sql)) return { rows: [] };
+      if (/SELECT name FROM clients/.test(sql)) return { rows: [{ name: 'Example Client' }] };
+      return { rows: [] };
+    },
+  };
+  let graded = null;
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://hvac.example',
+      clientName: 'Example Client',
+      clientId: '00000000-0000-4000-8000-000000000099',
+      db,
+      grade: true,
+      fetchImpl: async () => ({
+        ok: true,
+        text: async () => `<html><body>${'Commercial HVAC contractor serving building owners. '.repeat(8)}</body></html>`,
+      }),
+      gradeFn: async (spec) => {
+        graded = spec;
+        return { fit: 'yes', prob: 0.8, reason: 'hvac contractor', answers: { category: { choice: 'icp_fit' } } };
+      },
+    });
+    assert.equal(graded.pass, 'icp_fit');
+    assert.equal(graded.strictCache, true);
+    assert.equal(v.source, 'openrouter_jev');
+    assert.match(v.reason, /hvac contractor|client ICP is icp fit/);
+    assert.notEqual(v.label, 'private_equity_firm');
+  } finally {
+    examples.supabaseRequest = real;
+    if (prevUrl == null) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    clearIcpMemoryCache();
+  }
+});
+
+const LONG_SITE = `<html><body>${'Established company selling to other businesses with a real contract. '.repeat(8)}</body></html>`;
+
+function jevFetch({ answers, statuses } = {}) {
+  const calls = [];
+  let n = 0;
+  const fetchImpl = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('openrouter.ai')) {
+      calls.push({ url: u, body: JSON.parse(opts.body), authorization: opts.headers.authorization });
+      const status = statuses ? statuses[Math.min(n, statuses.length - 1)] : 200;
+      n += 1;
+      if (status !== 200) return { ok: false, status, json: async () => ({ error: 'nope' }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          answers: answers || {
+            category: {
+              choice: 'private_equity_firm',
+              probabilities: { private_equity_firm: 0.91 },
+            },
+          },
+          usage: { cost: 0.01 },
+        }),
+      };
+    }
+    return { ok: true, status: 200, text: async () => LONG_SITE };
+  };
+  return { fetchImpl, calls };
+}
+
+test('a miss calls Jev on OpenRouter and does not call another grader', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const prevOr = process.env.OPENROUTER_API_KEY;
+  const prevRetry = process.env.REPLY_ICP_JEV_RETRY_MS;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  process.env.REPLY_ICP_JEV_RETRY_MS = '0,0,0';
+  const { fetchImpl, calls } = jevFetch({ statuses: [503, 200] });
+  try {
+    const v = await resolveReplyIcp({
+      website: 'https://pe.example',
+      clientName: 'Bolder Cyber Partners',
+      grade: true,
+      fetchImpl,
+    });
+    assert.equal(v.status, 'qualified');
+    assert.equal(v.source, 'openrouter_jev');
+    assert.equal(calls.length, 2, 'a 5xx is retried, then the 200 is the verdict');
+    assert.equal(calls[0].url, JEV_DECISIONS_URL);
+    assert.equal(calls[0].authorization, 'Bearer test-openrouter-key');
+    assert.equal(calls[0].body.model, 'typesafe/jev-1.13');
+    assert.equal(calls[0].body.state.domain, 'pe.example');
+    assert.match(calls[0].body.state.website_text, /Established company/);
+    assert.equal(calls[0].body.questions.category.type, 'choice');
+    assert.equal(calls[0].body.questions.category.criteria.private_equity_firm != null, true);
+    assert.equal(jevModelSpec('bcp'), 'jev:typesafe/jev-1.13|bcp');
+    assert.doesNotMatch(JSON.stringify(calls), /generative|gemini/i);
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    if (prevOr == null) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = prevOr;
+    if (prevRetry == null) delete process.env.REPLY_ICP_JEV_RETRY_MS; else process.env.REPLY_ICP_JEV_RETRY_MS = prevRetry;
+    clearIcpMemoryCache();
+  }
+});
+
+test('a missing Jev key or a failed call shows ICP: check failed and is not cached', async () => {
+  clearIcpMemoryCache();
+  const prevUrl = process.env.SUPABASE_URL;
+  const prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const prevOr = process.env.OPENROUTER_API_KEY;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  const { db, rows } = cacheDb();
+  let openrouterCalls = 0;
+  const fetchImpl = async (url) => {
+    if (String(url).includes('openrouter.ai')) {
+      openrouterCalls += 1;
+      throw new Error('must not call Jev without a key');
+    }
+    return { ok: true, status: 200, text: async () => LONG_SITE };
+  };
+  try {
+    const missing = await resolveReplyIcp({
+      website: 'https://pe.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl,
+    });
+    assert.equal(missing.reason, 'check failed');
+    assert.match(icpVerdictLine(missing), /ICP: check failed/);
+    assert.equal(openrouterCalls, 0);
+    assert.equal(rows.size, 0);
+
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.REPLY_ICP_JEV_RETRY_MS = '0,0,0';
+    const { fetchImpl: live, calls } = jevFetch({ statuses: [400] });
+    const failed = await resolveReplyIcp({
+      website: 'https://pe.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl: live,
+    });
+    assert.equal(failed.reason, 'check failed');
+    assert.equal(calls.length, 1, 'a non-retryable Jev error is not retried');
+    assert.equal(rows.size, 0, 'the failure is not cached');
+
+    const { fetchImpl: again, calls: calls2 } = jevFetch();
+    const ok = await resolveReplyIcp({
+      website: 'https://pe.example',
+      clientName: 'Bolder Cyber Partners',
+      db,
+      grade: true,
+      fetchImpl: again,
+    });
+    assert.equal(ok.status, 'qualified');
+    assert.equal(calls2.length, 1, 'the next card retries Jev');
+    assert.equal(rows.size, 1);
+  } finally {
+    if (prevUrl == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    if (prevOr == null) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = prevOr;
+    delete process.env.REPLY_ICP_JEV_RETRY_MS;
     clearIcpMemoryCache();
   }
 });

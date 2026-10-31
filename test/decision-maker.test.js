@@ -62,14 +62,15 @@ test('card shows decision maker line and overall fit reflects it', () => {
   const v = { status: 'qualified', confidence: 90, reason: 'HVAC contractor',
     decision_maker: dm.judgeDecisionMaker('Account Executive', OPS) };
   const line = icpVerdictLine(v);
-  assert.match(line, /Not a fit: company fits/);
+  assert.match(line, /Fit — HVAC contractor/);
   assert.match(line, /Decision maker: No, sales role \(Account Executive\)/);
   const yes = icpVerdictLine({ ...v, decision_maker: dm.judgeDecisionMaker('Owner', OPS) });
-  assert.match(yes, /90% qualified/);
+  assert.match(yes, /Fit — HVAC contractor/);
+  assert.doesNotMatch(yes, /90%/);
   assert.match(yes, /Decision maker: Yes/);
   const unk = icpVerdictLine({ ...v, decision_maker: dm.judgeDecisionMaker(null, OPS) });
-  assert.match(unk, /decision maker unconfirmed/);
-  assert.equal(icpVerdictLine({ status: 'qualified', confidence: 90, reason: 'x' }), '\n🎯 90% qualified: x');
+  assert.match(unk, /Decision maker: unknown/);
+  assert.equal(icpVerdictLine({ status: 'qualified', confidence: 90, reason: 'x' }), '\n🎯 Fit — x');
 });
 
 test('decision maker survives storage and changes trigger card update', () => {

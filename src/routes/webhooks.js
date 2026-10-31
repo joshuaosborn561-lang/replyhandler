@@ -496,8 +496,8 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
       campaignName: smartleadCampaignName(payload) || null,
       statsId: earlyStatsId,
       patchCard: async (row) => {
-        const { patchPostedCard, latestCard } = require('../services/slack-reply-post');
-        if (!latestCard(row.id) || !client.slack_bot_token || !client.slack_channel_id) return;
+        const { patchPostedCard, loadLatestCard } = require('../services/slack-reply-post');
+        if (!await loadLatestCard(row.id) || !client.slack_bot_token || !client.slack_channel_id) return;
         await patchPostedCard({
           token: client.slack_bot_token,
           channelId: client.slack_channel_id,

@@ -86,11 +86,11 @@ test('meeting or no-show time shows only when there is one', () => {
 
 test('ICP fit and decision maker come from the stored verdict, same wording as reply cards', () => {
   const [, verdict] = ctxUtil.followupContextBlocks(ctx());
-  assert.equal(verdict.text.text, '🎯 91% qualified: IT services firm, fits the ICP\n👤 Decision maker: Yes, owner/executive (Owner)');
+  assert.equal(verdict.text.text, '🎯 Fit — IT services firm, fits the ICP\n👤 Decision maker: Yes, owner/executive (Owner)');
   const notDm = ctxUtil.followupContextBlocks(ctx({
     icp: { status: 'qualified', confidence: 88, reason: 'fits', decision_maker: { status: 'no', title: 'Account Executive', reason: 'sales role' } },
   }))[1].text.text;
-  assert.match(notDm, /Not a fit: company fits \(88% fits\) but the person replying is not a decision maker/);
+  assert.match(notDm, /Fit — fits/);
   assert.match(notDm, /Decision maker: No, sales role \(Account Executive\)/);
   const none = ctxUtil.followupContextBlocks(ctx({ icp: null }))[1].text.text;
   assert.match(none, /🎯 ICP: not graded on the original card/);
@@ -176,7 +176,7 @@ test('call card: context is at the top, under the header, and the buttons still 
   const blocks = seq.buildCallCardBlocks(callCard(), 'step-1');
   assert.equal(blocks[0].type, 'header');
   assert.ok(blocks[1].text.text.startsWith('*Acme Co*'));
-  assert.match(blocks[2].text.text, /🎯 91% qualified/);
+  assert.match(blocks[2].text.text, /🎯 Fit —/);
   const actions = blocks.find((b) => b.type === 'actions').elements;
   assert.equal(actions.length, 5);
   const done = seq.buildCallCardBlocks(callCard(), 'step-1', { outcome: 'booked', outcomeBy: 'U1' });
@@ -230,7 +230,7 @@ test('a FOLLOW_UP card without context is unchanged', () => {
     replyId: 'r3', leadName: 'Pat', platform: 'smartlead', classification: 'FOLLOW_UP', draft: 'd', inboundMessage: 'x',
     leadIcpVerdict: ICP_OK,
   });
-  assert.match(flat(card.blocks), /91% qualified/);
+  assert.match(flat(card.blocks), /Fit — IT services firm, fits the ICP/);
 });
 
 // ─── loading the stored facts ────────────────────────────────────────────────

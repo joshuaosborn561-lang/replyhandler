@@ -1,0 +1,74 @@
+{
+  "type": "modal",
+  "callback_id": "card_thread_modal",
+  "private_metadata": "{\"replyId\":\"11111111-0000-4000-8000-000000000010\"}",
+  "title": {
+    "type": "plain_text",
+    "text": "Full thread"
+  },
+  "close": {
+    "type": "plain_text",
+    "text": "Close"
+  },
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Northwind*\nIntro owners (4242)"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Pat Prospect · Owner · Example Co"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "📱 +15555550123 _(mobile)_  ·  ✉️ pat@example.com  ·  🔗 <https://www.linkedin.com/in/pat-prospect|LinkedIn>  ·  🌐 <https://example.com|example.com>"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🎯 Fit — website says commercial contractor; client ICP is commercial contractor\n👤 Decision maker: Yes, owner/executive (Owner)"
+      }
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🗣 *You said*\n>Worth a quick look at the offer?"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "📥 *They replied*\n>Yes, send times."
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🗣 *You said*\n>Our last note."
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "📥 *They replied*\n>His last note."
+      }
+    }
+  ]
+}

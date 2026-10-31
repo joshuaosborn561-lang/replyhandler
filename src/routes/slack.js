@@ -130,6 +130,7 @@ function sentCardPayload(reply, ctx, { sentReply, actionKind, userId, extraFoote
     ccUsed,
     needsClient: followMeta.needsClient,
     whatToSend: followMeta.whatToSend,
+    replyId: reply.id,
   };
 }
 
@@ -212,14 +213,20 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 
     console.log('[Slack] Action received', { actionId: action.action_id, value: action.value });
 
-    // A button on a reply someone else (or the booking bridge) already closed: say so, privately.
-    // Approve still falls through so its handler can relabel the stale card.
-    if (await noticeIfClosed(action, interaction)
-      && !String(action.action_id).startsWith('approve_reply')) {
+    // The full thread stays readable after the card is closed.
+    if (action.action_id === 'view_thread') {
+      await handleViewThread(action.value, interaction);
       return;
     }
 
-    if (action.action_id === 'approve_reply') {
+    // A button on a reply someone else (or the booking bridge) already closed: say so, privately.
+    if (await noticeIfClosed(action, interaction)) return;
+
+    if (action.action_id === 'reply_on_linkedin') {
+      return;
+    }
+
+    if (action.action_id === 'approve_reply' || action.action_id === 'retry_send') {
       await handleApprove(action.value, interaction);
     } else if (action.action_id === 'approve_reply_cc_client') {
       await handleApprove(action.value, interaction, { ccClientOnProspect: true });
@@ -256,6 +263,56 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 
 const CLICK_NOT_OPEN = 'This reply is no longer open, so nothing was done.';
 
+async function handleViewThread(replyId, interaction) {
+  const id = String(replyId || '').trim();
+  if (!id) {
+    await sendEphemeralNotice(interaction, 'That thread could not be opened.');
+    return;
+  }
+  const { rows: [reply] } = await db.query(
+    `SELECT pr.*, c.name AS client_name, c.slack_bot_token
+       FROM pending_replies pr
+       JOIN clients c ON c.id = pr.client_id
+      WHERE pr.id = $1`,
+    [id]
+  );
+  if (!reply) {
+    await sendEphemeralNotice(interaction, 'That reply is not on file, so the thread could not be opened.');
+    return;
+  }
+  if (!reply.slack_bot_token || !interaction?.trigger_id) {
+    await sendEphemeralNotice(interaction, 'The full thread could not be opened from this click.');
+    return;
+  }
+  const threadMessages = extractThreadMessages(reply.platform, reply.thread_context, { maxMessages: 40 });
+  const lastOutbound = reply.platform === 'smartlead'
+    ? lastOutboundBodyFromSmartleadHistory(reply.thread_context)
+    : '';
+  try {
+    await slackService.openThreadModal(reply.slack_bot_token, interaction.trigger_id, {
+      replyId: reply.id,
+      clientName: reply.client_name,
+      campaignDisplay: formatCampaignDisplay(reply.campaign_name, reply.campaign_id),
+      leadName: reply.lead_full_name || reply.lead_name,
+      leadTitle: reply.lead_title,
+      leadCompany: reply.lead_company,
+      leadEmail: reply.lead_email,
+      leadPhone: reply.lead_phone,
+      leadPhoneAlt: reply.lead_phone_alt,
+      phoneEnrichmentStatus: reply.phone_enrichment_status,
+      leadLinkedinUrl: reply.linkedin_url,
+      leadWebsite: reply.lead_website,
+      leadIcpVerdict: reply.icp_verdict,
+      threadMessages,
+      lastOutboundMessage: lastOutbound,
+      inboundMessage: reply.inbound_message,
+    });
+  } catch (err) {
+    console.warn('[Slack] view_thread failed', { err: err.message });
+    await sendEphemeralNotice(interaction, 'The full thread could not be opened. Nothing was sent.');
+  }
+}
+
 async function handleOpenEditModal(replyId, interaction) {
   const { rows: [reply] } = await db.query(
     'SELECT * FROM pending_replies WHERE id = $1 AND status IN ($2, $3)',
@@ -276,11 +333,12 @@ async function handleOpenEditModal(replyId, interaction) {
     }))).join(', ')
     : '';
   const sendingInboxes = reply.platform === 'smartlead' ? ourIdentitiesFromThread(reply.thread_context) : [];
+  const target = cardTarget(reply, client);
   await slackService.openEditReplyModal(client.slack_bot_token, interaction.trigger_id, {
     replyId,
     initialDraft: reply.draft_reply || '',
-    channelId: interaction.channel?.id,
-    messageTs: interaction.message?.ts,
+    channelId: target?.channelId,
+    messageTs: target?.ts,
     ccEmail: reply.platform === 'smartlead' ? (client.notify_emails || null) : null,
     ccEmails: reply.platform === 'smartlead' ? (client.notify_emails || null) : null,
     ccRoundRobinEmails: reply.platform === 'smartlead' ? client.cc_round_robin_emails : null,
@@ -323,8 +381,6 @@ async function handleEditModalSubmit(interaction) {
     meta = {};
   }
   const replyId = meta.replyId;
-  const channelId = meta.channelId;
-  const messageTs = meta.messageTs;
   if (!replyId) return;
 
   const draftState = interaction.view.state.values?.draft_block?.draft_input;
@@ -409,72 +465,97 @@ async function handleEditModalSubmit(interaction) {
       }
     }
 
-    if (channelId && messageTs) {
-      await slackService.updateSentConfirmationCard(
-        client.slack_bot_token, channelId, messageTs,
-        sentCardPayload(reply, ctx, {
-          sentReply: messageText,
-          actionKind: wasEdited ? 'edited' : 'approved',
-          userId: interaction.user.id,
-          extraFooter: extraFooter.trim() || undefined,
-          ccUsed: ccUsedLabel(reply, client, sendResult),
-        })
-      );
-    }
+    await paintConfirmation(
+      client.slack_bot_token, reply, client,
+      sentCardPayload(reply, ctx, {
+        sentReply: messageText,
+        actionKind: wasEdited ? 'edited' : 'approved',
+        userId: interaction.user.id,
+        extraFooter: extraFooter.trim() || undefined,
+        ccUsed: ccUsedLabel(reply, client, sendResult),
+      })
+    );
   } catch (err) {
     console.error('[Slack] Edit modal send failed', { replyId, err: err.message });
-    await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2', ['flagged', replyId]);
-    if (channelId && messageTs) {
-      await slackService.updateSentConfirmationCard(
-        client.slack_bot_token, channelId, messageTs,
-        sentCardPayload(reply, ctx, {
-          sentReply: messageText,
-          actionKind: 'failed',
-          userId: interaction.user.id,
-          extraFooter: err.message,
-        })
-      );
-    }
+    await db.query(
+      `UPDATE pending_replies SET status = 'failed', send_error = $2, updated_at = now() WHERE id = $1`,
+      [replyId, String(err.message || 'Send failed').slice(0, 500)]
+    );
+    await paintConfirmation(
+      client.slack_bot_token, reply, client,
+      sentCardPayload(reply, ctx, {
+        sentReply: messageText,
+        actionKind: 'failed',
+        userId: interaction.user.id,
+        extraFooter: err.message,
+        replyId,
+      })
+    );
   }
 }
 
-/** Plain status update on the clicked card. Never throws. */
-async function setCardStatus(token, interaction, text) {
-  try {
-    if (!token || !interaction?.channel?.id || !interaction?.message?.ts) return;
-    await slackService.updateMessage(token, interaction.channel.id, interaction.message.ts, text);
-  } catch (err) {
-    console.warn('[Slack] Card status update failed', { err: err.message });
+const POSTED_CARD_TS = /^\d+\.\d+$/;
+
+/** The row's stored Slack message. Never the interaction payload's ts. */
+function cardTarget(reply, client) {
+  const channelId = String(reply?.slack_channel_id || client?.slack_channel_id || '').trim();
+  const ts = String(reply?.slack_message_ts || '').trim();
+  if (!channelId || !POSTED_CARD_TS.test(ts)) return null;
+  return { channelId, ts };
+}
+
+function blocksForStatus(reply, interaction) {
+  const clickedTs = interaction?.message?.ts;
+  const same = clickedTs && String(clickedTs) === String(reply?.slack_message_ts || '');
+  if (same && Array.isArray(interaction?.message?.blocks) && interaction.message.blocks.length) {
+    return interaction.message.blocks;
   }
+  const payload = reply?.card_payload;
+  if (payload && typeof payload === 'object') {
+    try {
+      if (payload.draft) return slackService.buildDraftApprovalCard({ ...payload, replyId: reply.id }).blocks;
+      return slackService.buildAlertCard({ ...payload, replyId: reply.id }).blocks;
+    } catch (err) {
+      console.warn('[Slack] Could not rebuild card body', { replyId: reply?.id, err: err.message });
+    }
+  }
+  return null;
+}
+
+/** Keep the card body and swap the action buttons for one status line. Never sends an empty block list. */
+async function setCardStatus(token, reply, client, text, interaction) {
+  try {
+    const target = cardTarget(reply, client);
+    if (!token || !target) return;
+    const blocks = slackService.replaceActionsWithStatus(blocksForStatus(reply, interaction), text);
+    if (!blocks.length) return;
+    await slackService.updateMessageKeepingBlocks(token, target.channelId, target.ts, text, blocks);
+  } catch (err) {
+    console.warn('[Slack] Card status update failed', { replyId: reply?.id, err: err.message });
+  }
+}
+
+async function paintConfirmation(token, reply, client, payload) {
+  const target = cardTarget(reply, client);
+  if (!token || !target) return null;
+  return slackService.updateSentConfirmationCard(token, target.channelId, target.ts, payload);
 }
 
 async function handleApprove(replyId, interaction, { ccClientOnProspect = false, referralCcFromRow = false } = {}) {
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies SET status = $1, updated_at = now()
-     WHERE id = $2 AND status IN ('pending', 'flagged') RETURNING *`,
+     WHERE id = $2 AND status IN ('pending', 'flagged', 'failed') RETURNING *`,
     ['approved', replyId]
   );
 
   if (!reply) {
     console.warn('[Slack] Reply not found or already actioned', { replyId });
-    const { rows: [existing] } = await db.query(
-      `SELECT r.status, c.slack_bot_token FROM pending_replies r
-         JOIN clients c ON c.id = r.client_id WHERE r.id = $1`,
-      [replyId]
-    ).catch(() => ({ rows: [] }));
-    if (existing?.slack_bot_token) {
-      const label = existing.status === 'sent'
-        ? '✅ Already sent'
-        : existing.status === 'approved'
-          ? '⏳ Sending...'
-          : `Already handled (${existing.status})`;
-      await setCardStatus(existing.slack_bot_token, interaction, label);
-    }
+    await sendEphemeralNotice(interaction, CLICK_NOT_OPEN);
     return;
   }
 
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
-  await setCardStatus(client.slack_bot_token, interaction, '⏳ Sending...');
+  await setCardStatus(client.slack_bot_token, reply, client, '⏳ Sending...', interaction);
   const ctx = await slackCardContextFromReply(reply, client);
 
   try {
@@ -537,8 +618,8 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false,
       }
     }
 
-    await slackService.updateSentConfirmationCard(
-      client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+    await paintConfirmation(
+      client.slack_bot_token, reply, client,
       sentCardPayload(reply, ctx, {
         sentReply: reply.draft_reply,
         actionKind: 'approved',
@@ -548,15 +629,22 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false,
       })
     ).catch(async (err) => {
       console.warn('[Slack] Sent card render failed', { replyId, err: err.message });
-      await setCardStatus(client.slack_bot_token, interaction, skippedDuplicate ? '✅ Already sent' : '✅ Sent');
+      await setCardStatus(
+        client.slack_bot_token, reply, client,
+        skippedDuplicate ? '✅ Already sent' : '✅ Sent',
+        interaction,
+      );
     });
 
     console.log('[Slack] Reply approved and sent', { replyId, platform: reply.platform, lead: reply.lead_name });
   } catch (err) {
     console.error('[Slack] Failed to send reply after approval', { replyId, err: err.message });
-    await db.query('UPDATE pending_replies SET status = $1, updated_at = now() WHERE id = $2', ['flagged', replyId]);
-    await slackService.updateSentConfirmationCard(
-      client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+    await db.query(
+      `UPDATE pending_replies SET status = 'failed', send_error = $2, updated_at = now() WHERE id = $1 AND status IN ('approved', 'sending')`,
+      [replyId, String(err.message || 'Send failed').slice(0, 500)]
+    );
+    await paintConfirmation(
+      client.slack_bot_token, reply, client,
       sentCardPayload(reply, ctx, {
         sentReply: reply.draft_reply,
         actionKind: 'failed',
@@ -594,8 +682,8 @@ async function handleReject(replyId, interaction) {
     }
     const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
     const ctx = await slackCardContextFromReply(reply, client);
-    await slackService.updateSentConfirmationCard(
-      client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+    await paintConfirmation(
+      client.slack_bot_token, reply, client,
       sentCardPayload(reply, ctx, {
         sentReply: null,
         actionKind: 'skipped',
@@ -611,10 +699,10 @@ async function handleReject(replyId, interaction) {
 
   const { rows: [reply] } = await db.query(
     `UPDATE pending_replies
-        SET status = $1, classification = 'NOT_INTERESTED', updated_at = now()
-      WHERE id = $2 AND status IN ('pending', 'flagged')
+        SET status = 'rejected', updated_at = now()
+      WHERE id = $1 AND status IN ('pending', 'flagged')
       RETURNING *`,
-    ['rejected', replyId]
+    [replyId]
   );
 
   if (!reply) {
@@ -625,25 +713,9 @@ async function handleReject(replyId, interaction) {
   const client = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [reply.client_id])).rows[0]);
   const ctx = await slackCardContextFromReply(reply, client);
 
+  // Reject only closes this card. It does not change the lead's category
+  // or status in Smartlead or HeyReach.
   let extraFooter = '';
-  if (reply.platform === 'smartlead' && !isSlackTestFixtureReply(reply)) {
-    try {
-      const marked = await smartlead.markLeadNotInterested(
-        client.smartlead_api_key,
-        reply.campaign_id,
-        reply.lead_id
-      );
-      extraFooter = 'SmartLead category set to Not Interested.';
-      console.log('[Slack] SmartLead marked not interested', {
-        replyId, lead: reply.lead_name, categoryId: marked.categoryId,
-      });
-    } catch (err) {
-      extraFooter = `Rejected locally; SmartLead category update failed: ${err.message}`;
-      console.error('[Slack] SmartLead not-interested update failed', {
-        replyId, lead: reply.lead_name, err: err.message,
-      });
-    }
-  }
 
   let cancelled = 0;
   try {
@@ -661,8 +733,8 @@ async function handleReject(replyId, interaction) {
     extraFooter += `Cancelled ${cancelled} pending follow-up nudge${cancelled === 1 ? '' : 's'}.`;
   }
 
-  await slackService.updateSentConfirmationCard(
-    client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+  await paintConfirmation(
+    client.slack_bot_token, reply, client,
     sentCardPayload(reply, ctx, {
       sentReply: null,
       actionKind: 'rejected',
@@ -671,7 +743,7 @@ async function handleReject(replyId, interaction) {
     })
   );
 
-  console.log('[Slack] Reply rejected and marked not interested', { replyId, lead: reply.lead_name });
+  console.log('[Slack] Reply rejected', { replyId, platform: reply.platform });
 }
 
 /**
@@ -701,8 +773,8 @@ async function handleDisqualify(replyId, interaction) {
   const ctx = await slackCardContextFromReply(reply, client);
   const cancelled = result.cancelledFollowUps || 0;
 
-  await slackService.updateSentConfirmationCard(
-    client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+  await paintConfirmation(
+    client.slack_bot_token, reply, client,
     sentCardPayload(reply, ctx, {
       sentReply: null,
       actionKind: 'disqualified',
@@ -744,8 +816,8 @@ async function handleMeetingBooked(replyId, interaction) {
   const ctx = await slackCardContextFromReply(reply, client);
   const cancelled = result.cancelledFollowUps || 0;
 
-  await slackService.updateSentConfirmationCard(
-    client.slack_bot_token, interaction.channel.id, interaction.message.ts,
+  await paintConfirmation(
+    client.slack_bot_token, reply, client,
     sentCardPayload(reply, ctx, {
       sentReply: null,
       actionKind: 'meeting_booked',
@@ -763,6 +835,6 @@ async function handleMeetingBooked(replyId, interaction) {
 
 // Card builders reused by services that retire a card outside a button click
 // (services/retire-slack-cards.js). Kept here so the card-layout guard tests still see them.
-router.cardHelpers = { slackCardContextFromReply, sentCardPayload };
+router.cardHelpers = { slackCardContextFromReply, sentCardPayload, handleReject, cardTarget };
 
 module.exports = router;

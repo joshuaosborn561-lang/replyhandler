@@ -111,10 +111,12 @@ describe('/admin/post-approval-card', () => {
 
 describe('Slack approve click', () => {
   const src = read('src/routes/slack.js');
-  it('acks before work, shows Sending..., and Already sent on a repeat click', () => {
+  it('acks before work and shows Sending... on the row card, not a blank message', () => {
     assert.ok(src.indexOf('res.status(200).send();') < src.indexOf("action.action_id === 'approve_reply'"));
-    assert.match(src, /setCardStatus\(client\.slack_bot_token, interaction, '⏳ Sending\.\.\.'\)/);
+    assert.match(src, /setCardStatus\(client\.slack_bot_token, reply, client, '⏳ Sending\.\.\.', interaction\)/);
     assert.match(src, /'✅ Already sent'/);
+    assert.doesNotMatch(src, /blocks:\s*\[\]/);
+    assert.doesNotMatch(src, /interaction\.message\.ts/);
   });
   it('a failed notify copy does not fail the send', () => {
     const rs = read('src/services/reply-send.js');

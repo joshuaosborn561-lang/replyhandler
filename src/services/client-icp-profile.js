@@ -25,6 +25,9 @@ const ICP_FIELDS = Object.freeze([
   'industries', 'titles', 'company_size', 'geos', 'offer', 'exclusions',
 ]);
 
+/** Title words that, with a contact's first name, identify that client's call. */
+const TITLE_KEYWORDS = Object.freeze(['onboarding', 'discovery']);
+
 const SKIP_DOMAINS = /^(calendly\.com|book\.gosalesglider\.com|gosalesglider\.com|salesglider\.com|salesglidergrowth\.com|gmail\.com|yahoo\.com|hotmail\.com|outlook\.com|icloud\.com)$/i;
 
 function emptyProfile() {
@@ -59,6 +62,31 @@ function emailDomain(raw) {
   return m ? m[1].toLowerCase().replace(/^www\./, '') : '';
 }
 
+function addressesIn(raw) {
+  return String(raw || '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+}
+
+/** Contact, CC, and any email written on the booking link. Own mailboxes are dropped. */
+function clientContactEmails(client) {
+  const found = [];
+  for (const field of ['contact_email', 'cc_email', 'cc_emails', 'cc_round_robin_emails', 'notify_emails']) {
+    found.push(...addressesIn(client?.[field]));
+  }
+  for (const field of ['booking_link', 'booking_destination_url']) {
+    found.push(...addressesIn(client?.[field]));
+  }
+  const out = [];
+  const seen = new Set();
+  for (const raw of found) {
+    const email = String(raw || '').trim().toLowerCase();
+    const domain = emailDomain(email);
+    if (!email || !domain || SKIP_DOMAINS.test(domain) || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
 function clientSearchHints(client) {
   const name = String(client?.name || '').trim();
   const domains = new Set();
@@ -66,13 +94,74 @@ function clientSearchHints(client) {
     const d = domainFromWebsite(client?.[field]);
     if (d && !SKIP_DOMAINS.test(d)) domains.add(d);
   }
-  for (const field of ['contact_email', 'cc_email', 'cc_emails', 'notify_emails']) {
-    for (const part of String(client?.[field] || '').split(/[\n,;]+/)) {
-      const d = emailDomain(part);
-      if (d && !SKIP_DOMAINS.test(d)) domains.add(d);
-    }
+  const emails = clientContactEmails(client);
+  for (const email of emails) {
+    const d = emailDomain(email);
+    if (d && !SKIP_DOMAINS.test(d)) domains.add(d);
   }
-  return { name, domains: [...domains] };
+  const { firstNameFromEmail } = require('./cc-notice-email');
+  const firstNames = [];
+  const seenNames = new Set();
+  for (const email of emails) {
+    const first = firstNameFromEmail(email);
+    const key = String(first || '').toLowerCase();
+    if (!key || seenNames.has(key)) continue;
+    seenNames.add(key);
+    firstNames.push(first);
+  }
+  return { name, domains: [...domains], emails, firstNames };
+}
+
+function emailsOnCall(row) {
+  const out = [];
+  const people = Array.isArray(row?.meeting_attendees) ? row.meeting_attendees : [];
+  for (const person of people) {
+    if (!person) continue;
+    if (typeof person === 'string') out.push(person);
+    else if (person.email) out.push(person.email);
+  }
+  const parts = row?.participants;
+  if (Array.isArray(parts)) out.push(...parts.filter((p) => typeof p === 'string'));
+  else if (typeof parts === 'string') out.push(parts);
+  if (row?.host_email) out.push(row.host_email);
+  if (row?.organizer_email) out.push(row.organizer_email);
+  return out;
+}
+
+function participantDomainMatch(row, domains) {
+  const want = new Set((domains || []).map((d) => String(d || '').toLowerCase()).filter(Boolean));
+  if (!want.size) return false;
+  for (const raw of emailsOnCall(row)) {
+    const domain = emailDomain(raw);
+    if (domain && want.has(domain)) return true;
+  }
+  return false;
+}
+
+function titleAndFirstNameMatch(row, firstNames) {
+  const title = String(row?.title || '');
+  if (!/\b(?:onboarding|discovery)\b/i.test(title)) return false;
+  return (firstNames || []).some((name) => {
+    const token = String(name || '').trim();
+    if (token.length < 2) return false;
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(title);
+  });
+}
+
+/**
+ * A call belongs to this client when the company name matches, a participant
+ * or attendee email uses a contact/CC/booking domain, or the title is
+ * Onboarding/Discovery plus a contact's first name.
+ */
+function callMatchesClient(row, hints, { transcriptMatches } = {}) {
+  const matchFn = transcriptMatches;
+  if (typeof matchFn === 'function' && matchFn(row, { name: hints?.name, domains: hints?.domains || [] })) {
+    return true;
+  }
+  if (participantDomainMatch(row, hints?.domains)) return true;
+  if (titleAndFirstNameMatch(row, hints?.firstNames)) return true;
+  return false;
 }
 
 function hasDefaultVariant(client) {
@@ -154,6 +243,9 @@ function profileToVariantSpec(profile) {
     : 'does not match the ICP facts above';
   return {
     pass: 'icp_fit',
+    // A stored profile is this client's ICP. Do not reuse a Jev row graded
+    // for a different variant (those model ids will not end in |client_profile).
+    strictCache: true,
     instructions: (
       `We sell ${offer}. Which best describes this company, based on its website? ` +
       `Use only the ICP facts given. Do not invent industries, titles, size, or geos.`
@@ -221,10 +313,23 @@ async function persistIcp(db, clientId, row) {
   return row;
 }
 
-async function searchClientTranscripts(hints, { firefliesApi = fireflies, fetchImpl, env } = {}) {
+async function searchClientTranscripts(hints, {
+  firefliesApi = fireflies, fetchImpl, env, callLookbackMs = 0, now = Date.now(),
+} = {}) {
   const seen = new Map();
-  const queries = [hints.name, ...hints.domains].filter(Boolean);
-  for (const q of queries) {
+  const queries = [hints.name, ...(hints.domains || []), ...(hints.emails || [])];
+  for (const first of hints.firstNames || []) {
+    for (const word of TITLE_KEYWORDS) queries.push(`${word} ${first}`);
+  }
+  const accept = (row) => {
+    if (!row?.id || seen.has(row.id)) return;
+    const transcriptMatches = typeof firefliesApi.transcriptMatches === 'function'
+      ? (r, h) => firefliesApi.transcriptMatches(r, h)
+      : null;
+    if (!callMatchesClient(row, hints, { transcriptMatches })) return;
+    seen.set(row.id, row);
+  };
+  for (const q of queries.filter(Boolean)) {
     let rows = [];
     try {
       rows = await firefliesApi.searchTranscripts(q, { limit: 20, fetchImpl, env });
@@ -233,10 +338,17 @@ async function searchClientTranscripts(hints, { firefliesApi = fireflies, fetchI
       console.warn('[ClientIcp] Fireflies search skipped', { err: err.message });
       continue;
     }
-    for (const row of rows) {
-      if (!row?.id || seen.has(row.id)) continue;
-      if (!firefliesApi.transcriptMatches(row, hints)) continue;
-      seen.set(row.id, row);
+    for (const row of rows) accept(row);
+  }
+  if (callLookbackMs > 0 && typeof firefliesApi.listTranscriptsBetween === 'function') {
+    try {
+      const to = new Date(now);
+      const from = new Date(now - callLookbackMs);
+      const listed = await firefliesApi.listTranscriptsBetween(from, to, { limit: 50, fetchImpl, env });
+      for (const row of listed || []) accept(row);
+    } catch (err) {
+      if (err.code === 'FIREFLIES_NOT_CONFIGURED') throw err;
+      console.warn('[ClientIcp] Fireflies window skipped', { err: err.message });
     }
   }
   return [...seen.values()];
@@ -271,6 +383,8 @@ async function ensureClientIcp(client, {
   fetchImpl,
   env = process.env,
   force = false,
+  callLookbackMs = 0,
+  now = Date.now(),
 } = {}) {
   if (!client?.id) {
     return { status: 'needs_review', reason: 'no_client', transcript_count: 0 };
@@ -317,7 +431,9 @@ async function ensureClientIcp(client, {
   const hints = clientSearchHints(client);
   let hits = [];
   try {
-    hits = await searchClientTranscripts(hints, { firefliesApi, fetchImpl, env });
+    hits = await searchClientTranscripts(hints, {
+      firefliesApi, fetchImpl, env, callLookbackMs, now,
+    });
   } catch (err) {
     if (err.code === 'FIREFLIES_NOT_CONFIGURED') {
       const row = {
@@ -505,6 +621,93 @@ async function backfillMissingClientIcp({
   return counts;
 }
 
+const MANUAL_ICP_STATUSES = Object.freeze(['ready', 'needs_review', 'skipped_existing']);
+const MANUAL_ICP_BODY_KEYS = Object.freeze([
+  'icp_profile', 'icp_status', 'icp_source', 'icp_transcript_count',
+]);
+
+/**
+ * Validate a hand-entered ICP. Unknown profile keys and non-string items
+ * are rejected. Status defaults to ready when the profile has facts.
+ */
+function parseManualIcpBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be an object' };
+  }
+  const extra = Object.keys(body).filter((k) => !MANUAL_ICP_BODY_KEYS.includes(k));
+  if (extra.length) return { ok: false, error: `unknown field: ${extra[0]}` };
+  const profileIn = body.icp_profile;
+  if (!profileIn || typeof profileIn !== 'object' || Array.isArray(profileIn)) {
+    return { ok: false, error: 'icp_profile must be an object' };
+  }
+  const unknown = Object.keys(profileIn).filter((k) => !ICP_FIELDS.includes(k));
+  if (unknown.length) return { ok: false, error: `unknown icp_profile field: ${unknown[0]}` };
+  for (const field of ICP_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(profileIn, field)) continue;
+    const v = profileIn[field];
+    if (Array.isArray(v)) {
+      if (v.some((x) => typeof x !== 'string')) {
+        return { ok: false, error: `${field} items must be strings` };
+      }
+    } else if (typeof v !== 'string') {
+      return { ok: false, error: `${field} must be a string or an array of strings` };
+    }
+  }
+  const profile = normalizeProfile(profileIn);
+  let status = body.icp_status;
+  if (status == null || String(status).trim() === '') {
+    status = profileHasFacts(profile) ? 'ready' : 'needs_review';
+  } else {
+    status = String(status).trim();
+  }
+  if (!MANUAL_ICP_STATUSES.includes(status)) {
+    return { ok: false, error: 'icp_status must be ready, needs_review, or skipped_existing' };
+  }
+  let source = 'manual';
+  if (body.icp_source != null && String(body.icp_source).trim() !== '') {
+    source = String(body.icp_source).trim();
+  }
+  if (source.length > 64 || /[\r\n]/.test(source)) {
+    return { ok: false, error: 'icp_source must be a short string' };
+  }
+  let count = body.icp_transcript_count;
+  if (count == null || count === '') count = 0;
+  else if (typeof count === 'string' && /^\d+$/.test(count.trim())) count = Number(count.trim());
+  if (!Number.isInteger(count) || count < 0) {
+    return { ok: false, error: 'icp_transcript_count must be an integer >= 0' };
+  }
+  return { ok: true, profile, status, source, transcript_count: count };
+}
+
+/** Write a validated ICP. Returns the ICP columns only — never the client row. */
+async function saveManualIcpProfile(db, clientId, body) {
+  const parsed = parseManualIcpBody(body);
+  if (!parsed.ok) return { ok: false, statusCode: 400, error: parsed.error };
+  if (!db || !clientId) return { ok: false, statusCode: 400, error: 'client id is required' };
+  const { rows } = await db.query('SELECT id FROM clients WHERE id = $1', [clientId]);
+  if (!rows[0]) return { ok: false, statusCode: 404, error: 'Client not found' };
+  const { rows: written } = await db.query(
+    `UPDATE clients SET
+       icp_profile = $1::jsonb,
+       icp_status = $2,
+       icp_source = $3,
+       icp_transcript_count = $4,
+       icp_built_at = now(),
+       updated_at = now()
+     WHERE id = $5
+     RETURNING icp_profile, icp_status, icp_source, icp_transcript_count`,
+    [JSON.stringify(parsed.profile), parsed.status, parsed.source, parsed.transcript_count, clientId]
+  );
+  const row = written[0] || {};
+  return {
+    ok: true,
+    icp_profile: normalizeProfile(row.icp_profile || parsed.profile),
+    icp_status: row.icp_status || parsed.status,
+    icp_source: row.icp_source || parsed.source,
+    icp_transcript_count: Number(row.icp_transcript_count ?? parsed.transcript_count) || 0,
+  };
+}
+
 function tally(counts, result) {
   if (result.status === 'skipped_existing') counts.skipped_existing += 1;
   else if (result.status === 'ready') counts.ready += 1;
@@ -518,8 +721,10 @@ function tally(counts, result) {
 
 module.exports = {
   ICP_FIELDS,
+  TITLE_KEYWORDS,
   emptyProfile,
   clientSearchHints,
+  callMatchesClient,
   hasDefaultVariant,
   hasStoredProfile,
   clientHasIcp,
@@ -534,4 +739,6 @@ module.exports = {
   summarizeIcpResult,
   persistIcp,
   needsIcpWork,
+  parseManualIcpBody,
+  saveManualIcpProfile,
 };

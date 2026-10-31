@@ -1,4 +1,5 @@
 const { WebClient } = require('@slack/web-api');
+const { heyreachCanApprove } = require('./heyreach-card-gate');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 const { referralCcButtonText } = require('../utils/referred-contact');
 const { decodeHtmlEntities: decodeAllHtmlEntities } = require('../utils/html-entities');
@@ -138,8 +139,9 @@ function websiteUrlLine(leadWebsite) {
 }
 
 /**
- * ICP line on every reply card. Topup icp-llm stores fit + P(PASS);
- * display is "{n}% qualified|disqualified: {reason}" or "ICP: unknown (reason)".
+ * ICP line on every reply card. The verdict is the Jev website check
+ * (topup icp-llm, ported in reply-icp.js): fit or not, plus one line of why.
+ * Confidence stays on the stored verdict and is not shown.
  */
 function icpVerdictLine(leadIcpVerdict) {
   const v = leadIcpVerdict && typeof leadIcpVerdict === 'object' ? leadIcpVerdict : null;
@@ -147,23 +149,17 @@ function icpVerdictLine(leadIcpVerdict) {
   const { decisionMakerText } = require('./decision-maker');
   const dmText = decisionMakerText(dm);
   const dmLine = dmText ? `\n👤 ${escMrkdwn(dmText)}` : '';
-  if (v && v.status === 'unknown' && /^no ICP$/i.test(String(v.reason || '').trim())) {
-    // Josh, Oct 29 2026: no ICP from the client's onboarding call means "not on file", never a score.
-    return `\n🎯 ICP: not on file${dmLine}`;
-  }
+  const reason = String(v?.reason || '').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
   if (!v || !v.status || v.status === 'unknown') {
-    const why = String(v?.reason || 'unknown').replace(/[()]/g, '').trim() || 'unknown';
-    const not = dm?.status === 'no' ? ' · not a fit: person is not a decision maker' : '';
-    return `\n🎯 ICP: unknown (${escMrkdwn(why)})${escMrkdwn(not)}${dmLine}`;
+    if (/^no ICP$/i.test(reason)) return `\n🎯 ICP: not on file${dmLine}`;
+    if (/^unreachable$/i.test(reason)) return `\n🎯 ICP: site unreachable${dmLine}`;
+    if (/^check failed$/i.test(reason)) return `\n🎯 ICP: check failed${dmLine}`;
+    const why = reason || 'unknown';
+    return `\n🎯 ICP: ${escMrkdwn(why.slice(0, 180))}${dmLine}`;
   }
-  const pct = Number.isFinite(Number(v.confidence)) ? `${Math.round(Number(v.confidence))}% ` : '';
-  const reason = String(v.reason || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-  if (v.status === 'qualified' && dm?.status === 'no') {
-    return `\n🎯 ${escMrkdwn(`Not a fit: company fits (${pct}${reason || 'qualified'}) but the person replying is not a decision maker`)}${dmLine}`;
-  }
-  const word = v.status === 'qualified' ? 'qualified' : 'disqualified';
-  const tail = v.status === 'qualified' && dm?.status === 'unknown' ? ' · decision maker unconfirmed' : '';
-  return `\n🎯 ${escMrkdwn(`${pct}${word}: ${reason || word}${tail}`)}${dmLine}`;
+  const why = (reason || (v.status === 'qualified' ? 'fits the ICP' : 'does not fit the ICP')).slice(0, 180);
+  const word = v.status === 'qualified' ? 'Fit' : 'Not a fit';
+  return `\n🎯 ${escMrkdwn(`${word} — ${why}`)}${dmLine}`;
 }
 
 /** Prefer the enriched full name when the reply only carried a first name. */
@@ -184,11 +180,11 @@ function websiteFromLeadEmail(leadEmail) {
   return normalizeWebsiteUrl(e.slice(at + 1));
 }
 
-/** Non-mobile number (landline / VoIP / unverified) when no confirmed mobile was found. */
+/** A number we hold that is not a confirmed mobile. No line-type label. */
 function altPhoneLine(leadPhone, leadPhoneAlt) {
   if (String(leadPhone || '').trim()) return '';
   const alt = String(leadPhoneAlt || '').trim();
-  return alt ? `\n☎️ ${escMrkdwn(alt)} _(not a confirmed mobile)_` : '';
+  return alt ? `\n☎️ ${escMrkdwn(alt)}` : '';
 }
 
 /** The PERSON's location + local time zone (not company HQ). */
@@ -764,7 +760,72 @@ function draftApprovalActionsBlock(replyId) {
   };
 }
 
+function linkedinReplyButton(url) {
+  const href = normalizeLinkedinUrl(url);
+  if (!href) return null;
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: 'Reply on LinkedIn' },
+    url: href,
+    action_id: 'reply_on_linkedin',
+  };
+}
+
+/** DQ, Meeting booked, and a LinkedIn link. No Approve, Edit, or Reject. */
+function heyreachLimitedActionsBlock(replyId, linkedinUrl) {
+  const elements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '🚫 DQ' },
+      action_id: 'dq_prospect',
+      value: String(replyId),
+    },
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '📅 Meeting booked' },
+      action_id: 'meeting_booked',
+      value: String(replyId),
+    },
+  ];
+  const link = linkedinReplyButton(linkedinUrl);
+  if (link) elements.push(link);
+  return { type: 'actions', elements };
+}
+
+/**
+ * HeyReach hides Approve unless the row can actually send. Every other
+ * platform keeps the full Approve / Edit / Reject row.
+ */
+function approvalActionsForCard(opts = {}) {
+  if (String(opts.platform || '').toLowerCase() !== 'heyreach') return null;
+  const explicit = opts.heyreachCanSend;
+  const canSend = explicit === true || explicit === false
+    ? explicit
+    : heyreachCanApprove({
+      replyId: opts.replyId,
+      leadId: opts.leadId,
+      conversationId: opts.conversationId,
+      linkedInAccountId: opts.linkedInAccountId ?? opts.linkedinAccountId,
+      hasApiKey: Boolean(opts.hasHeyreachApiKey || opts.heyreachApiKey),
+    });
+  if (canSend) return null;
+  return heyreachLimitedActionsBlock(opts.replyId, opts.linkedinReplyUrl || opts.leadLinkedinUrl);
+}
+
+function replaceActionsWithStatus(blocks, statusText) {
+  const kept = (Array.isArray(blocks) ? blocks : []).filter((block) => block && block.type !== 'actions');
+  const line = String(statusText || '').trim();
+  if (line) {
+    kept.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: line.slice(0, 2900) }],
+    });
+  }
+  return kept;
+}
+
 function buildSentConfirmationBlocks({
+  replyId,
   leadFullName, leadPhoneAlt, leadLocation, leadTimezone,
   leadName,
   leadEmail,
@@ -810,6 +871,7 @@ function buildSentConfirmationBlocks({
     // Closed by the booking bridge (or as a sibling of another card), not by a button click.
     meeting_booked_auto: '📅 Meeting booked — no action needed',
     failed: '⚠️ Send failed',
+    superseded: 'Superseded by newer card',
   };
   const footers = {
     approved: 'Approved & sent',
@@ -819,7 +881,8 @@ function buildSentConfirmationBlocks({
     disqualified: 'Disqualified · excluded from follow-up nudges',
     meeting_booked: 'Meeting booked · follow-up sequence cancelled',
     meeting_booked_auto: 'Meeting booked · no action needed',
-    failed: 'Send failed',
+    failed: 'Send failed — use Retry',
+    superseded: 'Superseded by newer card',
   };
   // Reject on a follow-up card skips that one send. It does not mean the
   // lead is not interested, and the next cadence step still posts.
@@ -898,10 +961,24 @@ function buildSentConfirmationBlocks({
     elements: [{ type: 'mrkdwn', text: footerText }],
   });
 
+  if (kind === 'failed' && replyId) {
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'Retry' },
+        style: 'primary',
+        action_id: 'retry_send',
+        value: String(replyId),
+      }],
+    });
+  }
+
   if (blocks.length > SLACK_BLOCK_LIMIT) {
-    const tail = blocks.slice(-1);
+    const tailCount = (kind === 'failed' && replyId) ? 2 : 1;
+    const tail = blocks.slice(-tailCount);
     const headRoom = SLACK_BLOCK_LIMIT - tail.length;
-    const overflowBlocks = blocks.slice(headRoom, blocks.length - 1);
+    const overflowBlocks = blocks.slice(headRoom, blocks.length - tail.length);
     const fitted = [...blocks.slice(0, headRoom), ...tail];
     fitted.overflowBlocks = overflowBlocks;
     return fitted;
@@ -922,9 +999,13 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
     ? 'Rejected — not interested'
     : opts.actionKind === 'disqualified'
       ? 'DQ'
-      : (opts.actionKind === 'meeting_booked' || opts.actionKind === 'meeting_booked_auto')
-        ? (opts.actionKind === 'meeting_booked_auto' ? 'Meeting booked, no action needed' : 'Meeting booked')
-        : 'Sent';
+      : opts.actionKind === 'superseded'
+        ? 'Superseded by newer card'
+        : opts.actionKind === 'failed'
+          ? 'Send failed'
+          : (opts.actionKind === 'meeting_booked' || opts.actionKind === 'meeting_booked_auto')
+            ? (opts.actionKind === 'meeting_booked_auto' ? 'Meeting booked, no action needed' : 'Meeting booked')
+            : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
   const result = await slack.chat.update({
@@ -970,22 +1051,17 @@ function shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientBut
  *   6. one context line for everything secondary (type, campaign, ICP, location, spend)
  */
 
-const PHONE_LABELS = {
-  mobile: 'mobile',
-  landline: 'landline',
-  'landline or mobile': 'landline or mobile',
-  voip: 'VoIP',
-  'toll-free': 'toll-free',
-  invalid: 'invalid number',
-};
-
-/** Label for a number we hold but cannot call a confirmed mobile. Veriphone result, else the fallback. */
-function altPhoneLabel(enrichmentReceipt) {
-  const raw = String(enrichmentReceipt?.phoneLabel || '').trim().toLowerCase();
-  return PHONE_LABELS[raw] || 'not a confirmed mobile';
+/** Veriphone (or an equivalent line-type check) said this number is mobile. */
+function isConfirmedMobile(enrichmentReceipt) {
+  const label = String(enrichmentReceipt?.phoneLabel || '').trim().toLowerCase();
+  if (label === 'mobile') return true;
+  const type = String(
+    enrichmentReceipt?.phoneType || enrichmentReceipt?.phone_type || enrichmentReceipt?.lineType || '',
+  ).trim().toLowerCase();
+  return type === 'mobile';
 }
 
-/** One line: phone (what kind), email, LinkedIn, website. Each shows once. */
+/** One line: phone, email, LinkedIn, website. Each shows once. */
 function compactContactLine({
   leadEmail, leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt,
   leadLinkedinUrl, leadWebsite,
@@ -994,9 +1070,10 @@ function compactContactLine({
   const phone = String(leadPhone || '').trim();
   const alt = String(leadPhoneAlt || '').trim();
   if (phone) {
-    parts.push(`📱 ${escMrkdwn(phone)} _(mobile)_`);
+    const mobile = isConfirmedMobile(enrichmentReceipt) ? ' _(mobile)_' : '';
+    parts.push(`📱 ${escMrkdwn(phone)}${mobile}`);
   } else if (alt) {
-    parts.push(`☎️ ${escMrkdwn(alt)} _(${altPhoneLabel(enrichmentReceipt)})_`);
+    parts.push(`☎️ ${escMrkdwn(alt)}`);
   } else {
     const { phoneMissingText } = require('../utils/phone-lookup-reason');
     const why = phoneMissingText(enrichmentReceipt?.phoneLookup, phoneEnrichmentStatus);
@@ -1031,6 +1108,82 @@ function cardHeaderBlock({ name, title, company, clientName }) {
 function oneLineText(s, max) {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * A later reply in the same thread: more than one real message from them,
+ * or a message from us after they already replied. The cold email plus
+ * their first reply is still the first card. Placeholder inbounds do not count.
+ */
+function isBackAndForthThread(threadMessages) {
+  const history = Array.isArray(threadMessages) ? threadMessages : [];
+  let them = 0;
+  let seenThem = false;
+  for (const raw of history) {
+    if (!raw) continue;
+    const body = String(raw.body || raw.message || '').trim();
+    if (!body || isPlaceholderInbound(body)) continue;
+    const role = String(raw.role || '').toLowerCase();
+    const fromThem = role === 'them' || role === 'prospect' || role === 'lead';
+    const fromUs = role === 'us' || role === 'me';
+    if (fromThem) {
+      them += 1;
+      seenThem = true;
+    } else if (fromUs && seenThem) {
+      return true;
+    }
+  }
+  return them > 1;
+}
+
+function campaignBlock(campaignDisplay) {
+  const camp = String(campaignDisplay || '').trim();
+  if (!camp || camp === '—') return null;
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: `📣 ${escMrkdwn(oneLineText(camp, 200))}` },
+  };
+}
+
+function leadIdentityBlock({ name, title, company } = {}) {
+  const text = [name, title, company]
+    .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' · ');
+  if (!text) return null;
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: escMrkdwn(oneLineText(text, 200)) },
+  };
+}
+
+function scoreBlock(leadIcpVerdict) {
+  const line = icpVerdictLine(leadIcpVerdict).replace(/^\n+/, '').trim();
+  if (!line) return null;
+  return { type: 'section', text: { type: 'mrkdwn', text: line } };
+}
+
+/** Platform and label only. Campaign, contact, and ICP are already above. */
+function classificationContextBlock({ platform, classification, reasoning, threadPermalink } = {}) {
+  const bits = [`*${escMrkdwn(String(platform || '').toUpperCase())} · ${escMrkdwn(classification || '')}*`];
+  if (reasoning) bits.push(escMrkdwn(oneLineText(reasoning, 140)));
+  if (threadPermalink) bits.push(`<${threadPermalink}|Earlier card>`);
+  return {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: bits.join('  ·  ').slice(0, 2900) }],
+  };
+}
+
+function viewThreadActionsBlock(replyId) {
+  return {
+    type: 'actions',
+    elements: [{
+      type: 'button',
+      text: { type: 'plain_text', text: 'View full thread' },
+      action_id: 'view_thread',
+      value: String(replyId),
+    }],
+  };
 }
 
 /** Everything secondary on a single context block. */
@@ -1098,12 +1251,13 @@ function assembleFollowUpApprovalBlocks({
   canCcClient,
   contextBlock,
   review,
+  actionsBlock = null,
 }) {
   const willSend = buildWillSendBlocks({ draft, outgoingLabel: 'WILL SEND' });
   const loop = loopInClientBlock(needsClient, whatToSend);
   // Josh, Oct 29 2026: the buttons stay at the bottom, after the draft and the context line.
   const head = [...topBlocks];
-  const buttons = [draftApprovalActionsBlock(replyId)];
+  const buttons = [actionsBlock || draftApprovalActionsBlock(replyId)];
   if (canCcClient) {
     buttons.push(sendCcClientActionsBlock(replyId));
   }
@@ -1143,6 +1297,8 @@ function buildDraftApprovalCard({
   mention = null,
   followupContext = null,
   leadTitle = null, leadCompany = null, leadData = null, payload = null,
+  leadId = null, conversationId = null, linkedInAccountId = null, linkedinAccountId = null,
+  heyreachCanSend = null, linkedinReplyUrl = null, hasHeyreachApiKey = false, heyreachApiKey = null,
 }) {
   void phoneProvider; void inThread; void contextLabel;
   const isFollowUp = String(classification || '').toUpperCase() === 'FOLLOW_UP';
@@ -1216,10 +1372,20 @@ function buildDraftApprovalCard({
       }),
       contextBlock,
       review,
+      actionsBlock: approvalActionsForCard({
+        replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
+        heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+      }) || draftApprovalActionsBlock(replyId),
     });
     blocks = assembled.blocks;
     overflowThread = assembled.overflowThread || [];
   } else {
+    // Josh, Oct 31 2026: first card is campaign, contact, ICP and DM,
+    // what we said, what they said, the draft, then the buttons.
+    // The client name is not a header — each client has its own channel.
+    // A later reply in the same thread is only our last, their last, the draft,
+    // the buttons, and View full thread.
+    const backAndForth = isBackAndForthThread(threadMessages);
     const body = [
       ...youSaidBlocks(lastOutboundMessage),
       ...theyRepliedBlocks(inboundMessage),
@@ -1228,11 +1394,25 @@ function buildDraftApprovalCard({
       body.push(dividerBlock());
       body.push(...conversationStepBlocks({ emoji: '✍️', label: 'Suggested reply', body: draft }));
     }
-    const head = [...topBlocks, contactBlock];
+    const head = [];
+    if (mention) head.push({ type: 'section', text: { type: 'mrkdwn', text: String(mention) } });
+    if (!backAndForth) {
+      const camp = campaignBlock(campaignDisplay);
+      if (camp) head.push(camp);
+      const who = leadIdentityBlock({ name, title, company });
+      if (who) head.push(who);
+      head.push(contactBlock);
+      const scores = scoreBlock(leadIcpVerdict);
+      if (scores) head.push(scores);
+    }
 
     const tail = [];
     if (review) tail.push(needsReviewBlock());
-    tail.push(contextBlock);
+    if (!backAndForth) {
+      tail.push(classificationContextBlock({
+        platform, classification, reasoning, threadPermalink,
+      }));
+    }
     const notice = platform === 'smartlead'
       ? ccAutoNoticeBlock({
           ccEmails: ccEmails || ccEmail,
@@ -1246,8 +1426,10 @@ function buildDraftApprovalCard({
       const referred = referredContactSection(referredContacts);
       if (referred) tail.push(referred);
     }
-    // Buttons last, after the draft and the context line.
-    tail.push(draftApprovalActionsBlock(replyId));
+    tail.push(approvalActionsForCard({
+      replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
+      heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+    }) || draftApprovalActionsBlock(replyId));
     if (String(platform || '').toLowerCase() === 'smartlead') {
       const referralBtn = referralCcActionsBlock(replyId, referredContacts);
       if (referralBtn) tail.push(referralBtn);
@@ -1255,6 +1437,7 @@ function buildDraftApprovalCard({
     if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
       tail.push(sendCcClientActionsBlock(replyId));
     }
+    if (backAndForth) tail.push(viewThreadActionsBlock(replyId));
     const fitted = fitCardBlocks(head, body, tail);
     blocks = fitted.blocks;
     overflowBlocks = fitted.overflowBlocks;
@@ -1382,6 +1565,7 @@ function buildAlertCard({
   leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread,
+  linkedinReplyUrl,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const headerText = inThread
@@ -1442,6 +1626,10 @@ function buildAlertCard({
         },
       ],
     });
+    if (String(platform || '').toLowerCase() === 'heyreach') {
+      const link = linkedinReplyButton(linkedinReplyUrl || leadLinkedinUrl);
+      if (link) tail[tail.length - 1].elements.push(link);
+    }
   }
   const fitted = fitCardBlocks(head, conversation, tail);
 
@@ -1548,6 +1736,19 @@ async function updateMessage(token, channelId, messageTs, text) {
     ts: messageTs,
     text,
     blocks: [],
+  });
+}
+
+/** chat.update that keeps the blocks it is given. Never sends an empty block list. */
+async function updateMessageKeepingBlocks(token, channelId, messageTs, text, blocks) {
+  const list = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+  if (!token || !channelId || !messageTs || !list.length) return null;
+  const slack = getClient(token);
+  return slack.chat.update({
+    channel: channelId,
+    ts: messageTs,
+    text: String(text || '').slice(0, 3000),
+    blocks: list.slice(0, SLACK_BLOCK_LIMIT),
   });
 }
 
@@ -1663,6 +1864,114 @@ async function openEditReplyModal(token, triggerId, {
       close: { type: 'plain_text', text: 'Cancel' },
       blocks,
     },
+  });
+}
+
+const THREAD_MODAL_BLOCK_CAP = 90;
+
+/**
+ * Whole thread, plus the client, campaign, contact, and scores the short
+ * card leaves off. View only — it does not send.
+ */
+function buildThreadModalView({
+  replyId,
+  clientName,
+  campaignDisplay,
+  leadName,
+  leadTitle,
+  leadCompany,
+  leadEmail,
+  leadPhone,
+  leadPhoneAlt,
+  phoneEnrichmentStatus,
+  enrichmentReceipt,
+  leadLinkedinUrl,
+  leadWebsite,
+  leadIcpVerdict,
+  threadMessages,
+  lastOutboundMessage,
+  inboundMessage,
+} = {}) {
+  const blocks = [];
+  const who = [clientName, campaignDisplay]
+    .map((x) => String(x || '').trim())
+    .filter((x) => x && x !== '—');
+  if (who.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: who.map((line, i) => (i === 0 ? `*${escMrkdwn(line)}*` : escMrkdwn(line))).join('\n') },
+    });
+  }
+  const person = leadIdentityBlock({ name: leadName, title: leadTitle, company: leadCompany });
+  if (person) blocks.push(person);
+  blocks.push(compactContactLine({
+    leadEmail, leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt, leadLinkedinUrl, leadWebsite,
+  }));
+  const scores = scoreBlock(leadIcpVerdict);
+  if (scores) blocks.push(scores);
+  blocks.push(dividerBlock());
+
+  const turns = [];
+  for (const raw of Array.isArray(threadMessages) ? threadMessages : []) {
+    const body = String(raw?.body || raw?.message || '').trim();
+    if (!body || isPlaceholderInbound(body)) continue;
+    const role = String(raw.role || '').toLowerCase();
+    const fromUs = role === 'us' || role === 'me';
+    turns.push({ role: fromUs ? 'us' : 'them', body });
+  }
+  if (!turns.length) {
+    const ours = String(lastOutboundMessage || '').trim();
+    const theirs = String(inboundMessage || '').trim();
+    if (ours) turns.push({ role: 'us', body: ours });
+    if (theirs) turns.push({ role: 'them', body: theirs });
+  }
+
+  let hidden = 0;
+  for (const turn of turns) {
+    const next = conversationStepBlocks({
+      emoji: turn.role === 'us' ? '🗣' : '📥',
+      label: turn.role === 'us' ? 'You said' : 'They replied',
+      body: turn.body,
+    });
+    if (blocks.length + next.length > THREAD_MODAL_BLOCK_CAP) {
+      hidden += 1;
+      continue;
+    }
+    blocks.push(...next);
+  }
+  if (hidden) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `${hidden} older message${hidden === 1 ? '' : 's'} did not fit in this window.` }],
+    });
+  }
+  if (!turns.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '_No earlier messages are stored on this reply._' },
+    });
+  }
+
+  return {
+    type: 'modal',
+    callback_id: 'card_thread_modal',
+    private_metadata: JSON.stringify({ replyId: replyId || null }),
+    title: { type: 'plain_text', text: 'Full thread' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: blocks.slice(0, 100),
+  };
+}
+
+async function openThreadModal(token, triggerId, opts = {}) {
+  if (!token || !triggerId) {
+    const err = new Error('missing Slack trigger');
+    err.code = 'NO_TRIGGER';
+    throw err;
+  }
+  const slack = getClient(token);
+  return slack.views.open({
+    trigger_id: triggerId,
+    view: buildThreadModalView(opts),
   });
 }
 
@@ -1786,7 +2095,16 @@ module.exports = {
   buildFollowUpConversationBlocks,
   lastThreadTurn,
   draftApprovalActionsBlock,
+  approvalActionsForCard,
+  heyreachLimitedActionsBlock,
+  linkedinReplyButton,
+  replaceActionsWithStatus,
+  updateMessageKeepingBlocks,
   openEditReplyModal,
+  openThreadModal,
+  buildThreadModalView,
+  isBackAndForthThread,
+  viewThreadActionsBlock,
   buildEditReplyBlocks,
   ccClientModalBlock,
   ccClientOptionText,

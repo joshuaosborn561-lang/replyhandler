@@ -103,6 +103,17 @@ function startCron() {
     });
   }
 
+  // Stuck Approve clicks: retry a row that never reached the provider, or
+  // mark a claimed send failed with Retry. Never sends a second copy.
+  cron.schedule('*/2 * * * *', async () => {
+    try {
+      const { sweepStuckSends } = require('./services/stuck-send-sweeper');
+      await sweepStuckSends();
+    } catch (err) {
+      console.error('[Cron] Stuck-send sweep failed', { err: err.message });
+    }
+  });
+
   // ─── HeyReach polling backstop (webhooks are primary) ──────────────
   if (!/^(1|true|yes|on)$/i.test(String(process.env.DISABLE_HEYREACH_POLLING || '').trim())) {
     const every = Number.isFinite(HEYREACH_POLL_MINUTES) && HEYREACH_POLL_MINUTES > 0

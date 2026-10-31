@@ -6,6 +6,7 @@ const path = require('node:path');
 const {
   emptyProfile,
   clientSearchHints,
+  callMatchesClient,
   hasDefaultVariant,
   clientHasIcp,
   profileHasFacts,
@@ -16,6 +17,8 @@ const {
   backfillMissingClientIcp,
   summarizeIcpResult,
   needsIcpWork,
+  parseManualIcpBody,
+  saveManualIcpProfile,
 } = require('../src/services/client-icp-profile');
 const { loadVariant, resolveReplyIcp, clearIcpMemoryCache } = require('../src/services/reply-icp');
 const fireflies = require('../src/services/fireflies');
@@ -322,6 +325,79 @@ test('needsIcpWork retries stale needs_review and ignores fresh ones', () => {
   }, { includeNeedsReview: false, now }), false);
 });
 
+test('a hand-entered ICP accepts the six fields and rejects a bad shape', () => {
+  const ok = parseManualIcpBody({
+    icp_profile: {
+      industries: ['independent HVAC contractors'],
+      titles: 'owner, service manager',
+      company_size: ['10-50'],
+      geos: ['Midwest'],
+      offer: ['outbound for HVAC shops'],
+      exclusions: ['national chains'],
+    },
+    icp_transcript_count: '2',
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.status, 'ready');
+  assert.equal(ok.source, 'manual');
+  assert.equal(ok.transcript_count, 2);
+  assert.deepEqual(ok.profile.titles, ['owner', 'service manager']);
+
+  const empty = parseManualIcpBody({ icp_profile: {} });
+  assert.equal(empty.status, 'needs_review');
+
+  assert.equal(parseManualIcpBody({ icp_profile: { city: ['Denver'] } }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: { industries: [1] } }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: { industries: ['hvac'] }, icp_status: 'published' }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, icp_transcript_count: -1 }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, icp_source: 'x'.repeat(65) }).ok, false);
+  assert.equal(parseManualIcpBody({ icp_profile: {}, smartlead_api_key: 'secret' }).ok, false);
+});
+
+test('saveManualIcpProfile writes the ICP columns and does not return the client row', async () => {
+  const writes = [];
+  const db = {
+    query: async (sql, params) => {
+      writes.push({ sql, params });
+      if (/SELECT id FROM clients/.test(sql)) return { rows: [{ id: 'c1' }] };
+      return {
+        rows: [{
+          icp_profile: JSON.parse(params[0]),
+          icp_status: params[1],
+          icp_source: params[2],
+          icp_transcript_count: params[3],
+          smartlead_api_key: 'should-not-leak',
+          name: 'New Co LLC',
+        }],
+      };
+    },
+  };
+  const saved = await saveManualIcpProfile(db, 'c1', {
+    icp_profile: { industries: ['independent HVAC contractors'], titles: ['owner'] },
+    icp_status: 'ready',
+    icp_source: 'onboarding-notes',
+    icp_transcript_count: 1,
+  });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.icp_status, 'ready');
+  assert.equal(saved.icp_source, 'onboarding-notes');
+  assert.deepEqual(Object.keys(saved).sort(), [
+    'icp_profile', 'icp_source', 'icp_status', 'icp_transcript_count', 'ok',
+  ]);
+  assert.equal(saved.smartlead_api_key, undefined);
+  assert.equal(saved.name, undefined);
+  const update = writes.find((w) => /UPDATE clients SET/.test(w.sql));
+  assert.match(update.sql, /icp_profile/);
+  assert.match(update.sql, /icp_built_at = now\(\)/);
+  assert.equal(update.params[4], 'c1');
+
+  const missing = await saveManualIcpProfile({
+    query: async () => ({ rows: [] }),
+  }, 'missing', { icp_profile: { industries: ['hvac'] } });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.statusCode, 404);
+});
+
 test('admin create and backfill are wired to ensureClientIcp', () => {
   const admin = read('src/routes/admin.js');
   assert.match(admin, /ensureClientIcp/);
@@ -329,4 +405,179 @@ test('admin create and backfill are wired to ensureClientIcp', () => {
   assert.match(admin, /backfillMissingClientIcp/);
   const migrate = read('scripts/run-migrations.js');
   assert.match(migrate, /033_client_icp_profile\.sql/);
+  const route = admin.slice(admin.indexOf("router.post('/admin/clients/:clientId/icp-profile'"));
+  const routeBody = route.slice(0, route.indexOf("router.patch('/admin/clients/:clientId'"));
+  assert.match(routeBody, /saveManualIcpProfile/);
+  assert.doesNotMatch(routeBody, /formatClient|requireAdminApiKey|smartlead_api_key/);
+});
+
+test('client search hints take first names from person emails and skip role mailboxes', () => {
+  const hints = clientSearchHints({
+    name: 'New Co LLC',
+    contact_email: 'jane.smith@newcoexample.com',
+    cc_email: 'info@newcoexample.com',
+    cc_emails: 'ops@newcoexample.com, josh@salesglidergrowth.com',
+    booking_link: 'https://www.newcoexample.com/book?host=pat.lee@newcoexample.com',
+  });
+  assert.deepEqual(hints.domains, ['newcoexample.com']);
+  assert.ok(hints.emails.includes('jane.smith@newcoexample.com'));
+  assert.ok(hints.emails.includes('pat.lee@newcoexample.com'));
+  assert.ok(!hints.emails.some((e) => e.endsWith('@salesglidergrowth.com')));
+  assert.deepEqual(hints.firstNames, ['Jane', 'Pat']);
+});
+
+test('a call matches on attendee domain or Onboarding/Discovery plus a first name', () => {
+  const hints = {
+    name: 'New Co LLC',
+    domains: ['newcoexample.com'],
+    emails: ['jane@newcoexample.com'],
+    firstNames: ['Jane'],
+  };
+  const noName = { transcriptMatches: () => false };
+  assert.equal(callMatchesClient({
+    id: 'a',
+    title: 'Weekly sync',
+    meeting_attendees: [{ email: 'jane@newcoexample.com' }],
+  }, hints, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'b',
+    title: 'Onboarding with Jane',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'c',
+    title: 'Discovery Call - Jane Smith',
+    participants: [],
+  }, { ...hints, domains: [] }, noName), true);
+  assert.equal(callMatchesClient({
+    id: 'd',
+    title: 'Onboarding with Bob',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), false);
+  assert.equal(callMatchesClient({
+    id: 'e',
+    title: 'Weekly sync with Jane',
+    meeting_attendees: [],
+  }, { ...hints, domains: [] }, noName), false);
+  assert.equal(callMatchesClient({
+    id: 'f',
+    title: 'Weekly sync',
+    meeting_attendees: [{ email: 'josh@salesglidergrowth.com' }],
+  }, { ...hints, domains: [] }, noName), false);
+});
+
+test('ensureClientIcp accepts a call by attendee domain and still drops invented facts', async () => {
+  const transcript = [
+    'Target is independent HVAC contractors in the Midwest.',
+    'Talk to the owner. Skip national chains.',
+  ].join(' ');
+  const queries = [];
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async (q) => {
+      queries.push(q);
+      if (q === 'New Co LLC') {
+        return [{
+          id: 't-domain',
+          title: 'Weekly sync',
+          meeting_attendees: [{ email: 'jane@newcoexample.com' }],
+        }];
+      }
+      return [];
+    },
+    transcriptMatches: () => false,
+    getTranscript: async () => ({ id: 't-domain' }),
+    sentencesToText: () => transcript,
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000011',
+      name: 'New Co LLC',
+      contact_email: 'jane.smith@newcoexample.com',
+    },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: api,
+      extractFn: async () => ({
+        industries: ['independent HVAC contractors'],
+        titles: ['owner'],
+        geos: ['Midwest', 'Denver'],
+        exclusions: ['national chains'],
+      }),
+      env: { FIREFLIES_API_KEY: 'x' },
+    },
+  );
+  assert.equal(result.status, 'ready');
+  assert.ok(result.profile.industries.includes('independent HVAC contractors'));
+  assert.ok(!result.profile.geos.includes('Denver'));
+  assert.ok(queries.includes('onboarding Jane'));
+  assert.ok(queries.includes('discovery Jane'));
+});
+
+test('ensureClientIcp stays needs_review when domain and title matches miss', async () => {
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [{
+      id: 't-miss',
+      title: 'Onboarding with Bob',
+      meeting_attendees: [{ email: 'bob@other.example' }],
+    }],
+    transcriptMatches: () => false,
+    getTranscript: async () => null,
+    sentencesToText: () => '',
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000012',
+      name: 'New Co LLC',
+      contact_email: 'jane.smith@newcoexample.com',
+    },
+    { db: { query: async () => ({ rows: [] }) }, firefliesApi: api, env: { FIREFLIES_API_KEY: 'x' } },
+  );
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'no_calls');
+});
+
+test('a lookback window includes matching calls the keyword search missed', async () => {
+  const transcript = 'We sell to independent HVAC contractors. Buyer is the owner.';
+  let windowed = false;
+  const api = {
+    isConfigured: () => true,
+    requiredEnvVar: () => 'FIREFLIES_API_KEY',
+    searchTranscripts: async () => [],
+    listTranscriptsBetween: async () => {
+      windowed = true;
+      return [{
+        id: 't-window',
+        title: 'Discovery with Jane',
+        meeting_attendees: [],
+      }];
+    },
+    transcriptMatches: () => false,
+    getTranscript: async () => ({ id: 't-window' }),
+    sentencesToText: () => transcript,
+  };
+  const result = await ensureClientIcp(
+    {
+      id: '00000000-0000-0000-0000-000000000013',
+      name: 'Quiet Co',
+      contact_email: 'jane@quietco.example',
+    },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: api,
+      extractFn: async () => ({
+        industries: ['independent HVAC contractors'],
+        titles: ['owner'],
+      }),
+      env: { FIREFLIES_API_KEY: 'x' },
+      callLookbackMs: 90 * 24 * 60 * 60 * 1000,
+      now: Date.parse('2026-10-15T18:00:00Z'),
+    },
+  );
+  assert.equal(windowed, true);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.transcript_count, 1);
 });
