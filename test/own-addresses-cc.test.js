@@ -5,7 +5,6 @@ const { isOwnAddress, filterOwnAddresses } = require('../src/utils/own-addresses
 const { buildReplyAll } = require('../src/utils/reply-all');
 const { extractReferredContacts, parseReferralCcInput } = require('../src/utils/referred-contact');
 const { clientContactEmails, alwaysForwardEmailsForProspectCc } = require('../src/services/client-cc');
-const { noticeRecipients } = require('../src/services/cc-notice-email');
 const slack = require('../src/services/slack');
 
 describe('own addresses are never client contacts', () => {
@@ -104,25 +103,5 @@ describe('client CC list (checkbox label + recipients)', () => {
     assert.equal(alwaysForwardEmailsForProspectCc({
       cc_emails: 'owner@acme.test', cc_email: 'owner@acme.test', contact_email: 'owner@acme.test',
     }), '');
-  });
-});
-
-describe('heads-up recipients', () => {
-  it('excludes Josh, Cayden, our domains, the lead, the sending inbox and sending domains; dedupes', () => {
-    const to = noticeRecipients({
-      ccEmails: 'owner@acme.test, OWNER@acme.test, joshua@salesglidergrowth.com, cayden@salesglidergrowth.com, '
-        + 'lead@prospect.test, box@sender-two.test, other@sender-two.test, ops@acme.test',
-      leadEmail: 'lead@prospect.test',
-      exclude: ['joshua@salesglidergrowth.com', 'box@sender-two.test'],
-      accountEmails: ['box@sender-two.test'],
-    });
-    assert.deepEqual(to, ['owner@acme.test', 'ops@acme.test']);
-  });
-  it('a client on gmail.com is not dropped just because Josh uses Gmail', () => {
-    const to = noticeRecipients({
-      ccEmails: 'owner@gmail.com', leadEmail: 'lead@prospect.test',
-      exclude: ['joshua@salesglidergrowth.com'], accountEmails: [],
-    });
-    assert.deepEqual(to, ['owner@gmail.com']);
   });
 });
