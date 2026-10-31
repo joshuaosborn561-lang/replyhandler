@@ -1119,6 +1119,91 @@ function oneLineText(s, max) {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+/**
+ * A later reply in the same thread: more than one real message from them,
+ * or a message from us after they already replied. The cold email plus
+ * their first reply is still the first card. Placeholder inbounds do not count.
+ */
+function isBackAndForthThread(threadMessages) {
+  const history = Array.isArray(threadMessages) ? threadMessages : [];
+  let them = 0;
+  let seenThem = false;
+  for (const raw of history) {
+    if (!raw) continue;
+    const body = String(raw.body || raw.message || '').trim();
+    if (!body || isPlaceholderInbound(body)) continue;
+    const role = String(raw.role || '').toLowerCase();
+    const fromThem = role === 'them' || role === 'prospect' || role === 'lead';
+    const fromUs = role === 'us' || role === 'me';
+    if (fromThem) {
+      them += 1;
+      seenThem = true;
+    } else if (fromUs && seenThem) {
+      return true;
+    }
+  }
+  return them > 1;
+}
+
+function clientNameBlock(clientName) {
+  const name = String(clientName || '').replace(/\s+/g, ' ').trim();
+  if (!name) return null;
+  return {
+    type: 'header',
+    text: { type: 'plain_text', text: name.length > 150 ? `${name.slice(0, 149)}…` : name },
+  };
+}
+
+function campaignBlock(campaignDisplay) {
+  const camp = String(campaignDisplay || '').trim();
+  if (!camp || camp === '—') return null;
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: `📣 ${escMrkdwn(oneLineText(camp, 200))}` },
+  };
+}
+
+function leadIdentityBlock({ name, title, company } = {}) {
+  const text = [name, title, company]
+    .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' · ');
+  if (!text) return null;
+  return {
+    type: 'section',
+    text: { type: 'mrkdwn', text: escMrkdwn(oneLineText(text, 200)) },
+  };
+}
+
+function scoreBlock(leadIcpVerdict) {
+  const line = icpVerdictLine(leadIcpVerdict).replace(/^\n+/, '').trim();
+  if (!line) return null;
+  return { type: 'section', text: { type: 'mrkdwn', text: line } };
+}
+
+/** Platform and label only. Campaign, contact, and ICP are already above. */
+function classificationContextBlock({ platform, classification, reasoning, threadPermalink } = {}) {
+  const bits = [`*${escMrkdwn(String(platform || '').toUpperCase())} · ${escMrkdwn(classification || '')}*`];
+  if (reasoning) bits.push(escMrkdwn(oneLineText(reasoning, 140)));
+  if (threadPermalink) bits.push(`<${threadPermalink}|Earlier card>`);
+  return {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: bits.join('  ·  ').slice(0, 2900) }],
+  };
+}
+
+function viewThreadActionsBlock(replyId) {
+  return {
+    type: 'actions',
+    elements: [{
+      type: 'button',
+      text: { type: 'plain_text', text: 'View full thread' },
+      action_id: 'view_thread',
+      value: String(replyId),
+    }],
+  };
+}
+
 /** Everything secondary on a single context block. */
 function secondaryContextBlock({
   platform, classification, review, reasoning, campaignDisplay, leadIcpVerdict, skipIcp,
@@ -1313,6 +1398,11 @@ function buildDraftApprovalCard({
     blocks = assembled.blocks;
     overflowThread = assembled.overflowThread || [];
   } else {
+    // Josh, Oct 31 2026: first card is client, campaign, contact, ICP and DM,
+    // what we said, what they said, the draft, then the buttons.
+    // A later reply in the same thread is only our last, their last, the draft,
+    // the buttons, and View full thread.
+    const backAndForth = isBackAndForthThread(threadMessages);
     const body = [
       ...youSaidBlocks(lastOutboundMessage),
       ...theyRepliedBlocks(inboundMessage),
@@ -1321,11 +1411,27 @@ function buildDraftApprovalCard({
       body.push(dividerBlock());
       body.push(...conversationStepBlocks({ emoji: '✍️', label: 'Suggested reply', body: draft }));
     }
-    const head = [...topBlocks, contactBlock];
+    const head = [];
+    if (mention) head.push({ type: 'section', text: { type: 'mrkdwn', text: String(mention) } });
+    if (!backAndForth) {
+      const clientHeader = clientNameBlock(client);
+      if (clientHeader) head.push(clientHeader);
+      const camp = campaignBlock(campaignDisplay);
+      if (camp) head.push(camp);
+      const who = leadIdentityBlock({ name, title, company });
+      if (who) head.push(who);
+      head.push(contactBlock);
+      const scores = scoreBlock(leadIcpVerdict);
+      if (scores) head.push(scores);
+    }
 
     const tail = [];
     if (review) tail.push(needsReviewBlock());
-    tail.push(contextBlock);
+    if (!backAndForth) {
+      tail.push(classificationContextBlock({
+        platform, classification, reasoning, threadPermalink,
+      }));
+    }
     const notice = platform === 'smartlead'
       ? ccAutoNoticeBlock({
           ccEmails: ccEmails || ccEmail,
@@ -1339,7 +1445,6 @@ function buildDraftApprovalCard({
       const referred = referredContactSection(referredContacts);
       if (referred) tail.push(referred);
     }
-    // Buttons last, after the draft and the context line.
     tail.push(approvalActionsForCard({
       replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
       heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
@@ -1351,6 +1456,7 @@ function buildDraftApprovalCard({
     if (shouldShowCcClientButton({ platform, ccEmails, ccEmail, showCcClientButton })) {
       tail.push(sendCcClientActionsBlock(replyId));
     }
+    if (backAndForth) tail.push(viewThreadActionsBlock(replyId));
     const fitted = fitCardBlocks(head, body, tail);
     blocks = fitted.blocks;
     overflowBlocks = fitted.overflowBlocks;
@@ -1780,6 +1886,114 @@ async function openEditReplyModal(token, triggerId, {
   });
 }
 
+const THREAD_MODAL_BLOCK_CAP = 90;
+
+/**
+ * Whole thread, plus the client, campaign, contact, and scores the short
+ * card leaves off. View only — it does not send.
+ */
+function buildThreadModalView({
+  replyId,
+  clientName,
+  campaignDisplay,
+  leadName,
+  leadTitle,
+  leadCompany,
+  leadEmail,
+  leadPhone,
+  leadPhoneAlt,
+  phoneEnrichmentStatus,
+  enrichmentReceipt,
+  leadLinkedinUrl,
+  leadWebsite,
+  leadIcpVerdict,
+  threadMessages,
+  lastOutboundMessage,
+  inboundMessage,
+} = {}) {
+  const blocks = [];
+  const who = [clientName, campaignDisplay]
+    .map((x) => String(x || '').trim())
+    .filter((x) => x && x !== '—');
+  if (who.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: who.map((line, i) => (i === 0 ? `*${escMrkdwn(line)}*` : escMrkdwn(line))).join('\n') },
+    });
+  }
+  const person = leadIdentityBlock({ name: leadName, title: leadTitle, company: leadCompany });
+  if (person) blocks.push(person);
+  blocks.push(compactContactLine({
+    leadEmail, leadPhone, leadPhoneAlt, phoneEnrichmentStatus, enrichmentReceipt, leadLinkedinUrl, leadWebsite,
+  }));
+  const scores = scoreBlock(leadIcpVerdict);
+  if (scores) blocks.push(scores);
+  blocks.push(dividerBlock());
+
+  const turns = [];
+  for (const raw of Array.isArray(threadMessages) ? threadMessages : []) {
+    const body = String(raw?.body || raw?.message || '').trim();
+    if (!body || isPlaceholderInbound(body)) continue;
+    const role = String(raw.role || '').toLowerCase();
+    const fromUs = role === 'us' || role === 'me';
+    turns.push({ role: fromUs ? 'us' : 'them', body });
+  }
+  if (!turns.length) {
+    const ours = String(lastOutboundMessage || '').trim();
+    const theirs = String(inboundMessage || '').trim();
+    if (ours) turns.push({ role: 'us', body: ours });
+    if (theirs) turns.push({ role: 'them', body: theirs });
+  }
+
+  let hidden = 0;
+  for (const turn of turns) {
+    const next = conversationStepBlocks({
+      emoji: turn.role === 'us' ? '🗣' : '📥',
+      label: turn.role === 'us' ? 'You said' : 'They replied',
+      body: turn.body,
+    });
+    if (blocks.length + next.length > THREAD_MODAL_BLOCK_CAP) {
+      hidden += 1;
+      continue;
+    }
+    blocks.push(...next);
+  }
+  if (hidden) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `${hidden} older message${hidden === 1 ? '' : 's'} did not fit in this window.` }],
+    });
+  }
+  if (!turns.length) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '_No earlier messages are stored on this reply._' },
+    });
+  }
+
+  return {
+    type: 'modal',
+    callback_id: 'card_thread_modal',
+    private_metadata: JSON.stringify({ replyId: replyId || null }),
+    title: { type: 'plain_text', text: 'Full thread' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: blocks.slice(0, 100),
+  };
+}
+
+async function openThreadModal(token, triggerId, opts = {}) {
+  if (!token || !triggerId) {
+    const err = new Error('missing Slack trigger');
+    err.code = 'NO_TRIGGER';
+    throw err;
+  }
+  const slack = getClient(token);
+  return slack.views.open({
+    trigger_id: triggerId,
+    view: buildThreadModalView(opts),
+  });
+}
+
 /**
  * Post the morning digest header; individual follow-up approval cards follow as children posts.
  */
@@ -1906,6 +2120,10 @@ module.exports = {
   replaceActionsWithStatus,
   updateMessageKeepingBlocks,
   openEditReplyModal,
+  openThreadModal,
+  buildThreadModalView,
+  isBackAndForthThread,
+  viewThreadActionsBlock,
   buildEditReplyBlocks,
   ccClientModalBlock,
   ccClientOptionText,

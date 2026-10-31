@@ -1703,3 +1703,13 @@ Guard: `a call matches on attendee domain or Onboarding/Discovery plus a first n
 `POST /admin/clients/:clientId/icp-profile` sets `icp_profile`, `icp_status`, `icp_source`, and `icp_transcript_count`. Same open admin surface as the other client routes — no API key. The profile may only contain industries, titles, company_size, geos, offer, and exclusions, each a string or a list of strings. Status is `ready`, `needs_review`, or `skipped_existing` (default `ready` when the profile has facts). The response is those ICP columns only, never the client row (that row carries API keys). This write does not re-provision the portal.
 
 Guard: `a hand-entered ICP accepts the six fields and rejects a bad shape` and `saveManualIcpProfile writes the ICP columns and does not return the client row` in `test/client-icp-profile.test.js`.
+
+## Interested reply card: full context first, then just the latest exchange (2026-10-31)
+
+Josh: "I need to see the client name, his campaign, his contact info, the ICP and DM, and what we said and what he said and then the card to decide. Then if we get into back and forth, just our last, his last, drafted reply and button, and click in to see whole thread."
+
+- The **first** reply card, top to bottom: client name, campaign, the lead (name once), phone with its mobile label, email, LinkedIn, and the company website, then the ICP and decision-maker scores, what we said, what they said, the draft, then the buttons. Contact details are not repeated in a footer.
+- A **later reply in the same thread** (more than one real message from them, or a message from us after they already replied) shows only our last message, their last message, the draft, the same buttons, and **View full thread**. That button opens a modal with the whole thread plus the client, campaign, contact, and scores. The cold email plus their first reply is still the first card.
+- Approve, Approve & Send + CC client, Edit, Reject (close only), DQ, and Meeting booked stay separate buttons. `action_id` and `value` stay the reply id, so a card already posted with the old layout still works. Follow-up cards are unchanged.
+
+Guard: `test/reply-card-layout.test.js`.

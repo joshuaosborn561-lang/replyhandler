@@ -213,6 +213,12 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 
     console.log('[Slack] Action received', { actionId: action.action_id, value: action.value });
 
+    // The full thread stays readable after the card is closed.
+    if (action.action_id === 'view_thread') {
+      await handleViewThread(action.value, interaction);
+      return;
+    }
+
     // A button on a reply someone else (or the booking bridge) already closed: say so, privately.
     if (await noticeIfClosed(action, interaction)) return;
 
@@ -256,6 +262,56 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
 });
 
 const CLICK_NOT_OPEN = 'This reply is no longer open, so nothing was done.';
+
+async function handleViewThread(replyId, interaction) {
+  const id = String(replyId || '').trim();
+  if (!id) {
+    await sendEphemeralNotice(interaction, 'That thread could not be opened.');
+    return;
+  }
+  const { rows: [reply] } = await db.query(
+    `SELECT pr.*, c.name AS client_name, c.slack_bot_token
+       FROM pending_replies pr
+       JOIN clients c ON c.id = pr.client_id
+      WHERE pr.id = $1`,
+    [id]
+  );
+  if (!reply) {
+    await sendEphemeralNotice(interaction, 'That reply is not on file, so the thread could not be opened.');
+    return;
+  }
+  if (!reply.slack_bot_token || !interaction?.trigger_id) {
+    await sendEphemeralNotice(interaction, 'The full thread could not be opened from this click.');
+    return;
+  }
+  const threadMessages = extractThreadMessages(reply.platform, reply.thread_context, { maxMessages: 40 });
+  const lastOutbound = reply.platform === 'smartlead'
+    ? lastOutboundBodyFromSmartleadHistory(reply.thread_context)
+    : '';
+  try {
+    await slackService.openThreadModal(reply.slack_bot_token, interaction.trigger_id, {
+      replyId: reply.id,
+      clientName: reply.client_name,
+      campaignDisplay: formatCampaignDisplay(reply.campaign_name, reply.campaign_id),
+      leadName: reply.lead_full_name || reply.lead_name,
+      leadTitle: reply.lead_title,
+      leadCompany: reply.lead_company,
+      leadEmail: reply.lead_email,
+      leadPhone: reply.lead_phone,
+      leadPhoneAlt: reply.lead_phone_alt,
+      phoneEnrichmentStatus: reply.phone_enrichment_status,
+      leadLinkedinUrl: reply.linkedin_url,
+      leadWebsite: reply.lead_website,
+      leadIcpVerdict: reply.icp_verdict,
+      threadMessages,
+      lastOutboundMessage: lastOutbound,
+      inboundMessage: reply.inbound_message,
+    });
+  } catch (err) {
+    console.warn('[Slack] view_thread failed', { err: err.message });
+    await sendEphemeralNotice(interaction, 'The full thread could not be opened. Nothing was sent.');
+  }
+}
 
 async function handleOpenEditModal(replyId, interaction) {
   const { rows: [reply] } = await db.query(

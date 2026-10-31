@@ -2,6 +2,7 @@ const { extractLeadPhone } = require('../utils/lead-phone');
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
+const { extractThreadMessages } = require('../utils/thread-transcript');
 const {
   enrichPendingReplyPhone,
   shouldSkipEnrichment,
@@ -118,6 +119,11 @@ function resolvePreviousThreadMessage({ platform, threadContext, inboundMessage 
     return plain;
   }
   return '';
+}
+
+function inboxThreadMessages(platform, card, threadContext) {
+  if (Array.isArray(card?.threadMessages)) return card.threadMessages;
+  return extractThreadMessages(platform, threadContext, { maxMessages: 40 });
 }
 
 function resolveSlackContextMessage({ platform, threadContext, lastOutboundMessage, inboundMessage }) {
@@ -791,6 +797,9 @@ async function postProspectSlackCard({
 
     let payload = {
       ...enrichedCard,
+      threadMessages: String(enrichedCard.classification || '').toUpperCase() === 'FOLLOW_UP'
+        ? enrichedCard.threadMessages
+        : inboxThreadMessages(platform, enrichedCard, threadContext),
       lastOutboundMessage: contextMessage.body || undefined,
       contextLabel: contextMessage.label,
       threadTs: threadTs || undefined,
