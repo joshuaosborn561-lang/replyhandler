@@ -5,7 +5,7 @@
  *
  * Josh's inbox, Cayden's, the primary Gmail the app sends from, and anything on our own domains
  * (salesglidergrowth.com and friends) must never show up as "another person on the thread", in the
- * client CC list / checkbox label, or as a recipient of the "we CC'd you" heads-up.
+ * client CC list or checkbox label.
  *
  * Extra addresses / domains can be added with OWN_ADDRESSES and OWN_DOMAINS (comma separated),
  * e.g. Josh's personal Gmail. Sending-inbox exclusion is separate (it is per thread): pass those
