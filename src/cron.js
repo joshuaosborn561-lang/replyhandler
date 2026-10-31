@@ -230,6 +230,26 @@ function startCron() {
     }
   }
 
+  // ─── MeetStream attendance (OFF by default, MEETSTREAM_ATTENDANCE_ENABLED) ──
+  // Sends the silent "Attendance" bot into Google Meet meetings in scope, marks showed / no_show.
+  // Records nothing, posts nothing to Slack, never touches campaigns.
+  {
+    const meetstream = require('./services/meetstream-attendance');
+    if (meetstream.enabled()) {
+      cron.schedule('* * * * *', async () => {
+        try {
+          const result = await meetstream.runAttendanceTick();
+          if (result.created || result.decided || result.expired || result.hardStopped) {
+            console.log('[Cron] Meetstream attendance tick', result);
+          }
+        } catch (err) {
+          console.error('[Cron] Meetstream attendance tick failed', { err: err.message });
+        }
+      });
+      console.log('[Cron] Meetstream attendance ENABLED', { scope: meetstream.scopeSetting() });
+    }
+  }
+
   // ─── Weekly voice learning — Fridays ──────────────────────────────
   // Learns from the week's Slack-approved / edited sends and manual
   // SmartLead / HeyReach replies, refreshes RAG, re-synthesizes the voice

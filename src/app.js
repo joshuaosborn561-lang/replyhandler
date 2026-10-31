@@ -2,6 +2,7 @@ const path = require('path');
 const express = require('express');
 const webhookRoutes = require('./routes/webhooks');
 const bookingBridgeRecapRoutes = require('./routes/booking-bridge-recap');
+const meetstreamRoutes = require('./routes/meetstream');
 const slackRoutes = require('./routes/slack');
 const adminRoutes = require('./routes/admin');
 const dashboardApiRoutes = require('./routes/dashboard-api');
@@ -45,6 +46,7 @@ function createApp() {
 
   app.use(webhookRoutes);
   app.use(bookingBridgeRecapRoutes);
+  app.use(meetstreamRoutes);
   app.use(slackRoutes);
   app.use(onboardingRoutes);
   app.use(adminRoutes);
