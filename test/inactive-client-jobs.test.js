@@ -25,6 +25,10 @@ describe('inactive clients are skipped by pollers and crons', () => {
     assert.doesNotMatch(body, /hubspot/i);
   });
 
+  it('the Deep Roots migration is registered so it runs on deploy', () => {
+    assert.match(read('scripts/run-migrations.js'), /055_deactivate_deep_roots\.sql/);
+  });
+
   it('the meeting reminder, digest, nurture, and stuck-send jobs skip inactive clients', () => {
     const cron = read('src/cron.js');
     const reminder = sliceBetween(cron, 'Meeting reminders', 'if (attentionDigestsEnabled');
