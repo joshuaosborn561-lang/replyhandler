@@ -1786,3 +1786,14 @@ Josh: "this brief still looks nothing like the one i get". The briefs he gets ar
 - **Unchanged.** Hold, reviewer, zero-context guard, `CLIENT_DAYOF_BRIEF_ENABLED` default off.
 
 Guard: `test/client-brief-writer.test.js`.
+
+## EA writes the client day-of brief (Josh, Oct 31 2026)
+
+Josh: the EA bot writes client day-of briefs. ReplyHandler lists the meetings and sends the HTML EA returns. It does not write those briefs itself unless a flag is turned on.
+
+- **List.** `GET /admin/client-meetings/upcoming?from=&to=` returns meetings whose `confirmed_time` is in that window (start inclusive, end exclusive, at most 31 days, status booked or confirmed). A `confirmed_time` stamped at insert is left out. Each row has client id and name, `notify_emails`, prospect name, email, and company, meeting time as an ISO timestamp with the client zone's offset, the meeting link, booking source `allo` / `calendly` / `tidycal` (null when the row is none of those), Smartlead `campaign_id` and `lead_id`, the stored Smartlead thread messages, and `brief_sent`. ICP and decision-maker titles are read from `clients.icp_profile` on that row only. They are null when the row has none. Code defaults are not filled in.
+- **Send.** `POST /admin/client-brief/send` body `{meeting_id, subject, html}` emails that HTML to the client's `notify_emails` and CCs Josh, through the same Gmail send as a released brief. It records the row. A second send for a meeting that already has `sent_at` is refused. Empty HTML, zero-context HTML (no source, no company or site, no past email or call, and no stated ask), and internal lines (LTV, our pricing, an unsubscribe, Smartlead) are refused and nothing is recorded. The send flag off refuses and does not record, so a later call can still send.
+- **Flags.** `CLIENT_DAYOF_BRIEF_ENABLED` still defaults off and is what gates `/send` and the cron's send of an already released row. `CLIENT_DAYOF_BRIEF_WRITER_ENABLED` defaults off. The internal LLM writer and the cron that builds a held brief run only when that flag is on. The writer code stays.
+- **Auth.** These routes use the same auth as the other admin routes: no `ADMIN_API_KEY`.
+
+Guard: `test/client-dayof-brief.test.js` (`lists upcoming meetings from the client record`, `sends EA html once and refuses an empty, zero-context, internal, or duplicate brief`, `does not write a brief on the cron unless the writer flag is on`).

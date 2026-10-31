@@ -251,12 +251,13 @@ function startCron() {
     }
   }
 
-  // ─── Client day-of briefs — hold ~2 hours before, send only on release ─
-  // CLIENT_DAYOF_BRIEF_ENABLED defaults off. A held brief is never emailed.
+  // ─── Client day-of briefs ────────────────────────────────────────────
+  // The send flag gates client email. The writer flag gates the internal
+  // hold/LLM path. Both default off, so EA is the writer and nothing sends.
   cron.schedule('*/5 * * * *', async () => {
     try {
       const briefs = require('./services/client-dayof-brief');
-      if (!briefs.dayofBriefEnabled()) return;
+      if (!briefs.dayofBriefEnabled() && !briefs.dayofBriefWriterEnabled()) return;
       const result = await briefs.runClientDayofBriefs();
       if (result.held || result.notified || result.sent || result.blocked_by_context) {
         console.log('[Cron] Client day-of briefs', result);
@@ -458,10 +459,14 @@ function startCron() {
   const icpNote = icpAutoBuildEnabled()
     ? `ICP auto-build (hourly weekdays 6am-8pm ${ICP_BUILD_TZ})`
     : 'ICP auto-build disabled (DISABLE_ICP_AUTO_BUILD)';
-  const dayofNote = require('./services/client-dayof-brief').dayofBriefEnabled()
-    ? 'client day-of briefs ON (held for review)'
-    : 'client day-of briefs off (CLIENT_DAYOF_BRIEF_ENABLED)';
-  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}, ${dayofNote}`);
+  const dayofBriefs = require('./services/client-dayof-brief');
+  const dayofNote = dayofBriefs.dayofBriefEnabled()
+    ? 'client day-of brief send ON'
+    : 'client day-of brief send off (CLIENT_DAYOF_BRIEF_ENABLED)';
+  const dayofWriterNote = dayofBriefs.dayofBriefWriterEnabled()
+    ? 'internal day-of writer ON'
+    : 'internal day-of writer off (CLIENT_DAYOF_BRIEF_WRITER_ENABLED)';
+  console.log(`[Cron] Jobs scheduled: SmartLead + HeyReach polling, follow-up runner, interested sweep, meeting reminders, ${voiceNote}, ${icpNote}, ${digestNote}, ${dayofNote}, ${dayofWriterNote}`);
 }
 
 async function alreadyPostedAttentionDigest(clientId, digestDate, digestType) {

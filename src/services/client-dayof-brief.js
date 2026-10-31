@@ -3,42 +3,29 @@
 /**
  * Day-of meeting brief for the client who is taking the meeting.
  *
- * About CLIENT_DAYOF_BRIEF_LEAD_MINUTES (default 120, two hours) before
- * meetings.confirmed_time the cron builds one brief and stores it as `held`.
- * It notifies REVIEW_NOTIFY (a webhook URL or an email) with the rendered brief
- * and release / enrich / block links. An email subject starts with
- * `[Client brief review]`, then the lead, company, and meeting time.
- * It does not email the client.
+ * EA writes the brief. GET /admin/client-meetings/upcoming lists the meeting
+ * and the facts on file. POST /admin/client-brief/send emails that HTML to
+ * the client's notify_emails and CCs Josh, through the same Gmail send this
+ * file already uses. CLIENT_DAYOF_BRIEF_ENABLED gates that send (default off).
  *
- * The client email mirrors the briefs Josh gets. `send-brief` on the Client
- * portal project (scvrsmfzyvmmbnaolcrg) only mails prebuilt HTML to Josh through
- * Resend. The sections and wording are the ones in those emails (for example
- * "Brief: Nathan Schnefke and Joshua Osborn @ 11:00am CT"): Who, Why you're
- * meeting, Rapport hooks, Easy openers, Allo, Fireflies / Cube, Logistics.
- * HTML is the Arial 14px shell with an h3 per section. This path renders here
- * and sends with Gmail to the client's notify list. It does not call send-brief.
- * It does not invent personal facts, and it drops internal notes (LTV, pricing
- * bars, unsubscribe, Smartlead).
+ * The internal writer (client-brief-writer.js) and the cron that builds a held
+ * brief stay in the code. They run only when CLIENT_DAYOF_BRIEF_WRITER_ENABLED
+ * is on (default off), so EA is the only writer unless that flag is turned on.
+ * The hold still notifies REVIEW_NOTIFY and still does not email the client.
+ * POST /admin/client-briefs/:id/release remains the way a held brief becomes
+ * `released`. A released brief is emailed only when the send flag is on.
  *
- * The cron hold and the admin preview call the same gather. It reads the
- * stored reply, then fills gaps from the lookups already used on reply cards:
- * Smartlead thread and lead, person profile (LinkedIn, title, location), the
- * email waterfall (phone and LinkedIn), HeyReach when a LinkedIn URL is known,
- * Allo call history, Fireflies transcripts, and the company site. The email
- * uses the seven sections above. The words are written by the same kind of LLM
- * pass as EA's "Meeting brief 30m before" routine (client-brief-writer.js), from
- * these facts only, with code guards. With no LLM key, or on any failure, the
- * mechanical sections print instead. A failed lookup leaves that fact out.
+ * The sections, when this file renders them, are Who, Why you're meeting,
+ * Rapport hooks, Easy openers, Allo, Fireflies / Cube, Logistics. HTML is the
+ * Arial 14px shell with an h3 per section. It does not call send-brief. It
+ * does not invent personal facts, and it drops internal notes (LTV, pricing
+ * bars, unsubscribe, Smartlead). POST /send refuses HTML that contains those
+ * lines, and refuses empty or zero-context HTML.
  *
- * POST /admin/client-briefs/:id/release is the only way a brief becomes
- * `released`. The client email goes out only then, and only when
- * CLIENT_DAYOF_BRIEF_ENABLED is on (default off). A blocked brief never sends.
- * A held brief never auto-sends. A brief with no source, no company info, no
- * past emails or calls, and no stated ask cannot be released or sent. A missing
- * LinkedIn URL is not that guard.
- *
- * To = clients.notify_emails. CC = Josh. This path is not a prospect reply and
- * does not CC anyone on a Smartlead or HeyReach send.
+ * A brief with no source, no company info, no past emails or calls, and no
+ * stated ask cannot be released or sent. A missing LinkedIn URL is not that
+ * guard. To = clients.notify_emails. CC = Josh. This path is not a prospect
+ * reply and does not CC anyone on a Smartlead or HeyReach send.
  */
 
 const { notifyEmails, parseEmailList, formatEmailList } = require('./client-cc');
@@ -50,12 +37,20 @@ const { cleanPhone } = require('../utils/lead-phone');
 
 const JOSH_DEFAULT = 'joshua@salesglidergrowth.com';
 const FLAG = 'CLIENT_DAYOF_BRIEF_ENABLED';
+const WRITER_FLAG = 'CLIENT_DAYOF_BRIEF_WRITER_ENABLED';
 const LEAD_FLAG = 'CLIENT_DAYOF_BRIEF_LEAD_MINUTES';
 const DEFAULT_LEAD_MINUTES = 120;
+const MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail)\./i;
+const ICP_KEYS = ['industries', 'titles', 'company_size', 'geos', 'offer', 'exclusions'];
 
 function dayofBriefEnabled(env = process.env) {
   return /^(1|true|yes|on)$/i.test(String(env[FLAG] || '').trim());
+}
+
+/** Internal LLM writer and the cron that builds briefs. Default off. EA writes. */
+function dayofBriefWriterEnabled(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env[WRITER_FLAG] || '').trim());
 }
 
 function leadMinutes(env = process.env) {
@@ -551,8 +546,10 @@ function prospectTexts(src) {
  * Same gather for the cron hold and the dry-run preview.
  * Reads the stored reply, then fills gaps from the lookups this repo already
  * uses, plus Allo and Fireflies. A failed lookup omits that fact.
- * With a key set it also runs the brief writer over these facts and web results.
- * Nothing invents a title, size, or profile outside what the lookups returned.
+ * The LLM writer runs only when CLIENT_DAYOF_BRIEF_WRITER_ENABLED is on and a
+ * key is set, or when a test passes writeSections / llm. A failure keeps the
+ * mechanical sections. Nothing invents a title, size, or profile outside what
+ * the lookups returned.
  */
 async function gatherBriefFacts(row, {
   priorNoShows = null, env = process.env, fetchImpl = fetch, deps = null, db = null,
@@ -741,9 +738,12 @@ async function gatherBriefFacts(row, {
     facts.flags.risks.push(`Email signature lists ${fromEmail}. The company site lists ${fromSite}.`);
   }
 
-  // The words come from the same kind of LLM pass EA runs for Josh's own briefs.
+  // EA writes the client brief. This pass stays off unless its flag is on.
+  // A test double (writeSections / llm) still runs so the writer can be checked.
   const writerOn = Boolean(injected.writeSections || injected.llm)
-    || (!injected.skipWriter && require('./client-brief-writer').writerConfigured(env));
+    || (!injected.skipWriter
+      && dayofBriefWriterEnabled(env)
+      && require('./client-brief-writer').writerConfigured(env));
   if (writerOn) {
     const company = oneLine(facts.company.name || facts.prospect.company, 160);
     const person = oneLine(facts.prospect.name, 160);
@@ -1203,6 +1203,164 @@ async function notifyReviewer(brief, { env = process.env, fetchImpl = fetch, sen
   return { ok: false, skipped: 'bad_target' };
 }
 
+function bookingSource(row) {
+  const blob = `${row.calendar_provider || ''} ${row.meeting_link || ''} ${row.platform || ''}`.toLowerCase();
+  if (/(^|[^a-z])allo([^a-z]|$)|withallo/.test(blob)) return 'allo';
+  if (blob.includes('tidycal')) return 'tidycal';
+  if (blob.includes('calendly')) return 'calendly';
+  return null;
+}
+
+/** ICP and buyer titles stored on the client row. Code defaults are not used. */
+function clientRecordIcp(row) {
+  const raw = parseObj(row && row.icp_profile);
+  if (!raw || Array.isArray(raw)) return { icp: null, decision_maker_titles: null };
+  const icp = {};
+  for (const key of ICP_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
+    const val = raw[key];
+    if (Array.isArray(val)) {
+      const items = val.map((item) => oneLine(item, 200)).filter(Boolean);
+      if (items.length) icp[key] = items;
+    } else if (filled(val)) {
+      icp[key] = oneLine(val, 500);
+    }
+  }
+  if (!Object.keys(icp).length) return { icp: null, decision_maker_titles: null };
+  const titles = Array.isArray(icp.titles) && icp.titles.length ? icp.titles : null;
+  return { icp, decision_maker_titles: titles };
+}
+
+function isoWithZone(value, tz) {
+  const d = asDate(value);
+  const zone = tz || 'America/Chicago';
+  if (!d) return { meeting_time: null, timezone: zone };
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'longOffset',
+    }).formatToParts(d);
+    const pick = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+    let offset = 'Z';
+    const match = String(pick('timeZoneName')).match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+    if (match) {
+      offset = `${match[1]}${match[2].padStart(2, '0')}:${(match[3] || '00').padStart(2, '0')}`;
+      if (offset === '+00:00' || offset === '-00:00') offset = 'Z';
+    }
+    const iso = `${pick('year')}-${pick('month')}-${pick('day')}T${pick('hour')}:${pick('minute')}:${pick('second')}${offset}`;
+    return { meeting_time: iso, timezone: zone };
+  } catch {
+    return { meeting_time: d.toISOString(), timezone: zone };
+  }
+}
+
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|tr|ul|ol)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Zero-context HTML is the same rule as the structured guard: no source, no
+ * company or site, no past email or call, and no stated ask. A name alone fails.
+ */
+function htmlIsZeroContext(text, meeting) {
+  const body = String(text || '');
+  const lower = body.toLowerCase();
+  const company = oneLine(meeting && meeting.lead_company, 200).toLowerCase();
+  let siteHost = '';
+  try {
+    const site = websiteFrom(meeting || {});
+    if (site) siteHost = new URL(site).hostname.replace(/^www\./, '').toLowerCase();
+  } catch { siteHost = ''; }
+  const urls = body.match(/https?:\/\/[^\s<>"']+/gi) || [];
+  const substantiveUrl = urls.some((u) => !/zoom\.us|meet\.google|teams\.microsoft|teams\.live|calendly\.com|tidycal\.com/i.test(u));
+  const hasCompany = (company.length > 2 && lower.includes(company))
+    || (siteHost.length > 3 && lower.includes(siteHost))
+    || substantiveUrl;
+  const hasHistory = /\b(asked|replied|said|wrote|voicemail|transcript)\b/i.test(body)
+    || /[“"][^"“”]{8,}[”"]/.test(body);
+  const hasAsk = /\?/.test(body) || /\b(wants|looking for|walk us through|asked)\b/i.test(body);
+  const hasSource = /\b(linkedin|campaign|came in|inbound|allo|calendly|tidycal|cold call|email)\b/i.test(body);
+  return !hasCompany && !hasHistory && !hasAsk && !hasSource;
+}
+
+function htmlSendProblem(subject, html, meeting) {
+  const sub = oneLine(subject, 300);
+  const raw = String(html || '').trim();
+  if (!sub || !raw) return 'empty';
+  const text = htmlToText(raw);
+  if (!text) return 'empty';
+  if (INTERNAL_BULLET.test(sub) || INTERNAL_BULLET.test(text)) return 'internal_content';
+  if (htmlIsZeroContext(text, meeting)) return 'zero_context';
+  return null;
+}
+
+function idOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  return String(v);
+}
+
+function presentUpcoming(row) {
+  const zone = row.digest_timezone || row.lead_timezone || 'America/Chicago';
+  const when = isoWithZone(usableMeetingStart(row) || row.confirmed_time, zone);
+  const icp = clientRecordIcp(row);
+  const name = oneLine(row.lead_full_name || row.lead_name, 200);
+  return {
+    meeting_id: row.id,
+    client_id: row.client_id,
+    client_name: row.client_name || null,
+    notify_emails: notifyEmails(row),
+    prospect_name: name || null,
+    prospect_email: oneLine(row.lead_email, 200).toLowerCase() || null,
+    prospect_company: oneLine(row.lead_company, 200) || null,
+    meeting_time: when.meeting_time,
+    timezone: when.timezone,
+    meeting_link: safeUrl(row.meeting_link) || null,
+    booking_source: bookingSource(row),
+    campaign_id: idOrNull(row.campaign_id),
+    lead_id: idOrNull(row.lead_id),
+    thread_id: idOrNull(row.pending_reply_id),
+    thread_messages: threadMessages(row, 'smartlead').map((m) => ({
+      role: m.role === 'us' ? 'us' : 'them',
+      body: m.body,
+      time: m.time || null,
+    })),
+    icp: icp.icp,
+    decision_maker_titles: icp.decision_maker_titles,
+    brief_sent: Boolean(row.brief_sent_at),
+  };
+}
+
+function parseWindow(from, to) {
+  if (!String(from || '').trim() || !String(to || '').trim()) return { ok: false, error: 'from_to_required' };
+  const start = asDate(from);
+  const end = asDate(to);
+  if (!start || !end || end.getTime() <= start.getTime()) return { ok: false, error: 'invalid_window' };
+  if (end.getTime() - start.getTime() > MAX_WINDOW_MS) return { ok: false, error: 'window_too_wide' };
+  return { ok: true, from: start.toISOString(), to: end.toISOString() };
+}
+
 function sqlStore(db) {
   const q = (sql, params) => db.query(sql, params);
   return {
@@ -1226,6 +1384,31 @@ function sqlStore(db) {
             AND m.confirmed_time <= $1::timestamptz + ($2::int * interval '1 minute')
             AND NOT EXISTS (SELECT 1 FROM client_dayof_briefs b WHERE b.meeting_id = m.id)`,
         [now, minutes],
+      );
+      return rows;
+    },
+    async listUpcoming(from, to) {
+      const { rows } = await q(
+        `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
+                m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
+                c.name AS client_name, c.notify_emails, c.digest_timezone, c.icp_profile, c.icp_status,
+                pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
+                pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
+                pr.lead_timezone, pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
+                pr.thread_context, pr.updated_at,
+                b.sent_at AS brief_sent_at
+           FROM meetings m
+           JOIN clients c ON c.id = m.client_id
+           LEFT JOIN pending_replies pr ON pr.id = m.pending_reply_id
+           LEFT JOIN client_dayof_briefs b ON b.meeting_id = m.id
+          WHERE m.status IN ('booked', 'confirmed')
+            AND c.active IS DISTINCT FROM false
+            AND m.confirmed_time IS NOT NULL
+            AND m.confirmed_time >= $1::timestamptz
+            AND m.confirmed_time < $2::timestamptz
+          ORDER BY m.confirmed_time ASC
+          LIMIT 200`,
+        [from, to],
       );
       return rows;
     },
@@ -1422,8 +1605,43 @@ function sqlStore(db) {
     },
     async clientById(clientId) {
       const { rows } = await q(
-        `SELECT id, name, notify_emails, digest_timezone FROM clients WHERE id = $1`,
+        `SELECT id, name, notify_emails, digest_timezone, icp_profile, icp_status FROM clients WHERE id = $1`,
         [clientId],
+      );
+      return rows[0] || null;
+    },
+    async briefByMeeting(meetingId) {
+      const { rows } = await q(
+        `SELECT * FROM client_dayof_briefs WHERE meeting_id = $1`,
+        [meetingId],
+      );
+      return rows[0] || null;
+    },
+    async upsertEaReleased(row) {
+      const { rows } = await q(
+        `INSERT INTO client_dayof_briefs
+           (meeting_id, client_id, status, subject, html_body, text_body, facts,
+            to_emails, cc_emails, meeting_starts_at, released_at)
+         VALUES ($1, $2, 'released', $3, $4, $5, $6::jsonb, $7, $8, $9, now())
+         ON CONFLICT (meeting_id) DO UPDATE
+           SET status = 'released',
+               subject = EXCLUDED.subject,
+               html_body = EXCLUDED.html_body,
+               text_body = EXCLUDED.text_body,
+               facts = EXCLUDED.facts,
+               to_emails = EXCLUDED.to_emails,
+               cc_emails = EXCLUDED.cc_emails,
+               meeting_starts_at = COALESCE(client_dayof_briefs.meeting_starts_at, EXCLUDED.meeting_starts_at),
+               released_at = COALESCE(client_dayof_briefs.released_at, now()),
+               send_error = NULL,
+               updated_at = now()
+         WHERE client_dayof_briefs.sent_at IS NULL
+           AND client_dayof_briefs.status <> 'blocked'
+         RETURNING *`,
+        [
+          row.meeting_id, row.client_id, row.subject, row.html_body, row.text_body,
+          JSON.stringify(row.facts || {}), row.to_emails, row.cc_emails, row.meeting_starts_at,
+        ],
       );
       return rows[0] || null;
     },
@@ -1447,9 +1665,8 @@ function presentPending(row, env) {
   };
 }
 
-async function sendReleased(brief, { store, env, send }) {
+async function deliverReleased(brief, { store, env, send }) {
   if (!brief || brief.status !== 'released' || brief.sent_at) return { sent: false, reason: 'not_released' };
-  if (hasZeroContext(brief.facts)) return { sent: false, reason: 'zero_context' };
   const claimed = await store.claimSend(brief.id);
   if (!claimed) return { sent: false, reason: 'not_claimed' };
   const client = await store.clientById(brief.client_id);
@@ -1473,6 +1690,16 @@ async function sendReleased(brief, { store, env, send }) {
     await store.markSendError(brief.id, err && err.message ? err.message : 'send_failed');
     return { sent: false, reason: 'send_failed' };
   }
+}
+
+async function sendReleased(brief, ctx) {
+  if (!brief || brief.status !== 'released' || brief.sent_at) return { sent: false, reason: 'not_released' };
+  // EA HTML is checked before the row is written. A later cron retry must
+  // still be able to send that row. A mechanical brief with no facts cannot.
+  if (hasZeroContext(brief.facts) && asFacts(brief.facts).writer !== 'ea') {
+    return { sent: false, reason: 'zero_context' };
+  }
+  return deliverReleased(brief, ctx);
 }
 
 async function holdOne(row, { store, env, now, fetchImpl, send, deps }) {
@@ -1516,8 +1743,11 @@ async function runClientDayofBriefs(opts = {}) {
   const env = opts.env || process.env;
   const now = opts.now instanceof Date ? opts.now : new Date(opts.now || Date.now());
   const enabled = dayofBriefEnabled(env);
-  const result = { enabled, held: 0, notified: 0, sent: 0, skipped: 0, blocked_by_context: 0 };
-  if (!enabled) return result;
+  const writer = dayofBriefWriterEnabled(env);
+  const result = { enabled, writer, held: 0, notified: 0, sent: 0, skipped: 0, blocked_by_context: 0 };
+  // The send flag does not turn the writer on. EA is the writer unless the
+  // writer flag is set. Neither flag means the cron does nothing.
+  if (!enabled && !writer) return result;
   const store = opts.store || sqlStore(opts.db || require('../db'));
   const send = opts.send || (async (message) => {
     const gmail = require('./gmail-send');
@@ -1525,45 +1755,48 @@ async function runClientDayofBriefs(opts = {}) {
   });
   const fetchImpl = opts.fetchImpl || fetch;
 
-  if (store.giveUpPast) await store.giveUpPast(now);
-
-  const due = await store.dueMeetings(now, leadMinutes(env));
-  for (const row of due) {
-    try {
-      const out = await holdOne(row, { store, env, now, fetchImpl, send, deps: opts.deps });
-      if (out.held) result.held += 1;
-      else result.skipped += 1;
-      if (out.notified) result.notified += 1;
-    } catch (err) {
-      result.skipped += 1;
-      console.error('[DayofBrief] hold failed', { meetingId: row && row.id, err: String(err && err.message || err).slice(0, 200) });
-    }
-  }
-
-  const waiting = await store.listUnnotified();
-  for (const brief of waiting) {
-    try {
-      const note = await notifyReviewer(brief, { env, fetchImpl, send });
-      if (note.ok) {
-        await store.markNotified(brief.id, null);
-        result.notified += 1;
-      } else {
-        await store.markNotified(brief.id, note.skipped || 'not_notified');
+  if (writer) {
+    const due = await store.dueMeetings(now, leadMinutes(env));
+    for (const row of due) {
+      try {
+        const out = await holdOne(row, { store, env, now, fetchImpl, send, deps: opts.deps });
+        if (out.held) result.held += 1;
+        else result.skipped += 1;
+        if (out.notified) result.notified += 1;
+      } catch (err) {
+        result.skipped += 1;
+        console.error('[DayofBrief] hold failed', { meetingId: row && row.id, err: String(err && err.message || err).slice(0, 200) });
       }
-    } catch (err) {
-      await store.markNotified(brief.id, String(err && err.message || err).slice(0, 300));
+    }
+
+    const waiting = await store.listUnnotified();
+    for (const brief of waiting) {
+      try {
+        const note = await notifyReviewer(brief, { env, fetchImpl, send });
+        if (note.ok) {
+          await store.markNotified(brief.id, null);
+          result.notified += 1;
+        } else {
+          await store.markNotified(brief.id, note.skipped || 'not_notified');
+        }
+      } catch (err) {
+        await store.markNotified(brief.id, String(err && err.message || err).slice(0, 300));
+      }
     }
   }
 
-  const ready = await store.listUnsentReleased(now);
-  for (const brief of ready) {
-    if (brief.status !== 'released') continue;
-    if (hasZeroContext(brief.facts)) {
-      result.blocked_by_context += 1;
-      continue;
+  if (enabled) {
+    if (store.giveUpPast) await store.giveUpPast(now);
+    const ready = await store.listUnsentReleased(now);
+    for (const brief of ready) {
+      if (brief.status !== 'released') continue;
+      if (hasZeroContext(brief.facts) && asFacts(brief.facts).writer !== 'ea') {
+        result.blocked_by_context += 1;
+        continue;
+      }
+      const sent = await sendReleased(brief, { store, env, send });
+      if (sent.sent) result.sent += 1;
     }
-    const sent = await sendReleased(brief, { store, env, send });
-    if (sent.sent) result.sent += 1;
   }
   return result;
 }
@@ -1650,11 +1883,102 @@ async function blockBrief(id, { store } = {}) {
   return { status: 200, body: { ok: true, status: 'blocked', sent: false } };
 }
 
+/**
+ * Meetings in [from, to) for EA to write. ICP and buyer titles come only from
+ * the client row. A missing profile is null, never a code default.
+ * Thread messages are the stored Smartlead history, not a live refetch.
+ */
+async function listUpcomingMeetings({ from, to, store } = {}) {
+  const window = parseWindow(from, to);
+  if (!window.ok) return { status: 400, body: { ok: false, error: window.error } };
+  const dbStore = store || sqlStore(require('../db'));
+  const rows = await dbStore.listUpcoming(window.from, window.to);
+  const meetings = [];
+  for (const row of rows || []) {
+    if (!usableMeetingStart(row)) continue;
+    meetings.push(presentUpcoming(row));
+  }
+  return {
+    status: 200,
+    body: { ok: true, from: window.from, to: window.to, count: meetings.length, meetings },
+  };
+}
+
+/**
+ * Send EA's HTML for one meeting. Records the row, then uses the same claim
+ * and Gmail send as a released brief. Flag off does not write a row, so a
+ * later call can still send. A meeting that already has sent_at is refused.
+ */
+async function sendClientBrief({ meetingId, subject, html } = {}, { store, env = process.env, send } = {}) {
+  if (!dayofBriefEnabled(env)) {
+    return { status: 409, body: { ok: false, sent: false, error: 'flag_off' } };
+  }
+  if (!meetingId) return { status: 400, body: { ok: false, sent: false, error: 'meeting_id_required' } };
+  const dbStore = store || sqlStore(require('../db'));
+  const row = await dbStore.loadMeeting(meetingId);
+  if (!row) return { status: 404, body: { ok: false, sent: false, error: 'meeting_not_found' } };
+  const problem = htmlSendProblem(subject, html, row);
+  if (problem === 'empty') return { status: 400, body: { ok: false, sent: false, error: 'empty' } };
+  if (problem === 'internal_content') {
+    return { status: 400, body: { ok: false, sent: false, error: 'internal_content' } };
+  }
+  if (problem === 'zero_context') {
+    return { status: 409, body: { ok: false, sent: false, error: 'zero_context' } };
+  }
+  const recipients = clientBriefRecipients(row, env);
+  if (!recipients.to.length) {
+    return { status: 409, body: { ok: false, sent: false, error: 'no_recipients' } };
+  }
+  const existing = dbStore.briefByMeeting ? await dbStore.briefByMeeting(meetingId) : null;
+  if (existing && existing.sent_at) {
+    return { status: 409, body: { ok: false, sent: false, error: 'already_sent' } };
+  }
+  if (existing && existing.status === 'blocked') {
+    return { status: 409, body: { ok: false, sent: false, error: 'blocked' } };
+  }
+  const text = htmlToText(html);
+  const saved = await dbStore.upsertEaReleased({
+    meeting_id: row.id,
+    client_id: row.client_id,
+    subject: oneLine(subject, 300),
+    html_body: str(html, 200000),
+    text_body: text,
+    facts: { writer: 'ea' },
+    to_emails: formatEmailList(recipients.to),
+    cc_emails: formatEmailList(recipients.cc),
+    meeting_starts_at: usableMeetingStart(row) || asDate(row.confirmed_time),
+  });
+  if (!saved) {
+    const again = dbStore.briefByMeeting ? await dbStore.briefByMeeting(meetingId) : null;
+    if (again && again.sent_at) return { status: 409, body: { ok: false, sent: false, error: 'already_sent' } };
+    if (again && again.status === 'blocked') return { status: 409, body: { ok: false, sent: false, error: 'blocked' } };
+    return { status: 409, body: { ok: false, sent: false, error: 'not_sendable' } };
+  }
+  const mail = send || (async (message) => require('./gmail-send').sendMail(message));
+  const delivered = await deliverReleased(
+    { ...saved, status: 'released', sent_at: null, facts: saved.facts || { writer: 'ea' } },
+    { store: dbStore, env, send: mail },
+  );
+  if (delivered.sent) {
+    return {
+      status: 200,
+      body: { ok: true, sent: true, meeting_id: row.id, to: delivered.to, cc: delivered.cc },
+    };
+  }
+  if (delivered.reason === 'not_claimed') {
+    return { status: 409, body: { ok: false, sent: false, error: 'in_flight' } };
+  }
+  const status = delivered.reason === 'send_failed' ? 502 : 409;
+  return { status, body: { ok: false, sent: false, error: delivered.reason || 'send_failed' } };
+}
+
 module.exports = {
   FLAG,
+  WRITER_FLAG,
   JOSH_DEFAULT,
   EXAMPLE_BRIEF_FACTS,
   dayofBriefEnabled,
+  dayofBriefWriterEnabled,
   leadMinutes,
   joshEmail,
   usableMeetingStart,
@@ -1677,6 +2001,8 @@ module.exports = {
   listPendingBriefs,
   releaseBrief,
   blockBrief,
+  listUpcomingMeetings,
+  sendClientBrief,
   sendReleased,
   sqlStore,
 };

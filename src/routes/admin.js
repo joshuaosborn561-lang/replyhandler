@@ -746,4 +746,41 @@ router.post('/admin/client-briefs/:id/block', async (req, res) => {
   }
 });
 
+/**
+ * Upcoming client meetings for the EA writer.
+ * Query: ?from=&to= (ISO instants, start inclusive, end exclusive, at most 31 days).
+ * Same auth as the other admin routes on this router: none.
+ */
+router.get('/admin/client-meetings/upcoming', async (req, res) => {
+  try {
+    const { listUpcomingMeetings } = require('../services/client-dayof-brief');
+    const out = await listUpcomingMeetings({ from: req.query.from, to: req.query.to });
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] upcoming client meetings error', { err: err.message });
+    return res.status(500).json({ error: 'upcoming_failed' });
+  }
+});
+
+/**
+ * Send one EA-written brief. Body: { meeting_id, subject, html }.
+ * To = that client's notify_emails. CC = Josh. Gated by CLIENT_DAYOF_BRIEF_ENABLED.
+ * Same auth as the other admin routes on this router: none.
+ */
+router.post('/admin/client-brief/send', async (req, res) => {
+  try {
+    const { sendClientBrief } = require('../services/client-dayof-brief');
+    const body = req.body || {};
+    const out = await sendClientBrief({
+      meetingId: body.meeting_id || body.meetingId,
+      subject: body.subject,
+      html: body.html,
+    });
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] client brief send error', { err: err.message });
+    return res.status(500).json({ error: 'send_failed' });
+  }
+});
+
 module.exports = router;

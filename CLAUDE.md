@@ -228,26 +228,26 @@ Clients get exactly three automatic updates, all to `clients.notify_emails`
 1. The weekday 4:00pm CT roll-up of positive replies we answered
    (`client-reply-digest.js`).
 2. The instant meeting-booked brief (`booked-meeting-email.js`).
-3. The day-of meeting brief (`client-dayof-brief.js`). Built about 2 hours
-   before `meetings.confirmed_time` (`CLIENT_DAYOF_BRIEF_LEAD_MINUTES`, default
-   120) and
-   stored `held`. `REVIEW_NOTIFY` (webhook URL or email; default in
-   `docs/.env.example` is `salesglider-briefs@mail.grokbot.com`) gets the brief
-   plus release / enrich / block links. An email subject starts with
-   `[Client brief review]`, then the lead, company, and meeting time. The client is emailed only after
-   `POST /admin/client-briefs/:id/release`, and only when
-   `CLIENT_DAYOF_BRIEF_ENABLED` is on (default off). A held or blocked brief
-   never auto-sends. A brief with no source, no company info, no past emails
-   or calls, and no stated ask cannot be released or sent. Missing LinkedIn
-   alone does not trip that guard. The hold and the preview use the same
-   gather: stored reply, then Smartlead history, person profile, the email
-   waterfall, HeyReach, Allo, and the company site when those facts are
-   missing, plus Fireflies when a company or email is known. The email mirrors
-   the briefs Josh gets: Who, Why you're meeting, Rapport hooks, Easy openers,
-   Allo, Fireflies / Cube, Logistics. `send-brief` only mails prebuilt HTML.
-   Internal notes (LTV, an unsubscribe, Smartlead, another client's proof)
-   are left out. A failed lookup leaves the fact out. To =
-   `notify_emails`, CC = Josh.
+3. The day-of meeting brief (`client-dayof-brief.js`). EA writes it.
+   `GET /admin/client-meetings/upcoming?from=&to=` lists meetings in that
+   window (start inclusive, end exclusive, 31 days max) with the client,
+   notify list, prospect, time (ISO with the client zone's offset), link,
+   booking source (`allo` / `calendly` / `tidycal`, otherwise null), Smartlead
+   campaign id, lead id, stored thread messages, and the client's ICP and
+   buyer titles from `clients.icp_profile` only (null when that row has none;
+   code defaults are not filled in), plus whether a brief was already sent.
+   `POST /admin/client-brief/send` with `{meeting_id, subject, html}` emails
+   that HTML to `notify_emails` and CCs Josh, through the same Gmail send.
+   It records the send, and it refuses a duplicate, empty HTML, zero-context
+   HTML, and internal lines (LTV, pricing, unsubscribe, Smartlead). Both
+   routes use the same auth as the other admin routes (no API key). The send
+   is gated by `CLIENT_DAYOF_BRIEF_ENABLED` (default off). The internal LLM
+   writer and the cron that builds a held brief stay in the code and run only
+   when `CLIENT_DAYOF_BRIEF_WRITER_ENABLED` is on (default off). A held brief
+   still waits for `POST /admin/client-briefs/:id/release` and still does not
+   auto-send. A brief with no source, no company info, no past emails or
+   calls, and no stated ask cannot be released or sent. Missing LinkedIn
+   alone does not trip that guard. To = `notify_emails`, CC = Josh.
    `reminder-email.js` is still the one-hour reminder to the prospect
    (`meeting.lead_email`), not this brief.
 

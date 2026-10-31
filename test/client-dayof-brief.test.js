@@ -13,11 +13,13 @@ const path = require('path');
 
 const {
   dayofBriefEnabled,
+  dayofBriefWriterEnabled,
   leadMinutes,
   usableMeetingStart,
   briefIsDue,
   clientBriefRecipients,
   assembleBriefFacts,
+  gatherBriefFacts,
   hasZeroContext,
   buildClientDayofBrief,
   exampleClientBrief,
@@ -26,6 +28,8 @@ const {
   releaseBrief,
   blockBrief,
   listPendingBriefs,
+  listUpcomingMeetings,
+  sendClientBrief,
   JOSH_DEFAULT,
   REVIEW_SUBJECT_TAG,
   reviewEmailSubject,
@@ -172,6 +176,58 @@ function memoryStore(seed = {}) {
     async listPending() { return briefs.filter((b) => b.status === 'held'); },
     async loadMeeting(id) { return api.meetings.find((m) => m.id === id) || null; },
     async clientById(id) { return api.clients[id] || null; },
+    async listUpcoming(fromIso, toIso) {
+      const start = new Date(fromIso).getTime();
+      const end = new Date(toIso).getTime();
+      return api.meetings.filter((m) => {
+        const status = m.status || 'booked';
+        if (!['booked', 'confirmed'].includes(status)) return false;
+        const t = new Date(m.confirmed_time).getTime();
+        return t >= start && t < end;
+      }).map((m) => {
+        const client = api.clients[m.client_id] || {};
+        const brief = briefs.find((b) => b.meeting_id === m.id);
+        return {
+          ...m,
+          client_name: m.client_name || client.name,
+          notify_emails: client.notify_emails || m.notify_emails,
+          digest_timezone: m.digest_timezone || client.digest_timezone,
+          icp_profile: Object.prototype.hasOwnProperty.call(client, 'icp_profile') ? client.icp_profile : (m.icp_profile ?? null),
+          brief_sent_at: brief ? brief.sent_at : null,
+        };
+      });
+    },
+    async briefByMeeting(meetingId) {
+      return briefs.find((b) => b.meeting_id === meetingId) || null;
+    },
+    async upsertEaReleased(row) {
+      const existing = briefs.find((b) => b.meeting_id === row.meeting_id);
+      if (existing) {
+        if (existing.sent_at || existing.status === 'blocked') return null;
+        Object.assign(existing, {
+          status: 'released',
+          subject: row.subject,
+          html_body: row.html_body,
+          text_body: row.text_body,
+          facts: row.facts,
+          to_emails: row.to_emails,
+          cc_emails: row.cc_emails,
+          meeting_starts_at: row.meeting_starts_at,
+          send_error: null,
+        });
+        return existing;
+      }
+      const saved = {
+        id: `brief-${n++}`,
+        status: 'released',
+        sent_at: null,
+        send_error: null,
+        reviewer_notified_at: null,
+        ...row,
+      };
+      briefs.push(saved);
+      return { ...saved };
+    },
   };
   return api;
 }
@@ -179,6 +235,7 @@ function memoryStore(seed = {}) {
 function env(over = {}) {
   return {
     CLIENT_DAYOF_BRIEF_ENABLED: 'true',
+    CLIENT_DAYOF_BRIEF_WRITER_ENABLED: 'true',
     REVIEW_NOTIFY: 'https://review.example/hook',
     PUBLIC_BASE_URL: 'https://briefs.example',
     ...over,
@@ -191,6 +248,9 @@ describe('day-of brief schedule and flag', () => {
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: '' }), false);
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: 'false' }), false);
     assert.equal(dayofBriefEnabled({ CLIENT_DAYOF_BRIEF_ENABLED: 'true' }), true);
+    assert.equal(dayofBriefWriterEnabled({}), false);
+    assert.equal(dayofBriefWriterEnabled({ CLIENT_DAYOF_BRIEF_WRITER_ENABLED: '' }), false);
+    assert.equal(dayofBriefWriterEnabled({ CLIENT_DAYOF_BRIEF_WRITER_ENABLED: 'true' }), true);
     assert.equal(leadMinutes({}), 120);
     assert.equal(leadMinutes({ CLIENT_DAYOF_BRIEF_LEAD_MINUTES: '30' }), 30);
   });
@@ -705,9 +765,293 @@ describe('day-of brief stays off the prospect send path', () => {
     assert.match(admin, /\/admin\/client-briefs\/:id\/release/);
     assert.match(admin, /\/admin\/client-briefs\/:id\/block/);
     assert.match(admin, /\/admin\/client-briefs\/preview/);
+    assert.match(admin, /\/admin\/client-meetings\/upcoming/);
+    assert.match(admin, /\/admin\/client-brief\/send/);
     assert.doesNotMatch(admin, /requireAdminApiKey/);
     assert.match(cron, /dayofBriefEnabled/);
+    assert.match(cron, /dayofBriefWriterEnabled/);
     const envExample = fs.readFileSync(path.join(__dirname, '../docs/.env.example'), 'utf8');
     assert.match(envExample, /^REVIEW_NOTIFY=salesglider-briefs@mail\.grokbot\.com$/m);
+    assert.match(envExample, /CLIENT_DAYOF_BRIEF_WRITER_ENABLED=false/);
+  });
+});
+
+const WINDOW_FROM = '2026-10-31T00:00:00.000Z';
+const WINDOW_TO = '2026-11-01T00:00:00.000Z';
+const GOOD_SUBJECT = 'Brief: Jordan Hale and Vector @ 9:30am CT';
+const GOOD_HTML = [
+  '<div>',
+  '<h3>Who</h3><ul><li>Jordan Hale, VP of Operations, Northwind Roofing Co.</li>',
+  '<li>jordan.hale@northwind-roofing.example</li></ul>',
+  '<h3>Why you\'re meeting</h3><ul><li>They asked: Can you walk us through pricing?</li></ul>',
+  '</div>',
+].join('');
+
+describe('EA upcoming meetings and send', () => {
+  function upcomingStore() {
+    return memoryStore({
+      meetings: [
+        meeting({
+          status: 'booked',
+          calendar_provider: 'allo',
+          campaign_id: 4242,
+          lead_id: 'lead-88',
+          thread_context: {
+            history: [{
+              type: 'REPLY',
+              email_body: 'Thursday works. Can you walk us through pricing?',
+              time: '2026-10-28T15:00:00.000Z',
+            }],
+          },
+        }),
+        meeting({
+          id: 'meet-sg',
+          client_id: 'client-sg',
+          client_name: 'SalesGlider',
+          status: 'confirmed',
+          calendar_provider: 'google',
+          meeting_link: 'https://tidycal.com/example/intro',
+          lead_name: 'Casey Example',
+          lead_full_name: 'Casey Example',
+          lead_email: 'casey.example@harbor-logistics.example',
+          lead_company: 'Harbor Logistics',
+          inbound_message: 'Tuesday is fine.',
+          sent_reply: '',
+          pending_reply_id: 'reply-sg',
+        }),
+        meeting({
+          id: 'meet-cal',
+          status: 'booked',
+          calendar_provider: 'calendly',
+          meeting_link: 'https://calendly.com/example/intro',
+          lead_name: 'Riley Example',
+          lead_full_name: 'Riley Example',
+          lead_email: 'riley.example@northwind-roofing.example',
+        }),
+        meeting({ id: 'meet-later', status: 'booked', confirmed_time: '2026-11-02T14:30:00.000Z' }),
+        meeting({
+          id: 'meet-stamp',
+          status: 'booked',
+          confirmed_time: '2026-10-31T15:00:00.000Z',
+          created_at: '2026-10-31T15:00:30.000Z',
+        }),
+        meeting({ id: 'meet-edge', status: 'booked', confirmed_time: WINDOW_TO }),
+        meeting({ id: 'meet-no', status: 'cancelled' }),
+      ],
+      clients: {
+        'client-vector': {
+          id: 'client-vector',
+          name: 'Vector',
+          notify_emails: `${VECTOR}, ops@vectorenergygroup.example`,
+          digest_timezone: 'America/Chicago',
+          icp_profile: {
+            industries: ['commercial roofing'],
+            titles: ['Owner', 'Director of Facilities'],
+            company_size: ['20-200'],
+          },
+        },
+        'client-sg': {
+          id: 'client-sg',
+          name: 'SalesGlider',
+          notify_emails: 'ops@salesglidergrowth.example',
+          digest_timezone: 'America/Chicago',
+          icp_profile: null,
+          icp_status: 'ready',
+        },
+      },
+    });
+  }
+
+  it('lists upcoming meetings from the client record', async () => {
+    const missing = await listUpcomingMeetings({ store: memoryStore(), from: '', to: WINDOW_TO });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.error, 'from_to_required');
+    const wide = await listUpcomingMeetings({
+      store: memoryStore(),
+      from: '2026-10-01T00:00:00.000Z',
+      to: '2026-12-15T00:00:00.000Z',
+    });
+    assert.equal(wide.body.error, 'window_too_wide');
+
+    const store = upcomingStore();
+    const out = await listUpcomingMeetings({ store, from: WINDOW_FROM, to: WINDOW_TO });
+    assert.equal(out.status, 200);
+    const ids = out.body.meetings.map((m) => m.meeting_id);
+    assert.deepEqual(ids, ['meet-1', 'meet-sg', 'meet-cal']);
+
+    const row = out.body.meetings[0];
+    assert.equal(row.client_id, 'client-vector');
+    assert.equal(row.client_name, 'Vector');
+    assert.deepEqual(row.notify_emails, [VECTOR, 'ops@vectorenergygroup.example']);
+    assert.equal(row.prospect_name, 'Jordan Hale');
+    assert.equal(row.prospect_email, 'jordan.hale@northwind-roofing.example');
+    assert.equal(row.prospect_company, 'Northwind Roofing Co.');
+    assert.equal(row.meeting_time, '2026-10-31T09:30:00-05:00');
+    assert.equal(row.timezone, 'America/Chicago');
+    assert.equal(row.meeting_link, 'https://us06web.zoom.us/j/00000000000');
+    assert.equal(row.booking_source, 'allo');
+    assert.equal(row.campaign_id, '4242');
+    assert.equal(row.lead_id, 'lead-88');
+    assert.equal(row.thread_id, 'reply-1');
+    assert.equal(row.brief_sent, false);
+    assert.ok(row.thread_messages.some((m) => /walk us through pricing/.test(m.body)));
+    assert.deepEqual(row.icp.titles, ['Owner', 'Director of Facilities']);
+    assert.deepEqual(row.decision_maker_titles, ['Owner', 'Director of Facilities']);
+    assert.equal(row.decision_maker_titles.includes('Head of Growth'), false);
+
+    const plain = out.body.meetings[1];
+    assert.equal(plain.client_name, 'SalesGlider');
+    assert.equal(plain.booking_source, 'tidycal');
+    assert.equal(plain.icp, null);
+    assert.equal(plain.decision_maker_titles, null);
+    assert.equal(out.body.meetings[2].booking_source, 'calendly');
+
+    store.briefs.push({
+      id: 'brief-sent', meeting_id: 'meet-1', status: 'released', sent_at: 'sent', send_error: null,
+    });
+    const again = await listUpcomingMeetings({ store, from: WINDOW_FROM, to: WINDOW_TO });
+    assert.equal(again.body.meetings[0].brief_sent, true);
+  });
+
+  it('sends EA html once and refuses an empty, zero-context, internal, or duplicate brief', async () => {
+    const store = memoryStore({ meetings: [meeting({ status: 'booked' })] });
+    const sent = [];
+    const send = async (m) => sent.push(m);
+    const off = await sendClientBrief(
+      { meetingId: 'meet-1', subject: GOOD_SUBJECT, html: GOOD_HTML },
+      { store, env: { CLIENT_DAYOF_BRIEF_ENABLED: 'false' }, send },
+    );
+    assert.equal(off.status, 409);
+    assert.equal(off.body.error, 'flag_off');
+    assert.equal(off.body.sent, false);
+    assert.equal(store.briefs.length, 0);
+    assert.equal(sent.length, 0);
+
+    const empty = await sendClientBrief(
+      { meetingId: 'meet-1', subject: GOOD_SUBJECT, html: '   ' },
+      { store, env: env(), send },
+    );
+    assert.equal(empty.body.error, 'empty');
+    assert.equal(store.briefs.length, 0);
+
+    const thin = await sendClientBrief(
+      { meetingId: 'meet-1', subject: GOOD_SUBJECT, html: '<p>Jordan Hale</p>' },
+      { store, env: env(), send },
+    );
+    assert.equal(thin.status, 409);
+    assert.equal(thin.body.error, 'zero_context');
+    assert.equal(store.briefs.length, 0);
+
+    for (const html of [
+      '<p>Northwind Roofing Co. Should clear the LTV bar before the call.</p>',
+      '<p>Northwind Roofing Co. He unsubscribed from the sequence.</p>',
+      '<p>Northwind Roofing Co. Our pricing is $2,000 per month.</p>',
+      '<p>Northwind Roofing Co. Smartlead shows the thread.</p>',
+    ]) {
+      const refused = await sendClientBrief(
+        { meetingId: 'meet-1', subject: GOOD_SUBJECT, html },
+        { store, env: env(), send },
+      );
+      assert.equal(refused.status, 400, html);
+      assert.equal(refused.body.error, 'internal_content', html);
+      assert.equal(sent.length, 0);
+    }
+    assert.equal(store.briefs.length, 0);
+
+    const ok = await sendClientBrief(
+      { meetingId: 'meet-1', subject: GOOD_SUBJECT, html: GOOD_HTML },
+      { store, env: env(), send },
+    );
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.sent, true);
+    assert.deepEqual(ok.body.to, [VECTOR]);
+    assert.deepEqual(ok.body.cc, [JOSH]);
+    assert.match(sent[0].htmlBody, /walk us through pricing/);
+    assert.equal(sent[0].htmlBody.includes('LTV'), false);
+    assert.equal(store.briefs[0].sent_at, 'sent');
+    assert.equal(store.briefs[0].facts.writer, 'ea');
+
+    const dup = await sendClientBrief(
+      { meetingId: 'meet-1', subject: GOOD_SUBJECT, html: GOOD_HTML },
+      { store, env: env(), send },
+    );
+    assert.equal(dup.status, 409);
+    assert.equal(dup.body.error, 'already_sent');
+    assert.equal(sent.length, 1);
+
+    const missing = await sendClientBrief(
+      { meetingId: 'missing', subject: GOOD_SUBJECT, html: GOOD_HTML },
+      { store, env: env(), send },
+    );
+    assert.equal(missing.status, 404);
+  });
+
+  it('does not write a brief on the cron unless the writer flag is on', async () => {
+    const store = memoryStore({ meetings: [meeting()] });
+    const sent = [];
+    const quiet = await runClientDayofBriefs({
+      env: { CLIENT_DAYOF_BRIEF_ENABLED: 'true' },
+      store,
+      now: NOW,
+      send: async (m) => sent.push(m),
+    });
+    assert.equal(quiet.enabled, true);
+    assert.equal(quiet.writer, false);
+    assert.equal(quiet.held, 0);
+    assert.equal(store.briefs.length, 0);
+    assert.equal(sent.length, 0);
+
+    store.briefs.push({
+      id: 'brief-ready',
+      meeting_id: 'meet-1',
+      client_id: 'client-vector',
+      status: 'released',
+      sent_at: null,
+      send_error: null,
+      subject: GOOD_SUBJECT,
+      html_body: GOOD_HTML,
+      text_body: 'Northwind Roofing Co. They asked for a walkthrough.',
+      facts: {
+        how: { source: 'Email' },
+        company: { name: 'Northwind Roofing Co.' },
+        openItems: ['walkthrough'],
+      },
+    });
+    const tick = await runClientDayofBriefs({
+      env: { CLIENT_DAYOF_BRIEF_ENABLED: 'true' },
+      store,
+      now: NOW,
+      send: async (m) => sent.push(m),
+    });
+    assert.equal(tick.held, 0);
+    assert.equal(tick.sent, 1);
+    assert.equal(sent[0].to[0], VECTOR);
+    assert.deepEqual(sent[0].cc, [JOSH]);
+  });
+
+  it('does not call the brief writer unless its flag is on', async () => {
+    let calls = 0;
+    const fetchImpl = async (url) => {
+      if (/anthropic|openrouter/i.test(String(url))) calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ content: [{ type: 'text', text: 'not json' }] }),
+      };
+    };
+    const row = meeting({ lead_location: 'Dallas, TX' });
+    await gatherBriefFacts(row, {
+      env: { ANTHROPIC_API_KEY: 'test-key', OPENROUTER_API_KEY: 'test-key' },
+      fetchImpl,
+    });
+    assert.equal(calls, 0);
+    await gatherBriefFacts(row, {
+      env: {
+        CLIENT_DAYOF_BRIEF_WRITER_ENABLED: 'true',
+        ANTHROPIC_API_KEY: 'test-key',
+      },
+      fetchImpl,
+    });
+    assert.equal(calls, 1);
   });
 });
