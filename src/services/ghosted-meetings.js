@@ -735,7 +735,8 @@ async function stopReason(seq, source, { dbClient = db, env = process.env, deps 
   const { rows: inbound } = await dbClient.query(
     `SELECT 1 FROM pending_replies
       WHERE client_id = $1 AND upper(classification) <> 'FOLLOW_UP'
-        AND lower(coalesce(lead_email, '')) = $2 AND created_at > $3 LIMIT 1`,
+        AND lower(coalesce(lead_email, '')) = $2 AND created_at > $3
+        AND campaign_id IS DISTINCT FROM 'manual-ghost' LIMIT 1`, // the manual context row is not a prospect reply
     [clientId, email, seq.enrolled_at],
   );
   if (inbound.length) return 'inbound_reply';

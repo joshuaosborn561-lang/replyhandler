@@ -9,6 +9,12 @@
  * posts to Slack. The scanner's Fireflies / calendar attendance guess is skipped because a
  * person already decided the meeting was missed.
  *
+ * manual:true is for a lead with no SmartLead / HeyReach reply (booked through Allo calls or Calendly):
+ * it creates one inert context row in pending_replies (campaign_id 'manual-ghost', status skipped,
+ * classification OTHER, so no recap, digest, scan or resurface job picks it up) and enrolls through the
+ * same pipeline. Its approval card sends, once approved, as a new email from the SalesGlider Gmail
+ * mailbox (see the send step in the reply sender). A lead that does have a real reply uses that reply instead.
+ *
  * Idempotent: a lead (client + lead key) that already has a ghosted_meeting sequence, in any
  * status, is returned as already enrolled and nothing is written.
  */
@@ -18,6 +24,8 @@ const { leadKey } = require('./follow-up-call-reminder');
 const { isDisqualified } = require('./disqualified-prospects');
 const { isLeadClaimed } = require('./client-claimed');
 const { slugFromClientName, normalizeEmail } = require('./booking-bridge');
+const crypto = require('crypto');
+const manual = require('../utils/manual-ghost');
 
 const MIN = 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,6 +68,12 @@ async function resolveClient({ clientId, client, email }, dbClient) {
   return { error: rows.length ? fail(409, 'client_ambiguous', { hint: 'pass clientId or client' }) : fail(404, 'lead_not_found') };
 }
 
+function sendPathFor(kind) {
+  return kind === 'manual'
+    ? 'card approval, then a new email from the connected SalesGlider Gmail mailbox'
+    : 'card approval, then a reply on the existing SmartLead / HeyReach thread';
+}
+
 /**
  * @returns {Promise<{status:number, body:object}>}
  */
@@ -78,14 +92,44 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
   const end = endP.value || new Date(start.getTime() + (startP.value ? cfg.defaultDurationMs : 0));
   if (end <= start && startP.value) return fail(400, 'meetingEnd must be after meetingStart');
 
+  const isManual = input.manual === true || input.manual === 'true';
+  const leadName = String(input.leadName || input.lead_name || '').trim().slice(0, 120);
+  const phone = String(input.phone || '').trim().slice(0, 40);
+  const company = String(input.company || '').trim().slice(0, 120);
+  if (isManual) {
+    if (!leadName) return fail(400, 'manual mode needs leadName');
+    if (!(input.clientId || input.client_id)) return fail(400, 'manual mode needs clientId');
+    if (!startP.value) return fail(400, 'manual mode needs meetingStart');
+  }
+
   const found = await resolveClient({ clientId: input.clientId || input.client_id, client: input.client, email }, dbClient);
   if (found.error) return found.error;
   const client = found.client;
   if (client.active === false) return fail(409, 'client_inactive');
 
-  const source = await ghost.sourceReplyFor(client, email);
-  if (!source) return fail(409, 'no_source_reply', { clientId: client.id });
-  const key = leadKey({ clientId: client.id, leadEmail: source.lead_email || email, linkedinUrl: source.linkedin_url, leadId: source.lead_id });
+  let source = await ghost.sourceReplyFor(client, email);
+  let sourceKind = 'reply';
+  let existingManual = null;
+  if (isManual && !source) {
+    sourceKind = 'manual';
+    const { rows: [m] } = await dbClient.query(
+      `SELECT * FROM pending_replies
+        WHERE client_id = $1 AND campaign_id = $2 AND lower(coalesce(lead_email, '')) = $3
+        ORDER BY created_at DESC LIMIT 1`,
+      [client.id, manual.MANUAL_CAMPAIGN_ID, email],
+    );
+    existingManual = m || null;
+    source = existingManual;
+  }
+  if (!source && !isManual) return fail(409, 'no_source_reply', { clientId: client.id, hint: 'pass manual:true for a lead without a SmartLead or HeyReach reply' });
+  if (isManual && !source && !manual.clientMayManualSend(client)) {
+    return fail(409, 'manual_send_not_supported_for_client', { clientId: client.id });
+  }
+  if (source && manual.isManualGhostReply(source)) sourceKind = 'manual';
+  if (sourceKind === 'manual' && !manual.clientMayManualSend(client)) {
+    return fail(409, 'manual_send_not_supported_for_client', { clientId: client.id });
+  }
+  const key = leadKey({ clientId: client.id, leadEmail: (source && source.lead_email) || email, linkedinUrl: source && source.linkedin_url, leadId: source && source.lead_id });
 
   const flag = { ghostedMeetingEnabled: ghost.enabled(env) };
   const note = flag.ghostedMeetingEnabled ? undefined
@@ -94,16 +138,17 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
   // Idempotency: any ghosted_meeting sequence for this lead, in any status.
   const { rows: [prior] } = await dbClient.query(
     `SELECT id, status, enrolled_at FROM followup_sequences
-      WHERE client_id = $1 AND origin = $2 AND (lead_key = $3 OR source_reply_id = $4)
+      WHERE client_id = $1 AND origin = $2 AND (lead_key = $3 OR source_reply_id = $4::uuid)
       ORDER BY created_at DESC LIMIT 1`,
-    [client.id, ghost.ORIGIN, key, source.id],
+    [client.id, ghost.ORIGIN, key, source ? source.id : null],
   );
   if (prior) {
     return { status: 200, body: { ok: true, enrolled: false, alreadyEnrolled: true, sequenceId: prior.id, sequenceStatus: prior.status, ...flag } };
   }
 
   if (await isDisqualified(client.id, { leadEmail: email })) return fail(409, 'disqualified');
-  if (await isLeadClaimed({ leadEmail: email, campaignId: source.campaign_id })) return fail(409, 'client_claimed');
+  if (source && !manual.isManualGhostReply(source)
+    && await isLeadClaimed({ leadEmail: email, campaignId: source.campaign_id })) return fail(409, 'client_claimed');
   const { rows: [active] } = await dbClient.query(
     `SELECT id FROM followup_sequences WHERE client_id = $1 AND lead_key = $2 AND status = 'active' LIMIT 1`,
     [client.id, key],
@@ -114,8 +159,9 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
   const { rows: replied } = await dbClient.query(
     `SELECT 1 FROM pending_replies
       WHERE client_id = $1 AND upper(classification) <> 'FOLLOW_UP'
-        AND lower(coalesce(lead_email, '')) = $2 AND created_at > $3 AND id <> $4 LIMIT 1`,
-    [client.id, email, start, source.id],
+        AND lower(coalesce(lead_email, '')) = $2 AND created_at > $3 AND id IS DISTINCT FROM $4::uuid
+        AND campaign_id IS DISTINCT FROM $5 LIMIT 1`,
+    [client.id, email, start, source ? source.id : null, manual.MANUAL_CAMPAIGN_ID],
   );
   if (replied.length) warnings.push('prospect_replied_since_meeting');
   const { rows: openCard } = await dbClient.query(
@@ -128,7 +174,24 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
   if (note) warnings.push('ghosted_meeting_flag_off');
 
   if (dryRun) {
-    return { status: 200, body: { ok: true, enrolled: false, dryRun: true, wouldEnroll: true, clientId: client.id, clientName: client.name, warnings, ...flag } };
+    return { status: 200, body: { ok: true, enrolled: false, dryRun: true, wouldEnroll: true, clientId: client.id, clientName: client.name, sourceKind, sendPath: sendPathFor(sourceKind), warnings, ...flag } };
+  }
+
+  if (!source) {
+    // manual: no reply anywhere. One inert context row for the sequence and its cards to hang off.
+    const leadId = `${manual.MANUAL_CAMPAIGN_ID}:${crypto.createHash('sha1').update(`${client.id}|${email}`).digest('hex').slice(0, 12)}`;
+    const { rows: [row] } = await dbClient.query(
+      `INSERT INTO pending_replies
+         (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_full_name, lead_email,
+          lead_phone, lead_phone_provider, phone_enrichment_status, lead_company,
+          inbound_message, classification, status, suppression_reason, created_at)
+       VALUES ($1, 'smartlead', $2, 'Manual ghosted meeting', $3, $4, $4, $5, $6, $7, $8, $9,
+               '(no new reply from prospect)', 'OTHER', 'skipped', 'manual_ghost_context', $10)
+       RETURNING *`,
+      [client.id, manual.MANUAL_CAMPAIGN_ID, leadId, leadName, email, phone || null,
+        phone ? 'manual' : null, phone ? 'found' : null, company || null, start],
+    );
+    source = row;
   }
 
   const reason = 'manual_enroll';
@@ -169,7 +232,7 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
       ok: true, enrolled: true, alreadyEnrolled: false,
       sequenceId: res.sequenceId, checkId: check.id, steps: res.steps,
       clientId: client.id, clientName: client.name, meetingStart: start.toISOString(),
-      warnings, ...flag, ...(note ? { note } : {}),
+      sourceKind, sendPath: sendPathFor(sourceKind), warnings, ...flag, ...(note ? { note } : {}),
     },
   };
 }

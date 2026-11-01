@@ -50,6 +50,7 @@ if (PGlite) {
 }
 
 let clientId = null;
+let sgId = null;
 let n = 0;
 async function setup() {
   if (!schemaReady) schemaReady = pg.exec(read('schema.sql').replace(/CREATE EXTENSION[^;]*;/gi, ''));
@@ -60,6 +61,9 @@ async function setup() {
     const { rows: [c] } = await pg.query(
       `INSERT INTO clients (name, slack_bot_token, slack_channel_id) VALUES ('Acme Co', 'xoxb-test', 'C1') RETURNING id`);
     clientId = c.id;
+    const { rows: [sg] } = await pg.query(
+      `INSERT INTO clients (name, slack_bot_token, slack_channel_id) VALUES ('SalesGlider', 'xoxb-test', 'C3') RETURNING id`);
+    sgId = sg.id;
   }
 }
 
@@ -259,4 +263,192 @@ test('card status: a positive classification is kept; repaintCard redraws the ex
   assert.equal(calls.length, 1);
   assert.equal(calls[0][1], 'xoxb-test');
   assert.equal(calls[0][3], card.slack_message_ts);
+});
+
+// ─── manual mode (no SmartLead / HeyReach reply) ─────────────────────────────
+
+const manualBody = (over = {}) => ({
+  manual: true, leadName: 'Test Person', leadEmail: 'manual@example.com', phone: '+15555550123', company: 'Example Co',
+  clientId: sgId, meetingStart: MEET, ...over,
+});
+
+test('manual enroll: context row + sequence + card step, inert source, idempotent, dryRun writes nothing', { skip }, async () => {
+  await setup();
+  await withServer(async (call) => {
+    const dry = await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ dryRun: true }));
+    assert.equal(dry.status, 200);
+    assert.equal(dry.body.wouldEnroll, true);
+    assert.equal(dry.body.sourceKind, 'manual');
+    assert.match(dry.body.sendPath, /new email from the connected SalesGlider Gmail/);
+    assert.equal(await count('pending_replies'), 0);
+    assert.equal(await count('followup_sequences'), 0);
+
+    const first = await call('POST', '/admin/ghosted-meetings/enroll', manualBody());
+    assert.equal(first.status, 201);
+    assert.equal(first.body.sourceKind, 'manual');
+    assert.ok(!JSON.stringify(first.body).includes('manual@example.com'));
+    const rows = (await pg.query('SELECT * FROM pending_replies')).rows;
+    assert.equal(rows.length, 1);
+    const src = rows[0];
+    assert.equal(src.campaign_id, 'manual-ghost');
+    assert.equal(src.status, 'skipped', 'inert: no recap, digest, scan or resurface job picks it up');
+    assert.equal(src.classification, 'OTHER');
+    assert.equal(src.lead_name, 'Test Person');
+    assert.equal(src.lead_phone, '+15555550123');
+    assert.equal(src.lead_company, 'Example Co');
+    const [seq] = (await pg.query('SELECT * FROM followup_sequences')).rows;
+    assert.equal(seq.origin, 'ghosted_meeting');
+    assert.equal(seq.source_reply_id, src.id);
+    assert.deepEqual((await pg.query('SELECT kind, status FROM followup_sequence_steps')).rows, [{ kind: 'ghost_email', status: 'pending' }]);
+
+    const again = await call('POST', '/admin/ghosted-meetings/enroll', manualBody());
+    assert.equal(again.status, 200);
+    assert.equal(again.body.alreadyEnrolled, true);
+    assert.equal(again.body.sequenceId, first.body.sequenceId);
+    const other = await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ meetingStart: '2026-10-29T15:00:00-05:00', leadName: 'Renamed' }));
+    assert.equal(other.body.alreadyEnrolled, true);
+    assert.equal(await count('pending_replies'), 1);
+    assert.equal(await count('followup_sequences'), 1);
+  });
+});
+
+test('manual enroll: needs name, client and meeting time; only SalesGlider can use the Gmail send path', { skip }, async () => {
+  await setup();
+  const { rows: [other] } = await pg.query(
+    `INSERT INTO clients (name, slack_bot_token, slack_channel_id) VALUES ('Other Client', 'xoxb-test', 'C2') RETURNING id`);
+  await withServer(async (call) => {
+    assert.equal((await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ leadName: '' }))).status, 400);
+    assert.equal((await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ clientId: undefined }))).status, 400);
+    assert.equal((await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ meetingStart: undefined }))).status, 400);
+    const refused = await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ clientId: other.id }));
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.error, 'manual_send_not_supported_for_client');
+    assert.equal(await count('pending_replies'), 0);
+    assert.equal(await count('followup_sequences'), 0);
+  });
+});
+
+test('manual enroll: a lead with a real reply uses that reply, not a manual row', { skip }, async () => {
+  await setup();
+  await addReply();
+  await withServer(async (call) => {
+    const r = await call('POST', '/admin/ghosted-meetings/enroll', manualBody({ leadEmail: 'lead@example.com', clientId }));
+    assert.equal(r.status, 201);
+    assert.equal(r.body.sourceKind, 'reply');
+    assert.equal(await count('pending_replies'), 1);
+  });
+});
+
+test('manual lead: the ghost card is posted from the context row and only a human approval can send', { skip }, async () => {
+  await setup();
+  await withServer(async (call) => { assert.equal((await call('POST', '/admin/ghosted-meetings/enroll', manualBody())).status, 201); });
+  const seqSvc = require('../src/services/followup-sequence');
+  const { rows: [enrolled] } = await pg.query('SELECT s.*, pr.campaign_id FROM followup_sequences s JOIN pending_replies pr ON pr.id = s.source_reply_id');
+  assert.equal(await require('../src/services/ghosted-meetings').stopReason(enrolled, enrolled, {}), null, 'the manual context row is not a prospect reply');
+  // Move the enrollment to a Tuesday late morning in Chicago so the step is due inside the send window.
+  await pg.exec(`UPDATE followup_sequences SET enrolled_at = '2030-01-08T16:00:00Z'; UPDATE followup_sequence_steps SET due_at = '2030-01-08T17:00:00Z'`);
+  const cards = [];
+  const slackApi = { getPermalink: async () => 'https://slack.example/p', getClient: () => ({ chat: { postMessage: async () => ({ ts: '1.1' }), update: async () => {} } }) };
+  const deps = {
+    postCard: async (a) => { cards.push(a); return { ts: '3000.1' }; },
+    resolveSlots: async () => ({ slots: [{ start: '2026-11-02T16:00:00Z', label: 'Mon 10am' }, { start: '2026-11-02T20:00:00Z', label: 'Mon 2pm' }] }),
+    resolveCopy: async () => ({ offerLine: null, proofPoint: null }),
+  };
+  const env = { GHOSTED_MEETING_ENABLED: 'true', FOLLOWUP_CALLERS: 'U0CAL8ZDG92:Gabe' };
+  const t = await seqSvc.runSequenceTick({ now: new Date('2030-01-08T18:00:00Z'), slackApi, deps, env }) // a Tuesday noon in Chicago: inside the send window;
+  assert.equal(t.posted, 1);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].campaignId, 'manual-ghost');
+  assert.equal(cards[0].card.classification, 'FOLLOW_UP');
+  assert.match(cards[0].card.draft, /^Hey Test, looks like we missed each other\./);
+  const { rows: [card] } = await pg.query(`SELECT * FROM pending_replies WHERE classification = 'FOLLOW_UP'`);
+  assert.equal(card.status, 'pending', 'gated on the card: nothing is sent until Approve');
+  assert.equal(card.campaign_id, 'manual-ghost');
+});
+
+test('manual lead send: new Gmail email to the lead, SalesGlider only, never SmartLead', { skip }, async () => {
+  const send = require('../src/services/reply-send');
+  const calls = [];
+  const gmail = {
+    isConfigured: () => true, getAccount: async () => ({ email: 'sender@example.com' }), expectedFromEmail: () => 'sender@example.com',
+    sendMail: async (m) => { calls.push(m); return { from: 'sender@example.com' }; },
+  };
+  const reply = { id: 'r1', campaign_id: 'manual-ghost', lead_email: 'manual@example.com' };
+  const out = await send.sendManualGhostEmail({ id: 'c', name: 'SalesGlider' }, reply, 'Hey Test,\nlooks like we missed each other.', { gmail });
+  assert.equal(out.manualGhostGmail, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].to, 'manual@example.com');
+  assert.match(calls[0].textBody, /missed each other/);
+  assert.match(calls[0].htmlBody, /Hey Test,<br>looks/);
+  await assert.rejects(() => send.sendManualGhostEmail({ id: 'x', name: 'Other Client' }, reply, 'x', { gmail }), /only be emailed for SalesGlider/);
+  await assert.rejects(() => send.sendManualGhostEmail({ id: 'c', name: 'SalesGlider' }, { ...reply, lead_email: '' }, 'x', { gmail }), /No email address/);
+  await assert.rejects(() => send.sendManualGhostEmail({ id: 'c', name: 'SalesGlider' }, reply, 'x', { gmail: { ...gmail, isConfigured: () => false } }), /not configured/);
+  await assert.rejects(() => send.sendManualGhostEmail({ id: 'c', name: 'SalesGlider' }, reply, 'x', { gmail: { ...gmail, getAccount: async () => null } }), /not connected/);
+  assert.equal(calls.length, 1, 'every refusal happens before any send');
+  // sendReplyToPlatform hands manual rows to Gmail before the SmartLead branch.
+  const src = read('src/services/reply-send.js');
+  assert.ok(src.indexOf('isManualGhostReply(reply)') > 0 && src.indexOf('isManualGhostReply(reply)') < src.indexOf("if (reply.platform === 'smartlead') {"));
+});
+
+// ─── status route: Slack reference backfill + repaint fallback ────────────────
+
+function repaintFakes() {
+  const calls = [];
+  return {
+    calls,
+    slackApi: {
+      updateDraftApprovalCard: async (...a) => { calls.push(['draft', ...a]); },
+      updateAlertCard: async (...a) => { calls.push(['alert', ...a]); },
+    },
+    loadCard: async (id) => ({ replyId: id, draft: 'Draft' }),
+  };
+}
+
+test('card status: slackChannel + slackTs are backfilled onto a row that has none, audited, and repainted', { skip }, async () => {
+  await setup();
+  const card = await addReply({ status: 'rejected', draft_reply: 'Draft', slack_message_ts: null, slack_channel_id: null });
+  const svc = require('../src/services/card-status-admin');
+  const f = repaintFakes();
+  const bad = await svc.setCardStatus(card.id, { status: 'pending', slackChannel: 'nope', slackTs: '1793313695.519449' }, f);
+  assert.equal(bad.status, 400);
+  assert.equal((await pg.query('SELECT status FROM pending_replies WHERE id = $1', [card.id])).rows[0].status, 'rejected', 'nothing changed on a bad reference');
+  const out = await svc.setCardStatus(card.id, { status: 'pending', repaintCard: true, slackChannel: 'C0CC420V1TK', slackTs: '1793313695.519449' }, f);
+  assert.equal(out.status, 200);
+  assert.equal(out.body.cardRepainted, 'repainted');
+  assert.deepEqual(out.body.slackBackfill.backfilled, ['slackChannel', 'slackTs']);
+  const row = (await pg.query('SELECT * FROM pending_replies WHERE id = $1', [card.id])).rows[0];
+  assert.equal(row.slack_channel_id, 'C0CC420V1TK');
+  assert.equal(row.slack_message_ts, '1793313695.519449');
+  assert.equal(row.status, 'pending');
+  assert.deepEqual(f.calls[0].slice(0, 1).concat(f.calls[0].slice(2)).slice(0, 3), ['draft', 'C0CC420V1TK', '1793313695.519449']);
+  const events = (await pg.query('SELECT event_type FROM followup_card_events ORDER BY created_at, event_type')).rows.map((r) => r.event_type);
+  assert.deepEqual(events.sort(), ['admin_slack_backfill', 'admin_status_change']);
+
+  // Already pending: nothing to reopen, but the repaint still runs; values the row has are not overwritten.
+  const f2 = repaintFakes();
+  const again = await svc.setCardStatus(card.id, { status: 'pending', repaintCard: true, slackChannel: 'C0OTHER12345', slackTs: '1700000000.000100' }, f2);
+  assert.equal(again.body.changed, false);
+  assert.equal(again.body.cardRepainted, 'repainted');
+  assert.deepEqual(again.body.slackBackfill, { backfilled: [], ignored: ['slackChannel', 'slackTs'] });
+  assert.equal((await pg.query('SELECT slack_channel_id FROM pending_replies WHERE id = $1', [card.id])).rows[0].slack_channel_id, 'C0CC420V1TK');
+  assert.equal(f2.calls[0][2], 'C0CC420V1TK');
+});
+
+test('card status: with only the ts known, the channel falls back to the follow-up channel, then the client channel', { skip }, async () => {
+  await setup();
+  const svc = require('../src/services/card-status-admin');
+  const fu = await addReply({ status: 'pending', classification: 'FOLLOW_UP', draft_reply: 'Draft', slack_channel_id: null, slack_message_ts: '1700.5' });
+  const f = repaintFakes();
+  const a = await svc.setCardStatus(fu.id, { status: 'pending', repaintCard: true }, f);
+  assert.equal(a.body.cardRepainted, 'repainted');
+  assert.equal(f.calls[0][2], require('../src/services/follow-up-runner').followUpSlackChannelId());
+  const plain = await addReply({ status: 'rejected', draft_reply: 'Draft', slack_channel_id: null, slack_message_ts: null });
+  const f2 = repaintFakes();
+  const b = await svc.setCardStatus(plain.id, { status: 'pending', repaintCard: true, slackTs: '1793313695.519449' }, f2);
+  assert.equal(b.body.cardRepainted, 'repainted');
+  assert.equal(f2.calls[0][2], 'C1', "the client's configured card channel");
+  assert.deepEqual(b.body.slackBackfill.backfilled, ['slackTs']);
+  const none = await addReply({ status: 'pending', draft_reply: 'Draft', slack_channel_id: null, slack_message_ts: null });
+  const c = await svc.setCardStatus(none.id, { status: 'pending', repaintCard: true }, repaintFakes());
+  assert.equal(c.body.cardRepainted, 'no_slack_message');
 });
