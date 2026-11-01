@@ -34,6 +34,7 @@ const { fyiReplyTo } = require('../utils/fyi-notify');
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { stripQuoted } = require('./booked-brief-data');
 const { cleanPhone } = require('../utils/lead-phone');
+const { INTERNAL_BULLET, redactBriefForClient } = require('./dayof-brief-redact');
 
 const JOSH_DEFAULT = 'joshua@salesglidergrowth.com';
 const FLAG = 'CLIENT_DAYOF_BRIEF_ENABLED';
@@ -885,13 +886,12 @@ function shortReply(text) {
   return oneLine(cut, 220);
 }
 
-/** Lines a client should not see. Prospect asks about pricing stay. */
-const INTERNAL_BULLET = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b|\$\s?\d[\d,.]*\s*(?:\/|per\s+)(?:month|mo|meeting|account|inbox)/i;
-
+/**
+ * Josh's brief keeps every line. The redaction pass (dayof-brief-redact.js) is the only place a
+ * line is removed for a client. Prospect asks about pricing stay.
+ */
 function visibleLine(line) {
-  const s = oneLine(line, 800);
-  if (!s || INTERNAL_BULLET.test(s)) return '';
-  return s;
+  return oneLine(line, 800);
 }
 
 function kept(lines, fallback) {
@@ -900,8 +900,8 @@ function kept(lines, fallback) {
 }
 
 /**
- * Same sections, same order, as the briefs Josh gets from send-brief.
- * Empty sections still get one honest line, the way those briefs say
+ * Josh's brief, mechanical version: the sections and bullets of the briefs Josh gets from send-brief,
+ * built from the facts on file with nothing removed. Empty sections still get one honest line, the way those briefs say
  * "Allo had no history" or "Fireflies was not checked".
  */
 function mirrorSections(facts) {
@@ -924,8 +924,8 @@ function mirrorSections(facts) {
   if (filled(c.size)) who.push(c.size);
 
   const why = [];
-  const came = [h.channel, h.campaign].filter(filled).join(', ');
-  if (came) why.push(came);
+  if (filled(h.channel)) why.push(`Came in by ${oneLine(h.channel, 80)}.`);
+  if (filled(h.campaign)) why.push(`Campaign: ${oneLine(h.campaign, 200)}`);
   const said = [];
   for (const q of hist.quotes || []) {
     const text = shortReply(q && (q.text || q));
@@ -1016,11 +1016,17 @@ const BRIEF_SECTIONS = [
   ['Logistics', 'logistics'],
 ];
 
-/**
- * Same shape as the briefs mailed through send-brief. Subject is
- * `Brief: <prospect> and <client> @ <time>`.
- */
-function buildClientDayofBrief(facts = {}) {
+const SECTION_PLACEHOLDERS = {
+  who: 'Name not on file.',
+  why: 'No thread on file.',
+  rapport: 'Nothing personal on file.',
+  openers: 'No specific ask on file.',
+  allo: 'Allo was not checked.',
+  fireflies: 'Fireflies was not checked.',
+  logistics: 'Time not on file.',
+};
+
+function briefSubject(facts) {
   const p = facts.prospect || {};
   const name = oneLine(p.name, 200) || 'Prospect';
   const client = oneLine(facts.clientName, 160);
@@ -1028,32 +1034,63 @@ function buildClientDayofBrief(facts = {}) {
   const timeOnly = whenShort.match(/\d{1,2}:\d{2}\s*[AP]M(?:\s+[A-Z]{2,5})?/i);
   const subjectWhen = timeOnly ? timeOnly[0] : whenShort;
   const whoWith = client ? `${name} and ${client}` : name;
-  const subject = subjectWhen ? `Brief: ${whoWith} @ ${subjectWhen}` : `Brief: ${whoWith}`;
-  const sections = overlayWritten(mirrorSections(facts), facts.written);
-  const blocks = BRIEF_SECTIONS.map(([title, key]) => [title, sections[key]]);
+  return subjectWhen ? `Brief: ${whoWith} @ ${subjectWhen}` : `Brief: ${whoWith}`;
+}
 
+/**
+ * Renders { subject, sections } in Josh's layout: Arial 14px shell, an h3 per section, bullets.
+ * Links print as plain text, as in Josh's emails. This one renderer serves Josh's copy and the
+ * client copy, so the two cannot drift apart.
+ */
+function renderBrief({ subject, sections }) {
   const text = [subject, ''];
-  for (const [title, items] of blocks) {
+  for (const { title, items } of sections) {
     text.push(title);
     for (const item of items) text.push(`- ${item}`);
     text.push('');
   }
   const textBody = text.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-
-  // Josh's emails print links as plain text (Gmail links them), so do the same.
   const ul = (items) => `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`;
-
-  const html = [
+  const htmlBody = [
     `<div style='font-family:Arial,sans-serif;font-size:14px'>`,
-    ...blocks.map(([title, items]) => `<h3>${escapeHtml(title)}</h3>${ul(items)}`),
+    ...sections.map(({ title, items }) => `<h3>${escapeHtml(title)}</h3>${ul(items)}`),
     `</div>`,
   ].join('');
+  return { subject, htmlBody, textBody };
+}
 
-  return { subject, htmlBody: html, textBody };
+/**
+ * Josh's day-of brief for a meeting, built from the facts on file: subject
+ * `Brief: <prospect> and <client> @ <time>`, then Who, Why you're meeting, Rapport hooks,
+ * Easy openers, Allo, Fireflies / Cube, Logistics. Nothing is removed. The real brief Josh gets is
+ * written by EA's routine and mailed by send-brief; this is the same shape built from our facts,
+ * and it is the only builder. The client copy is this output after the redaction pass.
+ */
+function buildJoshDayofBrief(facts = {}) {
+  const sections = overlayWritten(mirrorSections(facts), facts.written);
+  const blocks = BRIEF_SECTIONS.map(([title, key]) => ({ title, key, items: sections[key] }));
+  const brief = { subject: briefSubject(facts), sections: blocks };
+  return { ...brief, ...renderBrief(brief) };
+}
+
+/**
+ * The client's copy: Josh's brief, same sections, same order, same lines, minus the lines the
+ * redaction pass removes (campaign, mailbox, internal notes, tool names). `removed` lists them.
+ * There is no separate client template.
+ */
+function buildClientDayofBriefParts(facts = {}) {
+  const josh = buildJoshDayofBrief(facts);
+  const client = redactBriefForClient(josh, facts, { placeholders: SECTION_PLACEHOLDERS });
+  return { josh, client, removed: client.removed };
+}
+
+function buildClientDayofBrief(facts = {}) {
+  const { client, removed } = buildClientDayofBriefParts(facts);
+  return { ...renderBrief(client), removed };
 }
 
 const EXAMPLE_BRIEF_FACTS = {
-  clientName: 'Example Industrial',
+  clientName: 'Sample Client Co.',
   timezone: 'America/Chicago',
   whenLabel: 'Thu, Oct 31, 9:30am CT',
   where: 'Zoom',
@@ -1077,6 +1114,7 @@ const EXAMPLE_BRIEF_FACTS = {
     campaign: 'Spring owners, north Texas',
     channel: 'Email',
     source: 'Cold email, then they booked the intro page',
+    sender: 'sample.sender@example-mail.example',
   },
   history: {
     summary: 'Two emails from us, one reply from them. They answered the same day.',
@@ -1102,7 +1140,13 @@ const EXAMPLE_BRIEF_FACTS = {
   flags: {
     icpFit: 'Fit — commercial roofer, operations lead',
     decisionMaker: 'Decision maker: Yes, matches ICP buyer (Owner) (VP of Operations)',
-    risks: ['First meeting. No prior thread beyond the booking reply.'],
+    risks: [
+      'First meeting. No prior thread beyond the booking reply.',
+      // Internal lines Josh's own brief can carry. The client copy removes them.
+      'Fit: commercial roofing, should clear the $36K LTV bar',
+      'Proof to lean on: another client closed four bids in a day',
+      'Smartlead shows two sends from sample.sender@example-mail.example before the reply',
+    ],
     noShowHistory: 'No prior no-shows on file.',
   },
 };
@@ -1991,6 +2035,9 @@ module.exports = {
   hasZeroContext,
   mergeFacts,
   buildClientDayofBrief,
+  buildClientDayofBriefParts,
+  buildJoshDayofBrief,
+  renderBrief,
   exampleClientBrief,
   REVIEW_SUBJECT_TAG,
   notifyReviewer,

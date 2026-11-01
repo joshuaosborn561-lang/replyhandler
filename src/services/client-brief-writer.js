@@ -23,7 +23,7 @@ const SECTION_KEYS = ['who', 'why', 'rapport', 'openers', 'allo', 'fireflies', '
 const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-sonnet-5.5';
 
 /** Words and shapes a client never sees. Mirrors the filter in client-dayof-brief.js. */
-const INTERNAL_LINE = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bheyreach\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b|\bsalesglider (intro|staffing|subs)\b|\bcampaigns?\b|\$\s?\d[\d,.]*\s*(?:\/|per\s+)(?:month|mo|meeting|account|inbox)/i;
+const { INTERNAL_LINE } = require('./dayof-brief-redact');
 
 const SYSTEM = `You write the pre-meeting brief that a CLIENT reads right before a sales meeting SalesGlider booked for them. You are copying the style of Josh Osborn's own meeting briefs. Output ONLY JSON:
 
