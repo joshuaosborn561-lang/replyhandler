@@ -1539,7 +1539,8 @@ router.post('/webhook/booking-bridge', async (req, res) => {
     // Attendance tracking: a booking that carries its meeting link and time is recorded for the
     // Attendance bot. Best effort, never blocks or changes the follow-up stop below.
     try {
-      await require('../services/meetstream-attendance').registerFromBridgePayload(req.body || {});
+      Promise.resolve(require('../services/meetstream-attendance').registerFromBridgePayload(req.body || {}))
+        .catch((attErr) => console.error('[Meetstream] register from bridge failed', { err: attErr.message }));
     } catch (attErr) {
       console.error('[Meetstream] register from bridge failed', { err: attErr.message });
     }

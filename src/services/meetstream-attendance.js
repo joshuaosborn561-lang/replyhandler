@@ -15,6 +15,8 @@
  *   MEETSTREAM_LEAD_MINUTES         send the bot this long before the start (default 2)
  *   MEETSTREAM_MAX_BOTS             lifetime cap on bots created (default 20), a spend guard
  *   MEETSTREAM_INTERNAL_NAMES       comma list of host-side display names (default Josh)
+ *   MEETSTREAM_CLIENTS_OFF          comma list of client slugs that must NOT get a bot (default none: every
+ *                                   TidyCal client is ON once the scope allows clients)
  *
  * Nothing here is client-facing and nothing posts to Slack.
  *
@@ -55,6 +57,14 @@ function scopeAllows(rowScope, env = process.env) {
   if (s === 'all') return true;
   if (s === 'clients') return rowScope === 'client';
   return rowScope === 'josh';
+}
+
+/** Per-client switch. Every client is ON unless its slug is listed in MEETSTREAM_CLIENTS_OFF. */
+function clientOff(slug, env = process.env) {
+  const s = String(slug || '').trim().toLowerCase();
+  if (!s) return false;
+  return String(env.MEETSTREAM_CLIENTS_OFF || '').split(',')
+    .map((x) => x.trim().toLowerCase()).filter(Boolean).includes(s);
 }
 
 function num(env, name, fallback) {
@@ -278,6 +288,7 @@ async function registerBooking(input, env = process.env) {
   if (!meetingUrl) { status = 'skipped'; reason = 'no_meeting_url'; }
   else if (platform === 'zoom') { status = 'skipped'; reason = 'zoom_manual'; }
   else if (platform !== 'google_meet') { status = 'skipped'; reason = `unsupported_platform_${platform}`; }
+  else if (scope === 'client' && clientOff(input.client_slug, env)) { status = 'skipped'; reason = 'client_off'; }
   else if (!scopeAllows(scope, env)) { status = 'skipped'; reason = `scope_${scopeSetting(env)}`; }
 
   const { rows } = await db.query(
@@ -290,8 +301,10 @@ async function registerBooking(input, env = process.env) {
        starts_at = CASE WHEN meeting_attendance.bot_id IS NULL THEN EXCLUDED.starts_at ELSE meeting_attendance.starts_at END,
        ends_at = CASE WHEN meeting_attendance.bot_id IS NULL THEN EXCLUDED.ends_at ELSE meeting_attendance.ends_at END,
        status = CASE WHEN meeting_attendance.bot_id IS NULL AND meeting_attendance.status IN ('scheduled','skipped','cancelled')
+                          AND NOT (meeting_attendance.status = 'skipped' AND meeting_attendance.reason IN ('missed_window','bot_cap_reached'))
                      THEN EXCLUDED.status ELSE meeting_attendance.status END,
        reason = CASE WHEN meeting_attendance.bot_id IS NULL AND meeting_attendance.status IN ('scheduled','skipped','cancelled')
+                          AND NOT (meeting_attendance.status = 'skipped' AND meeting_attendance.reason IN ('missed_window','bot_cap_reached'))
                      THEN EXCLUDED.reason ELSE meeting_attendance.reason END,
        updated_at = now()
      RETURNING id, status, reason, platform`,
@@ -301,13 +314,26 @@ async function registerBooking(input, env = process.env) {
   return { ok: true, id: rows[0].id, status: rows[0].status, reason: rows[0].reason, platform: rows[0].platform };
 }
 
-/** booking-bridge /webhook/booking-bridge payloads may carry meeting_url + starts_at for a booking. */
-async function registerFromBridgePayload(body, env = process.env) {
+/**
+ * booking-bridge /webhook/booking-bridge payloads. A TidyCal booking (numeric booking_ref) is resolved through the
+ * TidyCal API, which is the source of truth for the join link and time (the embed event carries neither a link nor
+ * a host). Anything else needs meeting_url + starts_at on the payload itself.
+ */
+async function registerFromBridgePayload(body, env = process.env, deps = {}) {
   const b = body && typeof body === 'object' ? body : {};
-  if (b.event !== 'booking_confirmed' || !b.meeting_url || !b.starts_at) return { ok: true, skipped: 'no_meeting_fields' };
+  if (b.event !== 'booking_confirmed') return { ok: true, skipped: 'no_meeting_fields' };
+  const ref = String(b.booking_ref || b.tidycal_booking_id || '').trim();
+  if (/^\d+$/.test(ref)) {
+    const tidycal = deps.tidycal || require('./tidycal-attendance');
+    if (tidycal.tokenOf(env)) {
+      const r = await tidycal.registerById(ref, { env, clientSlug: b.client_slug, fetchImpl: deps.fetchImpl, register: deps.register });
+      if (r) return r;
+    }
+  }
+  if (!b.meeting_url || !b.starts_at) return { ok: true, skipped: 'no_meeting_fields' };
   return registerBooking({
     source: 'booking_bridge',
-    booking_ref: b.booking_ref || b.tidycal_booking_id || `${b.client_slug || 'client'}:${b.email || ''}:${b.starts_at}`,
+    booking_ref: ref || `${b.client_slug || 'client'}:${b.email || ''}:${b.starts_at}`,
     scope: 'client',
     client_slug: b.client_slug,
     meeting_url: b.meeting_url,
@@ -486,6 +512,16 @@ async function runAttendanceTick({ env = process.env, fetchImpl = fetch, now = D
     `UPDATE meeting_attendance SET status = 'scheduled', reason = NULL, updated_at = now()
       WHERE status = 'skipped' AND reason LIKE 'scope\\_%' AND bot_id IS NULL AND scope = ANY($1)`,
     [allowedScopes]);
+  // A client that was switched off and is switched back on (removed from MEETSTREAM_CLIENTS_OFF) comes back too.
+  const { rows: offRows } = await db.query(
+    `SELECT id, client_slug FROM meeting_attendance
+      WHERE status = 'skipped' AND reason = 'client_off' AND bot_id IS NULL AND scope = 'client'
+        AND starts_at > now() - interval '1 hour'`);
+  for (const r of offRows) {
+    if (!clientOff(r.client_slug, env) && scopeAllows('client', env)) {
+      await db.query(`UPDATE meeting_attendance SET status = 'scheduled', reason = NULL, updated_at = now() WHERE id = $1`, [r.id]);
+    }
+  }
 
   // 1. Rows whose window passed without a bot.
   const exp = await db.query(
@@ -503,6 +539,10 @@ async function runAttendanceTick({ env = process.env, fetchImpl = fetch, now = D
     [nowDate, String(cfg.leadMs)]);
   for (const row of due) {
     if (!scopeAllows(row.scope, env)) continue;
+    if (row.scope === 'client' && clientOff(row.client_slug, env)) {
+      await db.query(`UPDATE meeting_attendance SET status = 'skipped', reason = 'client_off', updated_at = now() WHERE id = $1 AND status = 'scheduled'`, [row.id]);
+      continue;
+    }
     if (!apiKey(env) || !webhookToken(env)) { out.capped += 1; continue; }
     if ((await botsCreatedCount()) >= cfg.maxBots) {
       await db.query(`UPDATE meeting_attendance SET status = 'skipped', reason = 'bot_cap_reached', updated_at = now() WHERE id = $1 AND status = 'scheduled'`, [row.id]);
@@ -546,6 +586,7 @@ module.exports = {
   enabled,
   scopeSetting,
   scopeAllows,
+  clientOff,
   config,
   tokenOk,
   platformOf,
