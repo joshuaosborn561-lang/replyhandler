@@ -779,6 +779,10 @@ module.exports = {
   checkFireflies,
   channelAlreadyHasLead,
   enrollGhost,
+  // Used by ghosted-manual-enroll.js (hand enrollment through the same pipeline).
+  decide,
+  sourceReplyFor,
+  existingFollowUpFor,
   runGhostedMeetingScan,
   stopReason,
   recordStepPosted,

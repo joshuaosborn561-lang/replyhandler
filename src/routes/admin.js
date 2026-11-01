@@ -586,6 +586,44 @@ router.post('/admin/ghosted-meetings/run', async (req, res) => {
 });
 
 /**
+ * Hand-enroll one ghosted meeting into the existing ghosted-meeting follow-up flow (same
+ * sequence, same approval cards, same stop rules as the scanner). Sends nothing and posts
+ * nothing itself; the sequence runner posts the cards and a human clicks them. Idempotent:
+ * a lead that already has a ghosted-meeting sequence comes back alreadyEnrolled.
+ * Like every admin route it takes no key (Josh, Oct 20).
+ * Body: { leadEmail, clientId? | client?, meetingStart?, meetingEnd?, dryRun? }
+ * 201 enrolled, 200 alreadyEnrolled / dryRun, 400 bad input, 404 unknown client or lead, 409 blocked.
+ */
+router.post('/admin/ghosted-meetings/enroll', async (req, res) => {
+  try {
+    const out = await require('../services/ghosted-manual-enroll').enrollManual(req.body || {});
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] ghosted-meetings enroll error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'enroll failed' });
+  }
+});
+
+/**
+ * Reopen a reply card that was Rejected: rejected -> pending, nothing else. Writes an audit row
+ * (followup_card_events, event_type admin_status_change) in the same statement. Never sends, does
+ * not restore cancelled follow-up nudges, does not touch Smartlead or HeyReach.
+ * Body: { status: 'pending' | 'interested', reason?, actor?, repaintCard? }
+ * 'interested' also sets classification INTERESTED when the card is not already a positive class.
+ * repaintCard: true redraws the existing Slack message (chat.update) so its buttons come back.
+ * 200 changed / already pending, 400 bad input, 404 unknown card, 409 card is not rejected.
+ */
+router.post('/admin/cards/:id/status', async (req, res) => {
+  try {
+    const out = await require('../services/card-status-admin').setCardStatus(req.params.id, req.body || {});
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] card status error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'card status change failed' });
+  }
+});
+
+/**
  * Day-30 nurture: flags, lead counts by stage, exit reasons, touch counts. Read only, counts only (no lead rows).
  */
 router.get('/admin/nurture', async (_req, res) => {
