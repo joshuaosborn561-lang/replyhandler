@@ -269,9 +269,13 @@ describe('day-of brief schedule and flag', () => {
 describe('day-of brief rendering', () => {
   it('uses the short bullet layout and leaves empty sections out', () => {
     const sample = exampleClientBrief();
-    for (const section of ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Fireflies / Cube', 'Logistics']) {
+    for (const section of ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Logistics']) {
       assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(sample.htmlBody, new RegExp(`<h3>${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</h3>`));
+    }
+    for (const hidden of ['Allo', 'Fireflies / Cube']) {
+      assert.equal(sample.textBody.includes(hidden), false, `${hidden} is hidden from clients`);
+      assert.equal(sample.htmlBody.includes(`<h3>${hidden}</h3>`), false);
     }
     assert.match(sample.subject, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT$/);
     assert.match(sample.textBody, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT/);
@@ -666,12 +670,12 @@ describe('day-of brief hold, release, block', () => {
     assert.match(text, /Why you're meeting/);
     assert.match(text, /\bInfo\b/);
     assert.match(text, /Thursday still works on LinkedIn/);
-    assert.match(text, /Thursday walkthrough/);
+    assert.equal(text.includes('Thursday walkthrough'), false, 'the Allo section is hidden from clients');
     assert.match(text, /commercial roofing/);
     assert.match(text, /555-0199/);
     assert.match(text, /jordan-hale-example/);
     assert.match(text, /Easy openers/);
-    assert.match(text, /No prior Fireflies transcripts mention/);
+    assert.equal(text.includes('Fireflies'), false, 'the Fireflies / Cube section is hidden from clients');
     assert.equal(text.includes('Source campaign'), false);
     assert.equal(text.includes('LTV'), false);
     for (const step of steps) assert.equal(seen.includes(step), true, step);
