@@ -1852,3 +1852,17 @@ Josh approved (via Research, 11:34am CT: "Yes and do a test on my meetings"). A 
 
 ## 2026-10-31 — Read-only daily Calendly sync for attendance tracking
 Josh's own Calendly bookings are registered with the MeetStream attendance tracker once a day (06:15 CT, plus once a minute after boot) by `src/services/calendly-attendance-sync.js`. It only issues GET requests to Calendly, registers Google Meet bookings (source `calendly_josh`, scope `josh`), skips Zoom and other locations, and marks Calendly-canceled events cancelled. It needs `CALENDLY_API_TOKEN` and `MEETSTREAM_ATTENDANCE_ENABLED`; with no token it does nothing. Client scope is unchanged.
+
+## The client day-of brief is Josh's brief with a redaction pass (Josh, Nov 1 2026)
+
+Josh, relayed by Chief of Staff (10:14am CT): the client brief must mirror his own day-of brief. Same content, same sections in the same order, same layout and wording style. Remove only campaign names and campaign-identifying lines, and internal-only content (pricing notes, mailbox and tool names).
+
+- **Answer to "same builder?"** Before this change, no. Josh's brief is written by EA's routine "Meeting brief 30m before" (an LLM prompt) and mailed by the `send-brief` edge function (Client portal project `scvrsmfzyvmmbnaolcrg`). Nothing in this repo or that function generates it. `buildClientDayofBrief` was a second, separate template that filtered lines while it built.
+- **One builder now.** `buildJoshDayofBrief(facts)` builds Josh's shape from the facts on file with nothing removed (it also carries the campaign line and internal notes, as his does). `buildClientDayofBrief(facts)` calls it, then `redactBriefForClient` (`src/services/dayof-brief-redact.js`), then the same `renderBrief` renderer. There is no client template. The redaction never rewrites a line; it keeps it as is or removes it and reports it in `removed`.
+- **Removed for a client.** The campaign name and any line naming a campaign, sender mailboxes and sending domains, LTV and `$NK` bars, our pricing and rate notes, "proof to lean on" (other clients), unsubscribe lines, the Calendly-wipe ops note, `SalesGlider Intro/Staffing/Subs` names, and tool names (Smartlead, HeyReach, Serper, OpenRouter and the like). A prospect asking about pricing stays.
+- **Kept.** Josh's section titles, including Allo and Fireflies / Cube, because his brief does not label them internal. To hide a whole section later, add its key to `CLIENT_HIDDEN_SECTION_KEYS`.
+- **Reverses** the Oct 31 line "The campaign name stays inside Why you're meeting". The channel stays ("Came in by Email."); the campaign does not.
+- **Sample data.** The example client is now "Sample Client Co." so the subject (client) and the body (the prospect's company, Northwind) no longer look like a mismatch.
+- **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off, the hold, the reviewer, the zero-context guard, EA's `POST /admin/client-brief/send` (still refuses internal lines).
+
+Guard: `test/client-brief-mirrors-josh.test.js`.

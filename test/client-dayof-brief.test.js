@@ -273,15 +273,16 @@ describe('day-of brief rendering', () => {
       assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(sample.htmlBody, new RegExp(`<h3>${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</h3>`));
     }
-    assert.match(sample.subject, /^Brief: Jordan Hale and Example Industrial @ 9:30am CT$/);
-    assert.match(sample.textBody, /^Brief: Jordan Hale and Example Industrial @ 9:30am CT/);
+    assert.match(sample.subject, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT$/);
+    assert.match(sample.textBody, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT/);
     assert.match(sample.htmlBody, /font-family:Arial,sans-serif;font-size:14px/);
     assert.match(sample.textBody, /jordan\.hale@northwind-roofing\.example/);
     assert.match(sample.textBody, /\(214\) 555-0148/);
     assert.match(sample.textBody, /Rockwall, TX/);
     assert.match(sample.textBody, /jordan-hale-example/);
     assert.match(sample.textBody, /northwind-roofing\.example/);
-    assert.match(sample.textBody, /Spring owners, north Texas/);
+    assert.equal(sample.textBody.includes('Spring owners'), false, 'clients never see the campaign');
+    assert.match(sample.textBody, /Came in by Email\./);
     assert.equal(sample.textBody.includes('Source campaign'), false);
     assert.equal(sample.textBody.includes('LTV'), false);
     assert.match(sample.textBody, /walk us through pricing/);
@@ -348,7 +349,7 @@ describe('day-of brief rendering', () => {
     assert.match(brief.textBody, /LinkedIn: /);
     assert.equal(brief.textBody.includes('Email thread'), false);
     assert.match(facts.how.campaign, /Owners, LinkedIn/);
-    assert.match(brief.textBody, /Owners, LinkedIn/);
+    assert.equal(brief.textBody.includes('Owners, LinkedIn'), false, 'clients never see the campaign');
     assert.equal(brief.textBody.includes('Source campaign'), false);
   });
 
@@ -368,7 +369,7 @@ describe('day-of brief rendering', () => {
       },
     });
     assert.match(brief.textBody, /pricing walkthrough/);
-    assert.match(brief.textBody, /Spring owners/);
+    assert.equal(brief.textBody.includes('Spring owners'), false);
     assert.equal(brief.textBody.includes('LTV'), false);
     assert.equal(brief.textBody.includes('unsubscribed'), false);
     assert.equal(brief.textBody.includes('Proof to lean on'), false);
