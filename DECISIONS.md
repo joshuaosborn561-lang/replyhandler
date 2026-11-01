@@ -1867,13 +1867,13 @@ Josh, relayed by Chief of Staff (10:14am CT): the client brief must mirror his o
 
 Guard: `test/client-brief-mirrors-josh.test.js`.
 
-## Clients do not see the Allo and Fireflies / Cube sections (Josh, Nov 1 2026)
+## Clients do not see the Fireflies / Cube section (Josh, Nov 1 2026)
 
-Josh, relayed by Chief of Staff (10:37am CT): hide the Allo and Fireflies / Cube sections from the client day-of brief. His own version still shows them.
+Josh, relayed by Chief of Staff (10:37am CT, corrected 10:40am CT): hide the Fireflies / Cube section from the client day-of brief. Allo stays. His own version still shows both.
 
-- **How.** `CLIENT_HIDDEN_SECTION_KEYS = ['allo', 'fireflies']` in `src/services/dayof-brief-redact.js`. The redaction pass drops those two whole sections from the client copy and lists their lines in `removed` with reason `hidden_section`. `buildJoshDayofBrief` is unchanged and still has all seven sections.
-- **Client sections, in order.** Who, Why you're meeting, Rapport hooks, Easy openers, Logistics.
-- **Supersedes** the "Kept" bullet in the Nov 1 entry above (Allo and Fireflies / Cube stayed for clients). The other redaction rules are unchanged.
-- **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off. The lookups still run on the hold and preview, so Josh's version and the facts keep the call and transcript history. EA's `POST /admin/client-brief/send` is not changed.
+- **How.** `CLIENT_HIDDEN_SECTION_KEYS = ['fireflies']` in `src/services/dayof-brief-redact.js`. The redaction pass drops that whole section from the client copy and lists its lines in `removed` with reason `hidden_section`. `buildJoshDayofBrief` is unchanged and still has all seven sections.
+- **Client sections, in order.** Who, Why you're meeting, Rapport hooks, Easy openers, Allo, Logistics.
+- **Supersedes** the "Kept" bullet in the Nov 1 entry above for Fireflies / Cube only. The other redaction rules are unchanged.
+- **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off. The Fireflies lookup still runs on the hold and preview, so Josh's version keeps the transcript history. EA's `POST /admin/client-brief/send` is not changed.
 
-Guard: `test/client-brief-mirrors-josh.test.js` (`Allo and Fireflies / Cube are hidden from the client and still shown to Josh`).
+Guard: `test/client-brief-mirrors-josh.test.js` (`Fireflies / Cube is hidden from the client, Allo stays, and Josh still sees both`).

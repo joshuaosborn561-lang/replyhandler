@@ -92,7 +92,7 @@ describe('client brief writer: same sections and look as Josh\'s send-brief emai
     assert.match(out.subject, /^Brief: Jordan Hale and Example Roofing Partners @ 9:30am CT$/);
     assert.ok(out.htmlBody.startsWith("<div style='font-family:Arial,sans-serif;font-size:14px'>"));
     const titles = [...out.htmlBody.matchAll(/<h3>([^<]*)<\/h3>/g)].map((m) => m[1]);
-    assert.deepEqual(titles, ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Logistics'], 'Allo and Fireflies / Cube are hidden from clients');
+    assert.deepEqual(titles, ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Logistics'], 'Fireflies / Cube is hidden from clients');
     assert.equal(out.htmlBody.includes('<a '), false, 'links print as plain text, like the real emails');
     assert.match(out.htmlBody, /<h3>Who<\/h3><ul><li>Jordan Hale, Owner/);
     assert.match(out.textBody, /^Brief: Jordan Hale/);
@@ -155,12 +155,12 @@ describe('client brief writer: same sections and look as Josh\'s send-brief emai
     assert.equal(written.fireflies, undefined);
     facts.written = written;
     const out = buildClientDayofBrief(facts);
-    // Josh's version shows the plain lookup lines; the client copy hides both sections.
+    // Josh's version shows the plain lookup lines; the client copy keeps Allo and hides Fireflies / Cube.
     const josh = buildJoshDayofBrief(facts);
     assert.match(josh.textBody, /Allo had no history: no calls, texts or voicemails with \(214\) 555-0148\./);
     assert.match(josh.textBody, /No prior Fireflies transcripts mention Northwind Roofing Co\. First call\./);
     assert.equal(josh.textBody.includes('Cayden called'), false);
-    assert.equal(out.textBody.includes('Allo had no history'), false);
+    assert.match(out.textBody, /Allo had no history: no calls, texts or voicemails with \(214\) 555-0148\./);
     assert.equal(out.textBody.includes('Fireflies'), false);
     assert.equal(out.textBody.includes('Cayden called'), false);
   });

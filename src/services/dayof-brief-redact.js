@@ -11,8 +11,8 @@
  *     calendar-wipe ops notes, internal offer names)
  *   - vendor and tool names that are not one of Josh's own section titles
  *
- * Two whole sections are hidden from clients, Allo and Fireflies / Cube (Josh, Nov 1 2026).
- * Josh's own version still shows them. Every other section stays, in the same order.
+ * One whole section is hidden from clients, Fireflies / Cube (Josh, Nov 1 2026).
+ * Josh's own version still shows it. Every other section, Allo included, stays in the same order.
  * To hide another section, add its key to CLIENT_HIDDEN_SECTION_KEYS.
  *
  * Nothing here rewrites a line. A line is kept exactly as Josh's brief has it,
@@ -22,7 +22,7 @@
 /** Pricing, LTV, other-client proof, unsubscribe and ops notes. Also used to refuse EA HTML on POST /send. */
 const INTERNAL_BULLET = /\bLTV\b|\bunsubscrib|\bsmartlead\b|\bproof to lean on\b|\bcalendly wipe\b|\$\s?\d[\d,.]*\s*K\b|\bour (price|pricing|rate card)\b|\binternal pricing\b|\$\s?\d[\d,.]*\s*(?:\/|per\s+)(?:month|mo|meeting|account|inbox)/i;
 
-/** Vendor and tool names a client never sees (Allo and Fireflies sit in sections hidden from clients). */
+/** Vendor and tool names a client never sees (Fireflies sits in a section hidden from clients; Allo stays as one of Josh's section titles). */
 const TOOL_NAME = /\b(smartlead|heyreach|serper|openrouter|anthropic|reply\s?handler|supabase|railway|instantly|lemlist)\b/i;
 
 /** Mailbox and sending words. Specific mailbox values come from facts.how.sender. */
@@ -38,7 +38,7 @@ const INTERNAL_LINE = new RegExp(
 );
 
 /** Whole sections hidden from clients. Josh's version still shows them. */
-const CLIENT_HIDDEN_SECTION_KEYS = ['allo', 'fireflies'];
+const CLIENT_HIDDEN_SECTION_KEYS = ['fireflies'];
 
 function norm(v) {
   return String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase();

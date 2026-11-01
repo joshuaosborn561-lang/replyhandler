@@ -20,7 +20,7 @@ const {
 const { redactionReason, CLIENT_HIDDEN_SECTION_KEYS } = require('../src/services/dayof-brief-redact');
 
 const TITLES = ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Fireflies / Cube', 'Logistics'];
-const CLIENT_TITLES = ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Logistics'];
+const CLIENT_TITLES = ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Logistics'];
 const CAMPAIGN = EXAMPLE_BRIEF_FACTS.how.campaign;
 const MAILBOX = EXAMPLE_BRIEF_FACTS.how.sender;
 
@@ -89,13 +89,13 @@ describe('client brief = Josh brief minus redacted lines', () => {
     for (const word of ['Smartlead', 'HeyReach', 'LTV', '$36K', 'Proof to lean on', 'unsubscribe']) {
       assert.equal(all.includes(word), false, word);
     }
-    // The real content stays. Allo and Fireflies / Cube are hidden (see the next test).
+    // The real content stays. Fireflies / Cube is hidden (see the next test); Allo stays.
     assert.match(out.textBody, /Came in by Email\./);
     assert.match(out.textBody, /walk us through pricing/);
   });
 
-  it('Allo and Fireflies / Cube are hidden from the client and still shown to Josh', () => {
-    assert.deepEqual(CLIENT_HIDDEN_SECTION_KEYS, ['allo', 'fireflies']);
+  it('Fireflies / Cube is hidden from the client, Allo stays, and Josh still sees both', () => {
+    assert.deepEqual(CLIENT_HIDDEN_SECTION_KEYS, ['fireflies']);
     const facts = sample();
     facts.history.callLines = ['Oct 26, 1:37pm CT: Cayden outbound, left a voicemail about the booking link'];
     facts.history.firefliesLines = ['Intro call with the sample company, Oct 20: they asked about pricing'];
@@ -104,15 +104,19 @@ describe('client brief = Josh brief minus redacted lines', () => {
     for (const t of ['Allo', 'Fireflies / Cube']) {
       assert.match(josh.textBody, new RegExp(`^${t.replace('/', '\\/')}$`, 'm'));
       assert.match(josh.htmlBody, new RegExp(`<h3>${t.replace('/', '\\/')}</h3>`));
-      assert.equal(client.textBody.includes(t), false, t);
-      assert.equal(client.htmlBody.includes(t), false, t);
     }
-    assert.equal(client.textBody.includes('left a voicemail'), false);
+    // Allo stays for the client, with its call lines.
+    assert.match(client.textBody, /^Allo$/m);
+    assert.match(client.htmlBody, /<h3>Allo<\/h3>/);
+    assert.match(client.textBody, /left a voicemail/);
+    // Fireflies / Cube is gone from the client copy, lines included.
+    assert.equal(client.textBody.includes('Fireflies'), false);
+    assert.equal(client.htmlBody.includes('Fireflies'), false);
     assert.equal(client.textBody.includes('Intro call with the sample company'), false);
-    assert.match(josh.textBody, /left a voicemail/);
+    assert.match(josh.textBody, /Intro call with the sample company/);
     assert.deepEqual(
       client.removed.filter((r) => r.reason === 'hidden_section').map((r) => r.section),
-      ['Allo', 'Fireflies / Cube'].flatMap((t) => (t === 'Allo' ? ['Allo'] : ['Fireflies / Cube'])),
+      ['Fireflies / Cube'],
     );
     assert.deepEqual([...client.htmlBody.matchAll(/<h3>([^<]*)<\/h3>/g)].map((m) => m[1]), CLIENT_TITLES);
   });
@@ -162,6 +166,6 @@ describe('client brief = Josh brief minus redacted lines', () => {
     assert.match(fn, /buildJoshDayofBrief\(facts\)/);
     assert.match(fn, /redactBriefForClient\(/);
     assert.equal((src.match(/BRIEF_SECTIONS\.map/g) || []).length, 1, 'sections are laid out in one place');
-    assert.deepEqual(CLIENT_HIDDEN_SECTION_KEYS, ['allo', 'fireflies'], 'only these two sections are hidden from clients');
+    assert.deepEqual(CLIENT_HIDDEN_SECTION_KEYS, ['fireflies'], 'only Fireflies / Cube is hidden from clients');
   });
 });
