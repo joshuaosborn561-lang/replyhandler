@@ -592,6 +592,10 @@ router.post('/admin/ghosted-meetings/run', async (req, res) => {
  * a lead that already has a ghosted-meeting sequence comes back alreadyEnrolled.
  * Like every admin route it takes no key (Josh, Oct 20).
  * Body: { leadEmail, clientId? | client?, meetingStart?, meetingEnd?, dryRun? }
+ * Manual mode, for a lead with no SmartLead / HeyReach reply (booked through Allo calls or Calendly):
+ *   { manual: true, leadName, leadEmail, phone?, company?, clientId, meetingStart, meetingEnd?, dryRun? }
+ * creates one inert context row and enrolls it the same way; the approved card then sends as a new email
+ * from the SalesGlider Gmail mailbox (SalesGlider only). A lead that has a real reply uses that reply.
  * 201 enrolled, 200 alreadyEnrolled / dryRun, 400 bad input, 404 unknown client or lead, 409 blocked.
  */
 router.post('/admin/ghosted-meetings/enroll', async (req, res) => {
@@ -608,7 +612,10 @@ router.post('/admin/ghosted-meetings/enroll', async (req, res) => {
  * Reopen a reply card that was Rejected: rejected -> pending, nothing else. Writes an audit row
  * (followup_card_events, event_type admin_status_change) in the same statement. Never sends, does
  * not restore cancelled follow-up nudges, does not touch Smartlead or HeyReach.
- * Body: { status: 'pending' | 'interested', reason?, actor?, repaintCard? }
+ * Body: { status: 'pending' | 'interested', reason?, actor?, repaintCard?, slackChannel?, slackTs? }
+ * slackChannel / slackTs are backfilled onto a row that lacks them (never overwritten) and audited; with only
+ * the ts known the repaint falls back to the follow-up channel (FOLLOW_UP cards), then the client's card channel.
+ * An already-pending card is not changed but is still repainted when asked.
  * 'interested' also sets classification INTERESTED when the card is not already a positive class.
  * repaintCard: true redraws the existing Slack message (chat.update) so its buttons come back.
  * 200 changed / already pending, 400 bad input, 404 unknown card, 409 card is not rejected.

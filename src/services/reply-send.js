@@ -27,6 +27,7 @@ const {
 } = require('../utils/reply-all');
 const { filterOwnAddresses } = require('../utils/own-addresses');
 const { trackSend } = require('./send-inflight');
+const manualGhost = require('../utils/manual-ghost');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -449,6 +450,29 @@ async function sendHeyreachReply(client, reply, replyText, deps = {}) {
   });
 }
 
+/** New one-off email for a manual ghosted lead. Throws (so nothing is marked sent) unless fully configured. */
+async function sendManualGhostEmail(client, reply, replyText, deps = {}) {
+  const mail = deps.gmail || gmail;
+  if (!manualGhost.clientMayManualSend(client)) {
+    throw new Error('Manual ghosted leads can only be emailed for SalesGlider. Nothing was sent.');
+  }
+  const to = String(reply.lead_email || '').trim();
+  if (!to.includes('@')) throw new Error('No email address for this lead. Nothing was sent.');
+  if (!mail.isConfigured()) throw new Error('Primary Gmail is not configured. Nothing was sent.');
+  const account = await mail.getAccount();
+  if (!account) {
+    throw new Error(`Primary Gmail not connected — open /auth/gmail/connect (login as ${mail.expectedFromEmail()}). Nothing was sent.`);
+  }
+  const sent = await mail.sendMail({
+    to,
+    subject: manualGhost.DEFAULT_SUBJECT,
+    htmlBody: manualGhost.htmlFromText(replyText),
+    textBody: String(replyText),
+  });
+  console.log('[ReplySend] Manual ghosted-lead email sent via Gmail', { replyId: reply.id, from: sent && sent.from });
+  return { manualGhostGmail: true };
+}
+
 async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
   if (reply?.id && !reply._sendTracked) {
     return trackSend(reply.id, sendReplyToPlatform(
@@ -493,6 +517,12 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
       replyId: reply.id, lead: reply.lead_name, platform: reply.platform,
     });
     return { skippedDuplicate: true };
+  }
+
+  // A manual ghosted-meeting lead has no SmartLead / HeyReach thread. The approved card goes out as a
+  // new email from the connected SalesGlider Gmail mailbox (see utils/manual-ghost.js).
+  if (manualGhost.isManualGhostReply(reply)) {
+    return sendManualGhostEmail(client, reply, replyText);
   }
 
   const referralListEarly = Array.isArray(referralCc) ? referralCc.filter(Boolean) : [];
@@ -853,6 +883,7 @@ async function maybeBookMeetingAfterSend(reply, client) {
 
 module.exports = {
   sendReplyToPlatform,
+  sendManualGhostEmail,
   sendHeyreachReply,
   lookupStoredHeyreachIdentifiers,
   maybeBookMeetingAfterSend,
