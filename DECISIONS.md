@@ -1866,3 +1866,14 @@ Josh, relayed by Chief of Staff (10:14am CT): the client brief must mirror his o
 - **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off, the hold, the reviewer, the zero-context guard, EA's `POST /admin/client-brief/send` (still refuses internal lines).
 
 Guard: `test/client-brief-mirrors-josh.test.js`.
+
+## Clients do not see the Fireflies / Cube section (Josh, Nov 1 2026)
+
+Josh, relayed by Chief of Staff (10:37am CT, corrected 10:40am CT): hide the Fireflies / Cube section from the client day-of brief. Allo stays. His own version still shows both.
+
+- **How.** `CLIENT_HIDDEN_SECTION_KEYS = ['fireflies']` in `src/services/dayof-brief-redact.js`. The redaction pass drops that whole section from the client copy and lists its lines in `removed` with reason `hidden_section`. `buildJoshDayofBrief` is unchanged and still has all seven sections.
+- **Client sections, in order.** Who, Why you're meeting, Rapport hooks, Easy openers, Allo, Logistics.
+- **Supersedes** the "Kept" bullet in the Nov 1 entry above for Fireflies / Cube only. The other redaction rules are unchanged.
+- **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off. The Fireflies lookup still runs on the hold and preview, so Josh's version keeps the transcript history. EA's `POST /admin/client-brief/send` is not changed.
+
+Guard: `test/client-brief-mirrors-josh.test.js` (`Fireflies / Cube is hidden from the client, Allo stays, and Josh still sees both`).

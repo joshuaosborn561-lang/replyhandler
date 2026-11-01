@@ -269,10 +269,12 @@ describe('day-of brief schedule and flag', () => {
 describe('day-of brief rendering', () => {
   it('uses the short bullet layout and leaves empty sections out', () => {
     const sample = exampleClientBrief();
-    for (const section of ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Fireflies / Cube', 'Logistics']) {
+    for (const section of ['Who', "Why you're meeting", 'Rapport hooks', 'Easy openers', 'Allo', 'Logistics']) {
       assert.match(sample.textBody, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(sample.htmlBody, new RegExp(`<h3>${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</h3>`));
     }
+    assert.equal(sample.textBody.includes('Fireflies'), false, 'Fireflies / Cube is hidden from clients');
+    assert.equal(sample.htmlBody.includes('<h3>Fireflies / Cube</h3>'), false);
     assert.match(sample.subject, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT$/);
     assert.match(sample.textBody, /^Brief: Jordan Hale and Sample Client Co\. @ 9:30am CT/);
     assert.match(sample.htmlBody, /font-family:Arial,sans-serif;font-size:14px/);
@@ -671,7 +673,7 @@ describe('day-of brief hold, release, block', () => {
     assert.match(text, /555-0199/);
     assert.match(text, /jordan-hale-example/);
     assert.match(text, /Easy openers/);
-    assert.match(text, /No prior Fireflies transcripts mention/);
+    assert.equal(text.includes('Fireflies'), false, 'the Fireflies / Cube section is hidden from clients');
     assert.equal(text.includes('Source campaign'), false);
     assert.equal(text.includes('LTV'), false);
     for (const step of steps) assert.equal(seen.includes(step), true, step);
