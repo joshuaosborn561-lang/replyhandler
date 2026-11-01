@@ -452,3 +452,22 @@ test('card status: with only the ts known, the channel falls back to the follow-
   const c = await svc.setCardStatus(none.id, { status: 'pending', repaintCard: true }, repaintFakes());
   assert.equal(c.body.cardRepainted, 'no_slack_message');
 });
+
+test('card status: a row with no stored card payload is repainted from the row itself', { skip }, async () => {
+  await setup();
+  const card = await addReply({ status: 'pending', draft_reply: 'Draft text', campaign_name: 'Camp', lead_phone: '+15555550111' });
+  const svc = require('../src/services/card-status-admin');
+  const f = repaintFakes();
+  const out = await svc.setCardStatus(card.id, { status: 'pending', repaintCard: true }, { ...f, loadCard: async () => null });
+  assert.equal(out.body.cardRepainted, 'repainted');
+  assert.equal(out.body.cardRebuiltFromRow, true);
+  assert.equal(f.calls[0][0], 'draft');
+  const painted = f.calls[0][4];
+  assert.equal(painted.replyId, card.id);
+  assert.equal(painted.draft, 'Draft text');
+  assert.equal(painted.leadEmail, 'lead@example.com');
+  assert.equal(painted.leadPhone, '+15555550111');
+  // The rebuilt card is stored, so the next repaint does not need to rebuild.
+  const { rows: [r] } = await pg.query('SELECT card_payload FROM pending_replies WHERE id = $1', [card.id]);
+  assert.equal(r.card_payload && r.card_payload.draft, 'Draft text');
+});

@@ -15,6 +15,8 @@
  * cards, then to the client's configured card channel.
  */
 const db = require('../db');
+const { formatCampaignDisplay } = require('../utils/campaign-display');
+const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POSITIVE = ['INTERESTED', 'MEETING_PROPOSED', 'QUESTION'];
@@ -73,8 +75,34 @@ async function backfillSlackRef(reply, input) {
   return { reply, backfilled, ignored };
 }
 
+/** A minimal card from the row, for a row whose stored card payload is missing. */
+function cardFromRow(reply, clientName) {
+  let thread = reply.thread_context;
+  if (typeof thread === 'string') { try { thread = JSON.parse(thread); } catch { thread = null; } }
+  const lastOutbound = thread && typeof thread === 'object' && !Array.isArray(thread)
+    ? (lastOutboundBodyFromSmartleadHistory(thread) || '') : '';
+  return {
+    replyId: reply.id,
+    leadName: reply.lead_name,
+    leadEmail: reply.lead_email,
+    leadPhone: reply.lead_phone || undefined,
+    phoneProvider: reply.lead_phone_provider || undefined,
+    leadLinkedinUrl: reply.linkedin_url || undefined,
+    leadWebsite: reply.lead_website || undefined,
+    leadFullName: reply.lead_full_name || undefined,
+    platform: reply.platform || 'smartlead',
+    classification: String(reply.classification || 'INTERESTED').toUpperCase(),
+    draft: reply.draft_reply || undefined,
+    reasoning: 'Reopened from Rejected.',
+    inboundMessage: reply.inbound_message,
+    campaignDisplay: formatCampaignDisplay(reply.campaign_name, reply.campaign_id) || undefined,
+    lastOutboundMessage: lastOutbound || undefined,
+    clientName: clientName || undefined,
+  };
+}
+
 async function repaint(reply, { slackApi, loadCard }) {
-  const { rows: [client] } = await db.query('SELECT slack_bot_token, slack_channel_id FROM clients WHERE id = $1', [reply.client_id]);
+  const { rows: [client] } = await db.query('SELECT name, slack_bot_token, slack_channel_id FROM clients WHERE id = $1', [reply.client_id]);
   if (!client || !client.slack_bot_token) return { result: 'no_slack_token' };
   const ts = String(reply.slack_message_ts || '').trim();
   if (!POSTED_TS.test(ts)) return { result: 'no_slack_message' };
@@ -86,13 +114,15 @@ async function repaint(reply, { slackApi, loadCard }) {
   ];
   const channel = fromRow || fallbacks.find(Boolean) || '';
   if (!channel) return { result: 'no_slack_channel' };
-  const payload = await loadCard(reply.id);
-  if (!payload) return { result: 'no_stored_card' };
+  let payload = await loadCard(reply.id);
+  let rebuilt = false;
+  if (!payload) { payload = cardFromRow(reply, client.name); rebuilt = true; }
   const card = { ...payload, replyId: reply.id, draft: payload.draft || reply.draft_reply || undefined };
   try {
     if (card.draft) await slackApi.updateDraftApprovalCard(client.slack_bot_token, channel, ts, card);
     else await slackApi.updateAlertCard(client.slack_bot_token, channel, ts, card);
-    return { result: 'repainted', channel: fromRow ? 'row' : 'fallback' };
+    if (rebuilt) require('./slack-reply-post').rememberCard(reply.id, card); // so the next repaint has a stored card
+    return { result: 'repainted', channel: fromRow ? 'row' : 'fallback', rebuilt };
   } catch (err) {
     console.warn('[Admin] card repaint failed', { replyId: reply.id, err: err.message });
     return { result: 'failed', error: String(err.data && err.data.error || err.message).slice(0, 80) };
@@ -136,7 +166,7 @@ async function setCardStatus(id, input = {}, { slackApi, loadCard } = {}) {
       status: 200,
       body: {
         ok: true, changed: false, status: 'pending', classification: cur.classification, note: 'already pending',
-        cardRepainted: rp.result, ...(rp.error ? { repaintError: rp.error } : {}), ...(slackBackfill ? { slackBackfill } : {}),
+        cardRepainted: rp.result, ...(rp.rebuilt ? { cardRebuiltFromRow: true } : {}), ...(rp.error ? { repaintError: rp.error } : {}), ...(slackBackfill ? { slackBackfill } : {}),
       },
     };
   }
@@ -183,7 +213,7 @@ async function setCardStatus(id, input = {}, { slackApi, loadCard } = {}) {
     status: 200,
     body: {
       ok: true, changed: true, id, from: 'rejected', status: 'pending',
-      classification: done.classification, auditId: done.audit_id, cardRepainted: rp.result,
+      classification: done.classification, auditId: done.audit_id, cardRepainted: rp.result, ...(rp.rebuilt ? { cardRebuiltFromRow: true } : {}),
       ...(rp.error ? { repaintError: rp.error } : {}), ...(slackBackfill ? { slackBackfill } : {}), warnings,
     },
   };
