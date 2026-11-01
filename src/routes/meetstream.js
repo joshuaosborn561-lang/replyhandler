@@ -22,7 +22,15 @@ router.post('/webhook/meetstream/tidycal-sync', async (req, res) => {
   const auth = assertBookingBridgeSecret(req);
   if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
   try {
-    const r = await require('../services/tidycal-attendance').runSync();
+    const tidycal = require('../services/tidycal-attendance');
+    const bookingId = String((req.body && req.body.booking_id) || '').trim();
+    if (bookingId) {
+      // One booking on demand (checks the link and registers it), instead of the whole sync.
+      if (!/^\d+$/.test(bookingId)) return res.status(400).json({ ok: false, error: 'bad_booking_id' });
+      const one = await tidycal.registerById(bookingId, { clientSlug: req.body.client_slug });
+      return res.status(200).json({ ok: true, booking: one });
+    }
+    const r = await tidycal.runSync();
     return res.status(200).json({ ok: true, ...r });
   } catch (err) {
     console.error('[Meetstream] tidycal sync error', { err: err.message });
