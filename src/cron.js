@@ -263,6 +263,27 @@ function startCron() {
         setTimeout(runCalendlySync, 60 * 1000);
         console.log('[Cron] Calendly attendance sync ENABLED (daily 06:15 CT, read-only)');
       }
+
+      // Client TidyCal bookings: every team's upcoming bookings + cancellations, read-only (needs TIDYCAL_API_TOKEN).
+      const tidycalSync = require('./services/tidycal-attendance');
+      if (tidycalSync.enabled()) {
+        let tidycalRunning = false;
+        const runTidycalSync = async () => {
+          if (tidycalRunning) return;
+          tidycalRunning = true;
+          try {
+            const r = await tidycalSync.runSync();
+            if (r.registered || r.cancelled || r.errors) console.log('[Cron] TidyCal attendance sync', r);
+          } catch (err) {
+            console.error('[Cron] TidyCal attendance sync failed', { err: err.message });
+          } finally {
+            tidycalRunning = false;
+          }
+        };
+        cron.schedule('*/5 * * * *', runTidycalSync);
+        setTimeout(runTidycalSync, 90 * 1000);
+        console.log('[Cron] TidyCal attendance sync ENABLED (every 5 min, read-only)');
+      }
     }
   }
 

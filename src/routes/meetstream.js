@@ -17,6 +17,19 @@ router.post('/webhook/meetstream/register', async (req, res) => {
   }
 });
 
+/** Run the TidyCal client sync now (same job the cron runs every 5 minutes). Bearer BOOKING_BRIDGE_WEBHOOK_SECRET. */
+router.post('/webhook/meetstream/tidycal-sync', async (req, res) => {
+  const auth = assertBookingBridgeSecret(req);
+  if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
+  try {
+    const r = await require('../services/tidycal-attendance').runSync();
+    return res.status(200).json({ ok: true, ...r });
+  } catch (err) {
+    console.error('[Meetstream] tidycal sync error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
 /** Read the attendance rows. Bearer BOOKING_BRIDGE_WEBHOOK_SECRET. */
 router.get('/webhook/meetstream/attendance', async (req, res) => {
   const auth = assertBookingBridgeSecret(req);
