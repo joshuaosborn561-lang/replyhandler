@@ -28,6 +28,7 @@ const {
 const { filterOwnAddresses } = require('../utils/own-addresses');
 const { trackSend } = require('./send-inflight');
 const manualGhost = require('../utils/manual-ghost');
+const { sendCcHeadsUp } = require('./cc-heads-up-email');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -568,6 +569,7 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
     let clientCcMode = '';
     let enrichment = null;
     let prospectCc = '';
+    let ccHeadsUpSent = false;
     const sendOpts = { replyText, emailStatsId };
 
     let threadForReplyAll = reply.thread_context;
@@ -645,6 +647,22 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
       sendOpts
     );
 
+    // Josh picked CC client. One separate Gmail heads-up to those same
+    // addresses. A failure here does not fail the prospect reply.
+    if (prospectCc) {
+      try {
+        const headsUp = await sendCcHeadsUp({
+          client,
+          reply,
+          ccEmails: prospectCc,
+          history: threadForReplyAll,
+        });
+        ccHeadsUpSent = Boolean(headsUp && headsUp.sent);
+      } catch (err) {
+        console.warn('[ReplySend] CC heads-up failed', { replyId: reply.id, err: err.message });
+      }
+    }
+
     let clientNotifyError = null;
     if (forwardEmails) {
     try {
@@ -664,6 +682,7 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
           clientNotifySkipped: true,
           clientNotifySkipReason: notifySkip,
           prospectCcEmails: prospectCc || undefined,
+          ccHeadsUpSent: ccHeadsUpSent || undefined,
         };
       }
 
@@ -826,6 +845,7 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
       clientDigestQueued: digestQueued || undefined,
       clientCcRoundRobin: ccMeta?.roundRobin || undefined,
       prospectCcEmails: prospectCc || undefined,
+      ccHeadsUpSent: ccHeadsUpSent || undefined,
       referralCcEmails: referralList.length ? referralList.join(', ') : undefined,
       leadCellPhone: enrichment?.phone || undefined,
       leadCellPhoneProvider: enrichment?.sources?.phone || undefined,

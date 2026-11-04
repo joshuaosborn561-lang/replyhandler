@@ -194,6 +194,20 @@ router.post('/slack/actions', slackVerify, async (req, res) => {
     return;
   }
 
+  // Voicemail follow-up: Send emails, Cancel does not. Validate before closing.
+  if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'fseq_voicemail_email_modal') {
+    const voicemailEmail = require('../services/voicemail-followup-email');
+    const errors = voicemailEmail.validateVoicemailEmailSubmission(interaction);
+    if (errors) return res.status(200).json({ response_action: 'errors', errors });
+    res.status(200).json({ response_action: 'clear' });
+    try {
+      await voicemailEmail.handleVoicemailEmailSubmit(interaction, { slackApi: slackService });
+    } catch (err) {
+      console.error('[Slack] Voicemail follow-up submit error', { err: err.message, stack: err.stack });
+    }
+    return;
+  }
+
   // Nurture Day 30: edit modal. Validate before closing, then approve with the edited text.
   if (interaction.type === 'view_submission' && interaction.view?.callback_id === 'nurture_d30_edit_modal') {
     const nurtureSvc = require('../services/nurture-day30');

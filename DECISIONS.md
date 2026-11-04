@@ -1886,6 +1886,29 @@ The dedupe key now drops `[image: ...]` and `[cid:...]`, then keeps letters and 
 
 Guard: `test/webhook-poller-dedupe.test.js`.
 
+## Voicemail follow-up email opens a modal and does not send until Send (Josh, Nov 4 2026)
+
+Josh: on a follow-up call card, "Left a voicemail" should open an editable email he can send to the prospect. The click still only logs the outcome, the same way it does today (including the Day 0 voicemail-email step). The email is extra.
+
+- The button stays `fseq_no_answer` ("No answer / Left VM"). It records `no_answer` and does not send.
+- Slack opens a modal prefilled with a short draft in the spirit of "just left you a voicemail". He can edit it. **Send** emails it. **Cancel** emails nothing. Opening the modal emails nothing.
+- The draft uses the thread and the lead on the card. The existing draft grounding check runs. An interactive draft may use Claude, then Gemini, then the short template. If the model is slow or ungrounded, the modal shows the template.
+- Send goes out from the thread's sending identity through the existing reply-send path for that card's platform. It does not CC the client.
+
+Guard: `voicemail follow-up email does not send on click or Cancel` in `test/voicemail-followup-email.test.js`.
+
+## CC heads-up email when Josh CCs the client (Josh, Nov 4 2026)
+
+Josh: when he CCs a client on a prospect reply, also email that client from his inbox telling them to check spam. This supersedes the Oct 31 removal of the "Hot lead: we CC'd you" notice. That notice, its module, its flag, and its subject stay gone. This is a different email.
+
+- It sends only when he uses the existing **Approve & Send + CC client** button or the Edit modal **CC client** checkbox. Both stay. No new CC cases. A plain Approve does not CC and does not send this email.
+- One email from the primary Gmail (the same sender as the other Josh emails), not a SmartLead cc and not a forward of the prospect thread. To = the addresses just placed on the prospect cc (`notify_emails` only, already minus the prospect and our own mailboxes).
+- Body: `Hey, we just CC'd you on a reply to <prospect name/company>. It came from <sending inbox address>. It's probably in your spam, so check there and mark it not-spam.` The inbox is the mailbox of the SENT message we replied to, else the latest SENT from, else the address the prospect wrote to. If that address cannot be found, the heads-up is not sent.
+- Once per CC event. A failed heads-up does not fail the prospect reply. The prospect is never a recipient.
+- The three automatic client updates (roll-up, meeting-booked brief, day-of brief) are unchanged.
+
+Guard: `CC heads-up does not send unless Josh picked CC, does not go to the prospect, and does not send twice for one CC event` in `test/cc-heads-up-email.test.js`. The Oct 31 scan in `test/cc-notice-retired.test.js` still forbids the old module, flag, and Hot lead subject.
+
 ## Vector Energy Group books on the SalesGlider wrap (Josh, Nov 4 2026)
 
 Josh asked for this directly. Vector Energy Group (Al) uses `https://book.gosalesglider.com/vector` as the booking link on reply cards and emails. The calendar behind that wrap is `https://cal.com/team/intro-call/vector-energy-group`. The retired TidyCal page (`tidycal.com/team/vector-energy-group/intro-call`) is not the booking link and not the destination.

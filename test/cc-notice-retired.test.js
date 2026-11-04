@@ -81,7 +81,12 @@ describe('CC send: no notice email, reply still CCs notify_emails, hot lead reac
     };
     clientClaimed.assertNotClaimedOrThrow = async () => {};
     smartlead.sendReply = async (_k, _c, _l, opts) => { sent.push(opts); };
-    smartlead.getThreadHistory = async () => ({ history: [] });
+    smartlead.getThreadHistory = async () => ({
+      history: [
+        { type: 'SENT', stats_id: 'stats1', from: 'inbox@sender.test', to: 'lead@prospect.test', time: '2026-10-30T14:00:00Z', email_body: 'Hello' },
+        { type: 'REPLY', from: 'lead@prospect.test', to: 'inbox@sender.test', time: '2026-10-30T15:00:00Z', email_body: 'Yes, interested.' },
+      ],
+    });
     smartlead.listEmailAccounts = async () => [];
     gmail.isConfigured = () => true;
     gmail.sendMail = async (m) => { mails.push(m); return { from: 'joshua@salesglidergrowth.com' }; };
@@ -113,14 +118,23 @@ describe('CC send: no notice email, reply still CCs notify_emails, hot lead reac
     };
   }
 
-  it('Approve & Send + CC client: CCs notify_emails on the reply, sends NO notice email, queues the roll-up', async () => {
+  it('Approve & Send + CC client: CCs notify_emails on the reply, sends one heads-up to those addresses, queues the roll-up', async () => {
+    // Nov 4 2026 supersedes the "no email of any kind" line. The Oct 31 Hot lead
+    // notice stays gone. The heads-up is a different email, to the CC list only.
     const res = await sendReplyToPlatform(CLIENT, REPLY, 'Sounds good', { ccClientOnProspect: true });
     assert.equal(sent.length, 1);
     assert.match(sent[0].cc, /owner@acme\.test/);
     assert.match(sent[0].cc, /ops@acme\.test/);
     assert.doesNotMatch(sent[0].cc, /portal@acme\.test|legacy@acme\.test|contact@acme\.test/);
-    assert.equal(mails.length, 0, 'no email of any kind is sent from the reply path');
+    assert.equal(mails.length, 1);
+    assert.deepEqual(mails[0].to, ['owner@acme.test', 'ops@acme.test']);
+    assert.ok(!mails[0].to.includes('lead@prospect.test'));
+    assert.match(mails[0].textBody, /Hey, we just CC'd you on a reply to Pat Doe at Doe Co\./);
+    assert.match(mails[0].textBody, /It came from inbox@sender\.test\./);
+    assert.match(mails[0].textBody, /mark it not-spam/);
+    assert.doesNotMatch(`${mails[0].subject}\n${mails[0].textBody}`, /Hot lead/i);
     assert.equal(res.ccNoticeSent, undefined);
+    assert.equal(res.ccHeadsUpSent, true);
     assert.equal(res.clientDigestQueued, true);
     assert.equal(rows.get('r1').ds, 'pending');
   });

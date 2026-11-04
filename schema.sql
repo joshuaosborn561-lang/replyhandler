@@ -105,6 +105,7 @@ CREATE TABLE pending_replies (
   follow_up_step INTEGER,
   follow_up_source_id UUID,
   cc_on_send BOOLEAN NOT NULL DEFAULT false,
+  cc_heads_up_sent_at TIMESTAMPTZ,
   pending_nudge_sent_at TIMESTAMPTZ,
   reminder_count INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
