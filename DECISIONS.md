@@ -1934,3 +1934,14 @@ Cayden, on the Sandro rule above: "If I get a card I want a followup unless I DQ
 Every posted positive card enrolls, including pending, flagged, and an AI Not a fit rating. Rejected and disqualified rows do not enroll. A DQ or a reject stops a sequence that is already running. Day 0 is the send plus `FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS` (default 3) when the reply was sent, otherwise the card post time plus those hours, then the next open call window. The cron noticing the card does not make Day 0 due.
 
 Guard: `test/followup-enroll-after-send.test.js`.
+
+## Meeting emails name the booker, not the client contact (Josh, Nov 4 2026)
+
+Josh: a client contact who receives a meeting email was named as the person who booked. The scheduler page host (and the notify mailbox) was landing in the prospect name. The company and the email on the brief were already the booker's.
+
+- The instant meeting-booked brief and the day-of brief keep the same wording, recipients, CC, and schedule.
+- A payload or stored name that matches that client's notify mailbox, or the host slug on their booking page, is not the booker unless it also matches the prospect's own email.
+- The name used instead is the lead record for that email, then the reply's stored name, then a mailbox header that matches the email. When none of those exist, the name is left blank and the existing company / "Prospect" fallback stays.
+- Who receives the email does not change. To is still `notify_emails`. CC is still Cayden and Josh on the booked brief, and Josh on the day-of brief.
+
+Guard: `meeting email names the booker, not the client contact` in `test/meeting-prospect-name.test.js`.

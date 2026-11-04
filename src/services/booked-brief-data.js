@@ -13,6 +13,9 @@
 
 const smartlead = require('./smartlead');
 const { plainFromHtmlish } = require('./client-notify-email');
+const {
+  chooseProspectName, displayNameFromHeader, identitiesForClients, nameMatchesEmail,
+} = require('../utils/meeting-prospect-name');
 
 const TZ = 'America/Chicago';
 const CONSUMER = /(^|\.)(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail|comcast|att|sbcglobal|verizon|bellsouth|cox|charter|gmx|zoho|mail)\.(com|net|me|co\.uk)$/i;
@@ -328,12 +331,22 @@ async function gatherBrief(m, ctx, deps = {}) {
   const meetingText = startIso ? meetingLabel(startIso, cal && cal.end) : '';
   const threadText = thread.map((t) => `${t.when} ${t.direction === 'in' ? 'PROSPECT' : 'US'}: ${t.body}`).join('\n\n').slice(0, 9000);
   const callText = [m.summary, ctx.highlights ? JSON.stringify(ctx.highlights) : ''].filter(Boolean).join('\n').slice(0, 6000);
+  const crmName = [lead.first_name, lead.last_name].filter(Boolean).join(' ');
+  const headerName = thread.map((t) => (t.direction === 'in' ? displayNameFromHeader(t.from) : '')).find((n) => n && nameMatchesEmail(n, m.prospect.email)) || '';
+  // The booking payload's name is sometimes the client contact who hosts the page.
+  // The lead record for this email, then a matching mailbox header, is the booker.
+  const personName = chooseProspectName({
+    given: m.prospect.name,
+    email: m.prospect.email,
+    alternatives: [crmName, headerName],
+    identities: identitiesForClients(ctx.clients),
+  });
 
   const synth = await safe('brief synthesis', () => synthesize({
     clientName,
     callBrands: deps.callBrands || [],
     meetingText,
-    prospect: { name: m.prospect.name, title: crmTitle, company, email: m.prospect.email, location },
+    prospect: { name: personName, title: crmTitle, company, email: m.prospect.email, location },
     crm: { company_name: lead.company_name, job_title: custom.job_title, location: lead.location, unsubscribed: lead.is_unsubscribed === true, other_fields: Object.keys(custom).filter((k) => k !== 'job_title') },
     campaign: sl.campaignName || m.list,
     withholdCampaign: ctx.clientFacing === true,
@@ -355,7 +368,7 @@ async function gatherBrief(m, ctx, deps = {}) {
   return {
     clientName,
     prospect: {
-      name: m.prospect.name || [lead.first_name, lead.last_name].filter(Boolean).join(' '),
+      name: personName,
       company,
       title: (synth && synth.title) || crmTitle,
       email: m.prospect.email,
