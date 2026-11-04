@@ -1885,3 +1885,13 @@ David Chapman (David.Chapman@phoenixpbm.com, BCP campaign 3763799) got two cards
 The dedupe key now drops `[image: ...]` and `[cid:...]`, then keeps letters and digits only. Spacing and punctuation cannot split one email into two. The stored row and the Slack card still show the full email, placeholders included. A Message-ID match still wins when both sides have the same RFC id. When one side has no id, the text key is the fallback. Two different Message-IDs are still two emails, including two short replies that are not the same letters. No time window and no stats-id match. Supersede of an older open card is unchanged: a second copy of the same email never becomes a newer card.
 
 Guard: `test/webhook-poller-dedupe.test.js`.
+
+## Vector Energy Group books on the SalesGlider wrap (Josh, Nov 4 2026)
+
+Josh asked for this directly. Vector Energy Group (Al) uses `https://book.gosalesglider.com/vector` as the booking link on reply cards and emails. The calendar behind that wrap is `https://cal.com/team/intro-call/vector-energy-group`. The retired TidyCal page (`tidycal.com/team/vector-energy-group/intro-call`) is not the booking link and not the destination.
+
+- `clients.booking_link` is the wrap. `clients.booking_destination_url` is the Cal.com URL. Migration `057_vector_cal_booking_link.sql` sets those on the Vector Energy Group row only, and only when they differ. It does not delete the row and does not touch any other client.
+- The fallback destination map and `GET /public/booking-clients` publish the Cal.com URL as the destination. A stale BookingBridge `clients.js` that still lists the TidyCal page does not put TidyCal back. BPLTG stays on TidyCal.
+- Drafts still paste the wrap, never the raw calendar.
+
+Guard: `Vector Energy Group booking link is the SalesGlider wrap and Cal.com is the destination` in `test/owner-intent.test.js`.
