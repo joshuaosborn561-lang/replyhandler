@@ -29,6 +29,7 @@
  */
 
 const { notifyEmails, parseEmailList, formatEmailList } = require('./client-cc');
+const { prospectDisplayName } = require('../utils/meeting-prospect-name');
 const { escapeHtml } = require('./client-notify-email');
 const { fyiReplyTo } = require('../utils/fyi-notify');
 const { extractThreadMessages } = require('../utils/thread-transcript');
@@ -364,7 +365,7 @@ function noShowLine(priorNoShows, email, tz) {
 function assembleBriefFacts(row, { priorNoShows = null } = {}) {
   const src = row || {};
   const tz = src.digest_timezone || 'America/Chicago';
-  const name = oneLine(src.lead_full_name, 200) || oneLine(src.lead_name, 200);
+  const name = oneLine(prospectDisplayName(src), 200);
   const companyName = oneLine(src.lead_company, 200);
   const campaign = oneLine(src.campaign_name, 200);
   const channel = channelFor(src);
@@ -1369,7 +1370,7 @@ function presentUpcoming(row) {
   const zone = row.digest_timezone || row.lead_timezone || 'America/Chicago';
   const when = isoWithZone(usableMeetingStart(row) || row.confirmed_time, zone);
   const icp = clientRecordIcp(row);
-  const name = oneLine(row.lead_full_name || row.lead_name, 200);
+  const name = oneLine(prospectDisplayName(row), 200);
   return {
     meeting_id: row.id,
     client_id: row.client_id,
@@ -1413,7 +1414,7 @@ function sqlStore(db) {
       const { rows } = await q(
         `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
-                c.name AS client_name, c.notify_emails, c.digest_timezone,
+                c.name AS client_name, c.notify_emails, c.booking_link, c.booking_destination_url, c.digest_timezone,
                 pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
                 pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
@@ -1435,7 +1436,7 @@ function sqlStore(db) {
       const { rows } = await q(
         `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
-                c.name AS client_name, c.notify_emails, c.digest_timezone, c.icp_profile, c.icp_status,
+                c.name AS client_name, c.notify_emails, c.booking_link, c.booking_destination_url, c.digest_timezone, c.icp_profile, c.icp_status,
                 pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
                 pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.lead_timezone, pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,
@@ -1634,7 +1635,7 @@ function sqlStore(db) {
       const { rows } = await q(
         `SELECT m.id, m.client_id, m.pending_reply_id, m.lead_name, m.lead_email, m.linkedin_url,
                 m.confirmed_time, m.created_at, m.meeting_link, m.calendar_provider, m.status,
-                c.name AS client_name, c.notify_emails, c.digest_timezone,
+                c.name AS client_name, c.notify_emails, c.booking_link, c.booking_destination_url, c.digest_timezone,
                 pr.platform, pr.campaign_id, pr.campaign_name, pr.lead_title, pr.lead_company,
                 pr.lead_id, pr.lead_phone, pr.lead_website, pr.lead_full_name, pr.lead_location,
                 pr.linkedin_url AS reply_linkedin, pr.inbound_message, pr.sent_reply,

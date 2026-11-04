@@ -179,6 +179,62 @@ describe('booked brief: non-call booking (Calendly)', () => {
     assert.ok(!/how they booked/i.test(sent[0].htmlBody) && !/how they booked/i.test(sent[0].textBody));
   });
 
+  it('names the booker from the lead record when the payload name is the client contact', async () => {
+    _resetSeenForTests();
+    const sent = [];
+    const contact = 'Casey Owner';
+    const r = await handleBookedMeetingEmail(calendlyPayload({
+      booking_id: 4401,
+      platform: 'hubspot',
+      client: 'Fixture Client',
+      prospect: {
+        name: contact,
+        company: 'North School',
+        email: 'pat.example@school.example',
+        title: 'IT Manager',
+      },
+    }), {
+      send: async (x) => { sent.push(x); },
+      env: {},
+      resolveCc: async () => ({
+        clients: ['Fixture Client'],
+        always: ['casey.owner@client.example'],
+        rows: [{
+          id: 'c1',
+          name: 'Fixture Client',
+          notify_emails: 'casey.owner@client.example',
+          smartlead_api_key: 'k',
+          booking_destination_url: 'https://meetings.hubspot.com/casey-owner',
+        }],
+      }),
+      highlightsFn: async () => null,
+      linkedinFn: async () => '',
+      briefDataFn: async (m, ctx) => gatherBrief(m, ctx, {
+        ...stubs,
+        sl: {
+          ...stubs.sl,
+          lookupLeadByEmail: async () => ({
+            leadId: '222',
+            campaignIds: ['111'],
+            lead: {
+              first_name: 'Pat',
+              last_name: 'Example',
+              company_name: 'North School',
+              location: 'Austin, TX',
+            },
+          }),
+        },
+      }),
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(sent[0].to, ['casey.owner@client.example']);
+    assert.match(sent[0].subject, /^Meeting booked: Pat Example · Fixture Client$/);
+    assert.match(sent[0].textBody, /FYI, Pat Example at North School booked a meeting/);
+    assert.match(sent[0].textBody, /Name: Pat Example/);
+    assert.equal(sent[0].textBody.includes(contact), false);
+    assert.equal(sent[0].htmlBody.includes(contact), false);
+  });
+
   it('still sends a minimal brief when the data step throws', async () => {
     _resetSeenForTests();
     const sent = [];

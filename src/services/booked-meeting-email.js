@@ -29,6 +29,7 @@ const { fyiReplyTo } = require('../utils/fyi-notify');
 const { generateHighlights } = require('./booked-meeting-highlights');
 const { lookupMissingLinkedin } = require('./reply-card-identity');
 const { resolveSchedulerContact } = require('./scheduler-contact');
+const { identitiesForClients, shouldDropProspectName } = require('../utils/meeting-prospect-name');
 
 const DEFAULT_TO = 'joshua@salesglidergrowth.com';
 const DEFAULT_CC = 'cayden@salesglidergrowth.com';
@@ -195,7 +196,7 @@ async function resolveClientAlwaysCc({ clientSlug, clientName }, { query = db.qu
   ].map((n) => String(n).trim().toLowerCase()).filter(Boolean);
   if (!names.length) return { clients: [], always: [], rows: [] };
   const { rows } = await query(
-    `SELECT id, name, notify_emails, smartlead_api_key FROM clients
+    `SELECT id, name, notify_emails, smartlead_api_key, booking_link, booking_destination_url FROM clients
       WHERE active IS DISTINCT FROM false
         AND lower(name) = ANY($1::text[])`,
     [names]
@@ -306,6 +307,9 @@ async function handleBookedMeetingEmail(body, {
   }
   m.clientDisplay = displayNameFor(m, clientRows);
   const clientName = m.clientDisplay || m.client;
+  // The page host is the client contact. Their name is not who booked.
+  const contactNames = identitiesForClients(clientRows);
+  if (shouldDropProspectName(m.prospect.name, m.prospect.email, contactNames)) m.prospect.name = '';
   // A booking made on a scheduler page reaches us before the scheduler's webhook, with no name. Ask the
   // scheduler's API who booked, so the brief, the LinkedIn match and the research all have a real person.
   const isCallBooking = Boolean(m.alloCallId) || m.platform === 'allo';
@@ -325,6 +329,7 @@ async function handleBookedMeetingEmail(body, {
       m.meetingAt = m.meetingAt || isoOrEmpty(hit.startsAt);
     }
   }
+  if (shouldDropProspectName(m.prospect.name, m.prospect.email, contactNames)) m.prospect.name = '';
   const [highlights, linkedinUrl] = await Promise.all([
     highlightsFn({
       transcript: m.transcript,
