@@ -19,8 +19,17 @@ function canonicalInboundMessageId(raw) {
   return s;
 }
 
+function messageIdFromHeaderBlob(raw) {
+  if (raw == null) return '';
+  if (typeof raw !== 'string') return '';
+  const labeled = raw.match(/message-id:\s*(<[^<>\s]+@[^<>\s]+>)/i);
+  if (labeled) return canonicalInboundMessageId(labeled[1]);
+  return '';
+}
+
 function messageIdFromHeaders(headers) {
   if (!headers) return '';
+  if (typeof headers === 'string') return messageIdFromHeaderBlob(headers);
   if (Array.isArray(headers)) {
     for (const h of headers) {
       if (!h || typeof h !== 'object') continue;
@@ -42,12 +51,22 @@ function messageIdOfMessage(message) {
   const keys = [
     'message_id', 'messageId', 'email_message_id', 'reply_message_id',
     'rfc_message_id', 'rfc822_message_id', 'internet_message_id',
+    'original_message_id', 'originalMessageId', 'smtp_message_id', 'smtpMessageId',
   ];
   for (const key of keys) {
     const id = canonicalInboundMessageId(message[key]);
     if (id) return id;
   }
-  return messageIdFromHeaders(message.headers || message.email_headers || message.header);
+  const fromHeaders = messageIdFromHeaders(
+    message.headers || message.email_headers || message.header
+    || message.raw_headers || message.rawHeaders || message.header_text
+  );
+  if (fromHeaders) return fromHeaders;
+  const nested = message.reply_message || message.replyMessage;
+  if (nested && typeof nested === 'object' && nested !== message) {
+    return messageIdOfMessage(nested);
+  }
+  return '';
 }
 
 module.exports = {

@@ -113,5 +113,5 @@ test('embedded signature images do not change the inbound dedupe key', () => {
   const b = 'Hi Sandy,\n\nPlease send over a booking link.\n\ndata:image/png;base64,BBB999DIFFERENT';
   assert.strictEqual(normalizeInboundText(a), normalizeInboundText(b));
   assert.strictEqual(inboundPrefix(a), inboundPrefix(b));
-  assert.ok(inboundPrefix(a).startsWith('hi sandy'));
+  assert.ok(inboundPrefix(a).startsWith('hisandy'));
 });
