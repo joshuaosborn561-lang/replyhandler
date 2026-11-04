@@ -1895,3 +1895,19 @@ Josh asked for this directly. Vector Energy Group (Al) uses `https://book.gosale
 - Drafts still paste the wrap, never the raw calendar.
 
 Guard: `Vector Energy Group booking link is the SalesGlider wrap and Cal.com is the destination` in `test/owner-intent.test.js`.
+
+## Follow-up sequence starts after we send, not when the card posts (Nov 4 2026)
+
+Sandro Duval (Vector) replied "We only want Tesla chargers". The card posted at 11:53 AM ET, rated Not a fit, still pending. At 11:56 the sequence posted "Call today · Day 1 of 5 · went quiet...". Enrollment treated pending and flagged cards as started, `createSequence` anchored Day 0 to the cron's clock, and Day 0 inside call hours was due immediately.
+
+A sequence starts only after Approve or Edit & Send has finished (`pending_replies.status = 'sent'` and a non-empty `sent_reply`). Pending, flagged, approved, and sending are not sends. The lookback is that send time (`updated_at`), still capped by `FOLLOWUP_SEQUENCE_MAX_AGE_HOURS`, so turning the flag on does not back-fill old leads. Day 0 is the send plus `FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS` (default 3), then the next open call window. A verdict that is not `qualified` or `unknown` is Not a fit and is not enrolled. If the rating lands after a sequence already started, the sequence stops as `not_a_fit`.
+
+Guard: `test/followup-enroll-after-send.test.js`.
+
+## A posted card gets a follow-up unless Cayden DQs or rejects it (Nov 4 2026)
+
+Cayden, on the Sandro rule above: "If I get a card I want a followup unless I DQ." That supersedes the "only after send" and "Not a fit is not enrolled" lines in the entry above. The three-hour wait stays.
+
+Every posted positive card enrolls, including pending, flagged, and an AI Not a fit rating. Rejected and disqualified rows do not enroll. A DQ or a reject stops a sequence that is already running. Day 0 is the send plus `FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS` (default 3) when the reply was sent, otherwise the card post time plus those hours, then the next open call window. The cron noticing the card does not make Day 0 due.
+
+Guard: `test/followup-enroll-after-send.test.js`.
