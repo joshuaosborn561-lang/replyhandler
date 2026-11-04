@@ -63,6 +63,7 @@ const MIGRATION_FILES = [
   '054_followup_card_events.sql',
   '055_deactivate_deep_roots.sql',
   '056_meeting_attendance.sql',
+  '057_vector_cal_booking_link.sql',
 ];
 
 async function clientsTableExists(client) {

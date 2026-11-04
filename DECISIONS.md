@@ -1886,6 +1886,16 @@ The dedupe key now drops `[image: ...]` and `[cid:...]`, then keeps letters and 
 
 Guard: `test/webhook-poller-dedupe.test.js`.
 
+## Vector Energy Group books on the SalesGlider wrap (Josh, Nov 4 2026)
+
+Josh asked for this directly. Vector Energy Group (Al) uses `https://book.gosalesglider.com/vector` as the booking link on reply cards and emails. The calendar behind that wrap is `https://cal.com/team/intro-call/vector-energy-group`. The retired TidyCal page (`tidycal.com/team/vector-energy-group/intro-call`) is not the booking link and not the destination.
+
+- `clients.booking_link` is the wrap. `clients.booking_destination_url` is the Cal.com URL. Migration `057_vector_cal_booking_link.sql` sets those on the Vector Energy Group row only, and only when they differ. It does not delete the row and does not touch any other client.
+- The fallback destination map and `GET /public/booking-clients` publish the Cal.com URL as the destination. A stale BookingBridge `clients.js` that still lists the TidyCal page does not put TidyCal back. BPLTG stays on TidyCal.
+- Drafts still paste the wrap, never the raw calendar.
+
+Guard: `Vector Energy Group booking link is the SalesGlider wrap and Cal.com is the destination` in `test/owner-intent.test.js`.
+
 ## Follow-up sequence starts after we send, not when the card posts (Nov 4 2026)
 
 Sandro Duval (Vector) replied "We only want Tesla chargers". The card posted at 11:53 AM ET, rated Not a fit, still pending. At 11:56 the sequence posted "Call today · Day 1 of 5 · went quiet...". Enrollment treated pending and flagged cards as started, `createSequence` anchored Day 0 to the cron's clock, and Day 0 inside call hours was due immediately.

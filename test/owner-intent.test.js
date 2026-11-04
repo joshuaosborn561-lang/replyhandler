@@ -2403,6 +2403,29 @@ test('the dashboard stays open with no login', () => {
     reversal('open dashboard', 'page load prompts for ADMIN_API_KEY again'));
 });
 
+test('Vector Energy Group booking link is the SalesGlider wrap and Cal.com is the destination', () => {
+  const dest = read('src/utils/booking-bridge-destinations.js');
+  const migration = read('migrations/057_vector_cal_booking_link.sql');
+  const startup = read('scripts/run-migrations.js');
+  const decisions = read('DECISIONS.md');
+  assert.match(decisions, /Vector Energy Group books on the SalesGlider wrap/,
+    reversal('Vector booking link', 'the decision was removed from DECISIONS.md'));
+  assert.match(dest, /https:\/\/cal\.com\/team\/intro-call\/vector-energy-group/,
+    reversal('Vector booking link', 'Al\'s Cal.com destination was removed'));
+  assert.match(dest, /book\.gosalesglider\.com\/vector/,
+    reversal('Vector booking link', 'the public wrap was removed'));
+  assert.match(dest, /vector: VECTOR_CAL_DESTINATION/,
+    reversal('Vector booking link', 'the fallback map no longer pins Vector to Cal.com'));
+  assert.doesNotMatch(dest, /vector:\s*'https:\/\/tidycal\.com/,
+    reversal('Vector booking link', 'the fallback map points Vector at TidyCal again'));
+  assert.match(migration, /name ILIKE 'vector energy group'/);
+  assert.match(migration, /https:\/\/book\.gosalesglider\.com\/vector/);
+  assert.match(migration, /https:\/\/cal\.com\/team\/intro-call\/vector-energy-group/);
+  assert.doesNotMatch(migration, /\bDELETE\b/i);
+  assert.doesNotMatch(migration, /bpltg/i);
+  assert.match(startup, /057_vector_cal_booking_link\.sql/);
+});
+
 test('new replies post as top-level cards and link to an earlier card', () => {
   const poster = read('src/services/slack-reply-post.js');
   const slackSrc = read('src/services/slack.js');
