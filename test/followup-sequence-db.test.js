@@ -15,7 +15,13 @@ const skip = PGlite ? false : 'PGlite not installed (dev-only integration test)'
 for (const k of ['ALLO_API_KEY', 'ALLO_PHONE_NUMBERS', 'ALLO_PHONE_NUMBER', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY',
   'BOOKING_BRIDGE_URL', 'CAMPAIGN_INTELLIGENCE_URL']) delete process.env[k];
 
-const ENV = { FOLLOWUP_SEQUENCE_ENABLED: 'true', FOLLOWUP_CALLER_NAME: 'Gabe' };
+const ENV = {
+  FOLLOWUP_SEQUENCE_ENABLED: 'true',
+  FOLLOWUP_CALLER_NAME: 'Gabe',
+  // These tests check the card path with Day 0 due at the send. Production
+  // waits FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS (default 3) after the send.
+  FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS: '0',
+};
 const MIN = 60000;
 const NOW = new Date('2026-10-27T17:00:00Z'); // Tue 12:00 CT
 
@@ -52,11 +58,13 @@ let n = 0;
 async function addReply(pg, clientId, over = {}) {
   n += 1;
   const row = {
-    classification: 'INTERESTED', status: 'pending', slack_message_ts: `1700.${n}`,
+    classification: 'INTERESTED', status: 'sent', slack_message_ts: `1700.${n}`,
+    sent_reply: 'Hey Pat, Tuesday or Wednesday?',
     lead_email: `lead${n}@x.co`, lead_name: 'Pat Smith', inbound_message: `Sounds good, send times ${n}`,
     lead_phone: '+15555550100', phone_enrichment_status: 'found', created_at: new Date(NOW - MIN),
     lead_timezone: 'America/Chicago', platform: 'smartlead', campaign_id: '111', lead_id: String(n), ...over,
   };
+  if (!row.updated_at) row.updated_at = row.created_at;
   const cols = Object.keys(row);
   const { rows: [r] } = await pg.query(
     `INSERT INTO pending_replies (client_id, ${cols.join(', ')}) VALUES ($1, ${cols.map((_, i) => `$${i + 2}`).join(', ')}) RETURNING *`,

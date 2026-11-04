@@ -39,9 +39,29 @@ const ghost = require('./ghosted-meetings');
 const ghostText = require('../utils/ghosted-meeting-text');
 
 const POSITIVE = new Set(['INTERESTED', 'MEETING_PROPOSED']);
-const ENROLL_STATUSES = ['pending', 'approved', 'sending', 'sent', 'flagged'];
+// A sequence starts only after Approve or Edit & Send has actually gone out.
+// `approved` / `sending` are the in-flight states. Pending and flagged cards
+// have not been sent. Sandro Duval, Nov 4 2026: a pending Not-a-fit card
+// enrolled three minutes after it posted.
+const ENROLL_STATUSES = ['sent'];
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
+
+function isNotAFitVerdict(verdict) {
+  const v = parseJson(verdict);
+  if (!v || typeof v !== 'object') return false;
+  const status = String(v.status || '').trim().toLowerCase();
+  if (!status || status === 'unknown' || status === 'qualified') return false;
+  return true;
+}
+
+/** Day 0 is the send, plus a few hours, not the moment the cron notices the row. */
+function day0Anchor({ sentAt, now = new Date(), env = process.env } = {}) {
+  const delayH = envMinutes('FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS', 3, env);
+  const base = sentAt ? new Date(sentAt) : now;
+  const start = Number.isFinite(base.getTime()) ? base : now;
+  return new Date(start.getTime() + delayH * HOUR);
+}
 
 function enabled(env = process.env) {
   return /^(1|true|yes|on)$/i.test(String(env.FOLLOWUP_SEQUENCE_ENABLED || '').trim());
@@ -60,10 +80,11 @@ function parseJson(raw) {
 // ─── Enrollment ───────────────────────────────────────────────────────────────
 
 /**
- * Start a sequence for every recent positive reply whose card is posted.
- * Only replies newer than FOLLOWUP_SEQUENCE_MAX_AGE_HOURS (default 6) and
- * FOLLOWUP_SEQUENCE_START (optional ISO) enrol, so turning the flag on never
- * back-fills old leads.
+ * Start a sequence for every positive reply we have actually sent.
+ * The send (`updated_at` once status is `sent`) must be newer than
+ * FOLLOWUP_SEQUENCE_MAX_AGE_HOURS (default 6) and FOLLOWUP_SEQUENCE_START
+ * (optional ISO), so turning the flag on never back-fills old leads.
+ * Pending and flagged cards are not sends. A Not a fit verdict is not a sequence.
  */
 async function enrollNewReplies({ now = new Date(), dbClient = db, env = process.env, limit = 50 } = {}) {
   const maxAgeH = envMinutes('FOLLOWUP_SEQUENCE_MAX_AGE_HOURS', 6, env) || 6;
@@ -78,11 +99,13 @@ async function enrollNewReplies({ now = new Date(), dbClient = db, env = process
       WHERE upper(pr.classification) IN ('INTERESTED', 'MEETING_PROPOSED')
         AND pr.platform IN ('smartlead', 'heyreach')
         AND pr.status = ANY($1::text[])
+        AND btrim(coalesce(pr.sent_reply, '')) <> ''
         AND pr.slack_message_ts IS NOT NULL
-        AND pr.created_at >= $2
+        AND pr.updated_at >= $2
         AND c.active IS DISTINCT FROM false
+        AND COALESCE(pr.icp_verdict->>'status', '') <> 'disqualified'
         AND NOT EXISTS (SELECT 1 FROM followup_sequences s WHERE s.source_reply_id = pr.id AND s.origin = 'reply')
-      ORDER BY pr.created_at ASC
+      ORDER BY pr.updated_at ASC
       LIMIT $3`,
     [ENROLL_STATUSES, floor, limit],
   );
@@ -90,6 +113,8 @@ async function enrollNewReplies({ now = new Date(), dbClient = db, env = process
   const out = { enrolled: 0, skipped: 0 };
   for (const reply of rows) {
     if (!isPostedSlackTs(reply.slack_message_ts) || isSlackTestFixtureReply(reply)) { out.skipped++; continue; }
+    if (String(reply.status || '') !== 'sent' || !String(reply.sent_reply || '').trim()) { out.skipped++; continue; }
+    if (isNotAFitVerdict(reply.icp_verdict)) { out.skipped++; continue; }
     const key = leadKey({
       clientId: reply.client_id, leadEmail: reply.lead_email,
       linkedinUrl: reply.linkedin_url, leadId: reply.lead_id,
@@ -132,7 +157,8 @@ async function createSequence(reply, key, { now, dbClient = db, env = process.en
   if (!seqId) return false;
   if (stoppedReason) return false;
 
-  const plan = time.planSequence({ enrolledAt: now, timeZone: tz, env });
+  const anchor = day0Anchor({ sentAt: reply.updated_at, now, env });
+  const plan = time.planSequence({ enrolledAt: anchor, timeZone: tz, env });
   const values = [];
   const params = [];
   plan.forEach((s, i) => {
@@ -819,8 +845,9 @@ async function applyStopRules({ dbClient = db, slackApi = slack, limit = 200, on
     else if (seqOrigin === ghost.ORIGIN) {
       // The source reply is already booked (the meeting was ghosted), so only the ghost rules apply.
       reason = await ghost.stopReason({ id: seqId, client_id: seqClientId, lead_email: seqLeadEmail, enrolled_at: seqEnrolledAt }, source, { dbClient, deps });
-    } else if (['meeting_booked'].includes(source.status)) reason = 'booked';
+    }     else if (['meeting_booked'].includes(source.status)) reason = 'booked';
     else if (source.status === 'disqualified') reason = 'disqualified';
+    else if (isNotAFitVerdict(source.icp_verdict)) reason = 'not_a_fit';
     else if (source.status === 'rejected' || !POSITIVE.has(String(source.classification || '').toUpperCase())) reason = 'source_closed';
     else reason = await stopReasonForLead(source, { dbClient, checkBooked: false });
     if (reason) {
@@ -1730,6 +1757,8 @@ async function applyCallInstead({
 
 module.exports = {
   enabled,
+  isNotAFitVerdict,
+  day0Anchor,
   enrollNewReplies,
   stopReasonForLead,
   stopSequence,

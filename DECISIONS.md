@@ -1885,3 +1885,11 @@ David Chapman (David.Chapman@phoenixpbm.com, BCP campaign 3763799) got two cards
 The dedupe key now drops `[image: ...]` and `[cid:...]`, then keeps letters and digits only. Spacing and punctuation cannot split one email into two. The stored row and the Slack card still show the full email, placeholders included. A Message-ID match still wins when both sides have the same RFC id. When one side has no id, the text key is the fallback. Two different Message-IDs are still two emails, including two short replies that are not the same letters. No time window and no stats-id match. Supersede of an older open card is unchanged: a second copy of the same email never becomes a newer card.
 
 Guard: `test/webhook-poller-dedupe.test.js`.
+
+## Follow-up sequence starts after we send, not when the card posts (Nov 4 2026)
+
+Sandro Duval (Vector) replied "We only want Tesla chargers". The card posted at 11:53 AM ET, rated Not a fit, still pending. At 11:56 the sequence posted "Call today · Day 1 of 5 · went quiet...". Enrollment treated pending and flagged cards as started, `createSequence` anchored Day 0 to the cron's clock, and Day 0 inside call hours was due immediately.
+
+A sequence starts only after Approve or Edit & Send has finished (`pending_replies.status = 'sent'` and a non-empty `sent_reply`). Pending, flagged, approved, and sending are not sends. The lookback is that send time (`updated_at`), still capped by `FOLLOWUP_SEQUENCE_MAX_AGE_HOURS`, so turning the flag on does not back-fill old leads. Day 0 is the send plus `FOLLOWUP_SEQUENCE_DAY0_DELAY_HOURS` (default 3), then the next open call window. A verdict that is not `qualified` or `unknown` is Not a fit and is not enrolled. If the rating lands after a sequence already started, the sequence stops as `not_a_fit`.
+
+Guard: `test/followup-enroll-after-send.test.js`.
