@@ -1162,6 +1162,23 @@ async function handleCallButton(action, interaction, { dbClient = db, slackApi =
     await sendEphemeralNotice(interaction, alreadyHandledNotice());
     return;
   }
+  // The click already logged the outcome. The email modal is extra and does
+  // not send. Send is a later modal submission.
+  if (outcome === 'no_answer' && interaction && interaction.trigger_id) {
+    try {
+      const voicemailEmail = require('./voicemail-followup-email');
+      await voicemailEmail.openFromCallClick({
+        step: res.step,
+        seq: res.seq,
+        interaction,
+        dbClient,
+        slackApi,
+        env,
+      });
+    } catch (err) {
+      console.warn('[FollowupSeq] voicemail follow-up modal did not open', { stepId: act.value, err: err.message });
+    }
+  }
   const payload = parseJson(res.step.payload) || {};
   if (!payload.card || !res.seq) return;
   const { rows: [client] } = await dbClient.query('SELECT slack_bot_token FROM clients WHERE id = $1', [res.seq.client_id]);
