@@ -9,6 +9,8 @@ const {
   normalizeClientBooking,
   refreshDestinations,
   FALLBACK_DESTINATIONS,
+  VECTOR_PUBLIC_BOOKING_URL,
+  VECTOR_CAL_DESTINATION,
   _resetLiveDestinationsForTests,
 } = require('../src/utils/booking-bridge-destinations');
 const { isCalendlyUrl } = require('../src/services/scheduling-slots');
@@ -144,6 +146,60 @@ window.BOOKING_CLIENTS = {
     );
     assert.equal(url, 'https://calendly.com/new-client/30min');
     assert.ok(calls >= 2, 'missing slug must refetch live clients.js');
+  });
+
+  it('Vector Energy Group uses the wrap in front and Cal.com behind it', async () => {
+    assert.equal(FALLBACK_DESTINATIONS.vector, VECTOR_CAL_DESTINATION);
+    assert.equal(VECTOR_PUBLIC_BOOKING_URL, 'https://book.gosalesglider.com/vector');
+    assert.equal(
+      resolveAvailabilityBookingUrl({
+        name: 'Vector Energy Group',
+        booking_link: 'https://book.gosalesglider.com/vector',
+      }),
+      VECTOR_CAL_DESTINATION
+    );
+    const fromRetired = normalizeClientBooking({
+      name: 'Vector Energy Group',
+      booking_link: 'https://book.gosalesglider.com/vector',
+      booking_destination_url: 'https://tidycal.com/team/vector-energy-group/intro-call',
+    });
+    assert.equal(fromRetired.booking_link, VECTOR_PUBLIC_BOOKING_URL);
+    assert.equal(fromRetired.booking_destination_url, VECTOR_CAL_DESTINATION);
+    const pasted = normalizeClientBooking({
+      name: 'Vector Energy Group',
+      booking_link: 'https://tidycal.com/team/vector-energy-group/intro-call',
+    });
+    assert.equal(pasted.booking_link, VECTOR_PUBLIC_BOOKING_URL);
+    assert.equal(pasted.booking_destination_url, VECTOR_CAL_DESTINATION);
+
+    const stale = `
+window.BOOKING_CLIENTS = {
+  "vector": { name: "Vector Energy Group", bookingUrl: "https://tidycal.com/team/vector-energy-group/intro-call" },
+  "bpltg": { name: "BPLTG", bookingUrl: "https://tidycal.com/team/bpltg/intro-call" },
+};
+`;
+    const map = await refreshDestinations({
+      now: Date.now(),
+      force: true,
+      fetchImpl: async () => ({ ok: true, text: async () => stale }),
+    });
+    assert.equal(map.vector, VECTOR_CAL_DESTINATION);
+    assert.equal(map.bpltg, 'https://tidycal.com/team/bpltg/intro-call');
+    assert.equal(
+      resolveAvailabilityBookingUrl({
+        name: 'Vector Energy Group',
+        booking_link: 'https://book.gosalesglider.com/vector',
+      }, map),
+      VECTOR_CAL_DESTINATION
+    );
+    assert.equal(
+      resolveAvailabilityBookingUrl({
+        name: 'BPLTG',
+        booking_link: 'https://book.gosalesglider.com/bpltg',
+        booking_destination_url: 'https://tidycal.com/team/bpltg/intro-call',
+      }, map),
+      'https://tidycal.com/team/bpltg/intro-call'
+    );
   });
 
   it('recognizes both public wrap hosts', () => {

@@ -19,6 +19,29 @@ const BOOKING_BRIDGE_HOSTS = new Set([
   'book.salesglidergrowth.com',
 ]);
 
+/** Cards and emails paste https://book.gosalesglider.com/vector. */
+const VECTOR_PUBLIC_BOOKING_URL = `${BOOKING_BRIDGE_ORIGIN}/vector`;
+
+/**
+ * Al's calendar behind that wrap. Slot lookup reads this. The retired
+ * TidyCal intro-call page is not the destination.
+ */
+const VECTOR_CAL_DESTINATION = 'https://cal.com/team/intro-call/vector-energy-group';
+
+const VECTOR_RETIRED_TIDYCAL_RE = /^https?:\/\/(?:www\.)?tidycal\.com\/team\/vector-energy-group\/intro-call\/?(?:[?#].*)?$/i;
+
+function isRetiredVectorTidycal(url) {
+  return VECTOR_RETIRED_TIDYCAL_RE.test(String(url || '').trim());
+}
+
+/** Vector's old TidyCal URL becomes the Cal.com destination. Every other URL stays. */
+function replaceRetiredVectorTidycal(slug, url) {
+  const dest = String(url || '').trim();
+  if (String(slug || '').trim().toLowerCase() !== 'vector') return dest;
+  if (!dest || isRetiredVectorTidycal(dest)) return VECTOR_CAL_DESTINATION;
+  return dest;
+}
+
 /** Last known destinations from booking-bridge site/clients.js */
 const FALLBACK_DESTINATIONS = Object.freeze({
   goliath: 'https://meetings.hubspot.com/dave-ackley',
@@ -29,7 +52,7 @@ const FALLBACK_DESTINATIONS = Object.freeze({
   bolder: 'https://calendly.com/mike-boldercyberpartners/30min',
   salesglider: 'https://calendly.com/joshua-salesglidergrowth/30min',
   powergryd: 'https://meet.powerpsa.com/jesse/powergryd-strategy-call-2026',
-  vector: 'https://tidycal.com/team/vector-energy-group/intro-call',
+  vector: VECTOR_CAL_DESTINATION,
 });
 
 const LIVE_TTL_MS = 60 * 1000;
@@ -47,7 +70,11 @@ function parseClientsJs(text) {
 }
 
 function destinationMap() {
-  return { ...FALLBACK_DESTINATIONS, ...(liveDestinations || {}) };
+  const map = { ...FALLBACK_DESTINATIONS, ...(liveDestinations || {}) };
+  // A stale BookingBridge clients.js still lists Vector's retired TidyCal
+  // page. That file must not put TidyCal back over the Cal.com destination.
+  map.vector = replaceRetiredVectorTidycal('vector', map.vector);
+  return map;
 }
 
 function slugFromWrapUrl(url) {
@@ -93,22 +120,24 @@ function normalizeClientBooking(client = {}) {
     const dest = destCol && !isBookingBridgeWrap(destCol)
       ? destCol
       : (destinationMap()[slug] || '');
-    if (slug && dest) rememberLiveDestination(slug, dest);
+    const canonical = replaceRetiredVectorTidycal(slug, dest);
+    if (slug && canonical) rememberLiveDestination(slug, canonical);
     return {
       slug,
       booking_link: stored,
-      booking_destination_url: dest || destCol || '',
+      booking_destination_url: canonical || destCol || '',
     };
   }
 
   if (/^https?:\/\//i.test(stored)) {
     const slug = nameSlug;
+    const dest = replaceRetiredVectorTidycal(slug, stored);
     if (slug) {
-      rememberLiveDestination(slug, stored);
+      rememberLiveDestination(slug, dest);
       return {
         slug,
         booking_link: `${BOOKING_BRIDGE_ORIGIN}/${slug}`,
-        booking_destination_url: stored,
+        booking_destination_url: dest,
       };
     }
     return { slug: '', booking_link: stored, booking_destination_url: stored };
@@ -125,17 +154,20 @@ function resolveAvailabilityBookingUrl(client, destMap = destinationMap()) {
   const destCol = client && client.booking_destination_url
     ? String(client.booking_destination_url).trim()
     : '';
-  if (destCol && !isBookingBridgeWrap(destCol) && /^https?:\/\//i.test(destCol)) {
-    return destCol;
-  }
   const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
   const wrapSlug = slugFromWrapUrl(stored);
-  if (wrapSlug) {
-    return destMap[wrapSlug] ? String(destMap[wrapSlug]).trim() : '';
-  }
-  if (stored) return stored;
   const nameSlug = slugFromClientName(client && client.name);
-  return nameSlug && destMap[nameSlug] ? String(destMap[nameSlug]).trim() : '';
+  const slug = wrapSlug || nameSlug;
+  if (destCol && !isBookingBridgeWrap(destCol) && /^https?:\/\//i.test(destCol)) {
+    return replaceRetiredVectorTidycal(slug, destCol);
+  }
+  if (wrapSlug) {
+    return replaceRetiredVectorTidycal(wrapSlug, destMap[wrapSlug] ? String(destMap[wrapSlug]).trim() : '');
+  }
+  if (stored) return replaceRetiredVectorTidycal(slug, stored);
+  return nameSlug && destMap[nameSlug]
+    ? replaceRetiredVectorTidycal(nameSlug, String(destMap[nameSlug]).trim())
+    : '';
 }
 
 async function refreshDestinations({
@@ -187,6 +219,8 @@ function _resetLiveDestinationsForTests() {
 
 module.exports = {
   FALLBACK_DESTINATIONS,
+  VECTOR_PUBLIC_BOOKING_URL,
+  VECTOR_CAL_DESTINATION,
   BOOKING_BRIDGE_HOSTS,
   parseClientsJs,
   destinationMap,
