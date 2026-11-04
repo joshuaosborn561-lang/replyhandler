@@ -20,6 +20,7 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
 const { noticeIfClosed, sendEphemeralNotice } = require('../services/card-click-guard');
+const { followUpSkipBlock } = require('../utils/human-card-skip');
 
 const router = Router();
 
@@ -695,6 +696,17 @@ async function handleReject(replyId, interaction) {
   // and do not cancel later cadence steps. The next scheduled follow-up
   // still posts.
   if (String(pending.classification || '').toUpperCase() === 'FOLLOW_UP') {
+    const block = followUpSkipBlock(interaction, pending);
+    if (block) {
+      await sendEphemeralNotice(
+        interaction,
+        block === 'too_soon'
+          ? 'This card just posted. Nothing was skipped. Click Reject again if you mean to skip it.'
+          : 'Nothing was skipped. A follow-up card is skipped only when a person clicks Reject on that card.',
+      );
+      console.log('[Slack] Follow-up skip ignored', { replyId, block });
+      return;
+    }
     const { rows: [reply] } = await db.query(
       `UPDATE pending_replies
           SET status = 'skipped', updated_at = now()

@@ -186,10 +186,11 @@ async function enrollManual(input = {}, { now = new Date(), env = process.env, d
           lead_phone, lead_phone_provider, phone_enrichment_status, lead_company,
           inbound_message, classification, status, suppression_reason, created_at)
        VALUES ($1, 'smartlead', $2, 'Manual ghosted meeting', $3, $4, $4, $5, $6, $7, $8, $9,
-               '(no new reply from prospect)', 'OTHER', 'skipped', 'manual_ghost_context', $10)
+               $11, 'OTHER', 'skipped', 'manual_ghost_context', $10)
        RETURNING *`,
       [client.id, manual.MANUAL_CAMPAIGN_ID, leadId, leadName, email, phone || null,
-        phone ? 'manual' : null, phone ? 'found' : null, company || null, start],
+        phone ? 'manual' : null, phone ? 'found' : null, company || null, start,
+        manual.MANUAL_ENROLL_INBOUND],
     );
     source = row;
   }

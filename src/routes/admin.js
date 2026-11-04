@@ -546,6 +546,9 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
 /**
  * Trace ghosted-meeting checks: every booked meeting looked at, the decision, the reason,
  * and the stage-by-stage trail. Read-only. Query: ?days=2 (default 3), ?decision=held.
+ * A check is included when it was first seen, updated, or decided inside the window,
+ * or its sequence is still active. first_seen_at alone hid enrollments whose card
+ * posted inside the window. Same auth as the other admin routes (no key).
  */
 router.get('/admin/ghosted-meetings', async (req, res) => {
   try {
@@ -555,7 +558,15 @@ router.get('/admin/ghosted-meetings', async (req, res) => {
       `SELECT g.id, c.name AS client, g.lead_key, g.meeting_start, g.meeting_end, g.source,
               g.decision, g.reason, g.evidence, g.sequence_id, g.trail, g.first_seen_at, g.decided_at
          FROM ghosted_meeting_checks g JOIN clients c ON c.id = g.client_id
-        WHERE g.first_seen_at >= now() - ($1::int * interval '1 day')
+        WHERE (
+              g.first_seen_at >= now() - ($1::int * interval '1 day')
+              OR g.updated_at >= now() - ($1::int * interval '1 day')
+              OR g.decided_at >= now() - ($1::int * interval '1 day')
+              OR EXISTS (
+                SELECT 1 FROM followup_sequences s
+                 WHERE s.id = g.sequence_id AND s.status = 'active'
+              )
+            )
           AND ($2::text IS NULL OR g.decision = $2)
         ORDER BY g.meeting_start DESC LIMIT 200`,
       [days, decision],
@@ -564,6 +575,36 @@ router.get('/admin/ghosted-meetings', async (req, res) => {
   } catch (err) {
     console.error('[Admin] ghosted-meetings list error', { err: err.message });
     return res.status(500).json({ error: err.message });
+  }
+});
+
+const GHOST_SEQ_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Step state for one ghosted-meeting sequence. Read-only. No key, same as the
+ * other admin routes. Operational fields only.
+ */
+router.get('/admin/ghosted-meetings/sequences/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!GHOST_SEQ_UUID.test(id)) return res.status(400).json({ ok: false, error: 'sequence id must be a uuid' });
+    const { rows: [seq] } = await db.query(
+      `SELECT id, status, origin, stop_reason, enrolled_at
+         FROM followup_sequences WHERE id = $1`,
+      [id],
+    );
+    if (!seq) return res.status(404).json({ ok: false, error: 'sequence_not_found' });
+    const { rows: steps } = await db.query(
+      `SELECT id, kind, seq_order, status, skip_reason, due_at, posted_at, outcome, slack_ts
+         FROM followup_sequence_steps
+        WHERE sequence_id = $1
+        ORDER BY seq_order ASC, due_at ASC`,
+      [id],
+    );
+    return res.json({ ok: true, sequence: seq, steps });
+  } catch (err) {
+    console.error('[Admin] ghosted sequence read error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'sequence read failed' });
   }
 });
 
@@ -609,7 +650,9 @@ router.post('/admin/ghosted-meetings/enroll', async (req, res) => {
 });
 
 /**
- * Reopen a reply card that was Rejected: rejected -> pending, nothing else. Writes an audit row
+ * Reopen a reply card that was Rejected: rejected -> pending, nothing else. A skipped
+ * FOLLOW_UP card can also be reopened to pending (buttons come back, nothing is sent
+ * and enrichment does not run). Writes an audit row
  * (followup_card_events, event_type admin_status_change) in the same statement. Never sends, does
  * not restore cancelled follow-up nudges, does not touch Smartlead or HeyReach.
  * Body: { status: 'pending' | 'interested', reason?, actor?, repaintCard?, slackChannel?, slackTs? }

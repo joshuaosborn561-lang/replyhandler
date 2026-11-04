@@ -1,4 +1,4 @@
-const { extractLeadPhone } = require('../utils/lead-phone');
+const { extractLeadPhone, phoneFromReplyText } = require('../utils/lead-phone');
 const db = require('../db');
 const slack = require('./slack');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
@@ -161,11 +161,21 @@ async function findSlackThreadRootTs(clientId, platform, campaignId, leadId, dbC
 }
 
 function applyCardLinks(card, identity = {}, extra = {}) {
+  const manualLocked = Boolean(card && card.phoneProvider === 'manual' && card.leadPhone);
+  const parsed = !manualLocked && !extra.phone && !card.leadPhone
+    ? (phoneFromReplyText(card.inboundMessage) || undefined)
+    : undefined;
   return {
     ...card,
     leadEmail: extra.email || identity.email || card.leadEmail || undefined,
-    leadPhone: extra.phone || card.leadPhone || sourcePhoneForCard(card),
-    phoneProvider: extra.phoneProvider || card.phoneProvider || undefined,
+    leadPhone: manualLocked
+      ? card.leadPhone
+      : (extra.phone || card.leadPhone || sourcePhoneForCard(card) || parsed),
+    phoneProvider: manualLocked
+      ? 'manual'
+      : (extra.phone
+        ? (extra.phoneProvider || card.phoneProvider || undefined)
+        : (card.phoneProvider || (parsed ? 'reply_text' : undefined))),
     phoneEnrichmentStatus: extra.phoneEnrichmentStatus || card.phoneEnrichmentStatus || undefined,
     enrichmentReceipt: extra.enrichmentReceipt || card.enrichmentReceipt || undefined,
     leadLinkedinUrl:
@@ -376,17 +386,36 @@ function sourcePhoneForCard(card = {}) {
   ) || undefined;
 }
 
-/** Store the lead's own phone (free, from the reply source) so later card refreshes keep it. */
-async function persistSourcePhone(dbClient, replyId, phone) {
+/**
+ * Store the lead's own phone so later card refreshes keep it.
+ * A manual enroll phone is locked (provider manual, enrichment found) and is
+ * not downgraded to source. A number parsed from reply text is stored only
+ * when the row has no phone yet.
+ */
+async function persistSourcePhone(dbClient, replyId, phone, provider) {
   if (!replyId || !dbClient || !phone) return;
+  const kind = provider === 'manual' ? 'manual' : (provider === 'reply_text' ? 'reply_text' : '');
   try {
     await dbClient.query(
       `UPDATE pending_replies
-          SET lead_phone = COALESCE(NULLIF(lead_phone, ''), $1),
-              lead_phone_provider = COALESCE(lead_phone_provider, 'source'),
+          SET lead_phone = CASE
+                WHEN lead_phone_provider = 'manual' AND NULLIF(lead_phone, '') IS NOT NULL THEN lead_phone
+                WHEN $3 = 'manual' THEN $1
+                ELSE COALESCE(NULLIF(lead_phone, ''), $1)
+              END,
+              lead_phone_provider = CASE
+                WHEN lead_phone_provider = 'manual' AND NULLIF(lead_phone, '') IS NOT NULL THEN lead_phone_provider
+                WHEN $3 = 'manual' THEN 'manual'
+                WHEN lead_phone_provider IS NULL AND $3 = 'reply_text' THEN 'reply_text'
+                ELSE COALESCE(lead_phone_provider, 'source')
+              END,
+              phone_enrichment_status = CASE
+                WHEN $3 = 'manual' OR (lead_phone_provider = 'manual' AND NULLIF(lead_phone, '') IS NOT NULL) THEN 'found'
+                ELSE phone_enrichment_status
+              END,
               updated_at = now()
         WHERE id = $2`,
-      [phone, replyId]
+      [phone, replyId, kind]
     );
   } catch (err) {
     console.warn('[Slack] persist source phone failed', { replyId, err: err.message });
@@ -758,7 +787,7 @@ async function postProspectSlackCard({
       ? (card?.leadIcpVerdict || parseStoredIcp(card?.icpVerdict) || checkingVerdict())
       : unknownVerdict('no website');
     let enrichedCard = applyCardLinks(card, identity, { icp: initialIcp });
-    await persistSourcePhone(dbClient, replyId, enrichedCard.leadPhone);
+    await persistSourcePhone(dbClient, replyId, enrichedCard.leadPhone, enrichedCard.phoneProvider);
     await persistCardIdentity(dbClient, replyId, {
       linkedinUrl: identity.linkedinUrl,
       website: identity.website,

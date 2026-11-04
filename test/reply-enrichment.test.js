@@ -23,7 +23,7 @@ const {
 } = require('../src/services/reply-enrich-policy');
 const { PENDING_CACHE_SELECT, SUPABASE_CONTACT_SELECT, assertSafeSelect } = require('../src/services/reply-contact-cache');
 const { enrichProspect } = require('../src/services/prospect-enrich');
-const { enrichPendingReplyPhone } = require('../src/services/reply-phone-enrichment');
+const { enrichPendingReplyPhone, keepStoredPhone } = require('../src/services/reply-phone-enrichment');
 const db = require('../src/db');
 
 const REPLY_ID = '11111111-1111-1111-1111-111111111111';
@@ -394,6 +394,86 @@ test('landline from the waterfall is stored as alt and does not count as a mobil
     assert.equal(persist.params[3], '+12015550999');
     const receipt = JSON.parse(persist.params[6]);
     assert.match(receipt.phoneGate, /not_mobile/);
+  } finally {
+    fetch.restore();
+    dbMock.restore();
+    if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
+    else process.env.EMAIL_WATERFALL_URL = prev;
+  }
+});
+
+test('a manual phone is not replaced and does not call the waterfall', async () => {
+  const prev = process.env.EMAIL_WATERFALL_URL;
+  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+  let fetches = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => { fetches += 1; throw new Error('should not fetch'); };
+  const row = baseReply({
+    lead_phone: '+15555550123',
+    lead_phone_provider: 'manual',
+    phone_enrichment_status: null,
+    classification: 'FOLLOW_UP',
+  });
+  const dbMock = installDb(row);
+  try {
+    const result = await enrichPendingReplyPhone(REPLY_ID, {
+      identityLookup: async () => { throw new Error('no cache'); },
+    });
+    assert.equal(fetches, 0);
+    assert.equal(result.phone, '+15555550123');
+    assert.equal(result.provider, 'manual');
+    assert.ok(!dbMock.calls.some((c) => /processing/.test(c.sql)));
+    assert.ok(!dbMock.calls.some((c) => /lead_email = COALESCE/.test(c.sql)));
+  } finally {
+    dbMock.restore();
+    global.fetch = originalFetch;
+    if (prev == null) delete process.env.EMAIL_WATERFALL_URL;
+    else process.env.EMAIL_WATERFALL_URL = prev;
+  }
+});
+
+test('a reply-text phone survives an empty waterfall result and a found mobile still wins', async () => {
+  assert.deepEqual(
+    keepStoredPhone(
+      { lead_phone: '+15555550111', lead_phone_provider: 'reply_text' },
+      { phone: null, provider: null },
+    ),
+    { phone: '+15555550111', provider: 'reply_text' },
+  );
+  assert.deepEqual(
+    keepStoredPhone(
+      { lead_phone: '+15555550111', lead_phone_provider: 'reply_text' },
+      { phone: '+15555550222', provider: 'aiark' },
+    ),
+    { phone: '+15555550222', provider: 'aiark' },
+  );
+  assert.deepEqual(
+    keepStoredPhone(
+      { lead_phone: '+15555550123', lead_phone_provider: 'manual' },
+      { phone: '+15555550999', provider: 'fullenrich' },
+    ),
+    { phone: '+15555550123', provider: 'manual' },
+  );
+
+  const prev = process.env.EMAIL_WATERFALL_URL;
+  process.env.EMAIL_WATERFALL_URL = 'https://waterfall.example.test';
+  const dbMock = installDb(baseReply({
+    lead_email: 'pat@roof.co',
+    lead_phone: '+15555550111',
+    lead_phone_provider: 'reply_text',
+    classification: 'QUESTION',
+  }));
+  const fetch = installFetch(async () => okHit({ spent_usd: 0 }));
+  try {
+    const result = await enrichPendingReplyPhone(REPLY_ID, {
+      identityLookup: async () => ({ email: null, phone: null, website: null, linkedinUrl: null, domain: null, sources: {} }),
+    });
+    assert.equal(result.phone, '+15555550111');
+    assert.equal(result.provider, 'reply_text');
+    const persist = dbMock.calls.find((c) => /lead_email = COALESCE/.test(c.sql));
+    assert.equal(persist.params[1], '+15555550111');
+    assert.equal(persist.params[2], 'reply_text');
+    assert.ok(fetch.calls.length >= 1);
   } finally {
     fetch.restore();
     dbMock.restore();

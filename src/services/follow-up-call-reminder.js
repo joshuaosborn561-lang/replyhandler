@@ -6,6 +6,7 @@
  * from any other reply row for the same lead email/LinkedIn as a fallback.
  * The once-a-day gate lives in follow_up_call_reminders (created lazily).
  */
+const { phoneFromReplyText } = require('../utils/lead-phone');
 const REMINDER_TZ = 'America/Chicago';
 let tableReady = null;
 
@@ -36,30 +37,50 @@ function leadKey({ clientId, leadEmail, linkedinUrl, leadId }) {
   return who ? `${clientId || ''}|${who}` : '';
 }
 
-/** Best phone on file for this lead: source reply first, then any reply row for the lead. */
+/** Best phone on file for this lead: manual, then source, then any stored row, then reply text. */
 async function phoneForFollowUp(db, { clientId, sourceReplyId, leadEmail, linkedinUrl }) {
+  let sourceRow = null;
   if (sourceReplyId) {
     const { rows: [r] } = await db.query(
-      `SELECT lead_phone, lead_phone_provider, lead_phone_alt FROM pending_replies WHERE id = $1`,
+      `SELECT lead_phone, lead_phone_provider, lead_phone_alt, inbound_message FROM pending_replies WHERE id = $1`,
       [sourceReplyId],
+    );
+    sourceRow = r || null;
+    if (sourceRow && sourceRow.lead_phone_provider === 'manual' && sourceRow.lead_phone) {
+      return { phone: sourceRow.lead_phone, provider: 'manual' };
+    }
+    if (sourceRow && (sourceRow.lead_phone || sourceRow.lead_phone_alt)) {
+      return { phone: sourceRow.lead_phone || sourceRow.lead_phone_alt, provider: sourceRow.lead_phone_provider || null };
+    }
+  }
+  const email = String(leadEmail || '').trim().toLowerCase();
+  const li = String(linkedinUrl || '').trim();
+  if (email || li) {
+    const { rows: [manualRow] } = await db.query(
+      `SELECT lead_phone, lead_phone_provider FROM pending_replies
+        WHERE client_id = $1
+          AND lead_phone_provider = 'manual'
+          AND NULLIF(lead_phone, '') IS NOT NULL
+          AND ((($2::text) <> '' AND lower(lead_email) = $2) OR (($3::text) <> '' AND linkedin_url = $3))
+        ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
+      [clientId, email, li],
+    );
+    if (manualRow && manualRow.lead_phone) return { phone: manualRow.lead_phone, provider: 'manual' };
+    const { rows: [r] } = await db.query(
+      `SELECT lead_phone, lead_phone_provider, lead_phone_alt FROM pending_replies
+        WHERE client_id = $1
+          AND (lead_phone IS NOT NULL OR lead_phone_alt IS NOT NULL)
+          AND ((($2::text) <> '' AND lower(lead_email) = $2) OR (($3::text) <> '' AND linkedin_url = $3))
+        ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
+      [clientId, email, li],
     );
     if (r && (r.lead_phone || r.lead_phone_alt)) {
       return { phone: r.lead_phone || r.lead_phone_alt, provider: r.lead_phone_provider || null };
     }
   }
-  const email = String(leadEmail || '').trim().toLowerCase();
-  const li = String(linkedinUrl || '').trim();
-  if (!email && !li) return { phone: null, provider: null };
-  const { rows: [r] } = await db.query(
-    `SELECT lead_phone, lead_phone_provider, lead_phone_alt FROM pending_replies
-      WHERE client_id = $1
-        AND (lead_phone IS NOT NULL OR lead_phone_alt IS NOT NULL)
-        AND ((($2::text) <> '' AND lower(lead_email) = $2) OR (($3::text) <> '' AND linkedin_url = $3))
-      ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
-    [clientId, email, li],
-  );
-  if (!r) return { phone: null, provider: null };
-  return { phone: r.lead_phone || r.lead_phone_alt, provider: r.lead_phone_provider || null };
+  const parsed = phoneFromReplyText(sourceRow && sourceRow.inbound_message);
+  if (parsed) return { phone: parsed, provider: 'reply_text' };
+  return { phone: null, provider: null };
 }
 
 /**

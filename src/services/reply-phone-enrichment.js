@@ -61,6 +61,23 @@ const { allowsTier } = require('./reply-enrich-policy');
 const { callNowDraft, CALL_NOW_VARIANT } = require('../utils/call-now-variant');
 const { verifyPhone: verifyPhoneVeriphone } = require('./veriphone');
 
+/**
+ * Manual enroll phone always wins. A number parsed from reply text is kept
+ * when enrichment finds nothing. Any other stored phone still follows the
+ * waterfall result.
+ */
+function keepStoredPhone(existing, next) {
+  const current = String(existing?.lead_phone || '').trim();
+  const provider = String(existing?.lead_phone_provider || '');
+  if (provider === 'manual' && current) {
+    return { phone: existing.lead_phone, provider: 'manual' };
+  }
+  if (!next?.phone && provider === 'reply_text' && current) {
+    return { phone: existing.lead_phone, provider: 'reply_text' };
+  }
+  return { phone: next?.phone || null, provider: next?.provider || null };
+}
+
 function storedResult(reply) {
   return {
     phone: reply?.lead_phone || null,
@@ -217,6 +234,10 @@ async function enrichPendingReplyPhone(replyId, {
     }
     return { ...storedResult(existing), status: 'skipped' };
   }
+  // A hand-entered phone is the number. Do not call a vendor and do not replace it.
+  if (String(existing.lead_phone_provider || '') === 'manual' && String(existing.lead_phone || '').trim()) {
+    return storedResult(existing);
+  }
   if (existing.phone_enrichment_status === 'found' ||
       existing.phone_enrichment_status === 'not_found' ||
       existing.phone_enrichment_status === 'skipped') {
@@ -361,6 +382,9 @@ async function enrichPendingReplyPhone(replyId, {
     }
 
     receipt.spentUsd = Number(spentUsd.toFixed(6));
+    const kept = keepStoredPhone(existing, { phone, provider: phoneProvider });
+    phone = kept.phone;
+    phoneProvider = kept.provider;
     const status = phone || email || linkedinUrl || website ? 'found' : 'not_found';
 
     let draftSql = '';
@@ -469,6 +493,7 @@ module.exports = {
   enrichPendingReply,
   storedResult,
   shouldSkipEnrichment,
+  keepStoredPhone,
   isVisibilityOnlyHeyreach,
   SKIP_ENRICH_CLASSIFICATIONS,
   FORBIDDEN_WRITE_COLUMNS,

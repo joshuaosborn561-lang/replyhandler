@@ -26,6 +26,22 @@ test('phone comes from the source reply first, then any row for the lead', async
   assert.equal(r.phone, '+15555550101');
   r = await m.phoneForFollowUp(fakeDb(), { clientId: 1 });
   assert.equal(r.phone, null);
+  r = await m.phoneForFollowUp(
+    fakeDb({ source: { inbound_message: 'Please call 305-555-0199.' } }),
+    { clientId: 1, sourceReplyId: 9 },
+  );
+  assert.equal(r.provider, 'reply_text');
+  assert.match(r.phone, /305/);
+  r = await m.phoneForFollowUp(
+    fakeDb({ source: { inbound_message: 'Thanks.\nOn Mon, Jan 5, 2026 someone wrote:\ncall 212-555-0100' } }),
+    { clientId: 1, sourceReplyId: 9 },
+  );
+  assert.equal(r.phone, null);
+  r = await m.phoneForFollowUp(
+    fakeDb({ source: { lead_phone: '+15555550123', lead_phone_provider: 'manual', inbound_message: 'call 212-555-0100' } }),
+    { clientId: 1, sourceReplyId: 9 },
+  );
+  assert.deepEqual(r, { phone: '+15555550123', provider: 'manual' });
 });
 
 test('reminder fires at most once per lead per Central day', async () => {
