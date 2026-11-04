@@ -1877,3 +1877,11 @@ Josh, relayed by Chief of Staff (10:37am CT, corrected 10:40am CT): hide the Fir
 - **Unchanged.** `CLIENT_DAYOF_BRIEF_ENABLED` default off. The Fireflies lookup still runs on the hold and preview, so Josh's version keeps the transcript history. EA's `POST /admin/client-brief/send` is not changed.
 
 Guard: `test/client-brief-mirrors-josh.test.js` (`Fireflies / Cube is hidden from the client, Allo stays, and Josh still sees both`).
+
+## One SmartLead email is one card when the poller rendering differs (Nov 3 2026)
+
+David Chapman (David.Chapman@phoenixpbm.com, BCP campaign 3763799) got two cards ten seconds apart. The webhook stored the Gmail body, including `[image: Phoenix Logo]` and `678-208-6249 (d)`. The poller built the second card from SmartLead history, which dropped the image placeholder and the space before `(d)`. The Message-ID was missing on that copy, and the 120-character text key diverged around character 50. Austin Neudecker (BCP PE) the same evening was the same split. Both of David's cards were approved, so the reply went out twice.
+
+The dedupe key now drops `[image: ...]` and `[cid:...]`, then keeps letters and digits only. Spacing and punctuation cannot split one email into two. The stored row and the Slack card still show the full email, placeholders included. A Message-ID match still wins when both sides have the same RFC id. When one side has no id, the text key is the fallback. Two different Message-IDs are still two emails, including two short replies that are not the same letters. No time window and no stats-id match. Supersede of an older open card is unchanged: a second copy of the same email never becomes a newer card.
+
+Guard: `test/webhook-poller-dedupe.test.js`.

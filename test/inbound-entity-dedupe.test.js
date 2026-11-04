@@ -75,7 +75,7 @@ test('Bill Hall entity renderings share a dedupe prefix', () => {
   assert.strictEqual(normalizeInboundText(em), normalizeInboundText(hyphen));
   assert.strictEqual(normalizeInboundText(curly), normalizeInboundText(curlyChar));
 
-  assert.ok(normalizeInboundText(entity).includes('bill hall - project executive'));
+  assert.ok(normalizeInboundText(entity).includes('billhallprojectexecutive'));
   assert.ok(!normalizeInboundText(entity).includes('&#8211;'));
   assert.ok(!normalizeInboundText(entity).includes('\u2013'));
 
@@ -145,7 +145,7 @@ test('different text is never deduped, including when the stats id matches', asy
   assert.ok(!seen.params.includes('stats-bill-hall'));
   assert.ok(!seen.params.includes('emcor-1'));
   assert.ok(
-    seen.params.some((p) => String(p).includes('wednesday works')),
+    seen.params.some((p) => String(p).includes('wednesdayworks')),
     'only the text of this reply is sent to the dedupe query'
   );
 });

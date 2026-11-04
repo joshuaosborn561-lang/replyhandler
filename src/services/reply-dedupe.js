@@ -50,12 +50,47 @@ function stripInboundRenderArtifacts(text) {
 }
 
 /**
+ * Placeholders one renderer keeps and the other drops.
+ * David Chapman, Nov 3 2026: the webhook body had `[image: Phoenix Logo]`
+ * and `678-208-6249 (d)`; the poller history copy had neither the image
+ * token nor the space. Those are not two emails.
+ * Storage and the Slack card keep the original text. Only the dedupe key
+ * drops these.
+ */
+function stripDedupePlaceholders(text) {
+  return String(text || '')
+    .replace(/\[image:[^\]]*\]/gi, ' ')
+    .replace(/\[cid:[^\]]*\]/gi, ' ');
+}
+
+/** Letters and digits only, so spacing and punctuation cannot split one email. */
+function lettersAndDigits(text) {
+  return String(text || '').replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Whitespace-collapsed comparison text. Image and cid placeholders are gone.
+ * The 120-character window is taken from this string, then reduced to letters
+ * and digits, so a space in a phone number cannot shift the window and a
+ * signature that used to sit past character 120 still sits past it.
+ */
+function proseForDedupe(text) {
+  const decoded = decodeHtmlEntities(stripEmbeddedBinaries(text));
+  const stripped = stripDedupePlaceholders(stripInboundRenderArtifacts(decoded));
+  return foldDashAndQuotes(stripped)
+    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
  * One normalizer for storage, dedupe, and preferFullerInbound.
  *
  * `forStorage` keeps case, newlines, and the decoded dash so the card still
- * reads naturally. Comparison folds dashes and quotes, strips the same
- * artifacts, and collapses whitespace. Both modes share this function, so
- * the card, the stored row, and the dedupe key cannot drift apart again.
+ * reads naturally, including `[image: ...]` placeholders. Comparison folds
+ * dashes and quotes, strips render artifacts and image/cid placeholders,
+ * then keeps letters and digits only. Storage stays the full email.
  */
 function normalizeInboundText(text, opts = {}) {
   const decoded = decodeHtmlEntities(stripEmbeddedBinaries(text));
@@ -67,11 +102,7 @@ function normalizeInboundText(text, opts = {}) {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
-  return foldDashAndQuotes(stripped)
-    .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+  return lettersAndDigits(proseForDedupe(text));
 }
 
 /** What we persist. Decoded and artifact-stripped. Dashes stay as typed. */
@@ -94,7 +125,7 @@ function decodeInboundForStorage(text) {
 const PREFIX_LEN = 120;
 
 function inboundPrefix(text) {
-  return normalizeInboundText(text).slice(0, PREFIX_LEN);
+  return lettersAndDigits(proseForDedupe(text).slice(0, PREFIX_LEN));
 }
 
 /**
@@ -205,25 +236,36 @@ function applyArtifactStripSql(expr) {
   let sql = expr;
   sql = `regexp_replace(${sql}, '<mailto:[^>]*>', ' ', 'gi')`;
   sql = `regexp_replace(${sql}, '\\[(link|email)\\]', ' ', 'gi')`;
+  sql = `regexp_replace(${sql}, '\\[image:[^]]*\\]', ' ', 'gi')`;
+  sql = `regexp_replace(${sql}, '\\[cid:[^]]*\\]', ' ', 'gi')`;
   sql = `regexp_replace(${sql}, '\\[[^]]*@[^]]*\\]', ' ', 'gi')`;
   sql = `regexp_replace(${sql}, '(^|[[:space:]])>+[[:space:]]*', '\\1', 'g')`;
   return sql;
 }
 
-const STORED_NORM_SQL = (
+const STORED_PROSE_SQL = (
   `lower(trim(both from regexp_replace(` +
   `${stripUnicodeSpacesSql(applyArtifactStripSql(applyEntityFoldSql(STORED_STRIP_BINARIES_SQL)))}, ` +
   `'\\s+', ' ', 'g')))`
 );
 
-/** SQL for the same key, applied to the stored column. */
-const STORED_PREFIX_SQL = `left(${STORED_NORM_SQL}, ${PREFIX_LEN})`;
+/** Full comparison key: letters and digits of the whole reply. */
+const STORED_NORM_SQL = `regexp_replace(${STORED_PROSE_SQL}, '[^a-z0-9]', '', 'g')`;
 
 /**
- * Shortest text that can safely be called "the same reply". Below this, a
- * containment match would collapse genuinely different short replies.
+ * Leading window, then letters and digits. The slice is 120 characters of
+ * prose, not 120 letters, so a tail that used to fall outside the window
+ * still does.
  */
-const MIN_CONTAINMENT_LEN = 40;
+const STORED_PREFIX_SQL = `regexp_replace(left(${STORED_PROSE_SQL}, ${PREFIX_LEN}), '[^a-z0-9]', '', 'g')`;
+
+/**
+ * Shortest letter-and-digit key that can safely be called "the same reply".
+ * The old limit was 40 characters including spaces. A one-sentence rendering
+ * is about 39 letters (Henry / Chris fixtures), so 32 still treats that as
+ * one email and still refuses Yes vs No.
+ */
+const MIN_CONTAINMENT_LEN = 32;
 
 /**
  * SQL that matches a stored reply against one we are considering.

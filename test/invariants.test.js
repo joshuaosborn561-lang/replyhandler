@@ -134,24 +134,18 @@ test('dedupe key survives tail divergence but separates real replies', () => {
 // zero-width spaces in his signature and SQL did not, so the two renderings
 // of "the same" reply never matched.
 test('SQL and JS strip the exact same invisible-space codepoints', () => {
-  const { UNICODE_SPACE_CODEPOINTS, normalizeInboundText } = require('../src/services/reply-dedupe');
+  const { UNICODE_SPACE_CODEPOINTS, normalizeInboundText, STORED_NORM_SQL } = require('../src/services/reply-dedupe');
 
-  const jsStripsSpace = (code) => normalizeInboundText(`a${String.fromCodePoint(code)}b`) === 'a b';
+  // The comparison key keeps letters and digits only, so a space codepoint
+  // between two letters disappears rather than becoming a single space.
+  const jsDropsSpace = (code) => normalizeInboundText(`a${String.fromCodePoint(code)}b`) === 'ab';
 
   for (const code of UNICODE_SPACE_CODEPOINTS) {
-    assert.ok(jsStripsSpace(code), `JS must also normalize codepoint ${code} that SQL strips`);
+    assert.ok(jsDropsSpace(code), `JS must also drop codepoint ${code} that SQL strips`);
   }
-
-  // Spot-check the JS side does not strip anything outside the SQL list —
-  // otherwise the two sides silently diverge again in the other direction.
-  const notInList = [0x2E, 0x41, 0x09]; // '.', 'A', tab (a real \s char, handled separately)
-  for (const code of notInList) {
-    if (UNICODE_SPACE_CODEPOINTS.includes(code)) continue;
-    assert.ok(
-      code === 0x09 || !jsStripsSpace(code),
-      `codepoint ${code} is stripped by JS but missing from the SQL list`
-    );
-  }
+  assert.match(STORED_NORM_SQL, /\[\^a-z0-9\]/, 'SQL dedupe key must keep letters and digits only');
+  assert.strictEqual(normalizeInboundText('aAb'), 'aab', 'a letter stays in the key');
+  assert.strictEqual(normalizeInboundText('a.b'), 'ab', 'punctuation is not part of the key');
 });
 
 // ── Drafts ────────────────────────────────────────────────────────────

@@ -118,7 +118,8 @@ test('claim sentinels are not real Slack timestamps', () => {
 });
 
 test('dedupe prefix helper is still the 120-char window', () => {
-  const long = `${'word '.repeat(50)}tail that diverges`;
-  assert.strictEqual(inboundPrefix(long).length, 120);
-  assert.ok(normalizeInboundText('Hi\u00a0there'), 'nbsp still normalizes');
+  const { PREFIX_LEN } = require('../src/services/reply-dedupe');
+  assert.strictEqual(PREFIX_LEN, 120);
+  assert.strictEqual(inboundPrefix('x'.repeat(200)).length, 120);
+  assert.equal(normalizeInboundText('Hi\u00a0there'), 'hithere');
 });

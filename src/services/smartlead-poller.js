@@ -398,6 +398,9 @@ async function processInboxRow(sourceClient, row, options) {
   let inbound = decodeInboundForStorage(
     inboundMeta.body || latestInboundFromHistory(threadContext, row?.lead_email)
   );
+  // RFC Message-ID from the history entry when SmartLead sent one. The webhook
+  // row and this poller row are the same email when that id matches. When the
+  // history copy has no id, dedupe falls back to the letter-and-digit text key.
   let messageId = inboundMeta.messageId || '';
 
   // Master-inbox can ship a stale email_history while last_reply_time is already
