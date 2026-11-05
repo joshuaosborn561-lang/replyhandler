@@ -473,6 +473,15 @@ async function sendReply(apiKey, campaignId, leadId, {
     }
   }
 
+  const { validateSmartleadOutboundSignature } = require('../utils/smartlead-outbound-signature-guard');
+  validateSmartleadOutboundSignature({
+    plainBody,
+    emailBody,
+    addSignature: appendSig,
+    outboundClient,
+    sendingInboxEmail,
+  });
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

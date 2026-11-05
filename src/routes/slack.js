@@ -21,6 +21,10 @@ const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
 const { noticeIfClosed, sendEphemeralNotice } = require('../services/card-click-guard');
 const { followUpSkipBlock } = require('../utils/human-card-skip');
+const {
+  isOutboundSignatureGuardError,
+  signatureGuardUserMessage,
+} = require('../utils/smartlead-outbound-signature-guard');
 
 const router = Router();
 
@@ -518,6 +522,9 @@ async function handleEditModalSubmit(interaction) {
     );
   } catch (err) {
     console.error('[Slack] Edit modal send failed', { replyId, err: err.message });
+    if (await flagSignatureBlockedCard(replyId, reply, client, interaction, err)) {
+      return;
+    }
     await db.query(
       `UPDATE pending_replies SET status = 'failed', send_error = $2, updated_at = now() WHERE id = $1`,
       [replyId, String(err.message || 'Send failed').slice(0, 500)]
@@ -574,6 +581,37 @@ async function setCardStatus(token, reply, client, text, interaction) {
   } catch (err) {
     console.warn('[Slack] Card status update failed', { replyId: reply?.id, err: err.message });
   }
+}
+
+async function flagSignatureBlockedCard(replyId, reply, client, interaction, err) {
+  if (!isOutboundSignatureGuardError(err)) return false;
+  const userMsg = signatureGuardUserMessage(err) || String(err.message || 'Signature blocked');
+  await db.query(
+    `UPDATE pending_replies SET status = 'flagged', send_error = $2, updated_at = now()
+     WHERE id = $1 AND status IN ('approved', 'sending')`,
+    [replyId, userMsg.slice(0, 500)]
+  );
+  const target = cardTarget(reply, client);
+  const token = client?.slack_bot_token;
+  if (target && token && reply.card_payload && reply.card_payload.draft != null) {
+    try {
+      const card = slackService.buildDraftApprovalCard({
+        ...reply.card_payload,
+        replyId,
+        needsReview: true,
+        reasoning: userMsg,
+      });
+      await slackService.updateMessageKeepingBlocks(
+        token, target.channelId, target.ts, card.text, card.blocks,
+      );
+    } catch (paintErr) {
+      console.warn('[Slack] Signature block card repaint failed', { replyId, err: paintErr.message });
+      await setCardStatus(token, reply, client, `🚩 ${userMsg}`, interaction);
+    }
+  } else if (target && token) {
+    await setCardStatus(token, reply, client, `🚩 ${userMsg}`, interaction);
+  }
+  return true;
 }
 
 async function paintConfirmation(token, reply, client, payload) {
@@ -680,6 +718,9 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false,
     console.log('[Slack] Reply approved and sent', { replyId, platform: reply.platform, lead: reply.lead_name });
   } catch (err) {
     console.error('[Slack] Failed to send reply after approval', { replyId, err: err.message });
+    if (await flagSignatureBlockedCard(replyId, reply, client, interaction, err)) {
+      return;
+    }
     await db.query(
       `UPDATE pending_replies SET status = 'failed', send_error = $2, updated_at = now() WHERE id = $1 AND status IN ('approved', 'sending')`,
       [replyId, String(err.message || 'Send failed').slice(0, 500)]
