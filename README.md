@@ -222,7 +222,28 @@ Each client has **unique** URLs (`/webhook/smartlead/<client-uuid>`, `/webhook/h
 - **SmartLead:** `GET /api/v1/campaigns/{campaign_id}?api_key=...` must succeed for the client’s key (SmartLead returns 404 if the campaign is not in that account).
 - **HeyReach:** we call `POST /api/public/campaign/GetAll` with the client’s key and require the webhook’s `campaignId` to appear in their workspace’s campaign list.
 
-Paste **each client’s** webhook URL only into campaigns that belong to **that** client’s SmartLead/HeyReach workspace (the same API keys you saved in the dashboard). If someone pastes Client A’s URL into Client B’s campaign, events are **skipped** (no Slack noise).
+Paste **each client’s** webhook URL only into campaigns that belong to **that** client. Smartlead email still uses `/webhook/smartlead/<client-uuid>` and posts to that client’s `slack_channel_id`. HeyReach still requires the campaign id to appear on that client’s HeyReach key. If someone pastes Client A’s URL into Client B’s campaign, events are **skipped** (no Slack noise) unless a Smartlead owner tag or campaign route names Client B.
+
+### Smartlead agency key (one key, campaign ownership tags)
+
+Smartlead calls for clients on the agency account use `SMARTLEAD_MASTER_API_KEY`, or `SMARTLEAD_API_KEY` when the master variable is unset. A stored `clients.smartlead_api_key` is still used for an account that has not moved, and this app does not delete or blank those values.
+
+Campaign ownership, first match wins:
+
+1. Smartlead campaign tag `sg-owner:<slug>` (`salesglider`, `parlay`, `culture_fits`, `techevo`, `bcp`, `peterson`, `goliath`, `emcor`, `insight`, `powergryd`, `vector`, `nutter`, `bpltg`, `ciotola`, `nexus`, `virtual_pulsar`). Deliverability creates and backfills these tags. ReplyHandler only reads them.
+2. `smartlead_campaign_routes` (campaign id → client id).
+3. Campaign title (`Vector | …`, `EMCOR`, `TechEvo | Intro`).
+
+An active client with no key and `smartlead_use_master_key` still false (BPLTG today) is included on the agency inbox poll when a tag or route names them. The flag is optional once a tag or route resolves the campaign. To set it for one client later, without wiping keys:
+
+```sql
+UPDATE clients
+   SET smartlead_use_master_key = true, updated_at = now()
+ WHERE lower(name) = lower('Nutter')
+   AND active IS DISTINCT FROM false;
+```
+
+Rollout: Deliverability tags the campaigns, then deploy this service, then confirm each reply lands in that client’s Slack channel, and only after that remove per-client Smartlead keys. Key removal is not part of this change. Ciotola mailbox isolation (JEREMY-CIOTOLA allowlists and prefixes) is unchanged. Webhook URLs stay per client.
 
 **HeyReach polling backstop:** HeyReach webhooks can occasionally sync late. The app also runs an API poller (default every 3 minutes) that scans each active client's HeyReach inbox using the client-level `heyreach_api_key`, dedupes against `pending_replies`, and posts missed replies to the same Slack approval flow. Webhooks remain the primary path; polling is a safety net.
 

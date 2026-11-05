@@ -198,8 +198,9 @@ async function resolveOfferAndProof({
   let copy = '';
   let copySource = 'none';
   const getSeq = fetchSequence || (async () => {
-    if (platform !== 'smartlead' || !client.smartlead_api_key || !camp) return [];
-    return require('./smartlead').getCampaignSequence(client.smartlead_api_key, camp);
+    const keyed = require('./campaign-routing').withSmartleadKey(client);
+    if (platform !== 'smartlead' || !keyed?.smartlead_api_key || !camp) return [];
+    return require('./smartlead').getCampaignSequence(keyed.smartlead_api_key, camp);
   });
   try {
     const seq = await getSeq();

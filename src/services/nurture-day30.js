@@ -62,7 +62,10 @@ function slackTokenFor(client, env = process.env) {
 }
 
 function smartleadKeyFor(client, env = process.env) {
-  return String(env.NURTURE_SMARTLEAD_API_KEY || '').trim() || (client && client.smartlead_api_key) || '';
+  const dedicated = String(env.NURTURE_SMARTLEAD_API_KEY || '').trim();
+  if (dedicated) return dedicated;
+  const filled = require('./campaign-routing').withSmartleadKey(client, env);
+  return (filled && filled.smartlead_api_key) || '';
 }
 
 // ─── Exit rules ───────────────────────────────────────────────────────────────
@@ -744,8 +747,11 @@ async function approveTouch(touchId, userId, { env = process.env, dbClient = db,
   }
 
   const client = await loadClient(lead.client_id, dbClient);
-  const apiKey = smartleadKeyFor(client, env);
   const campaignId = t.smartleadCampaignId(env);
+  const keyed = env.NURTURE_SMARTLEAD_API_KEY
+    ? client
+    : await require('./campaign-routing').applyAgencyKey(client, campaignId, { env });
+  const apiKey = smartleadKeyFor(keyed, env);
   if (!apiKey) return release('No Smartlead key is configured for nurture.', 'no_key');
   const sl = d.smartleadNurture;
   try {

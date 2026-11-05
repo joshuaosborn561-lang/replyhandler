@@ -1953,3 +1953,16 @@ Josh's SalesGlider campaign offers to send a video. When that prospect asks for 
 The URL is `clients.video_link`, edited on the dashboard next to the booking link, same as `voice_prompt`. The classifier does not contain the URL. If the SalesGlider row is empty, `SALESGLIDER_VIDEO_LINK` is the fallback. Other clients do not read that env var.
 
 Guard: `test/video-link-draft.test.js`.
+
+## One Smartlead agency key, ownership by campaign tag (Josh, Nov 5 2026)
+
+Josh: stop requiring a Smartlead API key on every `clients` row. Keep Smartlead client workspaces (`client_id`) for POD staffing. One agency key (`SMARTLEAD_MASTER_API_KEY`, else `SMARTLEAD_API_KEY`) is enough when the campaign is tagged `sg-owner:<slug>`. Slugs match `topup.client_map.client_tag` (`salesglider`, `parlay`, `culture_fits`, `techevo`, `bcp`, `peterson`, `goliath`, `emcor`, `insight`, `powergryd`, `vector`, `nutter`, `bpltg`, `ciotola`, `nexus`, `virtual_pulsar`). Deliverability writes the tags. This service reads them.
+
+- Resolve a campaign to a client in this order: `sg-owner:<slug>`, then `smartlead_campaign_routes`, then the campaign title. A tag wins. The Slack channel is that client’s `slack_channel_id`. An agency-inbox row with none of the three is not posted to a guessed channel.
+- Polling, webhooks, reply send, thread history, nurture, the interested sweep, follow-ups, and briefs do not need `clients.smartlead_api_key` to be non-null. A stored key is still used for a client who has not moved to the agency account.
+- Do not delete or blank stored `smartlead_api_key` values in this change. `smartlead_use_master_key` stays optional; a null key is served by the agency key when a tag or route names the client (BPLTG has neither a key nor the flag).
+- Per-client webhook URLs (`/webhook/smartlead/:clientId`) stay. Ciotola / Jeremy mailbox isolation is not relaxed.
+
+Order of operations: tags in Deliverability, then this code, then check Slack routing, then wipe keys in a later change.
+
+Guard: `sg-owner tag selects that client Slack channel and the agency key` in `test/campaign-routing.test.js`.

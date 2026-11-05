@@ -644,7 +644,7 @@ async function runDueFollowUps({ limit = 25 } = {}) {
   const totals = { posted: 0, skipped: 0, failed: 0, retired, deferred, skipReasons: {} };
 
   for (const fu of rows) {
-    const client = require('./campaign-routing').withSmartleadKey({
+    let client = require('./campaign-routing').withSmartleadKey({
       id: fu.client_id,
       name: fu.client_name,
       slack_bot_token: fu.slack_bot_token,
@@ -658,6 +658,9 @@ async function runDueFollowUps({ limit = 25 } = {}) {
       cc_emails: fu.cc_emails,
       notify_emails: fu.notify_emails,
     });
+    if (fu.platform === 'smartlead' && fu.campaign_id) {
+      client = await require('./campaign-routing').applyAgencyKey(client, fu.campaign_id);
+    }
 
     try {
       const { leadSuppressionReason } = require('./lead-suppression');

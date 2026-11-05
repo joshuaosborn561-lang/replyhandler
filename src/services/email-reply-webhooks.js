@@ -13,6 +13,7 @@ const db = require('../db');
 const smartlead = require('./smartlead');
 const { webhookUrls } = require('../utils/public-client');
 const campaignRouting = require('./campaign-routing');
+const { masterKey, routeClientForCampaign, pollTargetsFromClients } = campaignRouting;
 
 const KEY_GAP_MS = (() => {
   const n = parseInt(process.env.SMARTLEAD_WEBHOOK_CHECK_GAP_MS || '', 10);
@@ -141,6 +142,77 @@ async function ensureClientEmailReplyWebhooks(client) {
   return result;
 }
 
+/**
+ * Agency account: register each campaign's EMAIL_REPLY hook on the owning
+ * client's URL (`/webhook/smartlead/:clientId`). Tag, then route. Title is
+ * not enough to attach a webhook. Unresolved campaigns are left alone.
+ */
+async function ensureAgencyCampaignWebhooks(clients, key) {
+  const result = emptyClientResult('agency');
+  let campaigns = [];
+  try {
+    campaigns = await withKeyGap(key, () => smartlead.listCampaigns(key));
+  } catch (err) {
+    result.errors.push(err.message);
+    console.error('[Startup] EMAIL_REPLY agency list campaigns failed', { err: err.message });
+    return result;
+  }
+  if (!Array.isArray(campaigns)) campaigns = [];
+  for (const camp of campaigns) {
+    const campaignId = campaignIdOf(camp);
+    if (campaignId == null || !isActiveCampaign(camp)) continue;
+    const inlineTags = campaignRouting.tagsFromRecord(camp);
+    let tags = inlineTags;
+    if (tags == null) {
+      try {
+        tags = await withKeyGap(key, () => smartlead.campaignOwnerTags(key, campaignId));
+      } catch (err) {
+        result.unknown.push({ campaignId, err: err.message, reason: 'tags_failed' });
+        continue;
+      }
+    }
+    let owner = null;
+    try {
+      owner = await routeClientForCampaign(
+        { id: null, name: '(smartlead master)', smartlead_api_key: key },
+        campaignId,
+        {
+          tags: tags || [],
+          campaignName: camp.name || camp.campaign_name || null,
+          clients,
+          mode: 'master',
+          allowTitle: false,
+          legacyOwner: null,
+          fetchTags: false,
+          env: { SMARTLEAD_MASTER_API_KEY: key },
+        }
+      );
+    } catch (err) {
+      result.errors.push(err.message);
+      continue;
+    }
+    if (!owner || !owner.id || (owner._ownerVia !== 'tag' && owner._ownerVia !== 'route')) continue;
+    result.campaigns++;
+    const target = webhookUrls(owner.id).smartlead_webhook_url;
+    try {
+      const hooks = await withKeyGap(key, () => smartlead.listCampaignWebhooks(key, campaignId));
+      const has = (Array.isArray(hooks) ? hooks : []).some((h) => smartlead.webhookHasEmailReply(h, target));
+      if (has) {
+        result.registered++;
+        continue;
+      }
+      await withKeyGap(key, () => smartlead.createEmailReplyWebhook(key, campaignId, target));
+      result.created++;
+      result.registered++;
+      console.log('[Startup] EMAIL_REPLY webhook registered', { clientId: owner.id, campaignId, via: owner._ownerVia });
+    } catch (err) {
+      result.missing.push({ campaignId, err: err.message });
+      console.warn('[Startup] EMAIL_REPLY webhook missing', { clientId: owner.id, campaignId, err: err.message });
+    }
+  }
+  return result;
+}
+
 async function ensureEmailReplyWebhooks() {
   const summary = {
     clients: 0,
@@ -154,11 +226,9 @@ async function ensureEmailReplyWebhooks() {
   let clients = [];
   try {
     const { rows } = await db.query(
-      `SELECT id, smartlead_api_key
+      `SELECT *
          FROM clients
-        WHERE active IS DISTINCT FROM false
-          AND smartlead_api_key IS NOT NULL
-          AND smartlead_api_key <> ''`
+        WHERE active IS DISTINCT FROM false`
     );
     clients = rows;
   } catch (err) {
@@ -166,17 +236,27 @@ async function ensureEmailReplyWebhooks() {
     return { ...summary, errors: [err.message] };
   }
 
-  summary.clients = clients.length;
-  const perClient = await Promise.all(clients.map(async (client) => {
+  const agencyKey = masterKey();
+  const privateTargets = pollTargetsFromClients(clients).filter((t) => t.mode === 'client');
+  summary.clients = privateTargets.length + (agencyKey ? 1 : 0);
+  const perClient = await Promise.all(privateTargets.map(async (target) => {
     try {
-      return await ensureClientEmailReplyWebhooks(client);
+      return await ensureClientEmailReplyWebhooks(target.client);
     } catch (err) {
       console.error('[Startup] EMAIL_REPLY client check failed', {
-        clientId: client.id, err: err.message,
+        clientId: target.client.id, err: err.message,
       });
-      return { ...emptyClientResult(client.id), errors: [err.message] };
+      return { ...emptyClientResult(target.client.id), errors: [err.message] };
     }
   }));
+  if (agencyKey) {
+    try {
+      perClient.push(await ensureAgencyCampaignWebhooks(clients, agencyKey));
+    } catch (err) {
+      console.error('[Startup] EMAIL_REPLY agency check failed', { err: err.message });
+      perClient.push({ ...emptyClientResult('agency'), errors: [err.message] });
+    }
+  }
 
   for (const row of perClient) {
     summary.campaigns += row.campaigns;
