@@ -393,6 +393,10 @@ async function sendReply(apiKey, campaignId, leadId, {
   recipient, toEmail, toFirstName,
   replyMessageId, replyEmailTime, replyEmailBody,
   requireCc = false, requiredCc = null,
+  addSignature = true,
+  outboundClient = null,
+  sendingInboxEmail = null,
+  senderFullName = null,
 } = {}) {
   const cid = toSmartleadId(campaignId, 'campaign_id');
   let stats = String(emailStatsId || '').trim();
@@ -408,7 +412,12 @@ async function sendReply(apiKey, campaignId, leadId, {
       `SmartLead sendReply missing email_stats_id [campaign_id=${cid} lead_id=${lidHint}] — no SENT message found in thread history`
     );
   }
-  let emailBody = String(replyText || '');
+  const { prepareSmartleadReplyText, shouldAppendSmartleadMailboxSignature } = require('../utils/smartlead-outbound-body');
+  let plainBody = prepareSmartleadReplyText(replyText, {
+    client: outboundClient,
+    sendingInboxEmail,
+  });
+  let emailBody = plainBody;
   if (shouldHtmlifyOutboundBody() && !looksLikeHandwrittenHtmlEmailBody(emailBody)) {
     emailBody = formatPlainTextAsSmartleadHtml(emailBody);
   }
@@ -418,10 +427,12 @@ async function sendReply(apiKey, campaignId, leadId, {
     throw new Error('SmartLead sendReply internal error: misconstructed reply URL');
   }
 
+  const appendSig = addSignature !== false
+    && shouldAppendSmartleadMailboxSignature({ sendingInboxEmail });
   const payload = {
     email_stats_id: stats,
     email_body: emailBody,
-    add_signature: true,
+    add_signature: appendSig,
   };
   // Docs (reply-email-thread): to_email (optional, defaults to lead email),
   // to_first_name (optional), reply_message_id, reply_email_body (quoted
