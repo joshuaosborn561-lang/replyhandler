@@ -941,6 +941,7 @@ async function draftOnly({
   slotLabels = null,
   slots = null,
   referredContacts = null,
+  videoLink = null,
 }) {
   if (!assertDraftableClassification(classification)) {
     console.warn('[Classifier] Refusing draft for non-positive classification', {
@@ -960,6 +961,16 @@ async function draftOnly({
     console.log('[Classifier] Referral draft is the fixed template', { leadName });
     return templated;
   }
+
+  const { videoOfferDraftForReply } = require('../utils/video-link');
+  const videoDraft = videoOfferDraftForReply({
+    clientName,
+    videoLink,
+    inboundMessage,
+    threadContext,
+    classification,
+  });
+  if (videoDraft) return videoDraft;
 
   const booking = prospectBookingLink({ clientName, bookingLink });
   const name = firstNameFromLead(leadName);
@@ -1151,6 +1162,7 @@ async function classifyAndDraft(
   {
     leadName, digestTimezone, platform,
     clientId = null, leadId = null, leadEmail = null, clientName = null,
+    videoLink = null,
     draftMode = 'realtime',
     deferDraft = false,
     slots = null,
@@ -1237,6 +1249,7 @@ async function classifyAndDraft(
       draftMode,
       slots,
       slotLabels,
+      videoLink,
     })
     : null;
 
@@ -1252,6 +1265,10 @@ async function classifyAndDraft(
       schedulingPromptBlock,
       voicePrompt,
       learnedVoiceBlock,
+      videoLink: require('../utils/video-link').resolveClientVideoLink({
+        name: clientName,
+        video_link: videoLink,
+      }),
     });
     factCheck = await enforceDraftGrounding({
       draft,
@@ -1275,6 +1292,7 @@ async function classifyAndDraft(
         factCheckRetryClaims: claims,
         slots,
         slotLabels,
+        videoLink,
       }),
     });
     draft = factCheck.text;

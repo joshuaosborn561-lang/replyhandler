@@ -91,6 +91,7 @@ function toPublicClient(row) {
     booking_link: src.booking_link || null,
     booking_destination_url: src.booking_destination_url || null,
     voice_prompt: src.voice_prompt || '',
+    video_link: src.video_link || null,
     digest_timezone: src.digest_timezone || null,
     cc_email: src.cc_email || null,
     cc_emails: src.cc_emails || null,

@@ -65,6 +65,7 @@ const MIGRATION_FILES = [
   '056_meeting_attendance.sql',
   '057_vector_cal_booking_link.sql',
   '058_cc_heads_up_sent.sql',
+  '059_client_video_link.sql',
 ];
 
 async function clientsTableExists(client) {

@@ -812,6 +812,7 @@ async function processSmartleadWebhookAsync({
           leadId: resolvedLeadId,
           leadEmail,
           clientName: client.name,
+          videoLink: client.video_link,
           draftMode: 'realtime',
           deferDraft: true,
         },
@@ -1052,6 +1053,7 @@ async function processSmartleadWebhookAsync({
       digestTimezone: client.digest_timezone,
       platform: 'smartlead',
       clientName: client.name,
+      videoLink: client.video_link,
       clientId,
       draftMode: 'realtime',
       slots,
@@ -1074,6 +1076,7 @@ async function processSmartleadWebhookAsync({
         digestTimezone: client.digest_timezone,
         platform: 'smartlead',
         clientName: client.name,
+        videoLink: client.video_link,
         clientId,
         draftMode: 'realtime',
         referredContacts,
@@ -1097,6 +1100,7 @@ async function processSmartleadWebhookAsync({
       clientName: client.name,
       schedulingPromptBlock: promptBlock,
       voicePrompt: client.voice_prompt,
+      videoLink: require('../utils/video-link').resolveClientVideoLink(client),
     });
     const factCheck = await enforceDraftGrounding({
       draft: drafted,
@@ -1112,6 +1116,7 @@ async function processSmartleadWebhookAsync({
         digestTimezone: client.digest_timezone,
         platform: 'smartlead',
         clientName: client.name,
+        videoLink: client.video_link,
         clientId,
         draftMode: 'realtime',
         slots,
@@ -1357,6 +1362,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
               clientId,
               leadId: leadId || hrConversationId,
               clientName: client.name,
+              videoLink: client.video_link,
               draftMode: 'realtime',
             },
           );

@@ -286,6 +286,7 @@ function factSourceText({
   schedulingPromptBlock,
   voicePrompt,
   learnedVoiceBlock,
+  videoLink,
 } = {}) {
   return [
     leadName,
@@ -295,6 +296,7 @@ function factSourceText({
     schedulingPromptBlock,
     voicePrompt,
     learnedVoiceBlock,
+    videoLink,
   ].filter(Boolean).join('\n');
 }
 
