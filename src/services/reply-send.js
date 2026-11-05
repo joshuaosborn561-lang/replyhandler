@@ -28,7 +28,7 @@ const {
 const { filterOwnAddresses } = require('../utils/own-addresses');
 const { trackSend } = require('./send-inflight');
 const manualGhost = require('../utils/manual-ghost');
-const { sendCcHeadsUp } = require('./cc-heads-up-email');
+const { sendCcHeadsUp, sendingInboxFromThread } = require('./cc-heads-up-email');
 
 /** Rows created by POST /admin/test/slack-draft — not real SmartLead/HeyReach leads */
 function isSlackTestFixtureReply(reply) {
@@ -640,6 +640,10 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
       sendOpts.requiredCc = referralList;
       console.log('[ReplySend] Referral CC', { replyId: reply.id, cc: referralList.join(', ') });
     }
+
+    const sendingInboxEmail = sendingInboxFromThread(threadForReplyAll, emailStatsId);
+    sendOpts.outboundClient = client;
+    sendOpts.sendingInboxEmail = sendingInboxEmail;
 
     await smartlead.sendReply(
       client.smartlead_api_key,

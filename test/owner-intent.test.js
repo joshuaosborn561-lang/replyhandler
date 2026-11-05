@@ -288,7 +288,7 @@ test('our drafts add no sign-off, mailbox signature only', () => {
   const classifier = read('src/services/classifier.js');
   assert.match(classifier, /Do NOT add any sign-off/i,
     reversal('our drafts carry no sign-off', 'the prompt no longer forbids one; the mailbox already signs'));
-  assert.match(read('src/services/smartlead.js'), /add_signature:\s*true/, 'SmartLead must keep appending the real signature');
+  assert.match(read('src/services/smartlead.js'), /add_signature:\s*appendSig/, 'SmartLead must keep appending the real signature by default');
 });
 
 // ── Decision: two calendar times + booking link on positive replies ──
