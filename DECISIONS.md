@@ -1945,3 +1945,11 @@ Josh: a client contact who receives a meeting email was named as the person who 
 - Who receives the email does not change. To is still `notify_emails`. CC is still Cayden and Josh on the booked brief, and Josh on the day-of brief.
 
 Guard: `meeting email names the booker, not the client contact` in `test/meeting-prospect-name.test.js`.
+
+## SalesGlider video link is a client setting (Nov 5 2026)
+
+Josh's SalesGlider campaign offers to send a video. When that prospect asks for it or accepts the offer ("send the video", or "sure, send it" after we offered a video), the draft is the short line with that client's video URL and a light call ask. A meeting reply that never mentions the video does not get the link. Another client's reply does not get SalesGlider's link. A DQ, unsubscribe, or departure does not get it.
+
+The URL is `clients.video_link`, edited on the dashboard next to the booking link, same as `voice_prompt`. The classifier does not contain the URL. If the SalesGlider row is empty, `SALESGLIDER_VIDEO_LINK` is the fallback. Other clients do not read that env var.
+
+Guard: `test/video-link-draft.test.js`.

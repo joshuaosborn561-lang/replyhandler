@@ -721,6 +721,12 @@
       </div>
 
       <div class="form-group">
+        <label>Video link</label>
+        <input type="text" id="f_video_link" placeholder="https://">
+        <div class="hint">Optional. Included only when a prospect asks for or accepts that video. SalesGlider uses the watch page. Other clients stay unchanged until this is set.</div>
+      </div>
+
+      <div class="form-group">
         <label>Always forward (optional)</label>
         <textarea id="f_cc_emails" rows="2" placeholder="owner@client.com, ae@client.com" oninput="syncPortalEmailFromAlwaysNotify()"></textarea>
         <div class="hint">Comma or newline separated. The first address is the portal login. A new client with this address gets an invite email. Later edits do not send another invite. These addresses are not copied on Smartlead or HeyReach prospect replies.</div>
@@ -1144,6 +1150,10 @@ function openDetail(id) {
         <span class="value">${c.booking_link ? '<a href="' + esc(c.booking_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_link) + '</a>' : '—'}</span>
       </div>
       <div class="detail-row">
+        <span class="label">Video link</span>
+        <span class="value">${c.video_link ? '<a href="' + esc(c.video_link) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.video_link) + '</a>' : '—'}</span>
+      </div>
+      <div class="detail-row">
         <span class="label">Regular calendar</span>
         <span class="value">${c.booking_destination_url ? '<a href="' + esc(c.booking_destination_url) + '" target="_blank" style="color:var(--accent-light)">' + esc(c.booking_destination_url) + '</a>' : '—'}</span>
       </div>
@@ -1248,6 +1258,7 @@ async function openEditFromDetail() {
   document.getElementById('f_slack_bot_token').value = full.slack_bot_token || '';
   document.getElementById('f_slack_channel_id').value = full.slack_channel_id || '';
   document.getElementById('f_booking_link').value = full.booking_destination_url || full.booking_link || '';
+  document.getElementById('f_video_link').value = full.video_link || '';
   document.getElementById('f_cc_emails').value = full.cc_emails || full.cc_email || '';
   document.getElementById('f_notify_emails').value = full.notify_emails || '';
   syncPortalEmailFromAlwaysNotify();
@@ -1267,6 +1278,7 @@ async function submitForm() {
     slack_bot_token: document.getElementById('f_slack_bot_token').value.trim(),
     slack_channel_id: document.getElementById('f_slack_channel_id').value.trim(),
     booking_link: document.getElementById('f_booking_link').value.trim() || null,
+    video_link: document.getElementById('f_video_link').value.trim() || null,
     cc_emails: document.getElementById('f_cc_emails').value.trim() || null,
     notify_emails: document.getElementById('f_notify_emails').value.trim() || null,
     cc_round_robin_emails: document.getElementById('f_cc_round_robin_emails').value.trim() || null,
@@ -1324,7 +1336,7 @@ function syncPortalEmailFromAlwaysNotify() {
 
 function clearForm() {
   ['f_name', 'f_smartlead_api_key', 'f_heyreach_api_key', 'f_allo_api_key', 'f_slack_bot_token',
-   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_cc_emails', 'f_notify_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
+   'f_slack_channel_id', 'f_contact_email', 'f_booking_link', 'f_video_link', 'f_cc_emails', 'f_notify_emails', 'f_cc_round_robin_emails', 'f_voice_prompt'].forEach(id => {
     document.getElementById(id).value = '';
   });
 }

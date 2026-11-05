@@ -57,7 +57,7 @@ router.post('/admin/clients', async (req, res) => {
   try {
     const {
       name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token,
-      slack_channel_id, booking_link, voice_prompt, digest_timezone,
+      slack_channel_id, booking_link, video_link, voice_prompt, digest_timezone,
       cc_email, cc_emails, cc_round_robin_emails, contact_email, notify_emails,
     } = req.body;
 
@@ -72,14 +72,18 @@ router.post('/admin/clients', async (req, res) => {
 
     const contactEmail = portalContactEmail({ cc_emails: alwaysCc, cc_email: legacyCc });
     const booked = normalizeClientBooking({ name, booking_link });
+    const video = require('../utils/video-link').normalizeVideoLink(video_link);
+    if (String(video_link || '').trim() && !video) {
+      return res.status(400).json({ error: 'video_link must be an https URL' });
+    }
 
     const { rows: [client] } = await db.query(
       `INSERT INTO clients (
          name, smartlead_api_key, heyreach_api_key, allo_api_key, slack_bot_token, slack_channel_id,
-         booking_link, booking_destination_url, voice_prompt, digest_timezone,
+         booking_link, booking_destination_url, video_link, voice_prompt, digest_timezone,
          cc_email, cc_emails, cc_round_robin_emails, contact_email, notify_emails
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
       [
         name,
         smartlead_api_key || null,
@@ -89,6 +93,7 @@ router.post('/admin/clients', async (req, res) => {
         slack_channel_id,
         booked.booking_link || null,
         booked.booking_destination_url || null,
+        video || null,
         voice_prompt || '',
         digest_timezone || null,
         legacyCc,
@@ -230,7 +235,7 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
     const fields = req.body;
     const allowedFields = [
       'name', 'smartlead_api_key', 'heyreach_api_key', 'allo_api_key', 'slack_bot_token',
-      'slack_channel_id', 'booking_link', 'booking_destination_url', 'voice_prompt',
+      'slack_channel_id', 'booking_link', 'booking_destination_url', 'video_link', 'voice_prompt',
       'active', 'digest_timezone', 'cc_email', 'cc_emails', 'cc_round_robin_emails',
       'contact_email', 'notify_emails',
     ];
@@ -260,6 +265,13 @@ router.patch('/admin/clients/:clientId', async (req, res) => {
       delete fields.contact_email;
     }
 
+    if (Object.prototype.hasOwnProperty.call(fields, 'video_link')) {
+      const video = require('../utils/video-link').normalizeVideoLink(fields.video_link);
+      if (String(fields.video_link || '').trim() && !video) {
+        return res.status(400).json({ error: 'video_link must be an https URL' });
+      }
+      fields.video_link = video || null;
+    }
     if (Object.prototype.hasOwnProperty.call(fields, 'booking_link')
       || Object.prototype.hasOwnProperty.call(fields, 'name')) {
       const { rows: [existing] } = await db.query('SELECT * FROM clients WHERE id = $1', [clientId]);

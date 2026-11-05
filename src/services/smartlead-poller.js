@@ -243,6 +243,7 @@ async function recoverSuppressedReferral(client, {
       bookingLink: client.booking_link,
       platform: 'smartlead',
       clientName: client.name,
+      videoLink: client.video_link,
       clientId: client.id,
       draftMode: 'bulk',
       referredContacts: ref.referredContacts,
@@ -634,6 +635,7 @@ async function processInboxRow(sourceClient, row, options) {
         leadId,
         leadEmail,
         clientName: client.name,
+        videoLink: client.video_link,
         // Poller = backfill/sweep. Never burn Anthropic here.
         draftMode: 'bulk',
         slots: slotResult.slots,
@@ -703,6 +705,7 @@ async function processInboxRow(sourceClient, row, options) {
         digestTimezone: client.digest_timezone,
         platform: 'smartlead',
         clientName: client.name,
+        videoLink: client.video_link,
         clientId: client.id,
         draftMode: 'bulk',
         slots: slotResult.slots,
