@@ -18,12 +18,51 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
 ].join(' ');
 
+function sanitizeOauthValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim();
+}
+
 function clientId() {
-  return String(process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '').trim();
+  return sanitizeOauthValue(process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID);
 }
 
 function clientSecret() {
-  return String(process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '').trim();
+  return sanitizeOauthValue(process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET);
+}
+
+function isGmailQuotaError(status, body) {
+  return Number(status) === 403 && /Quota exceeded/i.test(String(body || ''));
+}
+
+async function postGmailSend(raw, token, {
+  fetchImpl = fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  retries = 2,
+  waitMs = 1500,
+} = {}) {
+  let lastStatus = 0;
+  let lastBody = '';
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetchImpl(`${GMAIL_API}/users/me/messages/send`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+    });
+    lastStatus = res.status;
+    lastBody = await res.text();
+    if (res.ok) return { ok: true, status: lastStatus, body: lastBody };
+    if (!isGmailQuotaError(lastStatus, lastBody) || attempt === retries) {
+      return { ok: false, status: lastStatus, body: lastBody };
+    }
+    await sleep(waitMs * (attempt + 1));
+  }
+  return { ok: false, status: lastStatus, body: lastBody };
 }
 
 function expectedFromEmail() {
@@ -216,22 +255,14 @@ async function sendMail({ to, cc, replyTo, subject, htmlBody, textBody }) {
     textBody,
   });
 
-  const res = await fetch(`${GMAIL_API}/users/me/messages/send`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ raw }),
-  });
-  const body = await res.text();
-  if (!res.ok) {
-    throw new Error(`Gmail send failed (${res.status}): ${body.slice(0, 400)}`);
+  const sent = await postGmailSend(raw, token);
+  if (!sent.ok) {
+    throw new Error(`Gmail send failed (${sent.status}): ${sent.body.slice(0, 400)}`);
   }
   try {
-    return { ...(JSON.parse(body) || {}), from, to: recipients, cc: ccList, replyTo: replyTo || null };
+    return { ...(JSON.parse(sent.body) || {}), from, to: recipients, cc: ccList, replyTo: replyTo || null };
   } catch {
-    return { ok: true, from, to: recipients, cc: ccList, replyTo: replyTo || null, raw: body };
+    return { ok: true, from, to: recipients, cc: ccList, replyTo: replyTo || null, raw: sent.body };
   }
 }
 
@@ -247,4 +278,7 @@ module.exports = {
   expectedFromEmail,
   sendMail,
   buildRawMime,
+  sanitizeOauthValue,
+  isGmailQuotaError,
+  postGmailSend,
 };
