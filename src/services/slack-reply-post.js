@@ -945,6 +945,7 @@ module.exports = {
   patchPostedCard,
   mergeCardPayload,
   rememberCard,
+  persistSourcePhone,
   latestCard,
   loadLatestCard,
   forgetCardMemory,

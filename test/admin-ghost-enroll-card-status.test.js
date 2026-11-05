@@ -545,8 +545,66 @@ test('card status: a skipped follow-up reopens without sending, and a manual pho
   assert.equal(painted.leadPhone, '+15555550123');
   assert.equal(painted.phoneProvider, 'manual');
   assert.equal(painted.inboundMessage, 'Manual enroll (from call)');
+  assert.equal(painted.campaignDisplay, 'Manual enroll (from call)');
   const row = (await pg.query('SELECT status, classification, sent_reply FROM pending_replies WHERE id = $1', [card.id])).rows[0];
   assert.equal(row.status, 'pending');
   assert.equal(row.classification, 'FOLLOW_UP');
   assert.equal(row.sent_reply, null);
+});
+
+test('card status: repaint rewrites the old manual label and a phone from the prospect reply', { skip }, async () => {
+  await setup();
+  const svc = require('../src/services/card-status-admin');
+  const label = await addReply({
+    status: 'pending', classification: 'FOLLOW_UP', campaign_id: 'manual-ghost',
+    campaign_name: 'Manual ghosted meeting', draft_reply: 'Draft',
+    inbound_message: 'Manual ghosted meeting (manual-ghost)',
+    slack_message_ts: '1793628003.308819', slack_channel_id: 'C0BRRS8DV19',
+  });
+  const f = repaintFakes();
+  f.loadCard = async (id) => ({
+    replyId: id,
+    draft: 'Draft',
+    campaignDisplay: 'Manual ghosted meeting (manual-ghost)',
+    inboundMessage: 'Manual ghosted meeting (manual-ghost)',
+    classification: 'FOLLOW_UP',
+  });
+  const paintedLabel = await svc.setCardStatus(label.id, { status: 'pending', repaintCard: true }, f);
+  assert.equal(paintedLabel.body.cardRepainted, 'repainted');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0][0], 'draft');
+  assert.equal(f.calls[0][4].campaignDisplay, 'Manual enroll (from call)');
+  assert.equal(f.calls[0][4].inboundMessage, 'Manual enroll (from call)');
+  assert.equal(f.calls[0][4].classification, 'FOLLOW_UP');
+
+  const kaleb = await addReply({
+    status: 'pending', classification: 'INTERESTED', draft_reply: 'Draft',
+    lead_email: 'kaleb@example.com', slack_channel_id: 'C0CC420V1TK',
+    slack_message_ts: '1793313695.519449',
+    inbound_message: [
+      'What is the cost per charger?',
+      'Best Regards,',
+      'cell: (951) 823-9296',
+      'On Tue, Nov 3, 2026 Sam wrote:',
+      'call me at 404-555-0177',
+    ].join('\n'),
+  });
+  const f2 = repaintFakes();
+  f2.loadCard = async (id) => ({
+    replyId: id,
+    draft: 'Draft',
+    inboundMessage: 'What is the cost per charger?',
+    enrichmentReceipt: { phoneLookup: { outcome: 'not_run' } },
+    classification: 'INTERESTED',
+  });
+  const paintedPhone = await svc.setCardStatus(kaleb.id, { status: 'pending', repaintCard: true }, f2);
+  assert.equal(paintedPhone.body.changed, false);
+  assert.equal(paintedPhone.body.cardRepainted, 'repainted');
+  assert.equal(f2.calls.length, 1);
+  assert.match(f2.calls[0][4].leadPhone, /951/);
+  assert.doesNotMatch(f2.calls[0][4].leadPhone, /404/);
+  assert.equal(f2.calls[0][4].phoneProvider, 'reply_text');
+  const stored = (await pg.query('SELECT lead_phone, lead_phone_provider FROM pending_replies WHERE id = $1', [kaleb.id])).rows[0];
+  assert.match(stored.lead_phone, /951/);
+  assert.equal(stored.lead_phone_provider, 'reply_text');
 });
