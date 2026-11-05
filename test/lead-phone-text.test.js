@@ -6,6 +6,11 @@ const { applyCardLinks } = require('../src/services/slack-reply-post');
 test('a phone in the prospect text is kept and a quoted number is not', () => {
   assert.match(phoneFromReplyText('Call me at (305) 555-0199 tomorrow.'), /305/);
   assert.match(phoneFromReplyText('mobile: +1 305 555 0199'), /305/);
+  assert.match(phoneFromReplyText('cell: (951) 823-9296'), /951/);
+  assert.equal(
+    phoneFromReplyText('Thanks.\nOn Tue, Nov 3, 2026 Sam wrote:\ncell: (951) 823-9296'),
+    '',
+  );
   assert.equal(phoneFromReplyText('no number in this note'), '');
   assert.equal(phoneFromReplyText('order 12345'), '');
   assert.equal(

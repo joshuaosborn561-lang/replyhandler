@@ -16,6 +16,7 @@
  */
 const db = require('../db');
 const manual = require('../utils/manual-ghost');
+const { phoneFromReplyText } = require('../utils/lead-phone');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
@@ -96,37 +97,61 @@ function cardFromRow(reply, clientName) {
     draft: reply.draft_reply || undefined,
     reasoning: 'Reopened from Rejected.',
     inboundMessage: reply.inbound_message,
-    campaignDisplay: formatCampaignDisplay(reply.campaign_name, reply.campaign_id) || undefined,
+    campaignDisplay: (manual.isManualGhostReply(reply)
+      ? manual.MANUAL_ENROLL_INBOUND
+      : formatCampaignDisplay(reply.campaign_name, reply.campaign_id)) || undefined,
     lastOutboundMessage: lastOutbound || undefined,
     clientName: clientName || undefined,
   };
 }
 
-/** Manual enroll phone and the internal call label win over a stored card payload. */
-async function overlayManualCard(card, reply) {
+function staleManualCopy(text) {
+  const t = String(text || '').trim();
+  return !t
+    || t === manual.PLACEHOLDER_INBOUND
+    || t === 'Manual ghosted meeting'
+    || t === `Manual ghosted meeting (${manual.MANUAL_CAMPAIGN_ID})`;
+}
+
+/**
+ * A stored card payload is what Slack was last painted with. Repaint still
+ * updates that same message, but the enroll label and a phone that is only
+ * in the prospect's own reply have to be applied here — first paint is not
+ * run again.
+ */
+async function overlayRepaintCard(card, reply) {
   const next = { ...card };
-  const applyInbound = (row) => {
-    const shown = manual.manualEnrollInbound(row);
-    if (!shown) return;
-    const current = String(next.inboundMessage || '').trim();
-    if (!current || current === manual.PLACEHOLDER_INBOUND) next.inboundMessage = shown;
-  };
-  applyInbound(reply);
-  const usePhone = (row) => row && row.lead_phone_provider === 'manual' && String(row.lead_phone || '').trim();
-  if (usePhone(reply)) {
-    next.leadPhone = reply.lead_phone;
-    next.phoneProvider = 'manual';
-  } else if (reply.follow_up_source_id) {
+  let source = null;
+  if (reply.follow_up_source_id) {
     const { rows: [src] } = await db.query(
       `SELECT lead_phone, lead_phone_provider, inbound_message, campaign_id
          FROM pending_replies WHERE id = $1`,
       [reply.follow_up_source_id],
     );
-    if (usePhone(src)) {
-      next.leadPhone = src.lead_phone;
-      next.phoneProvider = 'manual';
+    source = src || null;
+  }
+  const manualRow = manual.isManualGhostReply(reply) ? reply
+    : (source && manual.isManualGhostReply(source) ? source : null);
+  if (manualRow) {
+    next.campaignDisplay = manual.MANUAL_ENROLL_INBOUND;
+    if (staleManualCopy(next.inboundMessage)) next.inboundMessage = manual.MANUAL_ENROLL_INBOUND;
+  }
+  const manualPhone = (row) => row && row.lead_phone_provider === 'manual' && String(row.lead_phone || '').trim();
+  if (manualPhone(reply)) {
+    next.leadPhone = reply.lead_phone;
+    next.phoneProvider = 'manual';
+  } else if (manualPhone(source)) {
+    next.leadPhone = source.lead_phone;
+    next.phoneProvider = 'manual';
+  } else if (!String(next.leadPhone || '').trim() && !String(next.leadPhoneAlt || '').trim()) {
+    const parsed = phoneFromReplyText(reply.inbound_message)
+      || phoneFromReplyText(source && source.inbound_message)
+      || phoneFromReplyText(next.inboundMessage)
+      || phoneFromReplyText(next.followupContext && next.followupContext.replyText);
+    if (parsed) {
+      next.leadPhone = parsed;
+      next.phoneProvider = 'reply_text';
     }
-    applyInbound(src);
   }
   return next;
 }
@@ -148,11 +173,15 @@ async function repaint(reply, { slackApi, loadCard }) {
   let rebuilt = false;
   if (!payload) { payload = cardFromRow(reply, client.name); rebuilt = true; }
   let card = { ...payload, replyId: reply.id, draft: payload.draft || reply.draft_reply || undefined };
-  card = await overlayManualCard(card, reply);
+  card = await overlayRepaintCard(card, reply);
   try {
     if (card.draft) await slackApi.updateDraftApprovalCard(client.slack_bot_token, channel, ts, card);
     else await slackApi.updateAlertCard(client.slack_bot_token, channel, ts, card);
-    if (rebuilt) require('./slack-reply-post').rememberCard(reply.id, card); // so the next repaint has a stored card
+    const posts = require('./slack-reply-post');
+    posts.rememberCard(reply.id, card); // stored payload matches the message just updated
+    if (card.phoneProvider === 'reply_text' && card.leadPhone) {
+      await posts.persistSourcePhone(db, reply.id, card.leadPhone, 'reply_text');
+    }
     return { result: 'repainted', channel: fromRow ? 'row' : 'fallback', rebuilt };
   } catch (err) {
     console.warn('[Admin] card repaint failed', { replyId: reply.id, err: err.message });

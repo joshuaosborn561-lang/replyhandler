@@ -67,7 +67,7 @@ function phoneDigits(v) {
 function phoneFromReplyText(text) {
   const own = ownReplyText(text);
   if (!own.trim()) return '';
-  const labeled = own.match(/\b(?:tel|phone|mobile|cell|direct)\s*[:.]?\s*(\+?\d[\d\s().-]{8,}\d)/i);
+  const labeled = own.match(/\b(?:tel|phone|mobile|cell|direct)\s*[:.]?\s*(\(?\+?\d[\d\s().-]{8,}\d)/i);
   if (labeled) {
     const p = cleanPhone(labeled[1]);
     const n = phoneDigits(p);

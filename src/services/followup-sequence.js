@@ -790,7 +790,9 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       needsClient: false,
       ccEmails: client.notify_emails || undefined,
       inboundMessage: inboundForCard,
-      campaignDisplay: formatCampaignDisplay(campaignNameFromReply(source), source.campaign_id) || undefined,
+      campaignDisplay: (manual.isManualGhostReply(source)
+        ? manual.MANUAL_ENROLL_INBOUND
+        : formatCampaignDisplay(campaignNameFromReply(source), source.campaign_id)) || undefined,
       lastOutboundMessage: source.sent_reply || undefined,
       contextLabel: 'You sent',
       threadPermalink: permalink || undefined,
