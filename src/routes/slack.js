@@ -20,6 +20,11 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
 const { extractThreadMessages } = require('../utils/thread-transcript');
 const { readFollowUpMeta } = require('../utils/follow-up-meta');
 const { noticeIfClosed, sendEphemeralNotice } = require('../services/card-click-guard');
+const {
+  supersedeOpenSiblingsAfterSend,
+  findSentSiblingForLead,
+  supersedeWhenLeadAlreadySent,
+} = require('../services/supersede-cards');
 const { followUpSkipBlock } = require('../utils/human-card-skip');
 
 const router = Router();
@@ -516,6 +521,9 @@ async function handleEditModalSubmit(interaction) {
         ccUsed: ccUsedLabel(reply, client, sendResult),
       })
     );
+    if (!skippedDuplicate && sentReply) {
+      await supersedeStaleOpenCardsAfterSend(client, sentReply);
+    }
   } catch (err) {
     console.error('[Slack] Edit modal send failed', { replyId, err: err.message });
     await db.query(
@@ -580,6 +588,17 @@ async function paintConfirmation(token, reply, client, payload) {
   const target = cardTarget(reply, client);
   if (!token || !target) return null;
   return slackService.updateSentConfirmationCard(token, target.channelId, target.ts, payload);
+}
+
+async function supersedeStaleOpenCardsAfterSend(client, sentReply) {
+  if (!sentReply?.id) return;
+  try {
+    await supersedeOpenSiblingsAfterSend(sentReply, client);
+  } catch (err) {
+    console.warn('[Slack] Supersede open siblings after send failed', {
+      replyId: sentReply.id, err: err.message,
+    });
+  }
 }
 
 async function handleApprove(replyId, interaction, { ccClientOnProspect = false, referralCcFromRow = false } = {}) {
@@ -677,6 +696,10 @@ async function handleApprove(replyId, interaction, { ccClientOnProspect = false,
       );
     });
 
+    if (!skippedDuplicate && sentReply) {
+      await supersedeStaleOpenCardsAfterSend(client, sentReply);
+    }
+
     console.log('[Slack] Reply approved and sent', { replyId, platform: reply.platform, lead: reply.lead_name });
   } catch (err) {
     console.error('[Slack] Failed to send reply after approval', { replyId, err: err.message });
@@ -747,6 +770,18 @@ async function handleReject(replyId, interaction) {
       replyId, lead: reply.lead_name, step: reply.follow_up_step,
     });
     return;
+  }
+
+  const sentSibling = await findSentSiblingForLead(pending, { exceptReplyId: replyId });
+  if (sentSibling) {
+    const clientEarly = withSmartleadKey((await db.query('SELECT * FROM clients WHERE id = $1', [pending.client_id])).rows[0]);
+    const superseded = await supersedeWhenLeadAlreadySent(pending, sentSibling, clientEarly);
+    if (superseded) {
+      console.log('[Slack] Reject skipped — lead already sent on another card', {
+        replyId, sentSiblingId: sentSibling.id, lead: pending.lead_name,
+      });
+      return;
+    }
   }
 
   const { rows: [reply] } = await db.query(
