@@ -3,10 +3,12 @@
  *
  * 1. Strip draft sign-offs before send so SmartLead add_signature does not stack names.
  * 2. Client pod sending inboxes (not our agency domains) skip add_signature so
- *    SmartLead does not append the agency SalesGlider footer block.
+ *    SmartLead does not append the agency SalesGlider footer block, and append
+ *    exactly one bare first-name sign-off on the cleaned body.
  * 3. Agency / SalesGlider sending inboxes keep add_signature after the draft is cleaned.
  */
 const { stripSignOff } = require('../services/classifier');
+const { firstNameFromEmail } = require('./first-name');
 const { isOwnAddress } = require('./own-addresses');
 
 const AGENCY_BRAND_LINE = /\bsales\s*glider\b/i;
@@ -84,6 +86,52 @@ function isAgencySendingInbox(sendingInboxEmail) {
   return isOwnAddress(inbox);
 }
 
+const COMPANY_NAME_TAIL = new Set([
+  'tech', 'technologies', 'technology', 'group', 'growth', 'energy', 'partners', 'partner',
+  'solutions', 'services', 'service', 'consulting', 'holdings', 'inc', 'llc', 'ltd', 'co',
+  'company', 'corp', 'corporation', 'ventures', 'capital', 'media', 'digital', 'software',
+]);
+
+/** Person-style client display name (e.g. Jeremy Ciotola), not company-style (Parlay Tech). */
+function personStyleClientFirstName(clientName) {
+  const parts = String(clientName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return '';
+  const first = parts[0];
+  const second = parts[1];
+  if (COMPANY_NAME_TAIL.has(second.replace(/[^a-z]/gi, '').toLowerCase())) return '';
+  if (!/^[A-Za-z]/.test(first) || !/^[A-Za-z]/.test(second)) return '';
+  if (first.length < 2 || second.length < 2) return '';
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+/**
+ * Bare first-name line for client pod sends when SmartLead add_signature is off.
+ * Prefer person-style client.name; otherwise the sending mailbox local part (Myles@…).
+ */
+function clientPodSignOffFirstName(client, sendingInboxEmail) {
+  if (isAgencySendingInbox(sendingInboxEmail)) return '';
+  const fromClient = personStyleClientFirstName(client?.name);
+  if (fromClient) return fromClient;
+  return firstNameFromEmail(sendingInboxEmail) || '';
+}
+
+function bodyEndsWithBareNameLine(body, name) {
+  const target = String(name || '').trim();
+  if (!target) return false;
+  const lines = String(body || '').replace(/\r\n/g, '\n').split('\n');
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (!lines.length) return false;
+  return lines[lines.length - 1].trim().toLowerCase() === target.toLowerCase();
+}
+
+function appendClientPodSignOff(body, signOffName) {
+  const trimmed = String(body || '').trim();
+  const name = String(signOffName || '').trim();
+  if (!name) return trimmed;
+  if (bodyEndsWithBareNameLine(trimmed, name)) return trimmed;
+  return trimmed ? `${trimmed}\n\n${name}` : name;
+}
+
 /**
  * Plain-text body for SmartLead reply-email-thread (before optional HTML wrap).
  */
@@ -92,6 +140,9 @@ function prepareSmartleadReplyText(text, { client, sendingInboxEmail } = {}) {
   const nameKeys = nameKeysFromSendContext(client, sendingInboxEmail);
   body = stripTrailingSenderNameLines(body, nameKeys);
   body = stripTrailingAgencyBrandingLines(body);
+  if (!isAgencySendingInbox(sendingInboxEmail)) {
+    body = appendClientPodSignOff(body, clientPodSignOffFirstName(client, sendingInboxEmail));
+  }
   return body;
 }
 
@@ -112,6 +163,7 @@ function draftSignOffWasStripped(rawText, preparedText) {
 
 module.exports = {
   isAgencySendingInbox,
+  clientPodSignOffFirstName,
   prepareSmartleadReplyText,
   shouldAppendSmartleadMailboxSignature,
   stripTrailingSenderNameLines,
