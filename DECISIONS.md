@@ -1966,3 +1966,15 @@ Josh: stop requiring a Smartlead API key on every `clients` row. Keep Smartlead 
 Order of operations: tags in Deliverability, then this code, then check Slack routing, then wipe keys in a later change.
 
 Guard: `sg-owner tag selects that client Slack channel and the agency key` in `test/campaign-routing.test.js`.
+
+## Admin DQ route for one prospect (Cayden, Nov 5 2026)
+
+Cayden needs a way to DQ a prospect the same way the Slack **🚫 DQ** button and the call card **⋯ DQ** option do, including an orphan `pending_replies` row whose Slack post was skipped. The case in hand is Michael Kovacina (Goliath), row `ef912971-bd11-47a9-8f5b-f291ea3a0477`.
+
+`POST /admin/prospects/dq` calls `markDisqualified` with the same arguments those handlers pass (`clientId`, the reply row, `reason`, `slackUserId`). Reason defaults to `admin_dq`. Actor and note are stored in `created_by_slack_user`, which is the actor field `markDisqualified` already writes. The route then cancels every other thread for that lead, skips any remaining pending follow-up by email, closes still-open rows (including a row with no Slack card), redraws posted cards, and stops the follow-up sequence.
+
+- Identifier is an email, a Smartlead lead id, or both, plus an optional `clientId`. Optional `pendingReplyIds` must belong to that same lead. No match is 404. Two clients, or an email and lead id that are not the same person, is 409 unless `clientId` narrows it to one lead.
+- `dryRun` defaults to true and returns the rows that would change per table. A write requires `dryRun: false`.
+- Auth is header `ADMIN_API_KEY` (alias `x-admin-api-key`), the same fail-closed check as `POST /admin/onboarding/client`. Unset env is 503. This route lives in its own router so the open `/admin` router from 2026-10-20 stays open.
+
+Guard: `POST /admin/prospects/dq dry-runs by default and disqualifies one lead` in `test/admin-prospect-dq.test.js`.

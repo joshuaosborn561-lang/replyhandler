@@ -41,7 +41,7 @@ async function isDisqualified(clientId, {
   conversationId,
   leadEmail,
   linkedinUrl,
-} = {}) {
+} = {}, queryable = null) {
   if (!clientId) return false;
   const email = leadEmail ? String(leadEmail).trim().toLowerCase() : '';
   const camp = campaignId != null ? String(campaignId) : '';
@@ -51,7 +51,8 @@ async function isDisqualified(clientId, {
 
   if (!email && !lead && !conv && !li) return false;
 
-  const { rows } = await db.query(
+  const runner = queryable && typeof queryable.query === 'function' ? queryable : db;
+  const { rows } = await runner.query(
     `SELECT id
        FROM disqualified_prospects
       WHERE client_id = $1
