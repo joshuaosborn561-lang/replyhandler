@@ -20,6 +20,9 @@ const PASS = Object.freeze({
   deeproots: 'independent_manufacturer',
   bcp: 'private_equity_firm',
   b2b_service: 'b2b_service_business',
+  culture_fits: 'msp_owner',
+  vasco: 'franchised_auto_dealership',
+  nutter: 'independent_hospital',
 });
 
 /**
@@ -131,6 +134,68 @@ const VARIANTS = Object.freeze({
         'Anything else, or the website is too thin to tell what the company sells.',
     },
   },
+  // Culture Fits: staffing sold to MSP owners. From topup.client_icp
+  // (lane msp_owners). Staffing firms themselves are the cut.
+  culture_fits: {
+    pass: PASS.culture_fits,
+    instructions:
+      'We sell staffing and recruiting to owners of managed service providers. Which best describes this company, based on its website?',
+    criteria: {
+      msp_owner:
+        'A managed service provider, IT support company, or IT consultancy that runs IT for business clients on a recurring basis, and is the kind of firm whose owner or CEO would buy staffing or recruiting help.',
+      staffing_or_recruiting_firm:
+        'A staffing, recruiting, or placement firm, including IT staffing: not a buyer. Culture Fits disqualified staffing firms as prospects.',
+      it_or_security_vendor:
+        'A company that sells software, security products, or tools to MSPs or to end clients, rather than running managed IT.',
+      operating_company_not_msp:
+        'An operating business that uses IT rather than providing managed services: a manufacturer, professional firm, healthcare practice, or similar.',
+      national_chain_or_consultancy:
+        'A national chain, franchise location, or large consultancy whose hiring is run by a corporate team.',
+      other_or_too_thin:
+        'Anything else, or the website is too thin to tell.',
+    },
+  },
+  // Vasco: warranty administration for franchised auto dealers.
+  // From topup.client_icp (lane dealership_warranty_admin). BMW and
+  // Mercedes are unauthorized brands.
+  vasco: {
+    pass: PASS.vasco,
+    instructions:
+      'We sell warranty-claim administration to franchised auto dealerships. Which best describes this company, based on its website? BMW and Mercedes-Benz stores are not a fit.',
+    criteria: {
+      franchised_auto_dealership:
+        'A franchised new-car dealership or dealer group that sells a manufacturer brand other than BMW or Mercedes-Benz and would process OEM warranty claims: Nissan, Infiniti, GM, Audi, Volkswagen, and similar standard brands.',
+      unauthorized_luxury_brand:
+        'A BMW or Mercedes-Benz dealership or a group whose stores are those brands. Those brands were removed as unauthorized.',
+      independent_or_used_only:
+        'An independent or used-only car lot with no manufacturer warranty-admin work.',
+      non_dealership:
+        'Not a car dealership: a repair shop that is not a franchise dealer, a lender, an insurer, a software vendor, or another business.',
+      other_or_too_thin:
+        'Anything else, or the website is too thin to tell.',
+    },
+  },
+  // Nutter: retained executive search for independent hospitals.
+  // From topup.client_icp (lane independent_hospital_exec_search).
+  nutter: {
+    pass: PASS.nutter,
+    instructions:
+      'We do retained executive search for hospital leadership. Which best describes this organization, based on its website? We want independent and community hospitals, not job seekers and not large integrated systems as the primary buyer.',
+    criteria: {
+      independent_hospital:
+        'An independent, community, or not-for-profit hospital that would retain outside search for C-suite, nursing leadership, or CHRO succession. Not a large integrated health system.',
+      large_integrated_health_system:
+        'A large integrated health system or national hospital chain whose search is gated by a corporate team.',
+      job_seeker_or_candidate:
+        'A person looking for their own next role, a resume site, or a candidate community. Not a hiring organization.',
+      clinician_staffing_firm:
+        'A staffing or locums firm whose business is placing physicians, APRNs, or other clinicians.',
+      non_hospital_provider:
+        'A clinic, practice, payer, device company, or other healthcare organization that is not a hospital.',
+      other_or_too_thin:
+        'Anything else, or the website is too thin to tell.',
+    },
+  },
 });
 
 /** client_tag → jev_variant from topup.icp_variants (2026-10-11). */
@@ -138,14 +203,29 @@ const DEFAULT_CLIENT_VARIANTS = Object.freeze({
   bcp: { jev_variant: 'bcp', disco_icp: 'bcp', note: 'private_equity_firm passes' },
   deep_roots: { jev_variant: 'deeproots', disco_icp: 'deeproots', note: 'independent_manufacturer passes' },
   emcor: { jev_variant: 'emcor2', disco_icp: 'emcor', note: 'buyer_with_own_facility passes' },
-  // localOverride: replyhandler grades SalesGlider's own replies with this
-  // variant even though topup.icp_variants still says `choice` (trade
-  // contractors), which topup's own lead-gen pipeline keeps using.
+  // Stored topup.icp_variants.salesglider must be b2b_service as well.
+  // `choice` is the old trade-contractor question. localOverride keeps
+  // this definition if that row has not been updated yet.
   salesglider: {
     jev_variant: 'b2b_service',
     disco_icp: 'salesglider',
     note: 'b2b_service_business passes (any high-ticket B2B business)',
     localOverride: true,
+  },
+  culture_fits: {
+    jev_variant: 'culture_fits',
+    disco_icp: 'culture_fits',
+    note: 'msp_owner passes',
+  },
+  vasco: {
+    jev_variant: 'vasco',
+    disco_icp: 'vasco',
+    note: 'franchised_auto_dealership passes',
+  },
+  nutter: {
+    jev_variant: 'nutter',
+    disco_icp: 'nutter',
+    note: 'independent_hospital passes',
   },
 });
 
@@ -174,6 +254,12 @@ const CLIENT_TAG_ALIASES = Object.freeze({
   mesa_energy: 'emcor',
   salesglider: 'salesglider',
   sales_glider: 'salesglider',
+  culturefits: 'culture_fits',
+  culture_fits: 'culture_fits',
+  vasco: 'vasco',
+  vasco_warranty: 'vasco',
+  nutter: 'nutter',
+  nutter_group: 'nutter',
 });
 
 function variantSpec(jevVariant) {

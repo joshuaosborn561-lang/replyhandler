@@ -34,6 +34,14 @@ test('client tags map onto topup.icp_variants', () => {
   assert.equal(resolveClientTag('Deep Roots Capital'), 'deep_roots');
   assert.equal(resolveClientTag('Deep Roots'), 'deep_roots');
   assert.equal(resolveClientTag('SalesGlider'), 'salesglider');
+  assert.equal(resolveClientTag('Culture Fits'), 'culture_fits');
+  assert.equal(resolveClientTag('Vasco Warranty'), 'vasco');
+  assert.equal(resolveClientTag('Nutter Group'), 'nutter');
+  assert.equal(DEFAULT_CLIENT_VARIANTS.culture_fits.jev_variant, 'culture_fits');
+  assert.equal(PASS.culture_fits, 'msp_owner');
+  assert.equal(PASS.vasco, 'franchised_auto_dealership');
+  assert.equal(PASS.nutter, 'independent_hospital');
+  assert.equal(variantSpec('vasco').pass, 'franchised_auto_dealership');
   assert.equal(DEFAULT_CLIENT_VARIANTS.bcp.jev_variant, 'bcp');
   assert.equal(PASS.bcp, 'private_equity_firm');
   assert.equal(variantSpec('bcp').pass, 'private_equity_firm');
@@ -93,7 +101,7 @@ test('no website or no ICP is unknown without grading', async () => {
 
   const noIcp = await resolveReplyIcp({
     website: 'https://acme.com',
-    clientName: 'Vasco Warranty',
+    clientName: 'No Icp Client',
     grade: true,
     gradeFn: async () => { throw new Error('should not grade'); },
   });

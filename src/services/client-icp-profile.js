@@ -13,7 +13,12 @@ const { geminiModel } = require('./gemini-model');
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fireflies = require('./fireflies');
-const { DEFAULT_CLIENT_VARIANTS, CLIENT_TAG_ALIASES } = require('./reply-icp-variants');
+const {
+  DEFAULT_CLIENT_VARIANTS,
+  DEFAULT_CLIENT_PERSONAS,
+  CLIENT_TAG_ALIASES,
+  variantSpec,
+} = require('./reply-icp-variants');
 const { clientTagFor } = require('./prospect-enrich');
 const {
   FACT_GROUNDING_RULES,
@@ -167,6 +172,95 @@ function callMatchesClient(row, hints, { transcriptMatches } = {}) {
 function hasDefaultVariant(client) {
   const tag = resolveClientTag(client?.name);
   return Boolean(DEFAULT_CLIENT_VARIANTS[tag]);
+}
+
+function codeOwnsIcp(client) {
+  const tag = resolveClientTag(client?.name);
+  return Boolean(DEFAULT_CLIENT_VARIANTS[tag]?.localOverride);
+}
+
+function dedupe(items, limit = 12) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of items) {
+    const text = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text.slice(0, 240));
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function asList(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null || value === '') return [];
+  return [value];
+}
+
+/**
+ * topup.client_icp lanes → the six clients.icp_profile fields.
+ * `offer` is the buyer line (who they sell to); there is no separate
+ * offer column on client_icp.
+ */
+function profileFromClientIcpRows(rows) {
+  const industries = [];
+  const titles = [];
+  const companySize = [];
+  const geos = [];
+  const offer = [];
+  const exclusions = [];
+  for (const row of rows || []) {
+    industries.push(...asList(row.industries_in));
+    titles.push(...asList(row.titles));
+    companySize.push(...asList(row.company_size));
+    geos.push(...asList(row.geography));
+    offer.push(...asList(row.buyer));
+    exclusions.push(...asList(row.exclusions));
+  }
+  return normalizeProfile({
+    industries: dedupe(industries),
+    titles: dedupe(titles),
+    company_size: dedupe(companySize),
+    geos: dedupe(geos),
+    offer: dedupe(offer),
+    exclusions: dedupe(exclusions),
+  });
+}
+
+/** Profile mirror of a code-owned variant, for clients.icp_profile. */
+function profileFromCodeVariant(client) {
+  const tag = resolveClientTag(client?.name);
+  const local = DEFAULT_CLIENT_VARIANTS[tag];
+  const spec = local ? variantSpec(local.jev_variant) : null;
+  if (!spec) return emptyProfile();
+  const passText = spec.criteria?.[spec.pass] || '';
+  const exclusions = Object.keys(spec.criteria || {})
+    .filter((key) => key !== spec.pass)
+    .map((key) => key.replace(/_/g, ' '));
+  return normalizeProfile({
+    industries: passText ? [passText] : [],
+    titles: DEFAULT_CLIENT_PERSONAS[tag] || [],
+    company_size: [],
+    geos: [],
+    offer: spec.instructions ? [spec.instructions] : [],
+    exclusions,
+  });
+}
+
+async function fetchClientIcpRows(clientTag, { fetchRows, env = process.env } = {}) {
+  if (typeof fetchRows === 'function') return fetchRows(clientTag);
+  const url = String(env.SUPABASE_URL || '').trim();
+  const key = String(env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  if (!url || !key || !clientTag) return [];
+  const { supabaseRequest } = require('./reply-examples');
+  const rows = await supabaseRequest(
+    `/rest/v1/client_icp?client_tag=eq.${encodeURIComponent(clientTag)}&select=industries_in,titles,company_size,geography,buyer,exclusions&order=created_at.asc`,
+    { headers: { 'Accept-Profile': 'topup' } },
+  );
+  return Array.isArray(rows) ? rows : [];
 }
 
 function hasStoredProfile(client) {
@@ -385,17 +479,52 @@ async function ensureClientIcp(client, {
   force = false,
   callLookbackMs = 0,
   now = Date.now(),
+  fetchClientIcp,
 } = {}) {
   if (!client?.id) {
     return { status: 'needs_review', reason: 'no_client', transcript_count: 0 };
+  }
+
+  const tag = resolveClientTag(client?.name);
+  let sourceProfile = null;
+  let sourceName = null;
+  if (!codeOwnsIcp(client)) {
+    try {
+      const icpRows = await fetchClientIcpRows(tag, { fetchRows: fetchClientIcp, env });
+      const built = profileFromClientIcpRows(icpRows);
+      if (profileHasFacts(built)) {
+        sourceProfile = built;
+        sourceName = 'topup.client_icp';
+      }
+    } catch (err) {
+      console.warn('[ClientIcp] client_icp read skipped', { err: err.message });
+    }
+  } else {
+    const built = profileFromCodeVariant(client);
+    if (profileHasFacts(built)) {
+      sourceProfile = built;
+      sourceName = 'variant';
+    }
   }
 
   if (!force && hasDefaultVariant(client)) {
     const row = {
       status: 'skipped_existing',
       reason: 'existing_variant',
-      source: 'default_variant',
-      profile: null,
+      source: sourceName || 'default_variant',
+      profile: sourceProfile,
+      transcript_count: 0,
+    };
+    await persistIcp(db, client.id, row);
+    return row;
+  }
+
+  if (sourceProfile) {
+    const row = {
+      status: 'ready',
+      reason: null,
+      source: sourceName,
+      profile: sourceProfile,
       transcript_count: 0,
     };
     await persistIcp(db, client.id, row);
@@ -541,9 +670,14 @@ function needsIcpWork(client, {
   now = Date.now(),
 } = {}) {
   if (!client || client.active === false) return false;
-  if (hasStoredProfile(client)) return false;
+  if (hasStoredProfile(client) && client.icp_source !== 'topup.client_icp') return false;
   const status = icpStatusOf(client);
-  if (status === 'skipped_existing') return false;
+  if (status === 'skipped_existing' || client.icp_source === 'topup.client_icp') {
+    if (client.icp_source !== 'topup.client_icp') return false;
+    const built = client.icp_built_at ? new Date(client.icp_built_at).getTime() : 0;
+    if (!Number.isFinite(built) || built <= 0) return true;
+    return (now - built) >= retryNeedsReviewAfterMs;
+  }
   if (status === 'ready') return false;
   if (hasDefaultVariant(client)) return status === '';
   if (status === 'needs_review') {
@@ -726,6 +860,9 @@ module.exports = {
   clientSearchHints,
   callMatchesClient,
   hasDefaultVariant,
+  codeOwnsIcp,
+  profileFromClientIcpRows,
+  profileFromCodeVariant,
   hasStoredProfile,
   clientHasIcp,
   profileHasFacts,
