@@ -46,7 +46,6 @@ function replaceRetiredVectorTidycal(slug, url) {
 const FALLBACK_DESTINATIONS = Object.freeze({
   goliath: 'https://meetings.hubspot.com/dave-ackley',
   parlay: 'https://calendly.com/randyhaba/30min',
-  techevo: 'https://calendly.com/ctapper/meeting',
   culturefits:
     'https://bookings.cloud.microsoft/bookwithme/user/7faa90d1324a4bc6a511427c5b9a1488%40culture-fits.com/meetingtype/vkqrp6uGEUq_wrB0u0dyhA2?anonymous&ismsaljsauthenabled',
   bolder: 'https://calendly.com/mike-boldercyberpartners/30min',

@@ -20,14 +20,18 @@ describe('booking-bridge destinations', () => {
     _resetLiveDestinationsForTests();
   });
 
-  it('unwraps book.gosalesglider.com slugs to the real calendar', () => {
+  it('does not bake in a retired techevo wrap → Calendly fallback', () => {
+    assert.equal(FALLBACK_DESTINATIONS.techevo, undefined);
     assert.equal(
       resolveAvailabilityBookingUrl({
         name: 'TechEvolution',
         booking_link: 'https://book.gosalesglider.com/techevo',
       }),
-      'https://calendly.com/ctapper/meeting'
+      ''
     );
+  });
+
+  it('unwraps book.gosalesglider.com slugs to the real calendar', () => {
     assert.equal(
       resolveAvailabilityBookingUrl({
         name: 'Parlay Tech',
