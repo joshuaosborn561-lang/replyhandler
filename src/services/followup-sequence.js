@@ -36,6 +36,7 @@ const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campa
 const time = require('../utils/followup-sequence-time');
 const text = require('../utils/followup-sequence-text');
 const ghost = require('./ghosted-meetings');
+const manual = require('../utils/manual-ghost');
 const ghostText = require('../utils/ghosted-meeting-text');
 
 const POSITIVE = new Set(['INTERESTED', 'MEETING_PROPOSED']);
@@ -690,18 +691,25 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
     }
   }
   const threadContext = parseJson(source.thread_context);
+  const inboundForCard = manual.manualEnrollInbound(source)
+    || source.inbound_message
+    || manual.PLACEHOLDER_INBOUND;
+  const lockManual = source.lead_phone_provider === 'manual' && String(source.lead_phone || '').trim();
   if (!reply) {
     const { rows } = await dbClient.query(
       `INSERT INTO pending_replies
          (client_id, platform, campaign_id, campaign_name, lead_id, lead_name, lead_email, linkedin_url,
           inbound_message, thread_context, classification, draft_reply, status, smartlead_email_stats_id,
-          follow_up_source_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'FOLLOW_UP', $11, 'pending', $12, $13)
+          follow_up_source_id, lead_phone, lead_phone_provider, phone_enrichment_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'FOLLOW_UP', $11, 'pending', $12, $13, $14, $15, $16)
        RETURNING *`,
       [client.id, source.platform, source.campaign_id, campaignNameFromReply(source) || null,
         source.lead_id, source.lead_name, source.lead_email, source.linkedin_url,
-        source.inbound_message || '(no new reply from prospect)', JSON.stringify(threadContext),
-        body, source.smartlead_email_stats_id, source.id],
+        inboundForCard, JSON.stringify(threadContext),
+        body, source.smartlead_email_stats_id, source.id,
+        lockManual ? source.lead_phone : null,
+        lockManual ? 'manual' : null,
+        lockManual ? 'found' : null],
     );
     reply = rows[0];
     await setStep(step.id, { pending_reply_id: reply.id }, dbClient);
@@ -781,7 +789,7 @@ async function postEmailStep({ step, seq, client, source, now, dbClient = db, sl
       reasoning: notes.join(' · '),
       needsClient: false,
       ccEmails: client.notify_emails || undefined,
-      inboundMessage: source.inbound_message || '(no new reply from prospect)',
+      inboundMessage: inboundForCard,
       campaignDisplay: formatCampaignDisplay(campaignNameFromReply(source), source.campaign_id) || undefined,
       lastOutboundMessage: source.sent_reply || undefined,
       contextLabel: 'You sent',
@@ -1713,18 +1721,7 @@ async function applyCallInstead({
     if (!(err && err.code === '22P02')) throw err;
   }
   if (!step) {
-    if (stepId) {
-      const skipped = await dbClient.query(
-        `UPDATE pending_replies SET status = 'skipped', updated_at = now()
-          WHERE id = $1 AND status IN ('pending', 'flagged')
-          RETURNING id`,
-        [stepId],
-      ).catch((err) => (err && err.code === '22P02' ? { rows: [] } : Promise.reject(err)));
-      if (skipped.rows && skipped.rows.length) {
-        await sendEphemeralNotice(interaction, 'Call instead. This email will not send.');
-        return { applied: true, queued: false };
-      }
-    }
+    // A reply id is not a step. Do not mark that card skipped — only Reject does.
     await sendEphemeralNotice(interaction, alreadyHandledNotice());
     return { applied: false };
   }

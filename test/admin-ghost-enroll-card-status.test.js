@@ -31,6 +31,7 @@ test('the routes are registered and take no key, like the other admin routes', (
   const s = read('src/routes/admin.js');
   assert.match(s, /router\.post\('\/admin\/ghosted-meetings\/enroll', async/);
   assert.match(s, /router\.post\('\/admin\/cards\/:id\/status', async/);
+  assert.match(s, /router\.get\('\/admin\/ghosted-meetings\/sequences\/:id', async/);
   assert.ok(!/requireAdminApiKey/.test(s));
 });
 
@@ -295,6 +296,8 @@ test('manual enroll: context row + sequence + card step, inert source, idempoten
     assert.equal(src.classification, 'OTHER');
     assert.equal(src.lead_name, 'Test Person');
     assert.equal(src.lead_phone, '+15555550123');
+    assert.equal(src.lead_phone_provider, 'manual');
+    assert.equal(src.inbound_message, 'Manual enroll (from call)');
     assert.equal(src.lead_company, 'Example Co');
     const [seq] = (await pg.query('SELECT * FROM followup_sequences')).rows;
     assert.equal(seq.origin, 'ghosted_meeting');
@@ -360,10 +363,17 @@ test('manual lead: the ghost card is posted from the context row and only a huma
   assert.equal(cards.length, 1);
   assert.equal(cards[0].campaignId, 'manual-ghost');
   assert.equal(cards[0].card.classification, 'FOLLOW_UP');
+  assert.equal(cards[0].card.inboundMessage, 'Manual enroll (from call)');
+  assert.equal(cards[0].card.leadPhone, '+15555550123');
+  assert.equal(cards[0].card.phoneProvider, 'manual');
   assert.match(cards[0].card.draft, /^Hey Test, looks like we missed each other\./);
   const { rows: [card] } = await pg.query(`SELECT * FROM pending_replies WHERE classification = 'FOLLOW_UP'`);
   assert.equal(card.status, 'pending', 'gated on the card: nothing is sent until Approve');
   assert.equal(card.campaign_id, 'manual-ghost');
+  assert.equal(card.lead_phone, '+15555550123');
+  assert.equal(card.lead_phone_provider, 'manual');
+  assert.equal(card.phone_enrichment_status, 'found');
+  assert.equal(card.inbound_message, 'Manual enroll (from call)');
 });
 
 test('manual lead send: new Gmail email to the lead, SalesGlider only, never SmartLead', { skip }, async () => {
@@ -470,4 +480,73 @@ test('card status: a row with no stored card payload is repainted from the row i
   // The rebuilt card is stored, so the next repaint does not need to rebuild.
   const { rows: [r] } = await pg.query('SELECT card_payload FROM pending_replies WHERE id = $1', [card.id]);
   assert.equal(r.card_payload && r.card_payload.draft, 'Draft text');
+});
+
+test('ghosted-meetings list keeps an active or recently updated check inside the default window', { skip }, async () => {
+  await setup();
+  await addReply();
+  await withServer(async (call) => {
+    const enrolled = await call('POST', '/admin/ghosted-meetings/enroll', { leadEmail: 'lead@example.com', clientId, meetingStart: MEET });
+    assert.equal(enrolled.status, 201);
+    await pg.query(`UPDATE ghosted_meeting_checks SET first_seen_at = now() - interval '10 days'`);
+    const recent = await call('GET', '/admin/ghosted-meetings');
+    assert.equal(recent.status, 200);
+    assert.equal(recent.body.count, 1);
+
+    await pg.query(`UPDATE ghosted_meeting_checks SET updated_at = now() - interval '10 days', decided_at = now() - interval '10 days'`);
+    await pg.query(`UPDATE followup_sequences SET status = 'stopped'`);
+    const stale = await call('GET', '/admin/ghosted-meetings');
+    assert.equal(stale.body.count, 0);
+
+    await pg.query(`UPDATE followup_sequences SET status = 'active'`);
+    const live = await call('GET', '/admin/ghosted-meetings');
+    assert.equal(live.body.count, 1);
+
+    const seq = await call('GET', `/admin/ghosted-meetings/sequences/${enrolled.body.sequenceId}`);
+    assert.equal(seq.status, 200);
+    assert.equal(seq.body.ok, true);
+    assert.equal(seq.body.sequence.status, 'active');
+    assert.equal(seq.body.sequence.origin, 'ghosted_meeting');
+    assert.equal(seq.body.steps.length, 1);
+    assert.equal(seq.body.steps[0].kind, 'ghost_email');
+    assert.equal(seq.body.steps[0].status, 'pending');
+    assert.ok(!JSON.stringify(seq.body).includes('@'));
+    assert.equal((await call('GET', '/admin/ghosted-meetings/sequences/not-a-uuid')).status, 400);
+    assert.equal((await call('GET', '/admin/ghosted-meetings/sequences/00000000-0000-4000-8000-000000000000')).status, 404);
+  });
+});
+
+test('card status: a skipped follow-up reopens without sending, and a manual phone wins', { skip }, async () => {
+  await setup();
+  const src = await addReply({
+    status: 'skipped', classification: 'OTHER', campaign_id: 'manual-ghost',
+    lead_phone: '+15555550123', lead_phone_provider: 'manual', phone_enrichment_status: 'found',
+    inbound_message: '(no new reply from prospect)',
+  });
+  const card = await addReply({
+    status: 'skipped', classification: 'FOLLOW_UP', campaign_id: 'manual-ghost',
+    draft_reply: 'Draft', lead_phone: '+15555550999', lead_phone_provider: 'source',
+    inbound_message: '(no new reply from prospect)', follow_up_source_id: src.id,
+    slack_message_ts: '1793628003.308819', slack_channel_id: 'C0BRRS8DV19',
+  });
+  const other = await addReply({ status: 'skipped', classification: 'OTHER', draft_reply: 'Draft' });
+  const svc = require('../src/services/card-status-admin');
+  const f = repaintFakes();
+  const denied = await svc.setCardStatus(other.id, { status: 'pending', repaintCard: true }, f);
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, 'not_rejected');
+  assert.equal(f.calls.length, 0);
+  const out = await svc.setCardStatus(card.id, { status: 'interested', repaintCard: true, reason: 'restore' }, f);
+  assert.equal(out.status, 200);
+  assert.equal(out.body.changed, true);
+  assert.equal(out.body.from, 'skipped');
+  assert.equal(out.body.classification, 'FOLLOW_UP');
+  const painted = f.calls[0][4];
+  assert.equal(painted.leadPhone, '+15555550123');
+  assert.equal(painted.phoneProvider, 'manual');
+  assert.equal(painted.inboundMessage, 'Manual enroll (from call)');
+  const row = (await pg.query('SELECT status, classification, sent_reply FROM pending_replies WHERE id = $1', [card.id])).rows[0];
+  assert.equal(row.status, 'pending');
+  assert.equal(row.classification, 'FOLLOW_UP');
+  assert.equal(row.sent_reply, null);
 });

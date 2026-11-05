@@ -9,6 +9,16 @@
  */
 
 const MANUAL_CAMPAIGN_ID = 'manual-ghost';
+const MANUAL_ENROLL_INBOUND = 'Manual enroll (from call)';
+const PLACEHOLDER_INBOUND = '(no new reply from prospect)';
+
+/** Internal Slack line for a hand enrollment. Not used on client email. */
+function manualEnrollInbound(reply) {
+  if (!isManualGhostReply(reply)) return '';
+  const text = String(reply.inbound_message || '').trim();
+  if (!text || text === PLACEHOLDER_INBOUND) return MANUAL_ENROLL_INBOUND;
+  return text;
+}
 
 function isManualGhostReply(reply) {
   return Boolean(reply) && String(reply.campaign_id || '') === MANUAL_CAMPAIGN_ID;
@@ -35,4 +45,13 @@ function htmlFromText(text) {
   return escapeHtml(text).replace(/\r?\n/g, '<br>');
 }
 
-module.exports = { MANUAL_CAMPAIGN_ID, isManualGhostReply, clientMayManualSend, DEFAULT_SUBJECT, htmlFromText };
+module.exports = {
+  MANUAL_CAMPAIGN_ID,
+  MANUAL_ENROLL_INBOUND,
+  PLACEHOLDER_INBOUND,
+  isManualGhostReply,
+  manualEnrollInbound,
+  clientMayManualSend,
+  DEFAULT_SUBJECT,
+  htmlFromText,
+};

@@ -3,7 +3,7 @@
 /**
  * Admin: reopen a reply card that was closed with Reject.
  *
- * Only rejected -> pending. One atomic statement changes the row and writes the audit row
+ * rejected -> pending, and a skipped FOLLOW_UP card -> pending. One atomic statement changes the row and writes the audit row
  * (followup_card_events, event_type 'admin_status_change'), so there is never a change
  * without its audit. Nothing is sent to a lead, no follow-up nudges are restored, no
  * campaign / lead status is touched. `repaintCard` optionally redraws the existing Slack
@@ -15,6 +15,7 @@
  * cards, then to the client's configured card channel.
  */
 const db = require('../db');
+const manual = require('../utils/manual-ghost');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const { lastOutboundBodyFromSmartleadHistory } = require('../utils/smartlead-webhook-helpers');
 
@@ -101,6 +102,35 @@ function cardFromRow(reply, clientName) {
   };
 }
 
+/** Manual enroll phone and the internal call label win over a stored card payload. */
+async function overlayManualCard(card, reply) {
+  const next = { ...card };
+  const applyInbound = (row) => {
+    const shown = manual.manualEnrollInbound(row);
+    if (!shown) return;
+    const current = String(next.inboundMessage || '').trim();
+    if (!current || current === manual.PLACEHOLDER_INBOUND) next.inboundMessage = shown;
+  };
+  applyInbound(reply);
+  const usePhone = (row) => row && row.lead_phone_provider === 'manual' && String(row.lead_phone || '').trim();
+  if (usePhone(reply)) {
+    next.leadPhone = reply.lead_phone;
+    next.phoneProvider = 'manual';
+  } else if (reply.follow_up_source_id) {
+    const { rows: [src] } = await db.query(
+      `SELECT lead_phone, lead_phone_provider, inbound_message, campaign_id
+         FROM pending_replies WHERE id = $1`,
+      [reply.follow_up_source_id],
+    );
+    if (usePhone(src)) {
+      next.leadPhone = src.lead_phone;
+      next.phoneProvider = 'manual';
+    }
+    applyInbound(src);
+  }
+  return next;
+}
+
 async function repaint(reply, { slackApi, loadCard }) {
   const { rows: [client] } = await db.query('SELECT name, slack_bot_token, slack_channel_id FROM clients WHERE id = $1', [reply.client_id]);
   if (!client || !client.slack_bot_token) return { result: 'no_slack_token' };
@@ -117,7 +147,8 @@ async function repaint(reply, { slackApi, loadCard }) {
   let payload = await loadCard(reply.id);
   let rebuilt = false;
   if (!payload) { payload = cardFromRow(reply, client.name); rebuilt = true; }
-  const card = { ...payload, replyId: reply.id, draft: payload.draft || reply.draft_reply || undefined };
+  let card = { ...payload, replyId: reply.id, draft: payload.draft || reply.draft_reply || undefined };
+  card = await overlayManualCard(card, reply);
   try {
     if (card.draft) await slackApi.updateDraftApprovalCard(client.slack_bot_token, channel, ts, card);
     else await slackApi.updateAlertCard(client.slack_bot_token, channel, ts, card);
@@ -141,7 +172,9 @@ async function setCardStatus(id, input = {}, { slackApi, loadCard } = {}) {
 
   let { rows: [cur] } = await db.query('SELECT * FROM pending_replies WHERE id = $1', [id]);
   if (!cur) return { status: 404, body: { ok: false, error: 'card_not_found' } };
-  if (cur.status !== 'pending' && cur.status !== 'rejected') {
+  const skippedFollowUp = cur.status === 'skipped'
+    && String(cur.classification || '').toUpperCase() === 'FOLLOW_UP';
+  if (cur.status !== 'pending' && cur.status !== 'rejected' && !skippedFollowUp) {
     return { status: 409, body: { ok: false, error: 'not_rejected', status: cur.status } };
   }
   const wantsRepaint = input.repaintCard === true || input.repaintCard === 'true';
@@ -167,6 +200,44 @@ async function setCardStatus(id, input = {}, { slackApi, loadCard } = {}) {
       body: {
         ok: true, changed: false, status: 'pending', classification: cur.classification, note: 'already pending',
         cardRepainted: rp.result, ...(rp.rebuilt ? { cardRebuiltFromRow: true } : {}), ...(rp.error ? { repaintError: rp.error } : {}), ...(slackBackfill ? { slackBackfill } : {}),
+      },
+    };
+  }
+
+  // A skipped follow-up was closed without a send. Reopen it and redraw the
+  // buttons. Do not relabel it, do not enrich, and do not email anyone.
+  if (skippedFollowUp) {
+    const { rows: [done] } = await db.query(
+      `WITH upd AS (
+         UPDATE pending_replies
+            SET status = 'pending', updated_at = now()
+          WHERE id = $1 AND status = 'skipped' AND upper(classification) = 'FOLLOW_UP'
+          RETURNING id, client_id, classification
+       ), aud AS (
+         INSERT INTO followup_card_events (client_id, pending_reply_id, event_type, outcome, detail)
+         SELECT client_id, id, 'admin_status_change', 'reopened',
+                jsonb_build_object('from', 'skipped', 'to', 'pending', 'classification_from', $2::text,
+                                   'classification_to', classification, 'actor', $3::text, 'reason', $4::text)
+           FROM upd
+         RETURNING id
+       )
+       SELECT upd.id, upd.classification, aud.id AS audit_id FROM upd JOIN aud ON true`,
+      [id, cur.classification, actor, reason],
+    );
+    if (!done) {
+      const { rows: [now] } = await db.query('SELECT status FROM pending_replies WHERE id = $1', [id]);
+      return { status: 409, body: { ok: false, error: 'not_rejected', status: now && now.status } };
+    }
+    console.log('[Admin] skipped follow-up card reopened', { replyId: id, actor });
+    const rp = await doRepaint();
+    return {
+      status: 200,
+      body: {
+        ok: true, changed: true, id, from: 'skipped', status: 'pending',
+        classification: done.classification, auditId: done.audit_id, cardRepainted: rp.result,
+        ...(rp.rebuilt ? { cardRebuiltFromRow: true } : {}),
+        ...(rp.error ? { repaintError: rp.error } : {}),
+        ...(slackBackfill ? { slackBackfill } : {}),
       },
     };
   }
