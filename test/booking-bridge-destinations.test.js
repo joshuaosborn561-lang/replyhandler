@@ -92,7 +92,7 @@ describe('booking-bridge destinations', () => {
     assert.equal(isCalendlyUrl(psa), false);
   });
 
-  it('parses live clients.js and prefers those destinations', async () => {
+  it('parses live clients.js and prefers those destinations (except retired techevo)', async () => {
     const js = `
 window.BOOKING_CLIENTS = {
   "techevo": {
@@ -100,11 +100,13 @@ window.BOOKING_CLIENTS = {
     bookingUrl: "https://calendly.com/ctapper/new-destination",
     accent: "#5e35b1",
   },
+  "parlay": {
+    name: "Parlay",
+    bookingUrl: "https://calendly.com/randyhaba/30min",
+  },
 };
 `;
-    assert.deepEqual(parseClientsJs(js), {
-      techevo: 'https://calendly.com/ctapper/new-destination',
-    });
+    assert.deepEqual(parseClientsJs(js).techevo, 'https://calendly.com/ctapper/new-destination');
     const map = await refreshDestinations({
       now: Date.now(),
       fetchImpl: async () => ({
@@ -112,13 +114,14 @@ window.BOOKING_CLIENTS = {
         text: async () => js,
       }),
     });
-    assert.equal(map.techevo, 'https://calendly.com/ctapper/new-destination');
+    assert.equal(map.techevo, undefined);
+    assert.equal(map.parlay, 'https://calendly.com/randyhaba/30min');
     assert.equal(
       resolveAvailabilityBookingUrl({
         name: 'TechEvolution',
         booking_link: 'https://book.gosalesglider.com/techevo',
       }, map),
-      'https://calendly.com/ctapper/new-destination'
+      ''
     );
   });
 

@@ -13,6 +13,10 @@
 
 const { BOOKING_BRIDGE_ORIGIN } = require('./public-booking-link');
 const { slugFromClientName } = require('../services/booking-bridge');
+const {
+  isTechEvolutionBookingRetired,
+  isTechEvolutionBookingSlug,
+} = require('./techevolution-booking');
 
 const BOOKING_BRIDGE_HOSTS = new Set([
   'book.gosalesglider.com',
@@ -68,8 +72,14 @@ function parseClientsJs(text) {
   return out;
 }
 
+function dropRetiredBookingSlugs(map) {
+  const out = { ...map };
+  delete out.techevo;
+  return out;
+}
+
 function destinationMap() {
-  const map = { ...FALLBACK_DESTINATIONS, ...(liveDestinations || {}) };
+  const map = dropRetiredBookingSlugs({ ...FALLBACK_DESTINATIONS, ...(liveDestinations || {}) });
   // A stale BookingBridge clients.js still lists Vector's retired TidyCal
   // page. That file must not put TidyCal back over the Cal.com destination.
   map.vector = replaceRetiredVectorTidycal('vector', map.vector);
@@ -98,7 +108,7 @@ function isBookingBridgeWrap(url) {
 function rememberLiveDestination(slug, url) {
   const key = String(slug || '').trim().toLowerCase();
   const dest = String(url || '').trim();
-  if (!key || !dest) return;
+  if (!key || !dest || isTechEvolutionBookingSlug(key)) return;
   liveDestinations = { ...(liveDestinations || {}), [key]: dest };
 }
 
@@ -113,6 +123,15 @@ function normalizeClientBooking(client = {}) {
     ? String(client.booking_destination_url).trim()
     : '';
   const nameSlug = slugFromClientName(name);
+
+  if (isTechEvolutionBookingRetired(name, stored)) {
+    const slug = slugFromWrapUrl(stored) || (isTechEvolutionBookingSlug(nameSlug) ? 'techevo' : nameSlug);
+    return {
+      slug: isTechEvolutionBookingSlug(slug) ? slug : nameSlug,
+      booking_link: stored,
+      booking_destination_url: '',
+    };
+  }
 
   if (isBookingBridgeWrap(stored)) {
     const slug = slugFromWrapUrl(stored);
@@ -150,10 +169,13 @@ function normalizeClientBooking(client = {}) {
 }
 
 function resolveAvailabilityBookingUrl(client, destMap = destinationMap()) {
+  const name = client && client.name ? String(client.name) : '';
+  const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
+  if (isTechEvolutionBookingRetired(name, stored)) return '';
+
   const destCol = client && client.booking_destination_url
     ? String(client.booking_destination_url).trim()
     : '';
-  const stored = client && client.booking_link ? String(client.booking_link).trim() : '';
   const wrapSlug = slugFromWrapUrl(stored);
   const nameSlug = slugFromClientName(client && client.name);
   const slug = wrapSlug || nameSlug;
@@ -184,7 +206,7 @@ async function refreshDestinations({
     });
     if (res && res.ok) {
       const text = typeof res.text === 'function' ? await res.text() : '';
-      const parsed = parseClientsJs(text);
+      const parsed = dropRetiredBookingSlugs(parseClientsJs(text));
       if (Object.keys(parsed).length) {
         liveDestinations = parsed;
         liveFetchedAt = now;

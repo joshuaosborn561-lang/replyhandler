@@ -10,10 +10,17 @@ const { canonicalKey } = require('../utils/own-addresses');
  */
 
 /** Slug → ReplyHandler `clients.name` aliases (from campaignintelligence log-booking). */
+/**
+ * Retired booking-bridge slugs: no outbound wrap/dest, but bridge webhooks may
+ * still send these slugs — resolveClients uses this for DB name lookup only.
+ */
+const RETIRED_BOOKING_BRIDGE_SLUGS = {
+  techevo: ['TechEvolution', 'TechEvo'],
+};
+
 const CLIENT_SLUG_ALIASES = {
   goliath: ['Goliath', 'Goliath Cybersecurity', 'Goliath Solutions Group'],
   parlay: ['Parlay Tech'],
-  techevo: ['TechEvolution', 'TechEvo'], // public wrap: https://book.gosalesglider.com/techevo
   culturefits: ['Culture Fits'],
   bolder: ['Bolder Cyber Partners'],
   salesglider: ['SalesGlider'],
@@ -423,7 +430,10 @@ function parseBridgePayload(body) {
  * pending follow-ups for that email (so a mistyped slug still stops nudges).
  */
 async function resolveClients({ clientSlug, clientName, email }) {
-  const aliases = CLIENT_SLUG_ALIASES[clientSlug] || [];
+  const aliases = [
+    ...(CLIENT_SLUG_ALIASES[clientSlug] || []),
+    ...(RETIRED_BOOKING_BRIDGE_SLUGS[clientSlug] || []),
+  ];
   const names = [
     ...aliases,
     ...(clientName ? [clientName] : []),
@@ -770,6 +780,7 @@ async function campaignIntelligenceSaysBooked(leadEmail) {
 
 module.exports = {
   CLIENT_SLUG_ALIASES,
+  RETIRED_BOOKING_BRIDGE_SLUGS,
   POSITIVE_CLASSIFICATIONS,
   slugFromClientName,
   aliasSlug,

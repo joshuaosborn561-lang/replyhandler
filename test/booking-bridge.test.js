@@ -4,6 +4,7 @@ const {
   parseBridgePayload,
   normalizeEmail,
   CLIENT_SLUG_ALIASES,
+  RETIRED_BOOKING_BRIDGE_SLUGS,
   assertBookingBridgeSecret,
   slugFromClientName,
   parseRecapWindow,
@@ -42,13 +43,18 @@ describe('booking-bridge payload', () => {
     assert.equal(normalizeEmail('ok@x.com'), 'ok@x.com');
   });
 
-  it('has slug aliases for every campaignintelligence client', () => {
+  it('has slug aliases for every campaignintelligence client (except retired booking slugs)', () => {
     for (const slug of [
-      'goliath', 'parlay', 'techevo', 'culturefits',
+      'goliath', 'parlay', 'culturefits',
       'bolder', 'salesglider', 'powergryd', 'peterson', 'vasco',
     ]) {
       assert.ok(CLIENT_SLUG_ALIASES[slug]?.length, `missing aliases for ${slug}`);
     }
+    assert.ok(
+      RETIRED_BOOKING_BRIDGE_SLUGS.techevo?.length,
+      'techevo bridge webhook must still resolve client names'
+    );
+    assert.equal(CLIENT_SLUG_ALIASES.techevo, undefined);
   });
 });
 
