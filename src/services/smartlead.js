@@ -58,7 +58,14 @@ function toSmartleadId(value, name) {
 
 /** apiKey prefix + campaign id → { name, fetchedAt } */
 const campaignNameCache = new Map();
+const campaignTagCache = new Map();
 const CAMPAIGN_NAME_TTL_MS = 6 * 60 * 60 * 1000;
+
+function campaignTagsOf(data) {
+  if (!data || typeof data !== 'object') return [];
+  const raw = data.tags || data.campaign_tags || data.tag_list || data.email_campaign_tags || [];
+  return Array.isArray(raw) ? raw : [];
+}
 
 /**
  * Fetch a SmartLead campaign (includes human-readable name).
@@ -82,6 +89,31 @@ async function getCampaign(apiKey, campaignId) {
     return JSON.parse(body);
   } catch (err) {
     throw new Error(`SmartLead getCampaign invalid JSON: ${String(body).slice(0, 200)}`);
+  }
+}
+
+/** Tags on the campaign. Cached so a poll does not refetch the same campaign. Empty when the API fails. */
+async function campaignOwnerTags(apiKey, campaignId) {
+  if (!apiKey || campaignId == null || campaignId === '') return [];
+  let cid;
+  try {
+    cid = toSmartleadId(campaignId, 'campaign_id');
+  } catch {
+    return [];
+  }
+  const cacheKey = `${String(apiKey).slice(0, 12)}:${cid}`;
+  const hit = campaignTagCache.get(cacheKey);
+  if (hit && Date.now() - hit.fetchedAt < CAMPAIGN_NAME_TTL_MS) return hit.tags;
+  try {
+    const data = await getCampaign(apiKey, cid);
+    const tags = campaignTagsOf(data);
+    campaignTagCache.set(cacheKey, { tags, fetchedAt: Date.now() });
+    return tags;
+  } catch (err) {
+    console.warn('[SmartLead] campaign tags failed', {
+      campaignId: cid, err: String(err && err.message).slice(0, 160),
+    });
+    return [];
   }
 }
 
@@ -789,6 +821,8 @@ module.exports = {
   markLeadNotInterested,
   listEmailAccounts,
   listCampaigns,
+  campaignOwnerTags,
+  campaignTagsOf,
   listCampaignWebhooks,
   createEmailReplyWebhook,
   webhookHasEmailReply,

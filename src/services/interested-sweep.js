@@ -1,5 +1,6 @@
 const db = require('../db');
 const smartlead = require('./smartlead');
+const { pollTargetsFromClients, routeClientForCampaign, tagsFromRecord, masterKey } = require('./campaign-routing');
 const { classifyFromSmartlead, extractCategory } = require('./smartlead-category');
 const { looksAlreadyBooked } = require('./booking-check');
 const { replySuppressesFollowUp } = require('../utils/booking-signals');
@@ -35,23 +36,19 @@ function confidence(signals) {
 async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
   const cutoff = Date.now() - hours * 3600 * 1000;
   const { rows: clients } = await db.query(
-    `SELECT id, name, smartlead_api_key FROM clients
+    `SELECT * FROM clients
       WHERE active IS DISTINCT FROM false`
   );
 
-  // An account-level master key sees every campaign, including any whose
-  // client row has no key of its own — otherwise those campaigns are invisible
-  // to this sweep. Per-client keys still win when present, so each result stays
-  // attributed to the right client.
-  const master = String(process.env.SMARTLEAD_MASTER_API_KEY || '').trim();
-  const targets = clients
-    .map((c) => ({ ...c, key: c.smartlead_api_key || master }))
-    .filter((c) => c.key);
-  if (master && !clients.some((c) => c.smartlead_api_key === master)) {
-    // Sweep the whole account once too, so campaigns not mapped to any client
-    // row are still seen.
-    targets.push({ id: null, name: '(account-wide)', key: master });
-  }
+  // One agency inbox scan, attributed by tag then route then title, plus each
+  // distinct stored key. A keyless client is not scanned as if it owned the
+  // whole inbox.
+  const master = masterKey();
+  const targets = pollTargetsFromClients(clients).map((t) => ({
+    ...t.client,
+    key: t.apiKey,
+    mode: t.mode,
+  }));
 
   const booked = [];
   const notBooked = [];
@@ -84,12 +81,30 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
         const leadName = `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim() || 'Unknown';
         const leadEmail = row.lead_email || null;
         const leadId = row.email_lead_id || row.lead_id || null;
+        const campaignId = row.email_campaign_id || row.emailCampaignId || row.campaign_id || null;
+        let owner = client;
+        if (campaignId) {
+          try {
+            const resolved = await routeClientForCampaign(client, campaignId, {
+              tags: tagsFromRecord(row),
+              campaignName: row.email_campaign_name || row.emailCampaignName || null,
+              mode: client.mode || 'client',
+              clients,
+              legacyOwner: client._legacyOwner || null,
+              fetchTags: false,
+            });
+            if (resolved && resolved.id) owner = resolved;
+            else if (client.mode === 'master') continue;
+          } catch (err) {
+            errors.push({ client: client.name, err: err.message });
+          }
+        }
         const inbound = cleanInboundReply(latestInboundFromRow(row) || '');
 
         const signals = [];
         try {
-          if (client.id) {
-            const reason = await looksAlreadyBooked(client.id, {
+          if (owner.id) {
+            const reason = await looksAlreadyBooked(owner.id, {
               platform: 'smartlead', leadEmail, leadName, leadId, since: at || new Date(cutoff),
             });
             if (reason) signals.push(reason);
@@ -102,7 +117,7 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
         if (fromText && !signals.includes(fromText)) signals.push(fromText);
 
         const entry = {
-          client: client.name,
+          client: owner.name,
           lead: leadName,
           email: leadEmail,
           smartleadCategory: category || null,

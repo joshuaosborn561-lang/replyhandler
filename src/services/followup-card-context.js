@@ -60,10 +60,11 @@ function titleFrom(source) {
 
 /** Best effort: Smartlead's campaign-lead map id for the master inbox deep link. */
 async function smartleadMapId(client, source, { smartlead } = {}) {
-  if (source.platform !== 'smartlead' || !client.smartlead_api_key || !source.lead_email) return null;
+  const keyed = require('./campaign-routing').withSmartleadKey(client);
+  if (source.platform !== 'smartlead' || !keyed?.smartlead_api_key || !source.lead_email) return null;
   try {
     const sl = smartlead || require('./smartlead');
-    const found = await sl.lookupLeadByEmail(client.smartlead_api_key, source.lead_email);
+    const found = await sl.lookupLeadByEmail(keyed.smartlead_api_key, source.lead_email);
     const rows = found && found.lead && Array.isArray(found.lead.lead_campaign_data) ? found.lead.lead_campaign_data : [];
     const row = rows.find((r) => String(r.campaign_id || r.campaignId || '') === String(source.campaign_id || ''));
     const id = row && (row.campaign_lead_map_id || row.email_lead_map_id || row.campaignLeadMapId);

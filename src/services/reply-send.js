@@ -532,6 +532,7 @@ async function sendReplyToPlatform(client, reply, replyText, opts = {}) {
   }
 
   if (reply.platform === 'smartlead') {
+    client = await require('./campaign-routing').applyAgencyKey(client, reply.campaign_id);
     // Primary: the stats_id captured at webhook ingestion.
     // Fallback: resolve live from message-history (for older rows that predate the column).
     let emailStatsId = reply.smartlead_email_stats_id || null;

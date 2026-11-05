@@ -1,4 +1,4 @@
-const { withSmartleadKey, routeClientForCampaign } = require('../services/campaign-routing');
+const { withSmartleadKey, routeClientForCampaign, tagsFromRecord, ownerSlugsFromTags, masterKey } = require('../services/campaign-routing');
 const { applyPositiveIntentGuard } = require('../utils/positive-intent');
 const { shouldAlertOther, postOtherAlert } = require('../services/other-alert');
 const { extractLeadPhone } = require('../utils/lead-phone');
@@ -413,7 +413,21 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     const campaignId = normalizeSmartleadCampaignId(payload, leadData);
 
     client = withSmartleadKey(client);
-    const routedClient = await routeClientForCampaign(client, campaignId);
+    const payloadTags = tagsFromRecord(payload) || tagsFromRecord(leadData);
+    const inlineOwner = ownerSlugsFromTags(payloadTags || []);
+    const tagKey = masterKey() || client.smartlead_api_key;
+    const routedClient = await routeClientForCampaign(client, campaignId, {
+      campaignName: smartleadCampaignName(payload),
+      tags: inlineOwner.length ? payloadTags : undefined,
+      mode: 'webhook',
+      fetchTags: !inlineOwner.length && tagKey
+        ? (id) => smartlead.campaignOwnerTags(tagKey, id)
+        : undefined,
+    });
+    if (!routedClient || !routedClient.id) {
+      console.warn('[Webhook] SmartLead campaign owner unresolved', { clientId, campaignId });
+      return res.status(200).json({ ok: true, skipped: true, reason: 'unresolved_campaign_owner' });
+    }
     if (routedClient !== client) {
       console.log('[Webhook] SmartLead campaign routed', { from: clientId, to: routedClient.id, campaignId });
       client = routedClient;
