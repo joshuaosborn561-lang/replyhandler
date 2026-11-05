@@ -25,8 +25,8 @@ test('prepareSmartleadReplyText strips draft sign-offs for every client (Parlay 
     client: PARLAY,
     sendingInboxEmail: PARLAY_INBOX,
   });
-  assert.equal(out, 'Happy to send times.');
-  assert.ok(draftSignOffWasStripped(draft, out));
+  assert.equal(out, 'Happy to send times.\n\nMyles');
+  assert.ok(draftSignOffWasStripped(draft, 'Happy to send times.'));
 });
 
 test('Ciotola client inbox: stacked names and SalesGlider lines removed from body', () => {
@@ -42,9 +42,9 @@ test('Ciotola client inbox: stacked names and SalesGlider lines removed from bod
     client: CIOTOLA,
     sendingInboxEmail: JEREMY_INBOX,
   });
-  assert.equal(out, 'Sounds good — I can do Thursday afternoon.');
+  assert.equal(out, 'Sounds good — I can do Thursday afternoon.\n\nJeremy');
   assert.doesNotMatch(out, /SalesGlider/i);
-  assert.doesNotMatch(out, /\bJeremy\b/);
+  assert.match(out, /\nJeremy$/);
 });
 
 test('client pod inboxes never request SmartLead add_signature (Ciotola + Parlay)', () => {
@@ -86,6 +86,7 @@ test('SmartLead sendReply: client inbox add_signature false, agency inbox true',
       sendingInboxEmail: JEREMY_INBOX,
     });
     assert.equal(calls[0].body.add_signature, false);
+    assert.match(calls[0].body.email_body, /Jeremy$/);
 
     calls.length = 0;
     await smartlead.sendReply('test-key', 11, 22, {
@@ -95,7 +96,8 @@ test('SmartLead sendReply: client inbox add_signature false, agency inbox true',
       sendingInboxEmail: PARLAY_INBOX,
     });
     assert.equal(calls[0].body.add_signature, false);
-    assert.doesNotMatch(calls[0].body.email_body, /Myles/i);
+    assert.match(calls[0].body.email_body, /Myles$/);
+    assert.doesNotMatch(calls[0].body.email_body, /Best,/i);
 
     calls.length = 0;
     await smartlead.sendReply('test-key', 3739758, 33, {
