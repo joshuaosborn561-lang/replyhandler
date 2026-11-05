@@ -8,6 +8,7 @@ const {
   clientPodSignOffFirstName,
   nameKeysFromSendContext,
 } = require('./smartlead-outbound-body');
+const { resolveAgencySignatureContract } = require('./smartlead-agency-signature-contract');
 
 const AGENCY_BRAND_LINE = /\bsales\s*glider\b/i;
 
@@ -97,6 +98,98 @@ function assertSendingInbox(sendingInboxEmail) {
   return inbox;
 }
 
+function validateAgencySignatureContractPlain(contractPlain, nameKeys) {
+  const lines = String(contractPlain || '').replace(/\r\n/g, '\n').split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    throw new OutboundSignatureGuardError(
+      'AGENCY_SIGNATURE_CONTRACT_EMPTY',
+      'Agency signature contract is empty',
+      'Signature check blocked send — agency mailbox signature contract is empty. Configure SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON.',
+    );
+  }
+  const lineCounts = new Map();
+  for (const line of lines) {
+    const k = line.toLowerCase();
+    if (lineCounts.has(k)) {
+      throw new OutboundSignatureGuardError(
+        'AGENCY_SIGNATURE_CONTRACT_DUPLICATE',
+        `Agency signature contract repeats line: ${line}`,
+        'Signature check blocked send — agency mailbox signature contract has duplicate lines. Fix SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON.',
+      );
+    }
+    lineCounts.set(k, true);
+  }
+  const bareNames = lines.filter((l) => lineIsBareName(l, nameKeys) || lineIsSenderFullName(l, nameKeys));
+  const seen = new Set();
+  for (const line of bareNames) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) {
+      throw new OutboundSignatureGuardError(
+        'AGENCY_SIGNATURE_CONTRACT_DUPLICATE',
+        `Agency signature contract has duplicate sender lines: ${line}`,
+        'Signature check blocked send — agency mailbox signature contract has duplicate name lines. Fix SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON.',
+      );
+    }
+    seen.add(key);
+  }
+  if (lines.some((l) => CLOSING_WORDS.test(l))) {
+    throw new OutboundSignatureGuardError(
+      'AGENCY_SIGNATURE_CONTRACT_CLOSING',
+      'Agency signature contract must not include email closings',
+      'Signature check blocked send — remove "Best," / "Thanks," from the agency signature contract.',
+    );
+  }
+}
+
+/** Simulated plain text after SmartLead appends the contracted mailbox signature. */
+function simulateAgencyOutboundPlain(messagePlain, contractPlain) {
+  const msg = String(messagePlain || '').trim();
+  const sig = String(contractPlain || '').trim();
+  if (!sig) return msg;
+  return msg ? `${msg}\n\n${sig}` : sig;
+}
+
+function validateAgencyCombinedOutbound(messagePlain, contractPlain, nameKeys) {
+  validateAgencySignatureContractPlain(contractPlain, nameKeys);
+  const msgTrailing = collectTrailingSignOffLines(
+    String(messagePlain || '').replace(/\r\n/g, '\n').split('\n'),
+    nameKeys,
+  );
+  if (msgTrailing.length) {
+    throw new OutboundSignatureGuardError(
+      'AGENCY_BODY_SIGNOFF',
+      `Agency outbound body still contains a draft sign-off: ${msgTrailing.join(' / ')}`,
+      'Signature check blocked send — remove the draft sign-off so only the contracted mailbox signature appears once.',
+    );
+  }
+  const combined = simulateAgencyOutboundPlain(messagePlain, contractPlain);
+  const combinedLines = combined.split('\n');
+  const trailing = collectTrailingSignOffLines(combinedLines, nameKeys);
+  const sigLines = String(contractPlain || '').replace(/\r\n/g, '\n').split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const sigSet = new Set(sigLines.map((l) => l.toLowerCase()));
+  for (const line of trailing) {
+    if (!sigSet.has(line.toLowerCase()) && !CLOSING_WORDS.test(line)) {
+      throw new OutboundSignatureGuardError(
+        'AGENCY_COMBINED_EXTRA_SIGNOFF',
+        `Combined outbound has sign-off lines outside the contract: ${line}`,
+        'Signature check blocked send — draft still contains extra sign-off lines beyond the contracted mailbox signature.',
+      );
+    }
+  }
+  if (!combined.endsWith(String(contractPlain || '').trim())) {
+    throw new OutboundSignatureGuardError(
+      'AGENCY_COMBINED_MISMATCH',
+      'Combined outbound does not end with the contracted signature block',
+      'Signature check blocked send — outbound body and signature contract do not combine cleanly.',
+    );
+  }
+  return combined;
+}
+
 /**
  * @param {object} opts
  * @param {string} opts.plainBody - prepared plain text (pre-HTML)
@@ -104,6 +197,7 @@ function assertSendingInbox(sendingInboxEmail) {
  * @param {boolean} opts.addSignature - final add_signature flag
  * @param {object|null} opts.outboundClient
  * @param {string|null} opts.sendingInboxEmail
+ * @param {string|null} [opts.agencySignatureContractPlain] - verified mailbox signature (agency only)
  */
 function validateSmartleadOutboundSignature(opts = {}) {
   const inbox = assertSendingInbox(opts.sendingInboxEmail);
@@ -130,13 +224,6 @@ function validateSmartleadOutboundSignature(opts = {}) {
         'Signature check blocked send — agency mailbox expected SmartLead to append its signature. Nothing was sent.',
       );
     }
-    if (trailing.length) {
-      throw new OutboundSignatureGuardError(
-        'AGENCY_BODY_SIGNOFF',
-        `Agency outbound body still contains a draft sign-off: ${trailing.join(' / ')}`,
-        'Signature check blocked send — remove the draft sign-off (name or "Best,") so SmartLead adds the mailbox signature once.',
-      );
-    }
     if (lines.some((l) => AGENCY_BRAND_LINE.test(String(l || '').trim()))) {
       throw new OutboundSignatureGuardError(
         'AGENCY_BODY_BRAND',
@@ -144,7 +231,26 @@ function validateSmartleadOutboundSignature(opts = {}) {
         'Signature check blocked send — remove SalesGlider branding from the draft body.',
       );
     }
-    return { ok: true, mode: 'agency', addSignature: true };
+    let contractPlain = String(opts.agencySignatureContractPlain || '').trim();
+    if (!contractPlain) {
+      const resolved = resolveAgencySignatureContract(inbox);
+      contractPlain = resolved?.plainText || '';
+    }
+    if (!contractPlain) {
+      throw new OutboundSignatureGuardError(
+        'AGENCY_SIGNATURE_UNVERIFIED',
+        `No verifiable agency signature contract for inbox ${inbox}`,
+        'Signature check blocked send — agency mailbox signature is not configured for verification (SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON). Nothing was sent.',
+      );
+    }
+    const combined = validateAgencyCombinedOutbound(plain, contractPlain, nameKeys);
+    return {
+      ok: true,
+      mode: 'agency',
+      addSignature: true,
+      agencySignatureContractPlain: contractPlain,
+      simulatedOutboundPlain: combined,
+    };
   }
 
   if (addSignature) {
@@ -222,5 +328,7 @@ module.exports = {
   validateSmartleadOutboundSignature,
   plainTextFromEmailBody,
   collectTrailingSignOffLines,
+  simulateAgencyOutboundPlain,
+  validateAgencyCombinedOutbound,
   CLOSING_WORDS,
 };

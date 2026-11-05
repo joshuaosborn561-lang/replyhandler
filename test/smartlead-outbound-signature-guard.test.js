@@ -11,7 +11,9 @@ const {
   isOutboundSignatureGuardError,
   OutboundSignatureGuardError,
   signatureGuardUserMessage,
+  simulateAgencyOutboundPlain,
 } = require('../src/utils/smartlead-outbound-signature-guard');
+const { resetAgencySignatureContractCacheForTests } = require('../src/utils/smartlead-agency-signature-contract');
 const smartlead = require('../src/services/smartlead');
 
 const ROOT = path.join(__dirname, '..');
@@ -23,9 +25,28 @@ const JEREMY_INBOX = 'jciotola@getjeremyciotola.info';
 const PARLAY_INBOX = 'myles@parlaytech.io';
 const AGENCY_INBOX = 'joshua@salesglidergrowth.com';
 
+const CONTRACT_ENV_KEY = 'SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON';
+const VERIFIED_AGENCY_CONTRACT = {
+  [AGENCY_INBOX]: 'Joshua Osborn\nSalesGlider Growth',
+};
+
+let savedContractEnv;
+
+test.beforeEach(() => {
+  savedContractEnv = process.env[CONTRACT_ENV_KEY];
+  process.env[CONTRACT_ENV_KEY] = JSON.stringify(VERIFIED_AGENCY_CONTRACT);
+  resetAgencySignatureContractCacheForTests();
+});
+
+test.afterEach(() => {
+  if (savedContractEnv === undefined) delete process.env[CONTRACT_ENV_KEY];
+  else process.env[CONTRACT_ENV_KEY] = savedContractEnv;
+  resetAgencySignatureContractCacheForTests();
+});
+
 /**
- * Repository fixture matrix (campaign-routing owner slugs + known pod inboxes from tests).
- * This is config/fixture coverage — not a live Smartlead mailbox inventory audit.
+ * Repository fixture matrix (campaign-routing owner slugs + synthetic inboxes).
+ * Not a live Smartlead mailbox inventory audit — no Smartlead API calls.
  */
 const CLIENT_POD_MATRIX = [
   { label: 'Ciotola', client: CIOTOLA, inbox: JEREMY_INBOX, expectedSignOff: 'Jeremy' },
@@ -64,7 +85,7 @@ test('Trevor Ciotola Slack draft prepares to a single Jeremy sign-off (fixture r
   validatePreparedClientSend(TREVOR_DRAFT, CIOTOLA, JEREMY_INBOX);
 });
 
-test('table: client pod signature matrix (fixture configs, not live inbox audit)', () => {
+test('table: client pod signature matrix (fixture configs only, not live inbox inventory)', () => {
   for (const row of CLIENT_POD_MATRIX) {
     if (row.expectCode) {
       const plain = prepareSmartleadReplyText('Quick note.', {
@@ -134,19 +155,24 @@ test('rejects client pod with add_signature true (SalesGlider footer path)', () 
   );
 });
 
-test('rejects agency body that still contains draft Josh sign-off', () => {
+test('agency: verified contract + clean body simulates a single mailbox signature block', () => {
   const plain = prepareSmartleadReplyText('Thursday works.\n\nJosh', {
     client: { name: 'SalesGlider' },
     sendingInboxEmail: AGENCY_INBOX,
   });
   assert.equal(plain, 'Thursday works.');
-  validateSmartleadOutboundSignature({
+  const result = validateSmartleadOutboundSignature({
     plainBody: plain,
     emailBody: plain,
     addSignature: true,
     outboundClient: { name: 'SalesGlider' },
     sendingInboxEmail: AGENCY_INBOX,
   });
+  assert.equal(result.mode, 'agency');
+  assert.match(result.simulatedOutboundPlain, /Thursday works\.\n\nJoshua Osborn\nSalesGlider Growth$/);
+});
+
+test('agency: draft sign-off in body fails combined validation', () => {
   assert.throws(
     () => validateSmartleadOutboundSignature({
       plainBody: 'Thursday works.\n\nJosh',
@@ -154,8 +180,39 @@ test('rejects agency body that still contains draft Josh sign-off', () => {
       addSignature: true,
       outboundClient: { name: 'SalesGlider' },
       sendingInboxEmail: AGENCY_INBOX,
+      agencySignatureContractPlain: VERIFIED_AGENCY_CONTRACT[AGENCY_INBOX],
     }),
     (err) => err.code === 'AGENCY_BODY_SIGNOFF',
+  );
+});
+
+test('agency: unverified mailbox (no contract) fails closed', () => {
+  delete process.env[CONTRACT_ENV_KEY];
+  resetAgencySignatureContractCacheForTests();
+  assert.throws(
+    () => validateSmartleadOutboundSignature({
+      plainBody: 'Hello.',
+      emailBody: 'Hello.',
+      addSignature: true,
+      outboundClient: { name: 'SalesGlider' },
+      sendingInboxEmail: AGENCY_INBOX,
+    }),
+    (err) => err.code === 'AGENCY_SIGNATURE_UNVERIFIED',
+  );
+});
+
+test('agency: contaminated signature contract (duplicate names) fails closed', () => {
+  const badContract = 'Jeremy\nJeremy\nJeremy Ciotola\nSalesGlider Growth';
+  assert.throws(
+    () => validateSmartleadOutboundSignature({
+      plainBody: 'Hello.',
+      emailBody: 'Hello.',
+      addSignature: true,
+      outboundClient: { name: 'SalesGlider' },
+      sendingInboxEmail: AGENCY_INBOX,
+      agencySignatureContractPlain: badContract,
+    }),
+    (err) => err.code === 'AGENCY_SIGNATURE_CONTRACT_DUPLICATE',
   );
 });
 
@@ -220,6 +277,22 @@ test('SmartLead sendReply: signature guard blocks POST with zero provider calls'
     );
     assert.equal(calls.length, 0);
 
+    delete process.env[CONTRACT_ENV_KEY];
+    resetAgencySignatureContractCacheForTests();
+    await assert.rejects(
+      () => smartlead.sendReply('test-key', 9, 8, {
+        replyText: 'Agency line.',
+        emailStatsId: 'stats-agency-fail',
+        outboundClient: { name: 'SalesGlider' },
+        sendingInboxEmail: AGENCY_INBOX,
+      }),
+      (err) => err.code === 'AGENCY_SIGNATURE_UNVERIFIED',
+    );
+    assert.equal(calls.length, 0);
+
+    process.env[CONTRACT_ENV_KEY] = JSON.stringify(VERIFIED_AGENCY_CONTRACT);
+    resetAgencySignatureContractCacheForTests();
+
     calls.length = 0;
     await smartlead.sendReply('test-key', 1, 2, {
       replyText: TREVOR_DRAFT,
@@ -228,9 +301,30 @@ test('SmartLead sendReply: signature guard blocks POST with zero provider calls'
       sendingInboxEmail: JEREMY_INBOX,
     });
     assert.equal(calls.length, 1);
+
+    calls.length = 0;
+    await smartlead.sendReply('test-key', 3739758, 33, {
+      replyText: 'Thursday works.\n\nJosh',
+      emailStatsId: 'stats-4',
+      outboundClient: { name: 'SalesGlider' },
+      sendingInboxEmail: AGENCY_INBOX,
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0][1].body).add_signature, true);
   } finally {
     global.fetch = orig;
   }
+});
+
+test('recovery: flagged rows stay claimable for approve/edit/stuck retry (no duplicate card path)', () => {
+  const dedupe = read('src/services/reply-dedupe.js');
+  assert.match(dedupe, /claimable = \['pending', 'flagged', 'approved', 'failed'\]/);
+  const slack = read('src/routes/slack.js');
+  assert.match(slack, /flagSignatureBlockedCard/);
+  assert.match(slack, /status = 'flagged', send_error/);
+  const approveCatch = slack.slice(slack.indexOf('Failed to send reply after approval'));
+  assert.doesNotMatch(approveCatch.slice(0, 600), /status = 'sent'/);
+  assert.match(read('src/services/stuck-send-sweeper.js'), /sendReplyToPlatform/);
 });
 
 test('smartlead.js validates outbound signature before fetch', () => {
@@ -238,13 +332,12 @@ test('smartlead.js validates outbound signature before fetch', () => {
   const validateAt = src.indexOf('validateSmartleadOutboundSignature');
   const fetchAt = src.indexOf('const res = await fetch(url', validateAt);
   assert.ok(validateAt > 0 && fetchAt > validateAt);
+  assert.match(src, /resolveAgencySignatureContract/);
 });
 
-test('slack approve path flags signature errors without using failed terminal state', () => {
-  const src = read('src/routes/slack.js');
-  assert.match(src, /flagSignatureBlockedCard/);
-  assert.match(src, /status = 'flagged', send_error/);
-  assert.match(src, /isOutboundSignatureGuardError/);
+test('simulateAgencyOutboundPlain matches verified contract append only', () => {
+  const combined = simulateAgencyOutboundPlain('Body.', VERIFIED_AGENCY_CONTRACT[AGENCY_INBOX]);
+  assert.equal(combined, 'Body.\n\nJoshua Osborn\nSalesGlider Growth');
 });
 
 test('OutboundSignatureGuardError exposes user-facing message', () => {

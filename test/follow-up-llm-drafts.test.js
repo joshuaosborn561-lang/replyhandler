@@ -418,12 +418,17 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       calls.push({ url: String(url), body: JSON.parse(opts.body) });
       return { ok: true, text: async () => JSON.stringify({ success: true }) };
     };
+    const sigGuardOpts = {
+      outboundClient: { name: 'Parlay Tech' },
+      sendingInboxEmail: 'myles@parlaytech.io',
+    };
     try {
       await smartlead.sendReply('test-key', 11, 22, {
         replyText: 'Hey there',
         emailStatsId: 'stats-1',
         cc: 'contact@example.com, ae@example.com',
         bcc: 'ops@example.com',
+        ...sigGuardOpts,
       });
       assert.match(calls[0].url, /\/campaigns\/11\/reply-email-thread/);
       assert.doesNotMatch(calls[0].url, /\/leads\/reply-email-thread/);
@@ -439,6 +444,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
         emailStatsId: 'stats-1',
         ccEmails: 'ignored@example.com',
         cc: ['array@example.com'],
+        ...sigGuardOpts,
       });
       assert.equal(calls[0].body.cc, undefined);
       assert.equal(Object.prototype.hasOwnProperty.call(calls[0].body, 'cc_emails'), false);
@@ -447,6 +453,7 @@ describe('FOLLOW_UP LLM continuation drafts', () => {
       await smartlead.sendReply('test-key', 11, 22, {
         replyText: 'Hey there',
         emailStatsId: 'stats-1',
+        ...sigGuardOpts,
       });
       assert.equal(calls[0].body.cc, undefined);
       assert.equal(calls[0].body.bcc, undefined);

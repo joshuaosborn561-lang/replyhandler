@@ -266,12 +266,17 @@ describe('referral CC is only an address the prospect typed', () => {
       return { ok: true, text: async () => JSON.stringify({ success: true }) };
     };
     try {
+      const sigGuardOpts = {
+        outboundClient: { name: 'Parlay Tech' },
+        sendingInboxEmail: 'myles@parlaytech.io',
+      };
       await smartlead.sendReply('test-key', 4242292, 4826394148, {
         replyText: 'Hey Ariel, thanks for pointing me to Guy.',
         emailStatsId: 'b0b7bc9d-364b-4fe9-85be-a1f0bff77845',
         cc: 'Guy@orioncityscape.com',
         requireCc: true,
         requiredCc: ['Guy@orioncityscape.com'],
+        ...sigGuardOpts,
       });
       assert.equal(calls.length, 1);
       assert.match(calls[0].url, /\/campaigns\/4242292\/reply-email-thread/);
@@ -286,6 +291,7 @@ describe('referral CC is only an address the prospect typed', () => {
           emailStatsId: 'stats-1',
           requireCc: true,
           requiredCc: ['Guy@orioncityscape.com'],
+          ...sigGuardOpts,
         }),
         /Nothing was sent/,
       );
@@ -298,6 +304,7 @@ describe('referral CC is only an address the prospect typed', () => {
           cc: ['Guy@orioncityscape.com'],
           requireCc: true,
           requiredCc: ['Guy@orioncityscape.com'],
+          ...sigGuardOpts,
         }),
         /Nothing was sent/,
       );

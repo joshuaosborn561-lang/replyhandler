@@ -474,12 +474,15 @@ async function sendReply(apiKey, campaignId, leadId, {
   }
 
   const { validateSmartleadOutboundSignature } = require('../utils/smartlead-outbound-signature-guard');
+  const { resolveAgencySignatureContract } = require('../utils/smartlead-agency-signature-contract');
+  const contract = appendSig ? resolveAgencySignatureContract(sendingInboxEmail) : null;
   validateSmartleadOutboundSignature({
     plainBody,
     emailBody,
     addSignature: appendSig,
     outboundClient,
     sendingInboxEmail,
+    agencySignatureContractPlain: contract?.plainText || null,
   });
 
   const res = await fetch(url, {
