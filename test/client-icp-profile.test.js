@@ -581,3 +581,72 @@ test('a lookback window includes matching calls the keyword search missed', asyn
   assert.equal(result.status, 'ready');
   assert.equal(result.transcript_count, 1);
 });
+
+test('client_icp rows become icp_profile and a code variant still grades', async () => {
+  const { profileFromClientIcpRows } = require('../src/services/client-icp-profile');
+  const profile = profileFromClientIcpRows([{
+    industries_in: ['Managed service providers (MSPs)'],
+    titles: ['Owner', 'CEO'],
+    company_size: 'Not stated on the Fireflies call',
+    geography: 'United States',
+    buyer: 'Owner / CEO of a managed service provider',
+    exclusions: ['Staffing firms as prospects'],
+  }]);
+  assert.deepEqual(profile.titles, ['Owner', 'CEO']);
+  assert.equal(profile.offer[0], 'Owner / CEO of a managed service provider');
+
+  const writes = [];
+  const result = await ensureClientIcp(
+    { id: 'c1', name: 'Culture Fits' },
+    {
+      db: { query: async (sql, params) => { writes.push({ sql, params }); return { rows: [] }; } },
+      firefliesApi: { isConfigured: () => false, requiredEnvVar: () => 'FIREFLIES_API_KEY' },
+      env: {},
+      fetchClientIcp: async (tag) => {
+        assert.equal(tag, 'culture_fits');
+        return [{
+          industries_in: ['Managed service providers (MSPs)'],
+          titles: ['Owner', 'CEO'],
+          company_size: 'Not stated',
+          geography: 'United States',
+          buyer: 'Owner / CEO of a managed service provider',
+          exclusions: ['Staffing firms as prospects'],
+        }];
+      },
+    },
+  );
+  assert.equal(result.status, 'skipped_existing');
+  assert.equal(result.source, 'topup.client_icp');
+  assert.equal(result.profile.titles[0], 'Owner');
+  assert.equal(writes[0].params[0].includes('Owner'), true);
+
+  clearIcpMemoryCache();
+  const variant = await loadVariant('culture_fits', {
+    db: {
+      query: async () => ({
+        rows: [{ icp_status: 'skipped_existing', icp_profile: result.profile }],
+      }),
+    },
+    clientId: 'c1',
+  });
+  assert.equal(variant.jev_variant, 'culture_fits');
+  assert.equal(variant.spec.pass, 'msp_owner');
+});
+
+test('SalesGlider icp_profile follows the high-ticket variant, not the old lanes', async () => {
+  let fetched = false;
+  const result = await ensureClientIcp(
+    { id: 'sg', name: 'SalesGlider' },
+    {
+      db: { query: async () => ({ rows: [] }) },
+      firefliesApi: { isConfigured: () => false, requiredEnvVar: () => 'FIREFLIES_API_KEY' },
+      env: {},
+      fetchClientIcp: async () => { fetched = true; return [{ buyer: 'staffing agency owner', titles: ['Owner'], industries_in: ['staffing'] }]; },
+    },
+  );
+  assert.equal(fetched, false);
+  assert.equal(result.status, 'skipped_existing');
+  assert.equal(result.source, 'variant');
+  assert.match(result.profile.offer[0], /high-ticket B2B/i);
+  assert.ok(result.profile.titles.includes('Head of Sales'));
+});
