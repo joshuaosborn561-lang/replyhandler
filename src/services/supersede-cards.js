@@ -292,6 +292,107 @@ async function retireDuplicateOpenCards({
   return summary;
 }
 
+async function findSentSiblingForLead(reply, { query, exceptReplyId } = {}) {
+  const run = query || ((sql, params) => db.query(sql, params));
+  const row = reply || {};
+  const lid = row.lead_id != null ? String(row.lead_id).trim() : '';
+  const email = row.lead_email ? String(row.lead_email).trim().toLowerCase() : '';
+  if (!row.client_id || (!lid && !email)) return null;
+  const { rows } = await run(
+    `SELECT id, slack_message_ts, slack_channel_id, updated_at
+       FROM pending_replies
+      WHERE client_id = $1
+        AND platform = $2
+        AND COALESCE(campaign_id, '') = COALESCE($3::text, '')
+        AND status = 'sent'
+        AND COALESCE(classification, '') <> 'FOLLOW_UP'
+        AND ($6::uuid IS NULL OR id <> $6)
+        AND (
+          ($4::text <> '' AND COALESCE(lead_id, '') = $4)
+          OR ($5::text <> '' AND lower(COALESCE(lead_email, '')) = $5)
+        )
+      ORDER BY updated_at DESC
+      LIMIT 1`,
+    [
+      row.client_id,
+      row.platform || '',
+      row.campaign_id != null ? String(row.campaign_id) : '',
+      lid,
+      email,
+      exceptReplyId || row.id || null,
+    ]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * After a reply is sent, close any other open cards for the same lead so
+ * Reject on a stale duplicate cannot show "not interested" beside a sent card.
+ */
+async function supersedeOpenSiblingsAfterSend(sentRow, client, deps = {}) {
+  if (!sentRow?.id || !sentRow.client_id) return { retired: [], skipped: 0 };
+  const token = client?.slack_bot_token;
+  const channelId = sentRow.slack_channel_id || client?.slack_channel_id;
+  const ts = sentRow.slack_message_ts;
+  return supersedeEarlierOpenCards({
+    clientId: sentRow.client_id,
+    platform: sentRow.platform,
+    campaignId: sentRow.campaign_id,
+    leadId: sentRow.lead_id,
+    leadEmail: sentRow.lead_email,
+    keepId: sentRow.id,
+    newTs: ts,
+    channelId,
+    token,
+    query: deps.query,
+    updateCard: deps.updateCard,
+    cardContext: deps.cardContext,
+    getPermalink: deps.getPermalink,
+  });
+}
+
+/**
+ * An open card for a lead that already has a sent row — supersede instead of
+ * painting "Rejected — not interested" (stale duplicate after send / 429 paint).
+ */
+async function supersedeWhenLeadAlreadySent(openRow, sentSibling, client, deps = {}) {
+  const run = deps.query || ((sql, params) => db.query(sql, params));
+  if (!openRow?.id || !sentSibling?.id) return false;
+  const marked = await markSuperseded(run, openRow, sentSibling.id);
+  if (!marked) return false;
+  const token = client?.slack_bot_token;
+  const channelId = openRow.slack_channel_id || client?.slack_channel_id;
+  const ts = String(openRow.slack_message_ts || '');
+  if (!token || !channelId || !POSTED_TS.test(ts)) return true;
+  const sentChannel = sentSibling.slack_channel_id || channelId;
+  const link = await permalinkFor(
+    token,
+    sentChannel,
+    sentSibling.slack_message_ts,
+    deps.getPermalink
+  );
+  const footer = link
+    ? `Reply already sent — see the sent card.\n<${link}|Open the sent card>`
+    : 'Reply already sent on another card.';
+  const helpers = require('../routes/slack').cardHelpers;
+  const ctx = deps.cardContext
+    ? await deps.cardContext(openRow, client)
+    : await helpers.slackCardContextFromReply(openRow, client);
+  const update = deps.updateCard || slackService.updateSentConfirmationCard;
+  await update(
+    token,
+    channelId,
+    ts,
+    helpers.sentCardPayload(openRow, ctx, {
+      sentReply: null,
+      actionKind: 'superseded',
+      userId: null,
+      extraFooter: footer,
+    })
+  );
+  return true;
+}
+
 module.exports = {
   OPEN_CARD_STATUSES,
   leadKeys,
@@ -300,4 +401,7 @@ module.exports = {
   supersedeRows,
   supersedeEarlierOpenCards,
   retireDuplicateOpenCards,
+  findSentSiblingForLead,
+  supersedeOpenSiblingsAfterSend,
+  supersedeWhenLeadAlreadySent,
 };
