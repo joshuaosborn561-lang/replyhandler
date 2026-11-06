@@ -630,6 +630,14 @@ are unchanged — Bolder stays on `/bolder`.
 
 Guard: `Tech Evolution booking link is the public booking-bridge wrap`
 
+**Superseded Nov 2026:** Tech Evolution outbound booking is fully retired in
+ReplyHandler. No reply draft may include a booking URL; `GET /public/booking-clients`
+must not publish `techevo` (BookingBridge live overlay). Bridge webhooks may
+still use slug `techevo` to stop follow-ups via `RETIRED_BOOKING_BRIDGE_SLUGS`.
+Campaign `sg-owner:techevo` routing is unchanged.
+
+Guard: `Tech Evolution reply drafts must not offer any booking link`
+
 ## 2026-09-29
 
 ### No follow-up messages past 5pm CT or on the weekend

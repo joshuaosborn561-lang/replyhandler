@@ -44,6 +44,8 @@ function resolveMeetingModality({ voicePrompt, clientName } = {}) {
 }
 
 function shouldIncludeBookingLink(voicePrompt, clientName) {
+  const { isTechEvolutionClient } = require('./techevolution-booking');
+  if (isTechEvolutionClient(clientName)) return false;
   return resolveMeetingModality({ voicePrompt, clientName }) === 'booking';
 }
 
