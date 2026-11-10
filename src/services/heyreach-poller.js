@@ -201,6 +201,12 @@ function listId(conv) {
   return conv?.listId || conv?.list_id || conv?.list?.id || null;
 }
 
+/**
+ * Sending LinkedIn account id. Approve needs it (with the conversation id) to
+ * send through HeyReach, so the backstop stores it on every row it records.
+ * GetConversationsV2 nests it as linkedInAccount.id; the shared extractor
+ * covers that shape.
+ */
 function linkedInAccountId(conv) {
   return (
     conv?.linkedinAccountId ||
@@ -210,6 +216,7 @@ function linkedInAccountId(conv) {
     conv?.accountId ||
     conv?.sender?.id ||
     conv?.linkedin_account?.id ||
+    heyreach.extractHeyreachLinkedInAccountId(conv) ||
     null
   );
 }
@@ -700,4 +707,6 @@ module.exports = {
   campaignId,
   conversationMessages,
   latestInbound,
+  linkedInAccountId,
+  conversationId,
 };

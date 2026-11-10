@@ -17,6 +17,7 @@ const {
 const { regradeNoIcpCards } = require('../services/regrade-no-icp-cards');
 const { resurfaceSuppressedReplies, parseDays, parseDryRun } = require('../services/resurface-suppressed');
 const { postStoredHeyreachApprovalCard } = require('../services/heyreach-approval-card');
+const { upgradeHeyreachAlertCard } = require('../services/heyreach-upgrade-alert-card');
 const { supersedeEarlierOpenCards, retireDuplicateOpenCards } = require('../services/supersede-cards');
 const { refreshReferralDrafts } = require('../services/refresh-referral-draft');
 const { validateExtraction } = require('../services/followup-sequence-copy');
@@ -552,6 +553,28 @@ router.post('/admin/heyreach/approval-card', async (req, res) => {
   } catch (err) {
     console.error('[Admin] heyreach approval card error', { err: err.message });
     return res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * Upgrade a posted HeyReach alert card (status alert_only, no draft) into a
+ * real approval card on the SAME row and the SAME Slack message.
+ * Writes the draft, sets status 'pending', and chat.update's the row's
+ * channel + ts. Never posts a new message, never inserts a row, never sends.
+ * Missing conversation / LinkedIn account ids are looked up with the client's
+ * HeyReach key and stored; if they cannot be found nothing changes (409).
+ * Same auth as the other admin routes (no key).
+ *
+ * POST /admin/heyreach/upgrade-alert-card
+ * Body: { reply_id, draft, classification? }
+ */
+router.post('/admin/heyreach/upgrade-alert-card', async (req, res) => {
+  try {
+    const out = await upgradeHeyreachAlertCard(req.body || {});
+    return res.status(out.status).json(out.body);
+  } catch (err) {
+    console.error('[Admin] heyreach upgrade-alert-card error', { err: err.message });
+    return res.status(500).json({ ok: false, error: 'upgrade-alert-card failed' });
   }
 });
 
