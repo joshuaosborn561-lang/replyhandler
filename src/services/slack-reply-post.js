@@ -935,16 +935,20 @@ async function postProspectSlackCard({
         return postHeyreachSmartleadContext(args);
       });
       try {
+        const emailNow = links?.email || payload.leadEmail || card?.leadEmail || null;
+        const prior = card?.smartleadFound || payload.smartleadFound || null;
+        const reuse = prior && prior.status !== 'error' && (!emailNow || prior.matchedBy === 'email');
         await run({
           replyId,
           clientId,
           token,
           channelId,
           threadTs: postedTs,
-          email: links?.email || payload.leadEmail || card?.leadEmail || null,
+          email: emailNow,
           name: links?.fullName || payload.leadFullName || payload.leadName || card?.leadName || null,
           company: payload.leadCompany || card?.leadCompany || null,
           query: (sql, params) => dbClient.query(sql, params),
+          found: reuse ? prior : null,
         });
       } catch (err) {
         console.warn('[Slack] Smartlead context thread failed', { replyId, err: err.message });

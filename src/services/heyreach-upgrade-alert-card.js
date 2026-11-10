@@ -120,8 +120,8 @@ async function upgradeHeyreachAlertCard(input = {}, {
   }
   const draft = input.draft.trim();
   const requested = String(input.classification || '').trim().toUpperCase();
-  if (requested && !DRAFT_CLASSIFICATIONS.has(requested)) {
-    return fail(400, 'classification must be INTERESTED, MEETING_PROPOSED, or QUESTION');
+  if (requested && !/^[A-Z_]+$/.test(requested)) {
+    return fail(400, 'classification must be a label such as INTERESTED or OTHER');
   }
 
   const { rows } = await dbClient.query(
@@ -194,7 +194,8 @@ async function upgradeHeyreachAlertCard(input = {}, {
   }
 
   const stored = String(row.classification || '').trim().toUpperCase();
-  const classification = requested || (DRAFT_CLASSIFICATIONS.has(stored) ? stored : 'INTERESTED');
+  const classification = requested
+    || (DRAFT_CLASSIFICATIONS.has(stored) ? stored : 'INTERESTED');
   const sameDraft = priorUpgrade && String(row.draft_reply || '').trim() === draft
     && String(row.classification || '').toUpperCase() === classification;
 
@@ -282,7 +283,116 @@ async function upgradeHeyreachAlertCard(input = {}, {
   };
 }
 
+async function markAlertUpgradeAttempted(dbClient, row) {
+  try {
+    await dbClient.query(
+      `UPDATE pending_replies
+          SET thread_context = jsonb_set(
+            CASE
+              WHEN jsonb_typeof(thread_context) = 'object' THEN thread_context
+              ELSE jsonb_build_object('messages', COALESCE(thread_context, '[]'::jsonb), 'heyreach', '{}'::jsonb)
+            END,
+            '{heyreach,alertUpgradeAttempted}',
+            'true'::jsonb,
+            true
+          )
+        WHERE id = $1`,
+      [row.id]
+    );
+  } catch (err) {
+    console.warn('[HeyReach] could not mark alert upgrade attempt', { replyId: row.id, err: err.message });
+  }
+}
+
+/**
+ * Backstop: alert cards already in Slack get a draft in place when the
+ * HeyReach send ids can be resolved. Same upgrade as the admin route.
+ * A row whose ids cannot be resolved is marked so the poll does not
+ * draft it again every cycle.
+ */
+async function upgradeOpenHeyreachAlerts({
+  limit = 2,
+  dbClient = db,
+  draftFn = null,
+} = {}) {
+  const { rows } = await dbClient.query(
+    `SELECT pr.id
+       FROM pending_replies pr
+      WHERE pr.platform = 'heyreach'
+        AND pr.status = 'alert_only'
+        AND pr.slack_message_ts IS NOT NULL
+        AND pr.slack_message_ts NOT LIKE 'claiming:%'
+        AND COALESCE(pr.draft_reply, '') = ''
+        AND COALESCE(pr.classification, '') <> 'FOLLOW_UP'
+        AND COALESCE(pr.thread_context #>> '{heyreach,alertUpgradeAttempted}', '') <> 'true'
+        AND pr.created_at > now() - interval '7 days'
+      ORDER BY pr.created_at DESC
+      LIMIT $1`,
+    [limit]
+  );
+  const draft = draftFn || ((args) => require('./classifier').draftOnly(args));
+  let upgraded = 0;
+  for (const { id } of rows) {
+    const { rows: full } = await dbClient.query(
+      `SELECT pr.*, c.voice_prompt, c.booking_link, c.video_link, c.name AS client_name
+         FROM pending_replies pr
+         JOIN clients c ON c.id = pr.client_id
+        WHERE pr.id = $1`,
+      [id]
+    );
+    const row = full[0];
+    if (!row) continue;
+    const { draftSkipReason } = require('../utils/client-draft-policy');
+    if (draftSkipReason({ id: row.client_id, name: row.client_name }, row.lead_email)) {
+      await markAlertUpgradeAttempted(dbClient, row);
+      continue;
+    }
+    let text = '';
+    try {
+      text = await draft({
+        classification: row.classification,
+        threadContext: row.thread_context,
+        inboundMessage: row.inbound_message,
+        leadName: row.lead_name,
+        voicePrompt: row.voice_prompt,
+        bookingLink: row.booking_link,
+        platform: 'heyreach',
+        clientName: row.client_name,
+        clientId: row.client_id,
+        videoLink: row.video_link,
+        draftMode: 'bulk',
+        draftAllClassifications: true,
+      });
+    } catch (err) {
+      console.warn('[HeyReach] alert draft failed', { replyId: id, step: 'draft', err: err.message });
+      continue;
+    }
+    if (!String(text || '').trim()) {
+      await markAlertUpgradeAttempted(dbClient, row);
+      continue;
+    }
+    const result = await upgradeHeyreachAlertCard({
+      reply_id: id,
+      draft: text,
+      classification: row.classification,
+    }, { dbClient });
+    if (result.status === 200) {
+      upgraded += 1;
+    } else {
+      console.warn('[HeyReach] alert upgrade did not post a draft', {
+        replyId: id,
+        step: 'upgrade',
+        status: result.status,
+        error: result.body && result.body.error,
+      });
+      if (result.status === 409) await markAlertUpgradeAttempted(dbClient, row);
+    }
+  }
+  return { upgraded, checked: rows.length };
+}
+
 module.exports = {
   upgradeHeyreachAlertCard,
+  upgradeOpenHeyreachAlerts,
   UPGRADE_MARKER,
 };

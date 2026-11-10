@@ -21,7 +21,7 @@ const { recordSuppressedReply } = require('../services/suppressed-replies');
 const { classifyFromSmartlead, applySmartleadCategory } = require('../services/smartlead-category');
 const { resolveVerifiedSchedulingSlots } = require('../services/scheduling-slots');
 const { cancelForInboundReply } = require('../services/outbound-follow-up');
-const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyClientDraftPolicy, applyHeyreachDraftPolicy, draftSkipReason } = require('../utils/client-draft-policy');
 const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
@@ -1361,6 +1361,18 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
         // Skip slow Calendly/calendar network calls on the LinkedIn webhook path; include booking link guidance.
         const { promptBlock: schedulingPromptBlock } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
 
+        const { findSmartleadColdEmails, formatSmartleadHistoryForDraft } = require('../services/heyreach-smartlead-context');
+        const keyedClient = withSmartleadKey(client);
+        const smartleadLookup = keyedClient.smartlead_api_key
+          ? findSmartleadColdEmails({
+            apiKey: keyedClient.smartlead_api_key,
+            name: resolvedLeadName,
+            company: hr.company || payload.company_name || payload.company || null,
+            clientId,
+            query: (sql, params) => db.query(sql, params),
+          }).catch((err) => ({ status: 'error', error: err.message }))
+          : Promise.resolve(null);
+
         let result;
         try {
           result = await classifyAndDraft(
@@ -1378,6 +1390,8 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
               clientName: client.name,
               videoLink: client.video_link,
               draftMode: 'realtime',
+              deferDraft: true,
+              draftAllClassifications: true,
             },
           );
         } catch (err) {
@@ -1390,6 +1404,33 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
             proposed_time: null,
             reasoning: `Classifier failed: ${err.message}`,
           };
+        }
+
+        const smartleadFound = await smartleadLookup;
+        if (!draftSkipReason(client, null) && result) {
+          try {
+            result.draft = await draftOnly({
+              classification: result.classification,
+              threadContext: withKnownOutbound(threadContext, lastOutboundHr),
+              inboundMessage,
+              leadName: resolvedLeadName,
+              voicePrompt: client.voice_prompt,
+              bookingLink: client.booking_link,
+              schedulingPromptBlock,
+              digestTimezone: client.digest_timezone,
+              platform: 'heyreach',
+              clientId,
+              clientName: client.name,
+              videoLink: client.video_link,
+              draftMode: 'realtime',
+              draftAllClassifications: true,
+              smartleadHistory: formatSmartleadHistoryForDraft(smartleadFound),
+              replyMode: result.replyMode,
+              replyOrdinal: result.replyOrdinal,
+            });
+          } catch (err) {
+            console.error('[Webhook] HeyReach draft failed', { clientId, err: err.message });
+          }
         }
 
         let { classification, draft, proposed_time, reasoning } = result;
@@ -1430,9 +1471,9 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           return;
         }
 
-        // HeyReach often has no email at ingest; policy applies when email is known.
+        // Every LinkedIn reply is drafted. Parlay .io/.ai still stays alert-only.
         const policy = applyFactCheckToPolicy(
-          applyClientDraftPolicy(client, null, { classification, draft, reasoning }),
+          applyHeyreachDraftPolicy(client, null, { classification, draft, reasoning }),
           result.factCheck,
         );
         draft = policy.draft;
@@ -1491,6 +1532,7 @@ router.post('/webhook/heyreach/:clientId', async (req, res) => {
           linkedinUrl: resolvedLinkedinUrl || enrichment.linkedinUrl || undefined,
           leadWebsite: enrichment.website || hr.website || hr.company_website || undefined,
           leadCompany: hr.company || payload.company_name || payload.company || null,
+          smartleadFound,
           platform: 'heyreach',
           classification,
           draft,

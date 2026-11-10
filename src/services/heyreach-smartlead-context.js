@@ -103,16 +103,32 @@ function companyMatches(wanted, found) {
   return a === b || a.includes(b) || b.includes(a);
 }
 
+function lastNameMatches(leadLast, wantedLast) {
+  const lead = String(leadLast || '').trim().toLowerCase();
+  const want = String(wantedLast || '').trim().toLowerCase();
+  if (!lead || !want) return false;
+  if (lead === want) return true;
+  return lead.split(/\s+/).includes(want);
+}
+
 function nameMatches(lead, parts) {
   if (!lead || !parts) return false;
   const first = String(lead.first_name || lead.firstName || '').trim().toLowerCase();
   const last = String(lead.last_name || lead.lastName || '').trim().toLowerCase();
-  return first === parts.first.toLowerCase() && last === parts.last.toLowerCase();
+  return first === parts.first.toLowerCase() && lastNameMatches(last, parts.last);
 }
 
 function positiveInt(value) {
   const n = Number(String(value ?? '').trim());
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function formatSmartleadHistoryForDraft(result) {
+  const emails = result && result.status === 'match' && Array.isArray(result.emails) ? result.emails : [];
+  if (!emails.length) return '';
+  return emails.slice(0, 4).map((email) => (
+    `Campaign: ${email.campaignName || 'Unknown'}\nStep: ${email.seq}\nSent: ${formatSentDate(email.time)}\n${String(email.body || '').slice(0, 700)}`
+  )).join('\n\n');
 }
 
 function formatSentDate(raw) {
@@ -223,7 +239,7 @@ async function smartleadJson(apiKey, { method = 'GET', path, query = {}, body = 
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { json = null; }
   if (res.status === 429) noteContextBackoff(RATE_LIMIT_BACKOFF_MS);
-  return { status: res.status, ok: res.ok, json };
+  return { status: res.status, ok: res.ok, json, text: String(text || '').slice(0, 300) };
 }
 
 function rowsOf(json, keys) {
@@ -434,16 +450,34 @@ async function lookupByEmail(apiKey, email, http) {
 }
 
 async function searchCampaignByName(apiKey, campaignId, parts, http) {
+  // fieldSet is required on live campaigns. Without it, Smartlead takes the
+  // heavy multi-select path: a one-lead canary returns, a real campaign
+  // hangs or 500s ("Error fetching campaign leads with multi-select filters").
+  const path = `/campaigns/${campaignId}/leads/filter`;
   const res = await smartleadJson(apiKey, {
     method: 'POST',
-    path: `/campaigns/${campaignId}/leads/filter`,
-    body: { searchText: `${parts.first} ${parts.last}`, limit: 10 },
+    path,
+    body: {
+      searchText: `${parts.first} ${parts.last}`,
+      limit: 10,
+      fieldSet: 'drafted_table',
+    },
     gapMs: http.gapMs,
     fetchJson: http.fetchJson,
   });
-  if (res.status === 404 || res.status === 400) return { leads: [], error: false };
-  if (!res.ok) return { leads: [], error: true, status: res.status };
-  return { leads: filterLeads(res.json), error: false };
+  if (res.status === 404 || res.status === 400) return { leads: [], error: false, status: res.status, path };
+  if (!res.ok) {
+    const detail = String(res.text || res.json?.message || '').replace(/\s+/g, ' ').slice(0, 160);
+    console.warn('[HeyReach] Smartlead name search request failed', {
+      step: 'campaign_filter',
+      campaignId,
+      status: res.status,
+      path,
+      detail: detail || null,
+    });
+    return { leads: [], error: true, status: res.status, path, detail };
+  }
+  return { leads: filterLeads(res.json), error: false, status: res.status, path };
 }
 
 async function historiesFor(apiKey, leadId, campaigns, http) {
@@ -490,10 +524,12 @@ async function nameSearch(apiKey, { name, company, campaigns, http }) {
   const hits = [];
   let errors = 0;
   let okSearches = 0;
+  let firstFailure = null;
   for (const campaign of list) {
     const found = await searchCampaignByName(apiKey, campaign.id, parts, http);
     if (found.error) {
       errors += 1;
+      if (!firstFailure) firstFailure = found;
       continue;
     }
     okSearches += 1;
@@ -505,8 +541,12 @@ async function nameSearch(apiKey, { name, company, campaigns, http }) {
     }
   }
   if (!okSearches && errors) {
-    const err = new Error('Smartlead name search failed');
-    err.status = 502;
+    const status = firstFailure && firstFailure.status != null ? firstFailure.status : 'unknown';
+    const path = firstFailure && firstFailure.path ? firstFailure.path : 'campaign_filter';
+    const err = new Error(
+      `Smartlead name search failed (${errors} campaign${errors === 1 ? '' : 's'}, first status ${status} on ${path})`
+    );
+    err.status = Number(status) || 502;
     throw err;
   }
   const byLead = new Map();
@@ -777,6 +817,7 @@ async function postHeyreachSmartleadContext({
   name,
   company,
   query,
+  found = null,
   findEmails = findSmartleadColdEmails,
   postThread = defaultPostThread,
   gapMs,
@@ -787,18 +828,23 @@ async function postHeyreachSmartleadContext({
     }
     const q = query;
     if (!q) return { posted: false, reason: 'no_db' };
-    const apiKey = await clientSmartleadKey(q, clientId);
-    if (!apiKey) return { posted: false, reason: 'no_api_key' };
-    const found = await findEmails({
-      apiKey, email, name, company, clientId, query: q, gapMs,
-    });
-    if (!found || found.status === 'error') {
+    let resolved = found;
+    if (!resolved) {
+      const apiKey = await clientSmartleadKey(q, clientId);
+      if (!apiKey) return { posted: false, reason: 'no_api_key' };
+      resolved = await findEmails({
+        apiKey, email, name, company, clientId, query: q, gapMs,
+      });
+    }
+    if (!resolved || resolved.status === 'error') {
       console.warn('[HeyReach] Smartlead context lookup failed', {
-        replyId, error: found && found.error,
+        replyId,
+        step: 'lookup',
+        error: resolved && resolved.error,
       });
       return { posted: false, reason: 'lookup_failed' };
     }
-    const message = buildSmartleadThreadMessage(found);
+    const message = buildSmartleadThreadMessage(resolved);
     if (!message) return { posted: false, reason: 'no_message' };
     const claimed = await claimContextPost(q, replyId);
     if (!claimed) return { posted: false, reason: 'already_posted' };
@@ -811,7 +857,7 @@ async function postHeyreachSmartleadContext({
       });
       return { posted: false, reason: 'slack_failed' };
     }
-    return { posted: true, reason: found.status, matchedBy: found.matchedBy || null };
+    return { posted: true, reason: resolved.status, matchedBy: resolved.matchedBy || null };
   } catch (err) {
     console.warn('[HeyReach] Smartlead context failed', {
       replyId, err: err.message,
@@ -829,6 +875,8 @@ module.exports = {
   campaignsOwnedByClient,
   sentColdEmails,
   formatSentDate,
+  formatSmartleadHistoryForDraft,
+  lastNameMatches,
   companyMatches,
   resetSmartleadContextPace,
   noteContextBackoff,

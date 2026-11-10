@@ -81,11 +81,37 @@ function applyClientDraftPolicy(client, leadEmail, {
   };
 }
 
+/**
+ * HeyReach cards draft every classification so Approve / Edit / Reject are
+ * on the card. Parlay's .io / .ai exclusion still forces alert-only.
+ * Smartlead stays on the three positive classifications.
+ */
+function applyHeyreachDraftPolicy(client, leadEmail, {
+  classification,
+  draft = null,
+  reasoning = '',
+} = {}) {
+  const reason = draftSkipReason(client, leadEmail);
+  if (reason) {
+    return applyClientDraftPolicy(client, leadEmail, { classification, draft, reasoning });
+  }
+  const text = String(draft || '').trim();
+  return {
+    isDraft: true,
+    draft: text,
+    status: 'pending',
+    reasoning: reasoning || '',
+    skippedDraft: false,
+    skipReason: null,
+  };
+}
+
 module.exports = {
   isParlayClient,
   emailTld,
   draftSkipReason,
   applyClientDraftPolicy,
+  applyHeyreachDraftPolicy,
   PARLAY_CLIENT_IDS,
   PARLAY_DQ_TLDS,
 };

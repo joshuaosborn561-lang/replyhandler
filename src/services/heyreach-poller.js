@@ -3,10 +3,10 @@ const db = require('../db');
 const heyreach = require('./heyreach');
 const { postProspectSlackCard } = require('./slack-reply-post');
 const { recordSuppressedReply } = require('./suppressed-replies');
-const { classifyAndDraft } = require('./classifier');
+const { classifyAndDraft, draftOnly } = require('./classifier');
 const { resolveVerifiedSchedulingSlots } = require('./scheduling-slots');
 const { cancelForInboundReply } = require('./outbound-follow-up');
-const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyHeyreachDraftPolicy, draftSkipReason } = require('../utils/client-draft-policy');
 const { applyFactCheckToPolicy } = require('../utils/draft-fact-check');
 const { formatCampaignDisplay } = require('../utils/campaign-display');
 const {
@@ -446,6 +446,18 @@ async function processConversation(client, conv, options) {
     return { skipped: 'already_processed_enriched' };
   }
   const { promptBlock, slots } = await resolveVerifiedSchedulingSlots(client, { skipExternalFetch: true });
+  const { withSmartleadKey } = require('./campaign-routing');
+  const { findSmartleadColdEmails, formatSmartleadHistoryForDraft } = require('./heyreach-smartlead-context');
+  const keyedClient = withSmartleadKey(client);
+  const smartleadLookup = keyedClient.smartlead_api_key
+    ? findSmartleadColdEmails({
+      apiKey: keyedClient.smartlead_api_key,
+      name: leadName(conv),
+      company: conv.company_name || conv.company || conv.organization || null,
+      clientId: client.id,
+      query: (sql, params) => db.query(sql, params),
+    }).catch((err) => ({ status: 'error', error: err.message }))
+    : Promise.resolve(null);
   let result;
   try {
     result = await classifyAndDraft(
@@ -465,6 +477,8 @@ async function processConversation(client, conv, options) {
         // Poller = backfill/sweep. Never burn Anthropic here.
         draftMode: 'bulk',
         slots,
+        deferDraft: true,
+        draftAllClassifications: true,
       },
     );
   } catch (err) {
@@ -478,6 +492,33 @@ async function processConversation(client, conv, options) {
       proposed_time: null,
       reasoning: `Classifier failed: ${err.message}`,
     };
+  }
+  const smartleadFound = await smartleadLookup;
+  if (!draftSkipReason(client, null) && result) {
+    try {
+      result.draft = await draftOnly({
+        classification: result.classification,
+        threadContext,
+        inboundMessage: inbound.text,
+        leadName: leadName(conv),
+        voicePrompt: client.voice_prompt,
+        bookingLink: client.booking_link,
+        schedulingPromptBlock: promptBlock,
+        digestTimezone: client.digest_timezone,
+        platform: 'heyreach',
+        clientId: client.id,
+        clientName: client.name,
+        videoLink: client.video_link,
+        draftMode: 'bulk',
+        slots,
+        draftAllClassifications: true,
+        smartleadHistory: formatSmartleadHistoryForDraft(smartleadFound),
+        replyMode: result.replyMode,
+        replyOrdinal: result.replyOrdinal,
+      });
+    } catch (err) {
+      console.error('[HeyReachPoll] draft failed', { client: client.name, err: err.message });
+    }
   }
   let { classification, draft, proposed_time, reasoning } = result;
   const coldInbound = isColdInbound(conv, messages);
@@ -509,7 +550,7 @@ async function processConversation(client, conv, options) {
   }
 
   const policy = applyFactCheckToPolicy(
-    applyClientDraftPolicy(client, null, { classification, draft, reasoning }),
+    applyHeyreachDraftPolicy(client, null, { classification, draft, reasoning }),
     result.factCheck,
   );
   draft = policy.draft;
@@ -568,6 +609,7 @@ async function processConversation(client, conv, options) {
     campaignDisplay: campaignDisplay(conv, cid),
     lastOutboundMessage: lastOut || undefined,
     leadCompany: conv.company_name || conv.company || conv.organization || null,
+    smartleadFound,
     repliedAt: reply.created_at,
     leadData: conv,
   };
@@ -692,6 +734,15 @@ async function pollHeyReachReplies() {
     }));
   } catch (err) {
     console.error('[HeyReachPoll] Poll failed', { err: err.message, stack: err.stack });
+  }
+  try {
+    const { upgradeOpenHeyreachAlerts } = require('./heyreach-upgrade-alert-card');
+    const upgraded = await upgradeOpenHeyreachAlerts({ limit: 2 });
+    if (upgraded.checked) {
+      console.log('[HeyReachPoll] Alert cards upgraded to drafts', upgraded);
+    }
+  } catch (err) {
+    console.warn('[HeyReachPoll] Alert upgrade pass failed', { step: 'upgrade_open_alerts', err: err.message });
   } finally {
     running = false;
     console.log('[HeyReachPoll] Finished', { ms: Date.now() - started, ...totals, skipCounts });
