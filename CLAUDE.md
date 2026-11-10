@@ -401,6 +401,15 @@ Startup + weekday hourly cron (6am–8pm CT) fill empty / missing client
 ICPs; `needs_review` retries once a day. `POST /admin/clients/:id/rebuild-icp`
 (`force=true`) rebuilds one client. Counts only.
 
+`POST /admin/heyreach/upgrade-alert-card` `{reply_id, draft}` turns a posted
+HeyReach **alert_only** card into a normal approval card on the same row and
+the same Slack message (`chat.update` on the row's channel + ts; never a new
+post, never a new row, never a send). It looks up and stores missing
+conversation / LinkedIn account ids with the client's HeyReach key first, and
+changes nothing (409) if they cannot be found. `/admin/heyreach/approval-card`
+still refuses a row that already has a card; `/admin/post-approval-card` is the
+Smartlead email path, not this one.
+
 `GET /health` returns `gitSha` from `RAILWAY_GIT_COMMIT_SHA` — the fastest way
 to confirm what is actually deployed rather than assuming a push went live.
 

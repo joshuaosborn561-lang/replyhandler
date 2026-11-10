@@ -95,9 +95,15 @@ async function persistIds(dbClient, row, ids) {
 }
 
 /**
- * Fill conversationId + linkedInAccountId on a HeyReach draft before the
- * Slack card is posted. Lookup failure still posts the card; Approve stays off.
+ * Fill conversationId + linkedInAccountId on a HeyReach card before it is
+ * posted. Lookup failure still posts the card; Approve stays off.
  * Never logs the API key.
+ *
+ * Alert cards (isDraft false) resolve and store the ids too, so a backstop
+ * alert that is later upgraded to an approval card
+ * (POST /admin/heyreach/upgrade-alert-card) already has what Approve needs.
+ * An alert lookup uses strong keys only (conversation id, lead id, LinkedIn
+ * URL; no name search) and a short page budget. It never drafts or sends.
  */
 async function prepareHeyreachDraftCard({
   replyId,
@@ -138,7 +144,7 @@ async function prepareHeyreachDraftCard({
     || ids.linkedInAccountId == null
     || String(ids.linkedInAccountId).trim() === '';
 
-  if (isDraft && missing && !derived) {
+  if (missing && !derived) {
     try {
       const lookup = lookupSibling || ((r) => {
         const { lookupStoredHeyreachIdentifiers } = require('./reply-send');
@@ -157,7 +163,7 @@ async function prepareHeyreachDraftCard({
     || ids.linkedInAccountId == null
     || String(ids.linkedInAccountId).trim() === '';
 
-  if (isDraft && stillMissing && apiKey && !derived) {
+  if (stillMissing && apiKey && !derived) {
     try {
       const find = findConversation || ((key, args) => {
         const heyreach = require('./heyreach');
@@ -168,9 +174,9 @@ async function prepareHeyreachDraftCard({
         leadId: isDerivedId(row.lead_id) ? null : row.lead_id,
         linkedinUrl: ids.linkedinUrl,
         leadName: row.lead_name,
-        allowNameSearch: true,
-        maxPages: 15,
-        limit: 100,
+        allowNameSearch: Boolean(isDraft),
+        maxPages: isDraft ? 15 : 3,
+        limit: isDraft ? 100 : 50,
       });
       if (found) {
         const heyreach = require('./heyreach');
