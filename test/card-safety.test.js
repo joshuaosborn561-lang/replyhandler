@@ -616,7 +616,12 @@ describe('HeyReach Approve only when a send can succeed', () => {
   it('shows Approve when the ids and the key are present, and keeps a derived row limited', () => {
     const full = buttons({ ...base, replyId: 'real-1', leadId: 'lead-1' });
     assert.ok(full.includes('approve_reply'));
-    assert.ok(!full.includes('reply_on_linkedin'));
+    assert.ok(full.includes('reply_on_linkedin'));
+    const fullCard = slack.buildDraftApprovalCard({ ...base, replyId: 'real-1', leadId: 'lead-1' });
+    const fullLink = fullCard.blocks.flatMap((block) => block.elements || []).find((el) => el.action_id === 'reply_on_linkedin');
+    assert.equal(fullLink.url, 'https://app.heyreach.io/app/inbox/42/conv-1');
+    assert.equal(fullLink.text.text, 'Reply in HeyReach');
+    assert.doesNotMatch(fullLink.url, /linkedin\.com/);
     const stillDerived = buttons({
       ...base,
       replyId: 'hr-derived:later',
@@ -639,7 +644,9 @@ describe('HeyReach Approve only when a send can succeed', () => {
     const ids = actionIds(blocks);
     assert.deepEqual(ids, ['dq_prospect', 'meeting_booked', 'reply_on_linkedin']);
     const link = blocks[blocks.length - 1].elements.find((el) => el.action_id === 'reply_on_linkedin');
-    assert.equal(link.url, linkedin);
+    assert.equal(link.url, 'https://app.heyreach.io/app/inbox');
+    assert.equal(link.text.text, 'Reply in HeyReach');
+    assert.doesNotMatch(link.url, /linkedin\.com/);
     assert.ok(!ids.includes('approve_reply'));
   });
 

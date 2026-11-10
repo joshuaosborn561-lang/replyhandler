@@ -729,6 +729,8 @@ async function postProspectSlackCard({
   claimFn = null,
   dbClient = db,
   awaitLinkUpdate = false,
+  profileLookup = lookupPersonProfile,
+  smartleadContextFn = null,
 }) {
   if (replyId) {
     // Lazy require — reply-dedupe loads this file at the top level.
@@ -824,6 +826,7 @@ async function postProspectSlackCard({
       }
     }
 
+    const fromThread = require('./heyreach-inbox-url').heyreachIdsFromContext(threadContext);
     let payload = {
       ...enrichedCard,
       threadMessages: String(enrichedCard.classification || '').toUpperCase() === 'FOLLOW_UP'
@@ -837,8 +840,15 @@ async function postProspectSlackCard({
       leadId,
       heyreachCanSend: heyreachPrep ? heyreachPrep.canSend : undefined,
       linkedinReplyUrl: heyreachPrep?.linkedinUrl || enrichedCard.leadLinkedinUrl || enrichedCard.linkedinUrl || undefined,
-      conversationId: heyreachPrep?.conversationId || undefined,
-      linkedInAccountId: heyreachPrep?.linkedInAccountId || undefined,
+      conversationId: heyreachPrep?.conversationId
+        || enrichedCard.conversationId
+        || fromThread.conversationId
+        || undefined,
+      linkedInAccountId: heyreachPrep?.linkedInAccountId
+        ?? enrichedCard.linkedInAccountId
+        ?? enrichedCard.linkedinAccountId
+        ?? fromThread.linkedInAccountId
+        ?? undefined,
       hasHeyreachApiKey: heyreachPrep ? heyreachPrep.hasApiKey : undefined,
     };
     payload = await attachDraftCc(dbClient, { replyId, platform, isDraft, payload });
@@ -887,6 +897,7 @@ async function postProspectSlackCard({
           channelId,
           token,
           query: (sql, params) => dbClient.query(sql, params),
+          getPermalink: slackApi.getPermalink,
         });
       } catch (err) {
         console.warn('[Slack] Could not supersede older HeyReach cards', { replyId, err: err.message });
@@ -912,9 +923,33 @@ async function postProspectSlackCard({
       campaignId,
       leadId,
       evaluateIcp,
+      profileLookup,
     }).catch((err) => {
       console.warn('[Slack] Late card-link update failed', { replyId, err: err.message });
       return null;
+    }).then(async (links) => {
+      // Card is already in Slack. Smartlead lookup must not delay or fail it.
+      if (String(platform || '').toLowerCase() !== 'heyreach' || !postedTs) return links;
+      const run = smartleadContextFn || ((args) => {
+        const { postHeyreachSmartleadContext } = require('./heyreach-smartlead-context');
+        return postHeyreachSmartleadContext(args);
+      });
+      try {
+        await run({
+          replyId,
+          clientId,
+          token,
+          channelId,
+          threadTs: postedTs,
+          email: links?.email || payload.leadEmail || card?.leadEmail || null,
+          name: links?.fullName || payload.leadFullName || payload.leadName || card?.leadName || null,
+          company: payload.leadCompany || card?.leadCompany || null,
+          query: (sql, params) => dbClient.query(sql, params),
+        });
+      } catch (err) {
+        console.warn('[Slack] Smartlead context thread failed', { replyId, err: err.message });
+      }
+      return links;
     });
 
     if (awaitLinkUpdate) await late;

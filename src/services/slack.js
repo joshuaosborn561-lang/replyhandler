@@ -1,5 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const { heyreachCanApprove } = require('./heyreach-card-gate');
+const { heyreachConversationUrl, isHeyreachAppUrl } = require('./heyreach-inbox-url');
 const { cleanInboundReply, stripOutlookCss } = require('../utils/smartlead-webhook-helpers');
 const { referralCcButtonText } = require('../utils/referred-contact');
 const { decodeHtmlEntities: decodeAllHtmlEntities } = require('../utils/html-entities');
@@ -766,19 +767,36 @@ function draftApprovalActionsBlock(replyId) {
   };
 }
 
-function linkedinReplyButton(url) {
-  const href = normalizeLinkedinUrl(url);
-  if (!href) return null;
+function resolveHeyreachReplyUrl(opts = {}) {
+  const explicit = String(opts.heyreachReplyUrl || opts.linkedinReplyUrl || '').trim();
+  if (isHeyreachAppUrl(explicit)) return explicit;
+  if (String(opts.platform || '').toLowerCase() !== 'heyreach') return '';
+  return heyreachConversationUrl({
+    conversationId: opts.conversationId,
+    linkedInAccountId: opts.linkedInAccountId ?? opts.linkedinAccountId,
+  });
+}
+
+/** Opens the HeyReach Unibox conversation. The LinkedIn profile stays on the Lead line. */
+function heyreachReplyButton(url) {
+  const href = String(url || '').trim();
+  if (!isHeyreachAppUrl(href)) return null;
   return {
     type: 'button',
-    text: { type: 'plain_text', text: 'Reply on LinkedIn' },
+    text: { type: 'plain_text', text: 'Reply in HeyReach' },
     url: href,
     action_id: 'reply_on_linkedin',
   };
 }
 
-/** DQ, Meeting booked, and a LinkedIn link. No Approve, Edit, or Reject. */
-function heyreachLimitedActionsBlock(replyId, linkedinUrl) {
+function heyreachReplyActionsBlock(url) {
+  const link = heyreachReplyButton(url);
+  if (!link) return null;
+  return { type: 'actions', elements: [link] };
+}
+
+/** DQ, Meeting booked, and a HeyReach inbox link. No Approve, Edit, or Reject. */
+function heyreachLimitedActionsBlock(replyId, replyUrl) {
   const elements = [
     {
       type: 'button',
@@ -793,7 +811,7 @@ function heyreachLimitedActionsBlock(replyId, linkedinUrl) {
       value: String(replyId),
     },
   ];
-  const link = linkedinReplyButton(linkedinUrl);
+  const link = heyreachReplyButton(replyUrl);
   if (link) elements.push(link);
   return { type: 'actions', elements };
 }
@@ -815,7 +833,7 @@ function approvalActionsForCard(opts = {}) {
       hasApiKey: Boolean(opts.hasHeyreachApiKey || opts.heyreachApiKey),
     });
   if (canSend) return null;
-  return heyreachLimitedActionsBlock(opts.replyId, opts.linkedinReplyUrl || opts.leadLinkedinUrl);
+  return heyreachLimitedActionsBlock(opts.replyId, resolveHeyreachReplyUrl(opts));
 }
 
 function replaceActionsWithStatus(blocks, statusText) {
@@ -1340,13 +1358,21 @@ function buildDraftApprovalCard({
     const layout = require('../utils/followup-card-layout');
     const fu = followupContext || {};
     const seq = fu.sequence || {};
+    const heyreachReplyUrl = resolveHeyreachReplyUrl({
+      platform, conversationId, linkedInAccountId, linkedinAccountId, linkedinReplyUrl,
+    });
     const limited = approvalActionsForCard({
       replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
-      heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+      heyreachCanSend, linkedinReplyUrl, heyreachReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
     });
     const extra = [];
     if (limited) {
       extra.push(limited);
+    } else {
+      const heyreachLink = heyreachReplyActionsBlock(heyreachReplyUrl);
+      if (heyreachLink) extra.push(heyreachLink);
+    }
+    if (limited) {
       extra.push({
         type: 'actions',
         elements: [{
@@ -1450,10 +1476,14 @@ function buildDraftApprovalCard({
       const referred = referredContactSection(referredContacts);
       if (referred) tail.push(referred);
     }
-    tail.push(approvalActionsForCard({
+    const heyreachReplyUrl = resolveHeyreachReplyUrl({
+      platform, conversationId, linkedInAccountId, linkedinAccountId, linkedinReplyUrl,
+    });
+    const limitedActions = approvalActionsForCard({
       replyId, platform, leadId, conversationId, linkedInAccountId, linkedinAccountId,
-      heyreachCanSend, linkedinReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
-    }) || draftApprovalActionsBlock(replyId));
+      heyreachCanSend, linkedinReplyUrl, heyreachReplyUrl, leadLinkedinUrl, hasHeyreachApiKey, heyreachApiKey,
+    });
+    tail.push(limitedActions || draftApprovalActionsBlock(replyId));
     if (String(platform || '').toLowerCase() === 'smartlead') {
       const referralBtn = referralCcActionsBlock(replyId, referredContacts);
       if (referralBtn) tail.push(referralBtn);
@@ -1462,6 +1492,10 @@ function buildDraftApprovalCard({
       tail.push(sendCcClientActionsBlock(replyId));
     }
     if (backAndForth) tail.push(viewThreadActionsBlock(replyId));
+    if (!limitedActions) {
+      const heyreachLink = heyreachReplyActionsBlock(heyreachReplyUrl);
+      if (heyreachLink) tail.push(heyreachLink);
+    }
     const fitted = fitCardBlocks(head, body, tail);
     blocks = fitted.blocks;
     overflowBlocks = fitted.overflowBlocks;
@@ -1589,7 +1623,7 @@ function buildAlertCard({
   leadLinkedinUrl, leadWebsite, enrichmentReceipt, leadIcpVerdict,
   platform, classification, inboundMessage, reasoning,
   campaignDisplay, lastOutboundMessage, contextLabel, inThread,
-  linkedinReplyUrl,
+  linkedinReplyUrl, conversationId, linkedInAccountId, linkedinAccountId,
 }) {
   const campLine = (campaignDisplay && String(campaignDisplay).trim()) ? String(campaignDisplay).trim() : '—';
   const headerText = inThread
@@ -1651,7 +1685,9 @@ function buildAlertCard({
       ],
     });
     if (String(platform || '').toLowerCase() === 'heyreach') {
-      const link = linkedinReplyButton(linkedinReplyUrl || leadLinkedinUrl);
+      const link = heyreachReplyButton(resolveHeyreachReplyUrl({
+        platform, conversationId, linkedInAccountId, linkedinAccountId, linkedinReplyUrl,
+      }));
       if (link) tail[tail.length - 1].elements.push(link);
     }
   }
@@ -2129,7 +2165,9 @@ module.exports = {
   draftApprovalActionsBlock,
   approvalActionsForCard,
   heyreachLimitedActionsBlock,
-  linkedinReplyButton,
+  heyreachReplyButton,
+  linkedinReplyButton: heyreachReplyButton,
+  resolveHeyreachReplyUrl,
   replaceActionsWithStatus,
   updateMessageKeepingBlocks,
   openEditReplyModal,

@@ -2,7 +2,7 @@
  * HeyReach draft cards only show Approve when we can actually send.
  * A derived thread key, a missing conversation id, a missing LinkedIn
  * account id, or a client with no HeyReach API key means the card offers
- * DQ, Meeting booked, and a Reply on LinkedIn link instead.
+ * DQ, Meeting booked, and a Reply in HeyReach link instead.
  */
 
 const DERIVED_ID = /^hr-derived:/i;
