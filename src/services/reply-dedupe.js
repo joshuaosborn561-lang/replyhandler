@@ -1,6 +1,6 @@
 const db = require('../db');
 const { postProspectSlackCard } = require('./slack-reply-post');
-const { applyClientDraftPolicy } = require('../utils/client-draft-policy');
+const { applyClientDraftPolicy, applyHeyreachDraftPolicy } = require('../utils/client-draft-policy');
 const { formatCampaignDisplay, campaignNameFromReply } = require('../utils/campaign-display');
 const {
   decodeHtmlEntities,
@@ -1022,11 +1022,38 @@ async function repostReplyRowToSlack(client, reply, { reasoningExtra } = {}) {
     prospectName: reply.lead_name,
     ourEmails: ourIdentitiesFromThread(threadForReferral),
   });
-  const policy = applyClientDraftPolicy(client, reply.lead_email, {
+  const policyFor = String(reply.platform || '').toLowerCase() === 'heyreach'
+    ? applyHeyreachDraftPolicy
+    : applyClientDraftPolicy;
+  let policy = policyFor(client, reply.lead_email, {
     classification: reply.classification,
     draft: reply.draft_reply,
     reasoning: reasoningExtra || `Recovered unposted Slack card for ${reply.lead_name}.`,
   });
+  if (policy.isDraft && !String(policy.draft || '').trim() && String(reply.platform || '').toLowerCase() === 'heyreach') {
+    try {
+      const { draftOnly } = require('./classifier');
+      policy = {
+        ...policy,
+        draft: await draftOnly({
+          classification: reply.classification,
+          threadContext: reply.thread_context,
+          inboundMessage: reply.inbound_message,
+          leadName: reply.lead_name,
+          voicePrompt: client.voice_prompt,
+          bookingLink: client.booking_link,
+          platform: 'heyreach',
+          clientName: client.name,
+          clientId: client.id,
+          videoLink: client.video_link,
+          draftMode: 'bulk',
+          draftAllClassifications: true,
+        }),
+      };
+    } catch (err) {
+      console.warn('[Dedupe] HeyReach recovery draft failed', { replyId: reply.id, step: 'draft', err: err.message });
+    }
+  }
   if (policy.skippedDraft && reply.draft_reply) {
     await db.query(
       `UPDATE pending_replies

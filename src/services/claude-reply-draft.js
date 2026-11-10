@@ -221,6 +221,7 @@ async function generateClaudeReply({
   learnedVoiceBlock = '',
   factCheckRetryClaims = null,
   referredContacts = null,
+  smartleadHistory = '',
 }) {
   if (!isConfigured()) throw new Error('Claude retrieval drafting is not configured');
   if (String(draftMode || '').toLowerCase() === 'bulk') {
@@ -334,6 +335,9 @@ async function generateClaudeReply({
     '</similar_manual_replies>',
     '',
     require('../utils/referred-contact').referralDraftNote({ leadName, contacts: referredContacts }),
+    String(smartleadHistory || '').trim()
+      ? `Cold emails already sent to this person (context only, do not paste):\n${String(smartleadHistory).trim()}`
+      : null,
     'Write the reply now. Acknowledge their latest point before any CTA.',
     factCheckRetryClaims && factCheckRetryClaims.length
       ? `\n${require('../utils/draft-fact-check').factCheckRetryHint(factCheckRetryClaims)}`

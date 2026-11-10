@@ -942,8 +942,11 @@ async function draftOnly({
   slots = null,
   referredContacts = null,
   videoLink = null,
+  draftAllClassifications = false,
+  smartleadHistory = '',
 }) {
-  if (!assertDraftableClassification(classification)) {
+  const positive = assertDraftableClassification(classification);
+  if (!positive && !draftAllClassifications) {
     console.warn('[Classifier] Refusing draft for non-positive classification', {
       classification, leadName, draftMode,
     });
@@ -983,9 +986,11 @@ async function draftOnly({
   const { prefersInPersonMeeting, prefersCallbackCall, shouldIncludeBookingLink } = require('../utils/meeting-modality');
   const inPerson = prefersInPersonMeeting(voicePrompt);
   const callback = prefersCallbackCall(voicePrompt, clientName);
-  const includeBookingLink = typeof includeBookingLinkOverride === 'boolean'
-    ? includeBookingLinkOverride
-    : shouldIncludeBookingLink(voicePrompt, clientName);
+  const includeBookingLink = !positive
+    ? false
+    : (typeof includeBookingLinkOverride === 'boolean'
+      ? includeBookingLinkOverride
+      : shouldIncludeBookingLink(voicePrompt, clientName));
 
   // Weekly-learned voice (global + this client). Best-effort; empty when the
   // Friday job has not run yet or the table is not migrated.
@@ -1020,7 +1025,12 @@ async function draftOnly({
 
   const handoffNote = referralDraftNote({ leadName, contacts: referredContacts });
 
-  const modeNote = callback
+  const coldEmailNote = String(smartleadHistory || '').trim()
+    ? `COLD EMAILS ALREADY SENT TO THIS PERSON (context only — do not paste them, do not invent beyond them):\n${String(smartleadHistory).trim()}`
+    : '';
+  const modeNote = !positive
+    ? `${mode} MODE: This LinkedIn reply is not a clear yes. Acknowledge what they said in one or two short sentences. Do not push a meeting unless they asked. No booking link.`
+    : callback
     ? `${mode} MODE: Acknowledge their latest point first, then ask what time works best. Tyler will call from 218-469-3457. No booking URL or two calendar slots.`
     : inPerson
     ? `${mode} MODE: Acknowledge their latest point first, then offer to stop by in person. No Zoom/phone/CEO call/booking URL.`
@@ -1034,6 +1044,7 @@ async function draftOnly({
     `${proposedTimesNote ? `${proposedTimesNote}\n\n` : ''}` +
     `${timeBlock}\n\n` +
     `${modeNote}\n\n` +
+    (coldEmailNote ? `${coldEmailNote}\n\n` : '') +
     (handoffNote ? `${handoffNote}\n\n` : '') +
     `Write the reply now. Acknowledge what they said before any CTA. Finish every sentence.` +
     (factCheckRetryClaims && factCheckRetryClaims.length
@@ -1116,6 +1127,7 @@ async function draftOnly({
         learnedVoiceBlock,
         factCheckRetryClaims,
         referredContacts,
+        smartleadHistory,
       });
       const draft = finalizeDraft(result.text, {
         booking, includeBookingLink, voicePrompt, leadName, clientName,
@@ -1167,6 +1179,8 @@ async function classifyAndDraft(
     deferDraft = false,
     slots = null,
     slotLabels = null,
+    draftAllClassifications = false,
+    smartleadHistory = '',
   } = {},
 ) {
   // Deterministic pre-classification gates — kill drafts that should not exist.
@@ -1208,7 +1222,7 @@ async function classifyAndDraft(
     clientId, platform, leadId, leadEmail,
   });
 
-  const needsDraft = assertDraftableClassification(classification);
+  const needsDraft = draftAllClassifications || assertDraftableClassification(classification);
   const { shouldIncludeBookingLink } = require('../utils/meeting-modality');
   const includeBookingLink = needsDraft && shouldIncludeBookingLink(voicePrompt, clientName);
 
@@ -1250,6 +1264,8 @@ async function classifyAndDraft(
       slots,
       slotLabels,
       videoLink,
+      draftAllClassifications,
+      smartleadHistory,
     })
     : null;
 
@@ -1269,6 +1285,7 @@ async function classifyAndDraft(
         name: clientName,
         video_link: videoLink,
       }),
+      extraSource: smartleadHistory,
     });
     factCheck = await enforceDraftGrounding({
       draft,
@@ -1293,6 +1310,8 @@ async function classifyAndDraft(
         slots,
         slotLabels,
         videoLink,
+        draftAllClassifications,
+        smartleadHistory,
       }),
     });
     draft = factCheck.text;

@@ -12,9 +12,11 @@ const {
   noteContextBackoff,
   contextPaceDelayMs,
   resetSmartleadContextPace,
+  lastNameMatches,
   NO_MATCH_LINE,
   NO_SENT_LINE,
 } = require('../src/services/heyreach-smartlead-context');
+const { applyHeyreachDraftPolicy } = require('../src/utils/client-draft-policy');
 const { buildDraftApprovalCard, buildAlertCard } = require('../src/services/slack');
 const { postProspectSlackCard } = require('../src/services/slack-reply-post');
 
@@ -214,6 +216,7 @@ test('name plus company is the fallback and a company miss is no match', async (
     if (req.path === '/leads/') return { status: 200, ok: true, json: {} };
     if (req.path === '/campaigns/77/leads/filter') {
       assert.equal(req.body.searchText, 'Pat Riley');
+      assert.equal(req.body.fieldSet, 'drafted_table');
       return {
         status: 200,
         ok: true,
@@ -565,6 +568,46 @@ test('an email hit in another client campaign is excluded', async () => {
   assert.equal(found.matchedBy, 'email');
   assert.equal(calls.includes('/campaigns/999/leads/55501/message-history'), false);
   assert.equal(found.emails[0].campaignName, 'Ciotola | Owners');
+});
+
+test('a failed name search reports the HTTP status', async () => {
+  const found = await findSmartleadColdEmails({
+    apiKey: 'test-key',
+    name: 'Pat Riley',
+    company: 'Acme',
+    gapMs: 0,
+    ownedCampaigns: [{ id: 5, name: 'Ciotola | Owners' }, { id: 6, name: 'Ciotola | Two' }],
+    fetchJson: async () => ({ status: 500, ok: false, json: { message: 'Error fetching campaign leads with multi-select filters' }, text: 'Error fetching campaign leads with multi-select filters' }),
+  });
+  assert.equal(found.status, 'error');
+  assert.match(found.error, /status 500/);
+  assert.match(found.error, /\/campaigns\/5\/leads\/filter/);
+});
+
+test('a middle name still matches the last name', () => {
+  assert.equal(lastNameMatches('Faye Allred', 'Allred'), true);
+  assert.equal(lastNameMatches('Allred', 'Allred'), true);
+  assert.equal(lastNameMatches('Smithson', 'Smith'), false);
+});
+
+test('HeyReach drafts every reply except Parlay .io and .ai', () => {
+  const other = applyHeyreachDraftPolicy(
+    { id: 'client-1', name: 'Ciotola' },
+    null,
+    { classification: 'OTHER', draft: 'Thanks for connecting.', reasoning: 'neutral' },
+  );
+  assert.equal(other.isDraft, true);
+  assert.equal(other.status, 'pending');
+  assert.equal(other.draft, 'Thanks for connecting.');
+
+  const parlay = applyHeyreachDraftPolicy(
+    { id: '9760132c-1dd3-4e97-8f29-c5d4d01f5054', name: 'Parlay Tech' },
+    'ada@startup.io',
+    { classification: 'INTERESTED', draft: 'Let us talk.', reasoning: 'yes' },
+  );
+  assert.equal(parlay.isDraft, false);
+  assert.equal(parlay.status, 'alert_only');
+  assert.equal(parlay.draft, null);
 });
 
 test('a 429 backs off this path only', () => {
