@@ -8,9 +8,12 @@ const {
   findSmartleadColdEmails,
   buildSmartleadThreadMessage,
   postHeyreachSmartleadContext,
+  campaignsOwnedByClient,
+  noteContextBackoff,
+  contextPaceDelayMs,
+  resetSmartleadContextPace,
   NO_MATCH_LINE,
   NO_SENT_LINE,
-  resetSmartleadContextPace,
 } = require('../src/services/heyreach-smartlead-context');
 const { buildDraftApprovalCard, buildAlertCard } = require('../src/services/slack');
 const { postProspectSlackCard } = require('../src/services/slack-reply-post');
@@ -172,7 +175,7 @@ test('email lookup uses GET /leads and message-history, and ignores replies', as
     name: 'Pat Riley',
     company: 'Acme Mechanical',
     gapMs: 0,
-    listCampaignIds: async () => { throw new Error('name search must not list campaigns after an email hit'); },
+    ownedCampaigns: [{ id: 321, name: 'Acme | Owners' }],
     fetchJson: async (req) => {
       calls.push(req);
       if (req.path === '/leads/') {
@@ -246,9 +249,8 @@ test('name plus company is the fallback and a company miss is no match', async (
     email: null,
     name: 'Pat Riley',
     company: 'Acme Mechanical',
-    campaignIds: ['77'],
     gapMs: 0,
-    listCampaignIds: null,
+    ownedCampaigns: [{ id: 77, name: 'Acme | Owners' }],
     fetchJson,
   });
   assert.equal(found.status, 'match');
@@ -261,9 +263,8 @@ test('name plus company is the fallback and a company miss is no match', async (
     apiKey: 'test-key',
     name: 'Pat Riley',
     company: 'No Such Firm',
-    campaignIds: ['77'],
     gapMs: 0,
-    listCampaignIds: null,
+    ownedCampaigns: [{ id: 77, name: 'Acme | Owners' }],
     fetchJson: async (req) => {
       if (req.path.endsWith('/filter')) {
         return {
@@ -287,7 +288,7 @@ test('a Smartlead failure is not reported as no match and does not post', async 
     apiKey: 'test-key',
     email: 'pat@acme.com',
     gapMs: 0,
-    listCampaignIds: null,
+    ownedCampaigns: [{ id: 1, name: 'Acme | Owners' }],
     fetchJson: async () => ({ status: 429, ok: false, json: null }),
   });
   assert.equal(found.status, 'error');
@@ -417,6 +418,162 @@ test('the card is posted before the Smartlead lookup, and a lookup throw does no
   }
   assert.equal(contextCalls, 1);
   release();
+});
+
+test('ownership keeps every campaign for this client, including ones we have not stored', () => {
+  const ciotola = { id: 'client-ciotola', name: 'Ciotola' };
+  const power = { id: 'client-power', name: 'PowerGRYD' };
+  const sales = { id: 'client-sales', name: 'SalesGlider' };
+  const clients = [ciotola, power, sales];
+  const smartleadClients = [
+    { id: 345263, name: 'SalesGlider', logo: 'SalesGlider', uuid: 'not-ours' },
+    { id: 592842, name: 'PowerGryd', logo: 'PowerGRYD', uuid: 'not-ours-2' },
+  ];
+  const smartleadCampaigns = [
+    { id: 1, name: 'Ciotola | East Village Church', client_id: 345263 },
+    { id: 2, name: 'MSP Owners 36 to 100', client_id: 592842 },
+    { id: 3, name: 'Peterson | Roofers', client_id: 345263 },
+    ...Array.from({ length: 13 }, (_, i) => ({
+      id: 100 + i,
+      name: `Ciotola | Lane ${i + 1}`,
+      client_id: 345263,
+    })),
+  ];
+  const owned = campaignsOwnedByClient({
+    replyClient: ciotola,
+    clients,
+    routes: [],
+    storedCampaignIds: ['1'],
+    smartleadCampaigns,
+    smartleadClients,
+  });
+  const ids = owned.map((c) => c.id).sort((a, b) => a - b);
+  assert.equal(ids.includes(1), true);
+  assert.equal(ids.includes(2), false, 'PowerGRYD client_id is not Ciotola');
+  assert.equal(ids.includes(3), false, 'another client title is excluded');
+  assert.equal(ids.filter((id) => id >= 100).length, 13);
+  assert.ok(ids.length > 12);
+  const outside = owned.find((c) => c.id === 100);
+  assert.equal(outside.via, 'title');
+  assert.equal(owned.find((c) => c.id === 1).via, 'title');
+
+  const powerOwned = campaignsOwnedByClient({
+    replyClient: power,
+    clients,
+    storedCampaignIds: [],
+    smartleadCampaigns,
+    smartleadClients,
+  });
+  assert.deepEqual(powerOwned.map((c) => c.id), [2]);
+  assert.equal(powerOwned[0].via, 'smartlead_client');
+
+  const routed = campaignsOwnedByClient({
+    replyClient: ciotola,
+    clients,
+    routes: [{ campaign_id: '50', client_id: 'client-ciotola' }],
+    storedCampaignIds: [],
+    smartleadCampaigns: [],
+    smartleadClients: [],
+  });
+  assert.deepEqual(routed.map((c) => c.id), [50]);
+
+  const tagged = campaignsOwnedByClient({
+    replyClient: ciotola,
+    clients,
+    smartleadCampaigns: [{ id: 9, name: 'Other | Roofers', tags: [{ name: 'sg-owner:ciotola' }] }],
+    smartleadClients,
+  });
+  assert.equal(tagged[0].via, 'tag');
+  assert.equal(tagged[0].id, 9);
+});
+
+test('name search covers every owned campaign past the old cap of 12', async () => {
+  const calls = [];
+  const owned = Array.from({ length: 13 }, (_, i) => ({
+    id: 200 + i,
+    name: `Ciotola | Lane ${i + 1}`,
+  }));
+  const found = await findSmartleadColdEmails({
+    apiKey: 'test-key',
+    name: 'Pat Riley',
+    company: 'Acme Mechanical',
+    gapMs: 0,
+    ownedCampaigns: owned,
+    fetchJson: async (req) => {
+      calls.push(req.path);
+      if (String(req.path).endsWith('/filter')) {
+        if (req.path === '/campaigns/212/leads/filter') {
+          return {
+            status: 200,
+            ok: true,
+            json: {
+              leads: [{
+                email_lead: {
+                  id: 10, first_name: 'Pat', last_name: 'Riley', company_name: 'Acme Mechanical',
+                },
+              }],
+            },
+          };
+        }
+        return { status: 200, ok: true, json: { leads: [] } };
+      }
+      if (req.path === '/campaigns/212/leads/10/message-history') {
+        return { status: 200, ok: true, json: sentHistory() };
+      }
+      throw new Error(req.path);
+    },
+  });
+  const filters = calls.filter((p) => String(p).endsWith('/filter'));
+  assert.equal(filters.length, 13);
+  assert.equal(found.status, 'match');
+  assert.equal(found.ownedCount, 13);
+  assert.equal(found.emails[0].campaignName, 'Ciotola | Lane 13');
+});
+
+test('an email hit in another client campaign is excluded', async () => {
+  const calls = [];
+  const found = await findSmartleadColdEmails({
+    apiKey: 'test-key',
+    email: 'pat@acme.com',
+    name: 'Pat Riley',
+    company: 'Acme Mechanical',
+    gapMs: 0,
+    ownedCampaigns: [{ id: 321, name: 'Ciotola | Owners' }],
+    fetchJson: async (req) => {
+      calls.push(req.path);
+      if (req.path === '/leads/') {
+        return {
+          status: 200,
+          ok: true,
+          json: {
+            id: 55501,
+            first_name: 'Pat',
+            last_name: 'Riley',
+            email: 'pat@acme.com',
+            lead_campaign_data: [
+              { campaign_id: 321, campaign_name: 'Ciotola | Owners' },
+              { campaign_id: 999, campaign_name: 'Peterson | Roofers' },
+            ],
+          },
+        };
+      }
+      assert.equal(req.path, '/campaigns/321/leads/55501/message-history');
+      return { status: 200, ok: true, json: sentHistory() };
+    },
+  });
+  assert.equal(found.status, 'match');
+  assert.equal(found.matchedBy, 'email');
+  assert.equal(calls.includes('/campaigns/999/leads/55501/message-history'), false);
+  assert.equal(found.emails[0].campaignName, 'Ciotola | Owners');
+});
+
+test('a 429 backs off this path only', () => {
+  resetSmartleadContextPace();
+  noteContextBackoff(5000);
+  assert.ok(contextPaceDelayMs() >= 4000);
+  assert.ok(contextPaceDelayMs() <= 5000);
+  resetSmartleadContextPace();
+  assert.equal(contextPaceDelayMs(), 0);
 });
 
 test('writes the example card and thread payloads', () => {
