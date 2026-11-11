@@ -431,7 +431,7 @@ function assembleBriefFacts(row, { priorNoShows = null } = {}) {
 }
 
 function smartleadKey(env) {
-  return String(env.SMARTLEAD_API_KEY || env.SMARTLEAD_MASTER_API_KEY || '').trim();
+  return require('./campaign-routing').masterKey(env);
 }
 
 function heyreachKey(env) {

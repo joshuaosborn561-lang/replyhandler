@@ -5,13 +5,18 @@
  *   1. Smartlead tag `sg-owner:<slug>` (slug matches topup.client_map.client_tag)
  *   2. smartlead_campaign_routes (campaign_id → client uuid)
  *   3. Campaign-title heuristic (leading "Client | …" segment, same aliases as booking)
- *   4. On a per-client inbox, the client whose key fetched the row.
- *      On the agency inbox, the single client that still stores that master key,
- *      otherwise no client — a reply is not posted to a guessed Slack channel.
+ *   4. On a webhook URL, the client the URL names. On the agency inbox, the
+ *      single client that still stores the agency key, else the client named
+ *      by SMARTLEAD_MASTER_OWNER_SLUG, otherwise no client — a reply is not
+ *      posted to a guessed Slack channel. (Per-client inboxes are scanned only
+ *      when no agency key is configured.)
  *
- * Tags win over routes and titles. A resolved tag or route uses the env agency
- * key (SMARTLEAD_MASTER_API_KEY, else SMARTLEAD_API_KEY) for later Smartlead
- * calls. Stored clients.smartlead_api_key values are never updated here.
+ * Tags win over routes and titles. Every Smartlead call uses the env agency
+ * key (SMARTLEAD_MASTER_API_KEY, else SMARTLEAD_API_KEY) whenever it is set,
+ * whatever clients.smartlead_api_key holds (Josh, Nov 11 2026: per-client keys
+ * are being deleted and may be revoked before the rows are cleared). A stored
+ * key is only a fallback when no agency key is configured. Stored values are
+ * never updated here.
  *
  * Mailbox isolation (Ciotola / JEREMY-CIOTOLA allowlists and prefixes) is not
  * part of owner tags and is not changed by this module.
@@ -20,9 +25,7 @@ const db = require('../db');
 const { CLIENT_SLUG_ALIASES, aliasSlug } = require('./booking-bridge');
 
 const TTL_MS = 60 * 1000;
-const OWNER_CACHE_MS = 10 * 60 * 1000;
 let cache = { at: 0, map: null };
-const ownerCache = new Map();
 
 /** Slugs Deliverability writes that booking aliases name differently, plus clients with no booking alias yet. */
 const EXTRA_OWNER_SLUGS = {
@@ -32,6 +35,8 @@ const EXTRA_OWNER_SLUGS = {
   ciotola: ['Ciotola', 'Jeremy Ciotola'],
   nexus: ['Nexus'],
   virtual_pulsar: ['Virtual Pulsar'],
+  // Client row is "TechEvolution"; Deliverability tags `sg-owner:techevo`.
+  techevo: ['TechEvolution', 'Tech Evolution', 'TechEvo'],
 };
 
 const TITLE_SEGMENT_SKIP = new Set([
@@ -42,7 +47,6 @@ const NAME_SUFFIXES = new Set(['group', 'inc', 'llc', 'co', 'company', 'energygr
 
 function resetCampaignRouteCache() {
   cache = { at: 0, map: null };
-  ownerCache.clear();
 }
 
 function normSlug(value) {
@@ -165,17 +169,6 @@ function ownerSlugsFromTags(tags) {
   return [...new Set(slugs)];
 }
 
-function rememberOwner(campaignId, via, clientId) {
-  if (campaignId == null || campaignId === '' || !via) return;
-  ownerCache.set(String(campaignId), { at: Date.now(), via, clientId: clientId || null });
-}
-
-function cachedOwner(campaignId) {
-  const hit = ownerCache.get(String(campaignId));
-  if (!hit || Date.now() - hit.at > OWNER_CACHE_MS) return null;
-  return hit;
-}
-
 async function loadRoutes(q) {
   if (cache.map && Date.now() - cache.at < TTL_MS) return cache.map;
   const map = new Map();
@@ -201,41 +194,53 @@ async function loadActiveClients(q) {
 }
 
 /**
- * Fill the Smartlead key at runtime when the row has none. Never persisted.
- * A stored key is left as-is so a client still on its own account keeps working.
- * smartlead_use_master_key is optional: a null key uses the agency key either way.
+ * Runtime Smartlead key, master first. Never persisted.
+ * With an agency key in env, every client uses it, even one whose row still
+ * stores its own key (that key may already be revoked). The stored key is a
+ * fallback only when no agency key is configured.
+ * smartlead_use_master_key is not read: a new client defaults to the agency key.
  */
 function withSmartleadKey(client, env = process.env) {
-  if (!client || client.smartlead_api_key) return client;
+  if (!client) return client;
   const key = masterKey(env);
-  return key ? { ...client, smartlead_api_key: key } : client;
+  if (!key || client.smartlead_api_key === key) return client;
+  return { ...client, smartlead_api_key: key };
 }
 
 function finish(target, sourceClient, via, deps) {
   const env = deps.env || process.env;
   const master = masterKey(env);
-  const useAgencyKey = (via === 'tag' || via === 'route' || via === 'legacy'
-    || (via === 'title' && deps.mode === 'master')) && master;
-  const key = useAgencyKey
-    ? master
-    : (target.smartlead_api_key || sourceClient?.smartlead_api_key || master || null);
-  rememberOwner(deps.campaignId, via, target.id);
+  const key = master || target.smartlead_api_key || sourceClient?.smartlead_api_key || null;
   if (target === sourceClient && key === sourceClient.smartlead_api_key) return sourceClient;
   return { ...target, smartlead_api_key: key || null, _ownerVia: via };
 }
 
 /**
- * One agency inbox scan, plus one scan per distinct stored key that is not the agency key.
- * Clients with no key (BPLTG) are not a separate scan; the agency inbox attributes them.
+ * Agency-inbox fallback owner for a row with no tag, route, or title.
+ * 1. The single active client whose stored key equals the agency key (pre-cut).
+ * 2. SMARTLEAD_MASTER_OWNER_SLUG, when set (e.g. `salesglider`), so that
+ *    fallback survives clearing the stored keys. Unset = no guessed channel.
+ */
+function legacyOwnerFor(active, master, env = process.env) {
+  const legacyRows = active.filter((c) => String(c.smartlead_api_key || '').trim() === master);
+  if (legacyRows.length === 1) return legacyRows[0];
+  const slug = String(env.SMARTLEAD_MASTER_OWNER_SLUG || '').trim();
+  if (slug) return clientForSlug(slug, active);
+  return null;
+}
+
+/**
+ * With an agency key: one agency inbox scan, nothing else. Stored per-client
+ * keys are not scanned (they may be revoked; their sub-client campaigns are
+ * visible to the agency key). Without an agency key: one scan per distinct
+ * stored key, as before.
  */
 function pollTargetsFromClients(clients, env = process.env) {
   const master = masterKey(env);
   const active = (clients || []).filter((c) => c && c.active !== false);
   const targets = [];
-  const seen = new Set();
   if (master) {
-    const legacyRows = active.filter((c) => String(c.smartlead_api_key || '').trim() === master);
-    const legacy = legacyRows.length === 1 ? legacyRows[0] : null;
+    const legacy = legacyOwnerFor(active, master, env);
     const base = legacy || {
       id: null,
       name: '(smartlead master)',
@@ -252,8 +257,9 @@ function pollTargetsFromClients(clients, env = process.env) {
         _legacyOwner: legacy,
       },
     });
-    seen.add(master);
+    return targets;
   }
+  const seen = new Set();
   for (const client of active) {
     const key = String(client.smartlead_api_key || '').trim();
     if (!key || seen.has(key)) continue;
@@ -347,47 +353,14 @@ async function routeClientForCampaign(sourceClient, campaignId, deps = {}) {
   return sourceClient;
 }
 
-function defaultTagFetch() {
-  if (process.execArgv.includes('--test')) return async () => [];
-  return async (campaignId) => {
-    const key = masterKey();
-    if (!key) return [];
-    const smartlead = require('./smartlead');
-    return smartlead.campaignOwnerTags(key, campaignId);
-  };
-}
-
 /**
- * Runtime key for a send / history / nurture call. Tag or route ownership
- * forces the agency key. The stored key on the row is not written.
+ * Runtime key for a send / history / nurture call: the agency key whenever it
+ * is set, regardless of campaign ownership or a stored per-client key. The
+ * campaign id is kept in the signature for callers; no Smartlead call is made.
  */
 async function applyAgencyKey(client, campaignId, deps = {}) {
-  const env = deps.env || process.env;
-  const base = withSmartleadKey(client, env);
-  if (!base || campaignId == null || campaignId === '') return base;
-  const master = masterKey(env);
-  if (!master) return base;
-  const hit = cachedOwner(campaignId);
-  if (hit && (hit.via === 'tag' || hit.via === 'route')) {
-    return { ...base, smartlead_api_key: master };
-  }
-  try {
-    const routed = await routeClientForCampaign(base, campaignId, {
-      ...deps,
-      env,
-      mode: 'client',
-      allowTitle: false,
-      fetchTags: deps.fetchTags !== undefined ? deps.fetchTags : defaultTagFetch(),
-    });
-    const after = cachedOwner(campaignId);
-    const via = routed?._ownerVia || after?.via;
-    if (via === 'tag' || via === 'route') {
-      return { ...base, smartlead_api_key: master };
-    }
-  } catch (err) {
-    console.warn('[CampaignRouting] agency key lookup failed', { err: err.message });
-  }
-  return base;
+  void campaignId;
+  return withSmartleadKey(client, deps.env || process.env);
 }
 
 module.exports = {
@@ -403,4 +376,5 @@ module.exports = {
   clientForSlug,
   clientFromCampaignTitle,
   slugsForClient,
+  legacyOwnerFor,
 };

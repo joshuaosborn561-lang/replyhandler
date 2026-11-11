@@ -33,8 +33,11 @@ test('mapped campaign goes to the routed client; key from env master / source', 
   assert.strictEqual(r2.smartlead_api_key, 'sg-key');
 });
 
-test('withSmartleadKey leaves keyed clients identical and fills the agency key when the row has none', () => {
-  assert.strictEqual(withSmartleadKey(SG, { SMARTLEAD_MASTER_API_KEY: 'm' }), SG);
+test('withSmartleadKey is master-first: agency key wins over a stored key; stored key only without one', () => {
+  // Nov 11 2026: per-client keys are being deleted and may be revoked first.
+  assert.strictEqual(withSmartleadKey(SG, { SMARTLEAD_MASTER_API_KEY: 'm' }).smartlead_api_key, 'm');
+  assert.strictEqual(SG.smartlead_api_key, 'sg-key');
+  assert.strictEqual(withSmartleadKey(SG, {}), SG);
   const plain = { id: 'x', smartlead_api_key: null, smartlead_use_master_key: false };
   assert.strictEqual(withSmartleadKey(plain, {}), plain);
   assert.strictEqual(withSmartleadKey(undefined), undefined);
@@ -201,13 +204,17 @@ test('owner slugs match client_map tags, including underscore forms', () => {
   assert.strictEqual(clientForSlug('vector', rows).id, '5');
 });
 
-test('poll targets cover stored keys and one agency scan, including a keyless client only via that scan', () => {
+test('poll targets: with an agency key, one agency scan only (stored keys are not scanned)', () => {
   const targets = pollTargetsFromClients(roster, AGENCY);
-  assert.strictEqual(targets.filter((t) => t.mode === 'master').length, 1);
-  assert.ok(targets.some((t) => t.mode === 'client' && t.apiKey === 'sg-key'));
-  assert.ok(targets.some((t) => t.mode === 'client' && t.apiKey === 'nut-key'));
-  assert.ok(!targets.some((t) => t.client.id === 'bpl'));
-  assert.strictEqual(targets.find((t) => t.mode === 'master').apiKey, 'master');
+  assert.strictEqual(targets.length, 1);
+  assert.strictEqual(targets[0].mode, 'master');
+  assert.strictEqual(targets[0].apiKey, 'master');
+  assert.ok(!targets.some((t) => t.apiKey === 'sg-key' || t.apiKey === 'nut-key'));
+  // No agency key: the stored keys are still scanned, as before.
+  const noAgency = pollTargetsFromClients(roster, {});
+  assert.ok(noAgency.some((t) => t.mode === 'client' && t.apiKey === 'sg-key'));
+  assert.ok(noAgency.some((t) => t.mode === 'client' && t.apiKey === 'nut-key'));
+  assert.ok(!noAgency.some((t) => t.client.id === 'bpl'));
 });
 
 test('onboarding: existing webhook is not duplicated', async () => {

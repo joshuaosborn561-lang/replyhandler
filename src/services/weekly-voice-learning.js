@@ -564,7 +564,8 @@ async function collectSmartleadManualPairs(client, { sinceMs, sinceIso, slackKey
   const { withSmartleadKey, routeClientForCampaign, tagsFromRecord, masterKey } = require('./campaign-routing');
   const keyed = withSmartleadKey(client);
   if (!keyed.smartlead_api_key) return [];
-  const usingAgencyKey = keyed.smartlead_api_key === masterKey() && !client.smartlead_api_key;
+  // Master-first: the agency inbox holds every client's rows, so keep only this client's campaigns.
+  const usingAgencyKey = keyed.smartlead_api_key === masterKey();
   client = keyed;
   const pageLimit = Math.min(numberEnv('VOICE_LEARNING_SL_PAGE_LIMIT', 20), 20);
   const maxRows = numberEnv('VOICE_LEARNING_SL_MAX_THREADS', 150);
@@ -595,12 +596,16 @@ async function collectSmartleadManualPairs(client, { sinceMs, sinceIso, slackKey
       const leadId = row?.email_lead_id || row?.emailLeadId || row?.sl_email_lead_id || null;
       const campaignId = row?.email_campaign_id || row?.emailCampaignId || null;
       if (usingAgencyKey && campaignId) {
+        const inlineTags = tagsFromRecord(row);
         const owner = await routeClientForCampaign(client, campaignId, {
-          tags: tagsFromRecord(row),
+          tags: inlineTags || undefined,
           campaignName: row?.email_campaign_name || row?.emailCampaignName || null,
           mode: 'master',
           legacyOwner: null,
-          fetchTags: false,
+          // Agency inbox rows may not carry tags inline; read sg-owner with the agency key.
+          fetchTags: inlineTags
+            ? false
+            : (id) => smartlead.campaignOwnerTags(client.smartlead_api_key, id),
         });
         if (!owner || owner.id !== client.id) continue;
       }

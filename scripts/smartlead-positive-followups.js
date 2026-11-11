@@ -154,7 +154,34 @@ function extractLatestReply(row) {
   };
 }
 
-async function fetchPositives(client) {
+/**
+ * Master-first: with an agency key, the inbox holds every client's replies, so a
+ * row counts for this client only when its campaign's sg-owner tag (then
+ * smartlead_campaign_routes, then title) names this client.
+ */
+async function rowBelongsTo(client, row, ctx) {
+  if (!ctx.usingMaster) return true;
+  const campaignId = row.email_campaign_id || row.emailCampaignId || null;
+  if (!campaignId) return false;
+  const { routeClientForCampaign, tagsFromRecord } = require('../src/services/campaign-routing');
+  const inline = tagsFromRecord(row);
+  const owner = await routeClientForCampaign(
+    { id: null, name: '(smartlead master)', smartlead_api_key: ctx.key, _pollMode: 'master' },
+    campaignId,
+    {
+      tags: inline || undefined,
+      fetchTags: inline ? false : (id) => require('../src/services/smartlead').campaignOwnerTags(ctx.key, id),
+      campaignName: row.email_campaign_name || null,
+      clients: ctx.allClients,
+      routes: ctx.routes,
+      mode: 'master',
+      legacyOwner: null,
+    },
+  );
+  return !!(owner && owner.id === client.id);
+}
+
+async function fetchPositives(client, ctx = { key: client.smartlead_api_key, usingMaster: false }) {
   const positives = [];
   const seen = new Set();
   let offset = 0;
@@ -162,7 +189,7 @@ async function fetchPositives(client) {
 
   while (true) {
     let rows;
-    try { rows = await fetchInboxPage(client.smartlead_api_key, offset); }
+    try { rows = await fetchInboxPage(ctx.key, offset); }
     catch (e) { console.warn(`  [${client.name}] inbox fetch failed at offset ${offset}: ${e.message}`); break; }
     if (!rows.length) break;
 
@@ -177,6 +204,7 @@ async function fetchPositives(client) {
 
       const extracted = extractLatestReply(row);
       if (!extracted || !extracted.inbound) continue;
+      if (!await rowBelongsTo(client, row, ctx)) continue;
       if (!isPositive(extracted.inbound)) continue;
 
       seen.add(email);
@@ -333,12 +361,24 @@ async function main() {
     [TARGET_CLIENT_NAMES],
   );
 
+  const master = require('../src/services/campaign-routing').masterKey();
+  let allClients = [];
+  const routes = new Map();
+  if (master) {
+    ({ rows: allClients } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false'));
+    try {
+      const { rows } = await db.query('SELECT campaign_id, client_id FROM smartlead_campaign_routes');
+      for (const r of rows) routes.set(String(r.campaign_id), r.client_id);
+    } catch (e) { console.warn(`campaign routes unavailable: ${e.message}`); }
+  }
+
   let totalPosted = 0;
   for (const client of clients) {
-    if (!client.smartlead_api_key) { console.log(`\n${client.name}: no SmartLead API key, skipping`); continue; }
+    const key = master || client.smartlead_api_key;
+    if (!key) { console.log(`\n${client.name}: no SmartLead agency or client key, skipping`); continue; }
     console.log(`\n=== ${client.name} ===`);
 
-    const positives = await fetchPositives(client);
+    const positives = await fetchPositives(client, { key, usingMaster: !!master, allClients, routes });
     console.log(`Found ${positives.length} positive replies:`);
 
     for (const [i, lead] of positives.entries()) {

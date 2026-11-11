@@ -1986,3 +1986,17 @@ Cayden needs a way to DQ a prospect the same way the Slack **🚫 DQ** button an
 - Auth is header `ADMIN_API_KEY` (alias `x-admin-api-key`), the same fail-closed check as `POST /admin/onboarding/client`. Unset env is 503. This route lives in its own router so the open `/admin` router from 2026-10-20 stays open.
 
 Guard: `POST /admin/prospects/dq dry-runs by default and disqualifies one lead` in `test/admin-prospect-dq.test.js`.
+
+## Smartlead master key only; per-client keys are being deleted (Josh, Nov 11 2026)
+
+Josh: every per-client Smartlead API key is being deleted. Everything runs on the agency key (`SMARTLEAD_MASTER_API_KEY`, else `SMARTLEAD_API_KEY`). Each campaign is attributed to its client only by its `sg-owner:<slug>` tag (then `smartlead_campaign_routes`, then title). Sub-client campaigns sit under the agency account, so the agency key can read and send on them. This replaces the Nov 5 bullet "A stored key is still used for a client who has not moved to the agency account."
+
+- Master first. When an agency key is set, every Smartlead call uses it, even if `clients.smartlead_api_key` still holds a value. A stored key may already be revoked in Smartlead before the row is cleared. A stored key is used only when no agency key is configured.
+- With an agency key, the poller, interested sweep and startup EMAIL_REPLY registration scan the agency inbox and campaign list once. They do not scan per stored key. The sweep and weekly voice learning read a campaign's `sg-owner` tag with the agency key when the inbox row does not carry it inline.
+- `smartlead_use_master_key` is not read anywhere. A new client with the flag false and no key uses the agency key.
+- Onboarding with a campaign id and an agency key always writes the campaign route and registers the webhook with the agency key, even if the client still stores a key. The agency key is never stored.
+- `sg-owner:techevo` names the `TechEvolution` client row.
+- Optional `SMARTLEAD_MASTER_OWNER_SLUG` (for example `salesglider`) restores the old agency-inbox fallback owner, which used to be "the client whose stored key equals the agency key". Unset means an agency-inbox row with no tag, route or title is not posted (unchanged rule).
+- Still: do not delete or blank stored keys in code or migrations. Per-client webhook URLs stay. HeyReach keys are unaffected.
+
+Guards: `test/master-key-only.test.js`, `test/master-key-webhook-send.test.js` (every client key null / '' / revoked; all Smartlead calls must carry the agency key), and `poll targets: with an agency key, one agency scan only` in `test/campaign-routing.test.js`.
