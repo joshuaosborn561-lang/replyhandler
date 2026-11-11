@@ -26,7 +26,6 @@ const CLIENT_FIXTURES = [
   ['peterson', 'Roofs By Peterson'],
   ['goliath', 'Goliath'],
   ['emcor', 'EMCOR'],
-  ['insight', 'Insight'],
   ['powergryd', 'PowerGRYD'],
   ['vector', 'Vector Energy Group'],
   ['nutter', 'Nutter Group'],
@@ -39,6 +38,22 @@ const CLIENT_FIXTURES = [
   ['cornerstone', 'Cornerstone Earthworks'],
   ['msrs', 'MSRS'],
 ];
+
+/**
+ * Tag slug → the synthetic fixture slug that owns it. `insight` has no client
+ * row; its replies go to SalesGlider (#salesglider-insight-ai-replies).
+ * ASSUMPTION for Josh to confirm.
+ */
+const TAG_OWNER = { insight: 'salesglider' };
+/** Every live sg-owner tag (Smartlead tag catalog, Nov 11 2026). */
+const LIVE_TAGS = [
+  'bcp', 'bpltg', 'ciotola', 'cornerstone', 'culture_fits', 'emcor', 'goliath', 'insight', 'nexus',
+  'nutter', 'parlay', 'peterson', 'powergryd', 'salesglider', 'techevo', 'vector', 'virtual_pulsar',
+  'deeproots', 'nieto', 'msrs', 'positive', 'vasco',
+];
+function ownerSlug(tagSlug) {
+  return TAG_OWNER[tagSlug] || tagSlug;
+}
 
 function slugChannel(slug) {
   return `C_${slug.toUpperCase()}`;
@@ -130,14 +145,18 @@ function installSmartleadFetch({ campaigns = new Map(), inboxRows = [], history 
       throw new Error(`network blocked in test: ${url.hostname}`);
     }
     const apiKey = url.searchParams.get('api_key');
-    calls.push({ host: url.hostname, path: url.pathname, apiKey, method: opts.method || 'GET', body: opts.body || null });
+    const includeTags = url.searchParams.get('include_tags') === 'true';
+    calls.push({ host: url.hostname, path: url.pathname, apiKey, includeTags, method: opts.method || 'GET', body: opts.body || null });
     if (apiKey !== MASTER) return json(401, { message: 'invalid api key' });
     const p = url.pathname.replace(/^\/api\/v1/, '');
     let m;
     if ((m = p.match(/^\/campaigns\/(\d+)\/?$/))) {
       const camp = campaigns.get(String(m[1]));
       if (!camp) return json(404, { message: 'not found' });
-      return json(200, { id: Number(m[1]), name: camp.name, tags: camp.tags, client_id: camp.client_id ?? null, status: 'ACTIVE' });
+      // Live Smartlead: no `tags` field at all unless include_tags=true.
+      const row = { id: Number(m[1]), name: camp.name, client_id: camp.client_id ?? null, status: 'ACTIVE' };
+      if (includeTags) row.tags = camp.tags;
+      return json(200, row);
     }
     if ((m = p.match(/^\/campaigns\/(\d+)\/leads\/(\d+)\/message-history$/))) {
       return json(200, history || { history: [] });
@@ -149,7 +168,11 @@ function installSmartleadFetch({ campaigns = new Map(), inboxRows = [], history 
       return json(200, { data: inboxRows.slice(off, off + lim) });
     }
     if (p === '/campaigns' || p === '/campaigns/') {
-      return json(200, [...campaigns.entries()].map(([id, c]) => ({ id: Number(id), name: c.name, status: 'ACTIVE', tags: c.tags })));
+      return json(200, [...campaigns.entries()].map(([id, c]) => {
+        const row = { id: Number(id), name: c.name, status: 'ACTIVE' };
+        if (includeTags) row.tags = c.tags;
+        return row;
+      }));
     }
     if ((m = p.match(/^\/campaigns\/(\d+)\/webhooks$/))) return json(200, []);
     if (p.startsWith('/leads')) return json(200, null);
@@ -178,6 +201,7 @@ function installDb(roster, { routes = [], onQuery } = {}) {
       return { rows: roster.filter((c) => c.id === params[0]) };
     }
     if (/FROM\s+clients/i.test(s) && /active/i.test(s)) return { rows: roster.filter((c) => c.active !== false) };
+    if (/^\s*SELECT \* FROM clients\s*$/i.test(s)) return { rows: roster };
     return { rows: [], rowCount: 0 };
   };
   db.connect = async () => ({ query: (...a) => db.query(...a), release: () => {} });
@@ -186,7 +210,7 @@ function installDb(roster, { routes = [], onQuery } = {}) {
 
 /** Optional real payloads: /workspace/keycut/fixtures/rh_payloads.json (absent = skipped). */
 function loadRealPayloads() {
-  const file = process.env.RH_PAYLOADS_FILE || '/workspace/keycut/fixtures/rh_payloads.json';
+  const file = process.env.RH_PAYLOADS_FILE || path.join(__dirname, '..', 'fixtures', 'rh_payloads.json');
   if (!fs.existsSync(file)) return null;
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   return Array.isArray(raw) ? raw : (raw.payloads || raw.entries || []);
@@ -197,7 +221,7 @@ function loadRealPayloads() {
  * Every row gets a fake Slack token and a null / revoked Smartlead key in memory.
  */
 function loadRealRoster() {
-  const file = process.env.RH_CLIENTS_FILE || '/workspace/keycut/rh_clients_safe.json';
+  const file = process.env.RH_CLIENTS_FILE || path.join(__dirname, '..', 'fixtures', 'rh_clients_live.json');
   if (!fs.existsSync(file)) return null;
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   const rows = Array.isArray(raw) ? raw : (raw.clients || []);
@@ -210,10 +234,22 @@ function loadRealRoster() {
   }));
 }
 
-/** The active roster row a real fixture entry expects, matched by name. */
+/**
+ * Expected owner for a real fixture entry, or null when it must be DROPPED.
+ *   insight → SalesGlider (assumption; no Insight row, channel #salesglider-insight-ai-replies)
+ *   ciotola → dropped (client inactive since Nov 11 08:06 CT)
+ *   otherwise → the active row named expected_client.
+ */
+const REAL_OVERRIDES = { insight: { name: 'SalesGlider', channel: 'C0AR02YS268' } };
 function expectedRealClient(entry, roster) {
-  if (!entry.expected_client || entry.expected_client_active_in_db === false) return null;
-  return roster.find((c) => c.active !== false && c.name === entry.expected_client) || null;
+  const o = REAL_OVERRIDES[entry.sg_owner];
+  const name = o ? o.name : entry.expected_client;
+  if (!name || (!o && entry.expected_client_active_in_db === false)) return null;
+  return roster.find((c) => c.active !== false && c.name === name) || null;
+}
+function expectedRealChannel(entry) {
+  const o = REAL_OVERRIDES[entry.sg_owner];
+  return o ? o.channel : entry.expected_slack_channel;
 }
 
 /** Same shape as the EMAIL_REPLY payloads in test/inbound-canon.test.js. */
@@ -248,6 +284,9 @@ module.exports = {
   loadRealPayloads,
   loadRealRoster,
   expectedRealClient,
+  expectedRealChannel,
+  ownerSlug,
+  LIVE_TAGS,
   emailReplyPayload,
   path,
 };

@@ -416,7 +416,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
     const payloadTags = tagsFromRecord(payload) || tagsFromRecord(leadData);
     const inlineOwner = ownerSlugsFromTags(payloadTags || []);
     const tagKey = masterKey() || client.smartlead_api_key;
+    let dropReason = null;
     const routedClient = await routeClientForCampaign(client, campaignId, {
+      onDrop: (reason) => { dropReason = reason; },
       campaignName: smartleadCampaignName(payload),
       tags: inlineOwner.length ? payloadTags : undefined,
       mode: 'webhook',
@@ -425,8 +427,9 @@ router.post('/webhook/smartlead/:clientId', async (req, res) => {
         : undefined,
     });
     if (!routedClient || !routedClient.id) {
-      console.warn('[Webhook] SmartLead campaign owner unresolved', { clientId, campaignId });
-      return res.status(200).json({ ok: true, skipped: true, reason: 'unresolved_campaign_owner' });
+      // Tagged for an inactive / unknown owner: dropped, never carded into the URL client's channel.
+      console.warn('[Webhook] SmartLead campaign owner unresolved', { clientId, campaignId, reason: dropReason });
+      return res.status(200).json({ ok: true, skipped: true, reason: dropReason || 'unresolved_campaign_owner' });
     }
     if (routedClient !== client) {
       console.log('[Webhook] SmartLead campaign routed', { from: clientId, to: routedClient.id, campaignId });

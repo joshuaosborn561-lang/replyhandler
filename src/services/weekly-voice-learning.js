@@ -595,12 +595,12 @@ async function collectSmartleadManualPairs(client, { sinceMs, sinceIso, slackKey
       }
       const leadId = row?.email_lead_id || row?.emailLeadId || row?.sl_email_lead_id || null;
       const campaignId = row?.email_campaign_id || row?.emailCampaignId || null;
-      if (usingAgencyKey && campaignId) {
+      if (campaignId) {
         const inlineTags = tagsFromRecord(row);
         const owner = await routeClientForCampaign(client, campaignId, {
           tags: inlineTags || undefined,
           campaignName: row?.email_campaign_name || row?.emailCampaignName || null,
-          mode: 'master',
+          mode: usingAgencyKey ? 'master' : 'client',
           legacyOwner: null,
           // Agency inbox rows may not carry tags inline; read sg-owner with the agency key.
           fetchTags: inlineTags

@@ -48,8 +48,8 @@ function envFlag(name, defaultValue = true) {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-function numberEnv(name, fallback) {
-  const n = parseInt(process.env[name] || '', 10);
+function numberEnv(name, fallback, env = process.env) {
+  const n = parseInt(env[name] || '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
@@ -386,7 +386,9 @@ async function processInboxRow(sourceClient, row, options) {
   const campaignId = normalizeSmartleadCampaignId(row) || row?.email_campaign_id || row?.emailCampaignId;
   const presentTags = tagsFromRecord(row);
   const inlineOwner = ownerSlugsFromTags(presentTags || []);
+  let dropReason = null;
   const client = await routeClientForCampaign(sourceClient, campaignId, {
+    onDrop: (reason) => { dropReason = reason; },
     campaignName: row?.email_campaign_name || row?.emailCampaignName || null,
     tags: inlineOwner.length ? presentTags : undefined,
     mode: sourceClient._pollMode || 'client',
@@ -396,7 +398,7 @@ async function processInboxRow(sourceClient, row, options) {
       : undefined,
   });
   if (!client || !client.id || !client.slack_channel_id) {
-    return { skipped: 'unresolved_campaign_owner' };
+    return { skipped: dropReason || 'unresolved_campaign_owner' };
   }
   const leadId = normalizeSmartleadLeadId(row) || row?.email_lead_id || row?.emailLeadId;
   if (!campaignId || !leadId) return { skipped: 'missing_ids' };
@@ -878,6 +880,19 @@ async function loadClients() {
   return pollTargetsFromClients(rows).map((target) => target.client);
 }
 
+/**
+ * Rows scanned per target per cycle. The single agency-inbox scan replaces ~13
+ * per-key scans of 40 rows each, so it defaults to 200 rows in pages of 20
+ * (Smartlead's max page). A per-client scan (no agency key) keeps 40 / 10.
+ * SMARTLEAD_POLL_MAX_REPLIES / SMARTLEAD_POLL_PAGE_LIMIT override both.
+ */
+function pollScanBudget(client, env = process.env) {
+  const master = client && client._pollMode === 'master';
+  const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', master ? 20 : 10, env), 20);
+  const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', master ? 200 : 40, env);
+  return { pageLimit, maxReplies };
+}
+
 let isPollingRunning = false;
 
 async function pollSmartleadReplies() {
@@ -900,8 +915,6 @@ async function pollSmartleadReplies() {
     }
 
     const clients = await loadClients();
-    const pageLimit = Math.min(numberEnv('SMARTLEAD_POLL_PAGE_LIMIT', 10), 20);
-    const maxReplies = numberEnv('SMARTLEAD_POLL_MAX_REPLIES', 40);
     const lookbackHours = numberEnv('SMARTLEAD_POLL_LOOKBACK_HOURS', 168);
     // Per-cycle budget for stale-history refetches, so a broadly stale
     // master-inbox cannot turn one poll into hundreds of extra API calls.
@@ -910,6 +923,7 @@ async function pollSmartleadReplies() {
     const maxHistoryRefetch = numberEnv('SMARTLEAD_POLL_MAX_HISTORY_REFETCH', 40);
 
     await Promise.all(clients.map(async (client) => {
+      const { pageLimit, maxReplies } = pollScanBudget(client);
       let scanned = 0;
       let posted = 0;
       const clientSkips = {};
@@ -970,6 +984,7 @@ async function pollSmartleadReplies() {
 
 module.exports = {
   pollSmartleadReplies,
+  pollScanBudget,
   fetchInboxReplies,
   historyFromRow,
   latestInboundFromRow,

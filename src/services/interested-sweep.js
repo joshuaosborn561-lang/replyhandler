@@ -97,8 +97,9 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
                 ? (id) => smartlead.campaignOwnerTags(client.key, id)
                 : false,
             });
+            // null = tagged for an inactive / unknown owner (or no owner on the agency inbox): skip.
             if (resolved && resolved.id) owner = resolved;
-            else if (client.mode === 'master') continue;
+            else continue;
           } catch (err) {
             errors.push({ client: client.name, err: err.message });
           }

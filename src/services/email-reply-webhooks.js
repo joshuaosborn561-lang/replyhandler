@@ -101,13 +101,20 @@ async function ensureClientEmailReplyWebhooks(client) {
   if (!Array.isArray(campaigns)) campaigns = [];
   // Campaigns routed to a different client are hooked by onboarding, not here.
   const routes = await campaignRouting.loadRoutes((sql, p) => db.query(sql, p));
+  let roster = [];
+  try {
+    ({ rows: roster } = await db.query('SELECT * FROM clients WHERE active IS DISTINCT FROM false'));
+  } catch { roster = []; }
 
   for (const camp of campaigns) {
     const campaignId = campaignIdOf(camp);
     if (campaignId == null) continue;
     if (!isActiveCampaign(camp)) continue;
+    // A campaign tagged for another (or an inactive / unknown) owner is not hooked to this client.
+    const byTag = campaignRouting.ownerFromTags(campaignRouting.tagsFromRecord(camp) || [], roster || []);
+    if (byTag.tagged && (!byTag.client || byTag.client.id !== client.id)) continue;
     const routedTo = routes.get(String(campaignId));
-    if (routedTo && routedTo !== client.id) continue;
+    if (!byTag.tagged && routedTo && routedTo !== client.id) continue;
     result.campaigns++;
     try {
       const hooks = await withKeyGap(key, () => smartlead.listCampaignWebhooks(key, campaignId));

@@ -2,7 +2,11 @@
  * Campaign → client routing for one Smartlead agency account.
  *
  * Order, when a campaign id is present:
- *   1. Smartlead tag `sg-owner:<slug>` (slug matches topup.client_map.client_tag)
+ *   1. Smartlead tag `sg-owner:<slug>` (OWNER_SLUG_CLIENTS). A TAGGED campaign
+ *      goes to its tag's active owner or is DROPPED (owner inactive, no client,
+ *      conflicting tags). Steps 2–4 apply only to a campaign with no sg-owner
+ *      tag (Nov 11 2026: Ciotola cards landed in SalesGlider's channel).
+ *      A failed tag lookup allows step 2 only.
  *   2. smartlead_campaign_routes (campaign_id → client uuid)
  *   3. Campaign-title heuristic (leading "Client | …" segment, same aliases as booking)
  *   4. On a webhook URL, the client the URL names. On the agency inbox, the
@@ -27,16 +31,42 @@ const { CLIENT_SLUG_ALIASES, aliasSlug } = require('./booking-bridge');
 const TTL_MS = 60 * 1000;
 let cache = { at: 0, map: null };
 
-/** Slugs Deliverability writes that booking aliases name differently, plus clients with no booking alias yet. */
-const EXTRA_OWNER_SLUGS = {
+/**
+ * Every live `sg-owner:<slug>` tag (Smartlead tag catalog, Nov 11 2026) → the
+ * `clients.name` values that own it. Explicit on purpose: a tag in this table
+ * resolves only to these names. `[]` = known tag with no ReplyHandler client.
+ * A slug not listed here falls back to the client-name heuristic
+ * (normalized name / booking alias), so a new client still routes.
+ *
+ * Keys are compared with normSlug, so `deeproots` = `deep_roots`.
+ */
+const OWNER_SLUG_CLIENTS = {
   bcp: ['Bolder Cyber Partners', 'BCP'],
-  culture_fits: ['Culture Fits'],
   bpltg: ['BPLTG'],
   ciotola: ['Ciotola', 'Jeremy Ciotola'],
+  cornerstone: ['Cornerstone', 'Cornerstone Earthworks'],
+  culture_fits: ['Culture Fits'],
+  deeproots: ['Deep Roots'],
+  emcor: ['Emcor'],
+  goliath: ['Goliath', 'Goliath Cybersecurity', 'Goliath Solutions Group'],
+  // ASSUMPTION (Josh to confirm): Insight (Smartlead client 582890) is Josh's
+  // own book; its replies belong in #salesglider-insight-ai-replies, i.e. the
+  // SalesGlider client. There is no Insight clients row.
+  insight: ['SalesGlider'],
+  msrs: ['MSRS'],
   nexus: ['Nexus'],
-  virtual_pulsar: ['Virtual Pulsar'],
-  // Client row is "TechEvolution"; Deliverability tags `sg-owner:techevo`.
+  nieto: ['Nieto'],
+  nutter: ['Nutter', 'Nutter Group'],
+  parlay: ['Parlay Tech'],
+  peterson: ['Roofs By Peterson'],
+  positive: [],
+  powergryd: ['PowerGryd'],
+  salesglider: ['SalesGlider'],
+  // Routing only. TechEvo booking stays retired (booking-bridge RETIRED_BOOKING_BRIDGE_SLUGS).
   techevo: ['TechEvolution', 'Tech Evolution', 'TechEvo'],
+  vasco: ['Vasco Warranty', 'Vasco Warranty Management'],
+  vector: ['Vector Energy Group', 'Vector'],
+  virtual_pulsar: ['Virtual Pulsar'],
 };
 
 const TITLE_SEGMENT_SKIP = new Set([
@@ -58,7 +88,15 @@ function masterKey(env = process.env) {
 }
 
 function ownerSlugTable() {
-  return { ...CLIENT_SLUG_ALIASES, ...EXTRA_OWNER_SLUGS };
+  return { ...CLIENT_SLUG_ALIASES, ...OWNER_SLUG_CLIENTS };
+}
+
+function explicitOwnerNames(slug) {
+  const want = normSlug(slug);
+  for (const [key, names] of Object.entries(OWNER_SLUG_CLIENTS)) {
+    if (normSlug(key) === want) return names;
+  }
+  return null;
 }
 
 function slugsForClient(client) {
@@ -80,13 +118,46 @@ function pickPreferred(clients) {
   ))[0] || null;
 }
 
-function clientForSlug(slug, clients) {
+/**
+ * Owner of one sg-owner slug among `clients` (active and inactive rows allowed).
+ * status: 'active' (client set) | 'inactive' (owner row exists, inactive) | 'no_client'.
+ */
+function resolveOwnerSlug(slug, clients) {
   const want = normSlug(slug);
-  if (!want) return null;
-  const matched = (clients || []).filter((c) => c && c.active !== false && slugsForClient(c).has(want));
-  if (matched.length === 1) return matched[0];
-  if (matched.length > 1) return pickPreferred(matched);
-  return null;
+  if (!want) return { status: 'no_client', client: null };
+  const explicit = explicitOwnerNames(slug);
+  const rows = (clients || []).filter(Boolean);
+  const candidates = explicit
+    ? rows.filter((c) => explicit.some((n) => normSlug(n) === normSlug(c.name)))
+    : rows.filter((c) => slugsForClient(c).has(want));
+  const active = candidates.filter((c) => c.active !== false);
+  if (active.length) return { status: 'active', client: active.length === 1 ? active[0] : pickPreferred(active) };
+  if (candidates.length) return { status: 'inactive', client: null };
+  return { status: 'no_client', client: null };
+}
+
+function clientForSlug(slug, clients) {
+  return resolveOwnerSlug(slug, clients).client;
+}
+
+/**
+ * Owner decided by the campaign's sg-owner tags alone.
+ *   { tagged: false }                       → no sg-owner tag; fallbacks may apply
+ *   { tagged: true, client }                → every tag names this one active client
+ *   { tagged: true, client: null, reason }  → drop: tag owner inactive / unknown / conflicting
+ */
+function ownerFromTags(tags, clients) {
+  const slugs = ownerSlugsFromTags(tags || []);
+  if (!slugs.length) return { tagged: false };
+  const results = slugs.map((slug) => ({ slug, ...resolveOwnerSlug(slug, clients) }));
+  const ids = new Set(results.filter((r) => r.client).map((r) => String(r.client.id)));
+  if (results.every((r) => r.client) && ids.size === 1) {
+    return { tagged: true, client: results[0].client, slugs };
+  }
+  let reason = 'owner_tag_no_client';
+  if (slugs.length > 1) reason = 'owner_tag_conflict';
+  else if (results[0].status === 'inactive') reason = 'owner_tag_inactive';
+  return { tagged: true, client: null, slugs, reason };
 }
 
 function nameExtends(compact, key) {
@@ -183,9 +254,13 @@ async function loadRoutes(q) {
   return map;
 }
 
-async function loadActiveClients(q) {
+/**
+ * Every client row, active or not. Inactive rows are never chosen as an owner;
+ * they are loaded so a tag whose owner is inactive is reported as such.
+ */
+async function loadRoutingClients(q) {
   try {
-    const { rows } = await q('SELECT * FROM clients WHERE active IS DISTINCT FROM false', []);
+    const { rows } = await q('SELECT * FROM clients', []);
     return rows || [];
   } catch (err) {
     console.warn('[CampaignRouting] client load failed', { err: err.message });
@@ -285,32 +360,40 @@ async function routeClientForCampaign(sourceClient, campaignId, deps = {}) {
   const env = deps.env || process.env;
   let clients = null;
   const needClients = async () => {
-    if (!clients) clients = Array.isArray(deps.clients) ? deps.clients : await loadActiveClients(q);
+    if (!clients) clients = Array.isArray(deps.clients) ? deps.clients : await loadRoutingClients(q);
     return clients;
   };
 
+  // tagsUnknown: a lookup was attempted and failed. That is not "untagged":
+  // only an explicit route may place the campaign; title / URL / legacy may not.
+  let tagsUnknown = false;
   let tags = Array.isArray(deps.tags) ? deps.tags : null;
   if (!tags && typeof deps.fetchTags === 'function') {
     try {
       const fetched = await deps.fetchTags(campaignId);
-      tags = Array.isArray(fetched) ? fetched : [];
+      if (Array.isArray(fetched)) tags = fetched;
+      else tagsUnknown = true;
     } catch (err) {
       console.warn('[CampaignRouting] tag fetch failed', { campaignId, err: err.message });
-      tags = [];
+      tagsUnknown = true;
     }
   }
-  const slugs = ownerSlugsFromTags(tags || []);
-  if (slugs.length > 1) {
-    console.warn('[CampaignRouting] campaign has conflicting sg-owner tags', { campaignId, slugs });
-  } else if (slugs.length === 1) {
-    const tagged = clientForSlug(slugs[0], await needClients());
-    if (tagged && tagged.id && tagged.id !== sourceClient.id) {
-      return finish(tagged, sourceClient, 'tag', { ...deps, env, campaignId });
-    }
-    if (tagged && tagged.id === sourceClient.id) {
-      return finish(sourceClient, sourceClient, 'tag', { ...deps, env, campaignId });
-    }
-    console.warn('[CampaignRouting] sg-owner tag did not match a client', { campaignId, slug: slugs[0] });
+  const drop = (reason, extra = {}) => {
+    console.warn('[CampaignRouting] campaign dropped, not posted to any channel', {
+      campaignId, reason, source: sourceClient.id || sourceClient.name || null, ...extra,
+    });
+    if (typeof deps.onDrop === 'function') deps.onDrop(reason);
+    return null;
+  };
+
+  // A tagged campaign belongs to its tag owner or to nobody (Nov 11 2026,
+  // Ciotola cards landing in SalesGlider's channel). No route / title /
+  // fetching-client / legacy fallback for a tagged campaign.
+  const byTag = ownerFromTags(tags || [], await needClients());
+  if (byTag.tagged) {
+    if (!byTag.client) return drop(byTag.reason, { slugs: byTag.slugs });
+    if (byTag.client.id === sourceClient.id) return finish(sourceClient, sourceClient, 'tag', { ...deps, env, campaignId });
+    return finish(byTag.client, sourceClient, 'tag', { ...deps, env, campaignId });
   }
 
   const routes = deps.routes || await loadRoutes(q);
@@ -331,6 +414,8 @@ async function routeClientForCampaign(sourceClient, campaignId, deps = {}) {
   } else if (targetId && targetId === sourceClient.id) {
     return finish(sourceClient, sourceClient, 'route', { ...deps, env, campaignId });
   }
+
+  if (tagsUnknown) return drop('owner_tags_unavailable');
 
   if (deps.allowTitle !== false && deps.campaignName) {
     const titled = clientFromCampaignTitle(deps.campaignName, await needClients());
@@ -374,6 +459,9 @@ module.exports = {
   tagsFromRecord,
   ownerSlugsFromTags,
   clientForSlug,
+  resolveOwnerSlug,
+  ownerFromTags,
+  OWNER_SLUG_CLIENTS,
   clientFromCampaignTitle,
   slugsForClient,
   legacyOwnerFor,

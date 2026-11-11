@@ -361,7 +361,7 @@ test('real payloads (/workspace/keycut/fixtures/rh_payloads.json): tag → expec
       if (want) {
         assert.ok(viaMaster, `${entry.sg_owner} ${cid}: unresolved`);
         assert.strictEqual(viaMaster.id, want.id, `${entry.sg_owner} ${cid}`);
-        assert.strictEqual(viaMaster.slack_channel_id, entry.expected_slack_channel, `${entry.sg_owner} ${cid}`);
+        assert.strictEqual(viaMaster.slack_channel_id, H.expectedRealChannel(entry), `${entry.sg_owner} ${cid}`);
         assert.strictEqual(viaMaster.smartlead_api_key, H.MASTER);
         assert.strictEqual(viaMaster._ownerVia, 'tag');
         checked += 1;

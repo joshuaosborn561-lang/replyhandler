@@ -167,28 +167,42 @@ test('real EMAIL_REPLY payloads through the webhook route (posted to the SalesGl
   const campaigns = new Map(REAL.map((e) => [String(e.campaign_id), { name: e.campaign_name, tags: e.tags }]));
   const sl = H.installSmartleadFetch({ campaigns, history: HISTORY });
   let checked = 0;
+  const dropped = [];
   try {
     await withServer(async (base) => {
       for (const entry of REAL) {
         const want = H.expectedRealClient(entry, REAL_ROSTER);
-        if (!want) continue; // inactive / missing owner: see report (webhook falls back to the URL client)
         const before = { accepted: captured.accepted.length, cards: captured.cards.length };
         const res = await fetch(`${base}/webhook/smartlead/${urlClient.id}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry.payload),
         });
         const body = await res.json();
+        if (!want) {
+          // Ciotola (inactive): dropped. Never stored, never carded into the URL client's (SalesGlider) channel.
+          assert.strictEqual(body.skipped, true, `${entry.sg_owner}: ${JSON.stringify(body)}`);
+          assert.strictEqual(body.reason, 'owner_tag_inactive', entry.sg_owner);
+          await new Promise((r) => setTimeout(r, 50));
+          assert.strictEqual(captured.accepted.length, before.accepted, `${entry.sg_owner}: stored`);
+          assert.strictEqual(captured.cards.length, before.cards, `${entry.sg_owner}: carded`);
+          dropped.push(entry.sg_owner);
+          continue;
+        }
         assert.strictEqual(body.accepted, true, `${entry.sg_owner}: ${JSON.stringify(body)}`);
         assert.strictEqual(captured.accepted[before.accepted].clientId, want.id, `${entry.sg_owner}: stored under the wrong client`);
         await waitFor(() => captured.cards.length > before.cards);
         const card = captured.cards[before.cards];
         assert.ok(card, `${entry.sg_owner}: no card`);
-        assert.strictEqual(card.channelId, entry.expected_slack_channel, `${entry.sg_owner}: wrong channel`);
+        assert.strictEqual(card.channelId, H.expectedRealChannel(entry), `${entry.sg_owner}: wrong channel`);
         assert.strictEqual(card.clientId, want.id);
         checked += 1;
       }
     });
-    assert.ok(checked > 0);
+    assert.strictEqual(checked, REAL.length - 1, 'every entry but Ciotola is carded');
+    assert.deepStrictEqual(dropped, ['ciotola']);
     for (const c of sl.smartleadCalls()) assert.strictEqual(c.apiKey, H.MASTER, `${c.method} ${c.path}`);
+    // Every campaign's tags were read with include_tags=true (other getCampaign callers need not).
+    const tagged = new Set(sl.smartleadCalls().filter((c) => c.includeTags).map((c) => c.path.replace(/\/$/, '')));
+    for (const e of REAL) assert.ok(tagged.has(`/api/v1/campaigns/${e.campaign_id}`), `no include_tags fetch for ${e.campaign_id}`);
     assert.ok(!sl.calls.some((c) => c.blocked && /smartlead/i.test(c.host)));
   } finally { sl.restore(); H.installDb(ROSTER); }
 });
