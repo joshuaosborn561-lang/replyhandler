@@ -42,7 +42,9 @@ function heyreachLastOutboundFromMessages(messages) {
   return last;
 }
 
-async function slackCardContextFromReply(reply, client) {
+async function slackCardContextFromReply(reply, rawClient) {
+  // Master-first even when a caller passes the raw clients row (repaint paths).
+  const client = withSmartleadKey(rawClient);
   let tc = reply.thread_context;
   if (typeof tc === 'string') {
     try { tc = JSON.parse(tc); } catch { tc = null; }

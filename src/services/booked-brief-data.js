@@ -303,10 +303,11 @@ async function findMeetingOnCalendar(clientIds, email, { db, google } = {}) {
  */
 async function gatherBrief(m, ctx, deps = {}) {
   const clientName = m.clientDisplay || m.client;
+  // Agency key first; a stored per-client key may already be revoked.
+  const env = deps.env || process.env;
   const keys = [...new Set([
+    require('./campaign-routing').masterKey(env),
     ...(ctx.clients || []).map((c) => c.smartlead_api_key),
-    deps.env ? deps.env.SMARTLEAD_API_KEY : process.env.SMARTLEAD_API_KEY,
-    deps.env ? deps.env.SMARTLEAD_MASTER_API_KEY : process.env.SMARTLEAD_MASTER_API_KEY,
   ].filter(Boolean))];
   const swap = ctx.swap || ((x) => x);
 

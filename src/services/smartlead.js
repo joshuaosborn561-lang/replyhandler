@@ -71,10 +71,12 @@ function campaignTagsOf(data) {
  * Fetch a SmartLead campaign (includes human-readable name).
  * @see https://api.smartlead.ai/api-reference/campaigns/get-by-id
  */
-async function getCampaign(apiKey, campaignId) {
+async function getCampaign(apiKey, campaignId, { includeTags = false } = {}) {
   if (!apiKey || campaignId == null || campaignId === '') return null;
   const cid = toSmartleadId(campaignId, 'campaign_id');
-  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}`;
+  // Smartlead omits `tags` unless include_tags=true (verified live Nov 11 2026).
+  const tagParam = includeTags ? '&include_tags=true' : '';
+  const url = `${BASE_URL}/campaigns/${encodeURIComponent(cid)}?api_key=${encodeURIComponent(apiKey)}${tagParam}`;
   const res = await fetchWith429Retry(url);
   const body = await res.text();
   if (!res.ok) {
@@ -92,20 +94,24 @@ async function getCampaign(apiKey, campaignId) {
   }
 }
 
-/** Tags on the campaign. Cached so a poll does not refetch the same campaign. Empty when the API fails. */
+/**
+ * Tags on the campaign (GET /campaigns/:id?include_tags=true). Cached so a poll
+ * does not refetch the same campaign. Returns null when the lookup fails, so
+ * routing can tell "no tags" apart from "tags unknown".
+ */
 async function campaignOwnerTags(apiKey, campaignId) {
-  if (!apiKey || campaignId == null || campaignId === '') return [];
+  if (!apiKey || campaignId == null || campaignId === '') return null;
   let cid;
   try {
     cid = toSmartleadId(campaignId, 'campaign_id');
   } catch {
-    return [];
+    return null;
   }
   const cacheKey = `${String(apiKey).slice(0, 12)}:${cid}`;
   const hit = campaignTagCache.get(cacheKey);
   if (hit && Date.now() - hit.fetchedAt < CAMPAIGN_NAME_TTL_MS) return hit.tags;
   try {
-    const data = await getCampaign(apiKey, cid);
+    const data = await getCampaign(apiKey, cid, { includeTags: true });
     const tags = campaignTagsOf(data);
     campaignTagCache.set(cacheKey, { tags, fetchedAt: Date.now() });
     return tags;
@@ -113,7 +119,7 @@ async function campaignOwnerTags(apiKey, campaignId) {
     console.warn('[SmartLead] campaign tags failed', {
       campaignId: cid, err: String(err && err.message).slice(0, 160),
     });
-    return [];
+    return null;
   }
 }
 
@@ -756,7 +762,8 @@ async function listEmailAccounts(apiKey) {
 
 async function listCampaigns(apiKey) {
   if (!apiKey) return [];
-  const url = `${BASE_URL}/campaigns?api_key=${encodeURIComponent(apiKey)}`;
+  // include_tags=true so sg-owner tags come back on every campaign in the list.
+  const url = `${BASE_URL}/campaigns?api_key=${encodeURIComponent(apiKey)}&include_tags=true`;
   const res = await fetchWith429Retry(url);
   const body = await res.text();
   if (!res.ok) throw new Error(`SmartLead listCampaigns failed (${res.status}): ${body.slice(0, 300)}`);

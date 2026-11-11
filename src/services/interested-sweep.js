@@ -85,16 +85,21 @@ async function sweepInterested({ hours = 24, pages = 12, pageSize = 20 } = {}) {
         let owner = client;
         if (campaignId) {
           try {
+            const inlineTags = tagsFromRecord(row);
             const resolved = await routeClientForCampaign(client, campaignId, {
-              tags: tagsFromRecord(row),
+              tags: inlineTags || undefined,
               campaignName: row.email_campaign_name || row.emailCampaignName || null,
               mode: client.mode || 'client',
               clients,
               legacyOwner: client._legacyOwner || null,
-              fetchTags: false,
+              // Agency inbox rows may not carry tags inline; read sg-owner with the agency key.
+              fetchTags: !inlineTags && client.mode === 'master' && client.key
+                ? (id) => smartlead.campaignOwnerTags(client.key, id)
+                : false,
             });
+            // null = tagged for an inactive / unknown owner (or no owner on the agency inbox): skip.
             if (resolved && resolved.id) owner = resolved;
-            else if (client.mode === 'master') continue;
+            else continue;
           } catch (err) {
             errors.push({ client: client.name, err: err.message });
           }

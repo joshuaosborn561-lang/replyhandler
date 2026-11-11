@@ -1,0 +1,405 @@
+[
+  {
+    "campaign_id": 4456009,
+    "campaign_name": "EMCOR Plumbing | Backflow",
+    "sg_owner": "emcor",
+    "tags": [
+      {
+        "tag_id": 547622,
+        "tag_name": "sg-owner:emcor",
+        "tag_color": "#8B5CF6"
+      }
+    ],
+    "expected_client": "Emcor",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0C51EJEK6W",
+    "smartlead_client_id": 574020,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4456009,
+      "campaign_name": "EMCOR Plumbing | Backflow",
+      "sl_email_lead_id": "4919747994",
+      "sl_email_lead_map_id": "3995983579",
+      "client_id": 574020,
+      "to_email": "lead-9b599586@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T15:44:07.000Z"
+      },
+      "event_timestamp": "2026-11-11T15:44:07.000Z"
+    }
+  },
+  {
+    "campaign_id": 4242293,
+    "campaign_name": "Vector | Big Owners | FOMO",
+    "sg_owner": "vector",
+    "tags": [
+      {
+        "tag_id": 547631,
+        "tag_name": "sg-owner:vector",
+        "tag_color": "#DB2777"
+      }
+    ],
+    "expected_client": "Vector Energy Group",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0CC420V1TK",
+    "smartlead_client_id": 597119,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4242293,
+      "campaign_name": "Vector | Big Owners | FOMO",
+      "sl_email_lead_id": "4924189089",
+      "sl_email_lead_map_id": "3999754828",
+      "client_id": 597119,
+      "to_email": "lead-4a70a470@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T15:30:46.000Z"
+      },
+      "event_timestamp": "2026-11-11T15:30:46.000Z"
+    }
+  },
+  {
+    "campaign_id": 4453071,
+    "campaign_name": "BPLTG IT DM 51 to 100 Industry",
+    "sg_owner": "bpltg",
+    "tags": [
+      {
+        "tag_id": 547618,
+        "tag_name": "sg-owner:bpltg",
+        "tag_color": "#0EA5E9"
+      }
+    ],
+    "expected_client": "BPLTG",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0CDZGLQVMG",
+    "smartlead_client_id": 602897,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4453071,
+      "campaign_name": "BPLTG IT DM 51 to 100 Industry",
+      "sl_email_lead_id": "4860023014",
+      "sl_email_lead_map_id": "3994699060",
+      "client_id": 602897,
+      "to_email": "lead-62e3ece7@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T15:06:15.000Z"
+      },
+      "event_timestamp": "2026-11-11T15:06:15.000Z"
+    }
+  },
+  {
+    "campaign_id": 3763804,
+    "campaign_name": "BCP Logistics Under-1k (No Team)",
+    "sg_owner": "bcp",
+    "tags": [
+      {
+        "tag_id": 547617,
+        "tag_name": "sg-owner:bcp",
+        "tag_color": "#4F46E5"
+      }
+    ],
+    "expected_client": "Bolder Cyber Partners",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0BMW7Y216F",
+    "smartlead_client_id": 542838,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 3763804,
+      "campaign_name": "BCP Logistics Under-1k (No Team)",
+      "sl_email_lead_id": "4296309580",
+      "sl_email_lead_map_id": "3489497938",
+      "client_id": 542838,
+      "to_email": "lead-8bc991d2@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T15:04:47.000Z"
+      },
+      "event_timestamp": "2026-11-11T15:04:47.000Z"
+    }
+  },
+  {
+    "campaign_id": 4288255,
+    "campaign_name": "Goliath MSP Displacement Spa | Nov1",
+    "sg_owner": "goliath",
+    "tags": [
+      {
+        "tag_id": 547623,
+        "tag_name": "sg-owner:goliath",
+        "tag_color": "#EC4899"
+      }
+    ],
+    "expected_client": "Goliath",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0BP0BCLWCV",
+    "smartlead_client_id": 548611,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4288255,
+      "campaign_name": "Goliath MSP Displacement Spa | Nov1",
+      "sl_email_lead_id": "4416935435",
+      "sl_email_lead_map_id": "3943930131",
+      "client_id": 548611,
+      "to_email": "lead-6b799b93@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T14:16:01.000Z"
+      },
+      "event_timestamp": "2026-11-11T14:16:01.000Z"
+    }
+  },
+  {
+    "campaign_id": 4236388,
+    "campaign_name": "Parlay IT DM POC",
+    "sg_owner": "parlay",
+    "tags": [
+      {
+        "tag_id": 547627,
+        "tag_name": "sg-owner:parlay",
+        "tag_color": "#84CC16"
+      }
+    ],
+    "expected_client": "Parlay Tech",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0B7D4J46KT",
+    "smartlead_client_id": 418274,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4236388,
+      "campaign_name": "Parlay IT DM POC",
+      "sl_email_lead_id": "4296377038",
+      "sl_email_lead_map_id": "3907865757",
+      "client_id": 418274,
+      "to_email": "lead-fe9f1ac4@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T13:06:02.000Z"
+      },
+      "event_timestamp": "2026-11-11T13:06:02.000Z"
+    }
+  },
+  {
+    "campaign_id": 4287124,
+    "campaign_name": "SG GC Tickets 1101",
+    "sg_owner": "salesglider",
+    "tags": [
+      {
+        "tag_id": 547616,
+        "tag_name": "sg-owner:salesglider",
+        "tag_color": "#4F46E5"
+      }
+    ],
+    "expected_client": "SalesGlider",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0AR02YS268",
+    "smartlead_client_id": 345263,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4287124,
+      "campaign_name": "SG GC Tickets 1101",
+      "sl_email_lead_id": "4508430924",
+      "sl_email_lead_map_id": "3943671895",
+      "client_id": 345263,
+      "to_email": "lead-b75f63bd@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-11T00:41:05.000Z"
+      },
+      "event_timestamp": "2026-11-11T00:41:05.000Z"
+    }
+  },
+  {
+    "campaign_id": 4041408,
+    "campaign_name": "Insight Partner Sucks",
+    "sg_owner": "insight",
+    "tags": [
+      {
+        "tag_id": 547624,
+        "tag_name": "sg-owner:insight",
+        "tag_color": "#14B8A6"
+      }
+    ],
+    "expected_client": null,
+    "expected_client_active_in_db": false,
+    "expected_slack_channel": null,
+    "smartlead_client_id": 582890,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4041408,
+      "campaign_name": "Insight Partner Sucks",
+      "sl_email_lead_id": "4511575547",
+      "sl_email_lead_map_id": "3765752651",
+      "client_id": 582890,
+      "to_email": "lead-a78951de@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-10T16:58:01.000Z"
+      },
+      "event_timestamp": "2026-11-10T16:58:01.000Z"
+    }
+  },
+  {
+    "campaign_id": 4289737,
+    "campaign_name": "Ciotola | East Village Church | Church Inboxes | Nov1",
+    "sg_owner": "ciotola",
+    "tags": [
+      {
+        "tag_id": 547619,
+        "tag_name": "sg-owner:ciotola",
+        "tag_color": "#10B981"
+      }
+    ],
+    "expected_client": "Ciotola",
+    "expected_client_active_in_db": false,
+    "expected_slack_channel": null,
+    "smartlead_client_id": 345263,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4289737,
+      "campaign_name": "Ciotola | East Village Church | Church Inboxes | Nov1",
+      "sl_email_lead_id": "4859576513",
+      "sl_email_lead_map_id": "3944480654",
+      "client_id": 345263,
+      "to_email": "lead-802d87b0@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-10T15:59:44.000Z"
+      },
+      "event_timestamp": "2026-11-10T15:59:44.000Z"
+    }
+  },
+  {
+    "campaign_id": 4127689,
+    "campaign_name": "Nutter | CEO | Outline | All",
+    "sg_owner": "nutter",
+    "tags": [
+      {
+        "tag_id": 547626,
+        "tag_name": "sg-owner:nutter",
+        "tag_color": "#6366F1"
+      }
+    ],
+    "expected_client": "Nutter",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0C9ED8R188",
+    "smartlead_client_id": 566991,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4127689,
+      "campaign_name": "Nutter | CEO | Outline | All",
+      "sl_email_lead_id": "4342678884",
+      "sl_email_lead_map_id": "3850792623",
+      "client_id": 566991,
+      "to_email": "lead-78b3a4f0@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-10T14:49:48.000Z"
+      },
+      "event_timestamp": "2026-11-10T14:49:48.000Z"
+    }
+  },
+  {
+    "campaign_id": 3798229,
+    "campaign_name": "Peterson - C2 Property Managers - SPORTS",
+    "sg_owner": "peterson",
+    "tags": [
+      {
+        "tag_id": 547628,
+        "tag_name": "sg-owner:peterson",
+        "tag_color": "#A855F7"
+      }
+    ],
+    "expected_client": "Roofs By Peterson",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0BP67QJWDU",
+    "smartlead_client_id": 548610,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 3798229,
+      "campaign_name": "Peterson - C2 Property Managers - SPORTS",
+      "sl_email_lead_id": "4840847074",
+      "sl_email_lead_map_id": "3928267921",
+      "client_id": 548610,
+      "to_email": "lead-ccaea3ce@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-10T13:23:41.000Z"
+      },
+      "event_timestamp": "2026-11-10T13:23:41.000Z"
+    }
+  },
+  {
+    "campaign_id": 4256503,
+    "campaign_name": "PowerGRYD | MSP Owners 36 to 100 | Tix | Oct27",
+    "sg_owner": "powergryd",
+    "tags": [
+      {
+        "tag_id": 547629,
+        "tag_name": "sg-owner:powergryd",
+        "tag_color": "#22D3EE"
+      }
+    ],
+    "expected_client": "PowerGryd",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0C3TAZ0WTB",
+    "smartlead_client_id": 592842,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 4256503,
+      "campaign_name": "PowerGRYD | MSP Owners 36 to 100 | Tix | Oct27",
+      "sl_email_lead_id": "3618272687",
+      "sl_email_lead_map_id": "3929655386",
+      "client_id": 592842,
+      "to_email": "lead-c4658dd8@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-06T18:09:45.000Z"
+      },
+      "event_timestamp": "2026-11-06T18:09:45.000Z"
+    }
+  },
+  {
+    "campaign_id": 3847795,
+    "campaign_name": "TechEvo SFL Startup Owners Jet Ski",
+    "sg_owner": "techevo",
+    "tags": [
+      {
+        "tag_id": 547630,
+        "tag_name": "sg-owner:techevo",
+        "tag_color": "#78716C"
+      }
+    ],
+    "expected_client": "TechEvolution",
+    "expected_client_active_in_db": true,
+    "expected_slack_channel": "C0BCS6J0BPB",
+    "smartlead_client_id": 521881,
+    "payload": {
+      "event_type": "EMAIL_REPLY",
+      "campaign_id": 3847795,
+      "campaign_name": "TechEvo SFL Startup Owners Jet Ski",
+      "sl_email_lead_id": "4508437910",
+      "sl_email_lead_map_id": "3658915613",
+      "client_id": 521881,
+      "to_email": "lead-e9044152@example.com",
+      "to_name": "Redacted Lead",
+      "reply_message": {
+        "text": "Sounds interesting, tell me more.",
+        "time": "2026-11-05T15:24:40.000Z"
+      },
+      "event_timestamp": "2026-11-05T15:24:40.000Z"
+    }
+  }
+]

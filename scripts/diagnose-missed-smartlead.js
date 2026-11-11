@@ -99,12 +99,17 @@ async function main() {
     console.log(`  - ${r.created_at.toISOString?.() || r.created_at} ${r.lead_name} ${r.classification} ${r.status}`);
   }
 
-  if (!client.smartlead_api_key) {
-    console.error('No SmartLead API key on client');
+  // Master-first: per-client keys are being deleted. /admin/clients strips keys anyway.
+  const slKey = String(
+    process.env.SMARTLEAD_MASTER_API_KEY || process.env.SMARTLEAD_API_KEY || client.smartlead_api_key || ''
+  ).trim();
+  if (!slKey) {
+    console.error('Set SMARTLEAD_MASTER_API_KEY (or SMARTLEAD_API_KEY)');
     process.exit(1);
   }
 
-  const inbox = await inboxReplies(client.smartlead_api_key, 20);
+  // Agency inbox: rows from every client, not only this one.
+  const inbox = await inboxReplies(slKey, 20);
   const replies = pickReplies(inbox);
   console.log(`\nSmartLead inbox recent replies: ${replies.length}`);
 

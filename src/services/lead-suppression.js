@@ -72,7 +72,9 @@ async function smartleadDnc(apiKey, email, { smartlead = require('./smartlead'),
  * @param {{platform?, campaignId?, leadId?, conversationId?, leadEmail?, linkedinUrl?}} keys
  * @returns {Promise<string|null>} reason, or null when the lead may get cards
  */
-async function leadSuppressionReason(client, keys = {}, deps = {}) {
+async function leadSuppressionReason(rawClient, keys = {}, deps = {}) {
+  // Master-first: a stored per-client key may be revoked; the agency key wins when set.
+  const client = require('./campaign-routing').withSmartleadKey(rawClient, deps.env || process.env);
   const clientId = client && client.id;
   if (!clientId) return null;
   const dq = deps.isDisqualified || isDisqualified;

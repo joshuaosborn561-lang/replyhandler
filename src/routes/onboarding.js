@@ -13,7 +13,7 @@ const smartlead = require('../services/smartlead');
 const { requireAdminApiKey } = require('../utils/admin-auth');
 const { webhookUrls } = require('../utils/public-client');
 const { normalizeClientBooking } = require('../utils/booking-bridge-destinations');
-const { resetCampaignRouteCache } = require('../services/campaign-routing');
+const { resetCampaignRouteCache, masterKey } = require('../services/campaign-routing');
 
 const SLACK_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
 
@@ -85,12 +85,14 @@ async function upsertOnboardingClient(body, deps = {}) {
     booking_link: body.booking_link != null ? body.booking_link : existing?.booking_link,
     booking_destination_url: existing?.booking_destination_url,
   });
+  // A per-client key is optional and only stored if given (never required).
   const slKey = body.smartlead_api_key || existing?.smartlead_api_key || null;
-  // Campaign on the shared master account: route it, use the env master key at
-  // runtime, never store that key on this client.
-  const useMaster = !slKey && !!body.smartlead_campaign_id;
+  // Master-first (Nov 11 2026): a campaign is routed to this client and its
+  // webhook is registered with the env agency key whenever that key is set,
+  // even if the client still stores its own key. The agency key is never stored.
   const env = deps.env || process.env;
-  const master = String(env.SMARTLEAD_MASTER_API_KEY || '').trim();
+  const master = masterKey(env);
+  const useMaster = !!body.smartlead_campaign_id && (!!master || !slKey);
   if (useMaster && !master) return { status: 500, json: { error: 'SMARTLEAD_MASTER_API_KEY not set on server' } };
 
   const plan = {
@@ -100,7 +102,7 @@ async function upsertOnboardingClient(body, deps = {}) {
     slack_channel_id: channel,
     booking_link: booked.booking_link || null,
     smartlead_campaign_id: body.smartlead_campaign_id || null,
-    smartlead_key: slKey ? 'client' : (useMaster ? 'master (runtime, not stored)' : 'none'),
+    smartlead_key: useMaster ? 'master (runtime, not stored)' : (slKey ? 'client' : 'none'),
     campaign_route: useMaster ? String(body.smartlead_campaign_id) : null,
   };
   if (dryRun) return { status: 200, json: { ok: true, dry_run: true, plan } };
@@ -136,7 +138,7 @@ async function upsertOnboardingClient(body, deps = {}) {
   }
   const out = { ok: true, action: plan.action, client: safeView(client) };
   if (useMaster) out.campaign_route = { campaign_id: String(body.smartlead_campaign_id), client_id: client.id };
-  const hookKey = slKey || (useMaster ? master : null);
+  const hookKey = (useMaster ? master : null) || slKey;
   if (body.smartlead_campaign_id) {
     const target = webhookUrls(client.id).smartlead_webhook_url;
     if (!hookKey) {

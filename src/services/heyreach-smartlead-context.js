@@ -27,7 +27,7 @@ const { fetchWith429Retry, historyMessages } = require('./smartlead');
 const { stripHtmlToText } = require('../utils/smartlead-webhook-helpers');
 const {
   withSmartleadKey,
-  ownerSlugsFromTags,
+  ownerFromTags,
   clientForSlug,
   clientFromCampaignTitle,
   tagsFromRecord,
@@ -300,10 +300,11 @@ function ourClientForSmartleadClient(slClient, ourClients) {
  * up a dedicated client (PowerGRYD, BPLTG) whose title has no prefix.
  */
 function attributeCampaign(campaign, { clients, routes, smartleadClientsById }) {
-  const slugs = ownerSlugsFromTags(campaign.tags || []);
-  if (slugs.length === 1) {
-    const tagged = clientForSlug(slugs[0], clients);
-    if (tagged && tagged.id) return { clientId: String(tagged.id), via: 'tag' };
+  // A tagged campaign belongs to its tag owner or to nobody: no title /
+  // client_id fallback (Ciotola campaigns sit in SalesGlider's Smartlead client).
+  const byTag = ownerFromTags(campaign.tags || [], clients);
+  if (byTag.tagged) {
+    return byTag.client ? { clientId: String(byTag.client.id), via: 'tag' } : null;
   }
   const routed = routes.get(String(campaign.id));
   if (routed) return { clientId: String(routed), via: 'route' };
@@ -582,6 +583,8 @@ async function loadAccountIndex(apiKey, http) {
   if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit;
   const campaignsRes = await smartleadJson(apiKey, {
     path: '/campaigns/',
+    // Smartlead returns `tags` only with include_tags=true.
+    query: { include_tags: 'true' },
     gapMs: http.gapMs,
     fetchJson: http.fetchJson,
   });

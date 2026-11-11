@@ -318,13 +318,18 @@ async function main() {
   const singleSl = process.env.SMARTLEAD_API_KEY;
   const singleHr = process.env.HEYREACH_API_KEY;
 
+  // Master-first: per-client Smartlead keys are being deleted. With an agency key,
+  // Smartlead is exported once from it (labelled 'smartlead-master'); stored
+  // per-client Smartlead keys are not used. HeyReach stays per client.
+  const agencySl = String(process.env.SMARTLEAD_MASTER_API_KEY || process.env.SMARTLEAD_API_KEY || '').trim();
   let targets = [];
   if (clients && clients.length) {
     targets = clients.map((c) => ({
       name: c.name,
-      smartlead_api_key: c.smartlead_api_key,
+      smartlead_api_key: agencySl ? null : c.smartlead_api_key,
       heyreach_api_key: c.heyreach_api_key,
     }));
+    if (agencySl) targets.push({ name: 'smartlead-master', smartlead_api_key: agencySl, heyreach_api_key: null });
   } else if (singleSl || singleHr) {
     targets = [{ name: process.env.EXPORT_CLIENT_NAME || 'single', smartlead_api_key: singleSl || null, heyreach_api_key: singleHr || null }];
   } else {

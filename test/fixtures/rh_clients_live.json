@@ -1,0 +1,128 @@
+[
+  {
+    "id": "live-client-00",
+    "name": "Ciotola",
+    "active": false,
+    "slack_channel_id": "C0CDYC9L6CE"
+  },
+  {
+    "id": "live-client-01",
+    "name": "BPLTG",
+    "active": true,
+    "slack_channel_id": "C0CDZGLQVMG"
+  },
+  {
+    "id": "live-client-02",
+    "name": "Vector Energy Group",
+    "active": true,
+    "slack_channel_id": "C0CC420V1TK"
+  },
+  {
+    "id": "live-client-03",
+    "name": "Nutter",
+    "active": true,
+    "slack_channel_id": "C0C9ED8R188"
+  },
+  {
+    "id": "live-client-04",
+    "name": "Deep Roots",
+    "active": false,
+    "slack_channel_id": "C0C7FE0E4DQ"
+  },
+  {
+    "id": "live-client-05",
+    "name": "Deep Roots",
+    "active": false,
+    "slack_channel_id": "C0C7FE0E4DQ"
+  },
+  {
+    "id": "live-client-06",
+    "name": "Emcor",
+    "active": true,
+    "slack_channel_id": "C0C51EJEK6W"
+  },
+  {
+    "id": "live-client-07",
+    "name": "PowerGryd",
+    "active": true,
+    "slack_channel_id": "C0C3TAZ0WTB"
+  },
+  {
+    "id": "live-client-08",
+    "name": "Cornerstone",
+    "active": false,
+    "slack_channel_id": "C0C2UFE39ME"
+  },
+  {
+    "id": "live-client-09",
+    "name": "Vasco Warranty",
+    "active": false,
+    "slack_channel_id": "C0BP87262CS"
+  },
+  {
+    "id": "live-client-10",
+    "name": "Roofs By Peterson",
+    "active": true,
+    "slack_channel_id": "C0BP67QJWDU"
+  },
+  {
+    "id": "live-client-11",
+    "name": "Goliath",
+    "active": true,
+    "slack_channel_id": "C0BP0BCLWCV"
+  },
+  {
+    "id": "live-client-12",
+    "name": "Bolder Cyber Partners",
+    "active": true,
+    "slack_channel_id": "C0BMW7Y216F"
+  },
+  {
+    "id": "live-client-13",
+    "name": "MSRS",
+    "active": false,
+    "slack_channel_id": "C0B7B9PJS66"
+  },
+  {
+    "id": "live-client-14",
+    "name": "TechEvolution",
+    "active": true,
+    "slack_channel_id": "C0BCS6J0BPB"
+  },
+  {
+    "id": "live-client-15",
+    "name": "Parlay Tech",
+    "active": true,
+    "slack_channel_id": "C0B7D4J46KT"
+  },
+  {
+    "id": "live-client-16",
+    "name": "Culture Fits",
+    "active": true,
+    "slack_channel_id": "C0B77TEMG3X"
+  },
+  {
+    "id": "live-client-17",
+    "name": "Nieto",
+    "active": false,
+    "slack_channel_id": "C0ASJNPTA9G"
+  },
+  {
+    "id": "live-client-18",
+    "name": "SalesGlider",
+    "active": true,
+    "slack_channel_id": "C0AR02YS268"
+  },
+  {
+    "id": "live-client-19",
+    "name": "Nieto (inactive duplicate)",
+    "active": false,
+    "slack_channel_id": "C0ASJNPTA9G"
+  },
+  {
+    "id": "live-client-20",
+    "name": "SalesGlider (inactive duplicate)",
+    "active": false,
+    "slack_channel_id": ""
+  }
+]
