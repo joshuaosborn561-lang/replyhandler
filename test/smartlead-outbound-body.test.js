@@ -18,6 +18,23 @@ const PARLAY = { name: 'Parlay Tech' };
 const JEREMY_INBOX = 'jciotola@getjeremyciotola.info';
 const PARLAY_INBOX = 'myles@parlaytech.io';
 const AGENCY_INBOX = 'joshua@salesglidergrowth.com';
+const { resetAgencySignatureContractCacheForTests } = require('../src/utils/smartlead-agency-signature-contract');
+
+function withVerifiedAgencyContract(fn) {
+  const key = 'SMARTLEAD_AGENCY_SIGNATURE_CONTRACT_JSON';
+  const prev = process.env[key];
+  process.env[key] = JSON.stringify({
+    [AGENCY_INBOX]: 'Joshua Osborn\nSalesGlider Growth',
+  });
+  resetAgencySignatureContractCacheForTests();
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env[key];
+    else process.env[key] = prev;
+    resetAgencySignatureContractCacheForTests();
+  }
+}
 
 test('prepareSmartleadReplyText strips draft sign-offs for every client (Parlay pattern)', () => {
   const draft = 'Happy to send times.\n\nBest,\nMyles';
@@ -100,11 +117,13 @@ test('SmartLead sendReply: client inbox add_signature false, agency inbox true',
     assert.doesNotMatch(calls[0].body.email_body, /Best,/i);
 
     calls.length = 0;
-    await smartlead.sendReply('test-key', 3739758, 33, {
-      replyText: 'Thursday works.\n\nJosh',
-      emailStatsId: 'stats-3',
-      outboundClient: { name: 'SalesGlider' },
-      sendingInboxEmail: AGENCY_INBOX,
+    await withVerifiedAgencyContract(async () => {
+      await smartlead.sendReply('test-key', 3739758, 33, {
+        replyText: 'Thursday works.\n\nJosh',
+        emailStatsId: 'stats-3',
+        outboundClient: { name: 'SalesGlider' },
+        sendingInboxEmail: AGENCY_INBOX,
+      });
     });
     assert.equal(calls[0].body.add_signature, true);
     assert.doesNotMatch(calls[0].body.email_body, /\bJosh\b/);
