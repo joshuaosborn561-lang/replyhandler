@@ -363,6 +363,9 @@ describe('Reject makes no Smartlead or HeyReach category or status call', { conc
       if (/SELECT \* FROM pending_replies WHERE id/.test(sql) && /pending', 'flagged'/.test(sql)) {
         return { rows: [reply] };
       }
+      if (/status = 'sent'/.test(sql) && /pending_replies/.test(sql)) {
+        return { rows: [] };
+      }
       if (/SET status = 'rejected'/.test(sql)) {
         assert.equal(params[0], OLDER);
         return { rows: [{ ...reply, status: 'rejected' }], rowCount: 1 };

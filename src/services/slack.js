@@ -21,6 +21,25 @@ function getClient(token) {
   return clientCache.get(token);
 }
 
+async function chatUpdateWithRetry(slack, args, { retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await slack.chat.update(args);
+    } catch (err) {
+      lastErr = err;
+      const rateLimited = err?.code === 'slack_webapi_rate_limited_error'
+        || err?.data?.error === 'rate_limited'
+        || /rate.?limit/i.test(String(err?.message || ''));
+      if (!rateLimited || attempt === retries) throw err;
+      const retryAfterSec = Number(err?.data?.retry_after ?? err?.retryAfter ?? 1);
+      const waitMs = Math.min(30000, Math.max(500, retryAfterSec * 1000 + attempt * 400));
+      await new Promise((resolve) => { setTimeout(resolve, waitMs); });
+    }
+  }
+  throw lastErr;
+}
+
 function decodeHtmlEntities(s) {
   return decodeAllHtmlEntities(s)
     .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
@@ -1032,7 +1051,7 @@ async function updateSentConfirmationCard(token, channelId, messageTs, opts) {
             : 'Sent';
   const text = `${textPrefix} — ${lead}${preview ? `: ${preview}` : ''}`;
 
-  const result = await slack.chat.update({
+  const result = await chatUpdateWithRetry(slack, {
     channel: channelId,
     ts: messageTs,
     text,
